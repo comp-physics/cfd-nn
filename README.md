@@ -111,7 +111,29 @@ Time Stepping:
 
 Output:
   --output DIR          Output directory
+  --num_snapshots N     Number of VTK snapshots (default 10)
   --verbose / --quiet   Verbosity control
+```
+
+### VTK Visualization Output
+
+The solver automatically writes VTK files for visualization during the simulation:
+
+```bash
+# Default: 10 snapshots during simulation + final
+./channel --Nx 64 --Ny 128 --nu 0.01 --max_iter 1000
+# Outputs: channel_1.vtk through channel_10.vtk + channel_final.vtk
+
+# More snapshots for detailed time evolution
+./channel --Nx 64 --Ny 128 --nu 0.01 --max_iter 1000 --num_snapshots 20
+# Outputs: 20 intermediate snapshots + final
+
+# Only final state (faster, less disk space)
+./channel --Nx 64 --Ny 128 --nu 0.01 --max_iter 1000 --num_snapshots 0
+# Outputs: only channel_final.vtk
+```
+
+VTK files can be visualized with ParaView, VisIt, or similar tools.
 ```
 
 ## Available Turbulence Models
