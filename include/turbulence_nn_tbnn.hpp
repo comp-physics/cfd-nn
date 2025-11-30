@@ -86,9 +86,7 @@ private:
     
     // GPU state
     bool gpu_ready_ = false;
-    bool full_gpu_ready_ = false;   // True when full pipeline is available
     bool initialized_ = false;
-    int cached_n_cells_ = 0;
     int cached_total_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);

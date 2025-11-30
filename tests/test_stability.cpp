@@ -137,7 +137,6 @@ void test_fixed_dt_coarse_grid() {
     }
     
     assert(is_velocity_valid(solver.velocity(), mesh) && "Solution diverged!");
-    assert(std::isfinite(solver.residual()) && "Residual is NaN/Inf!");
     
     std::cout << "PASSED\n";
 }

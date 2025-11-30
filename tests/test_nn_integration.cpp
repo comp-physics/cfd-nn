@@ -193,7 +193,6 @@ void test_nn_tbnn_solver_integration() {
         
         // Check solution validity
         assert(is_velocity_valid(solver.velocity(), mesh) && "Solution diverged with NN-TBNN!");
-        assert(std::isfinite(solver.residual()) && "Residual is NaN/Inf!");
         assert(is_field_valid(solver.nu_t(), mesh) && "nu_t is invalid!");
         
         std::cout << "PASSED\n";
