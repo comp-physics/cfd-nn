@@ -44,26 +44,31 @@ void TurbulenceNNTBNN::estimate_k(const Mesh& mesh, const VectorField& velocity,
         double dudy_avg = 0.0;
         int count = 0;
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dudy = (velocity.u(i, j+1) - velocity.u(i, j-1)) / (2.0 * mesh.dy);
-            dudy_avg += std::abs(dudy);
-            ++count;
+            if (j+1 < mesh.j_end() && j-1 >= mesh.j_begin()) {
+                double dudy = (velocity.u(i, j+1) - velocity.u(i, j-1)) / (2.0 * mesh.dy);
+                dudy_avg += std::abs(dudy);
+                ++count;
+            }
         }
-        dudy_avg /= count;
-        u_tau = std::sqrt(nu_ * dudy_avg);
+        if (count > 0) {
+            dudy_avg /= count;
+            u_tau = std::sqrt(nu_ * dudy_avg);
+        }
     }
     
-    u_tau = std::max(u_tau, 1e-10);
+    u_tau = std::max(u_tau, 1e-6);
     
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double y_wall = mesh.wall_distance(i, j);
-            double y_plus = y_wall * u_tau / nu_;
+            double y_plus = y_wall * u_tau / (nu_ + 1e-20);
             
             // van Driest-like damping
-            double f_mu = 1.0 - std::exp(-y_plus / 26.0);
+            double f_mu = 1.0 - std::exp(-std::min(y_plus / 26.0, 20.0));
             
             // k in log layer ~ u_tau^2 / sqrt(C_mu)
-            k(i, j) = std::max(k_min_, (u_tau * u_tau / std::sqrt(C_mu)) * f_mu * f_mu);
+            double k_est = (u_tau * u_tau / std::sqrt(C_mu)) * f_mu * f_mu;
+            k(i, j) = std::max(k_min_, std::min(k_est, 10.0 * u_tau * u_tau));
         }
     }
 }
@@ -173,8 +178,13 @@ void TurbulenceNNTBNN::update(
                     }
                 }
                 
-                // Ensure positivity
-                nu_t(i, j) = std::max(0.0, nu_t(i, j));
+                // Ensure positivity and clip to reasonable bounds
+                nu_t(i, j) = std::max(0.0, std::min(nu_t(i, j), 10.0 * nu_));
+                
+                // Debug: Check for problematic values
+                if (std::isnan(nu_t(i, j)) || std::isinf(nu_t(i, j))) {
+                    nu_t(i, j) = 0.0;  // Fallback to zero
+                }
                 
                 ++idx;
             }

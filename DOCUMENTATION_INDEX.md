@@ -1,40 +1,58 @@
 # Documentation Index
 
-## Getting Started
+## Quick Start Guides
 
-- **QUICK_START.md** - Build and run in 60 seconds  
-- **README.md** - Complete project documentation and usage
+- **`README.md`** - Main project documentation and usage
+- **`QUICK_START.md`** - Build and run in 60 seconds  
+- **`QUICK_TRAIN.md`** - Train a neural network model in 30 minutes
 
-## Technical Details
+## Training Neural Network Models
 
-- **VALIDATION.md** - Test results, validation against analytical solutions, recommended parameters
+- **`docs/TRAINING_GUIDE.md`** - Complete training workflow
+- **`docs/DATASET_INFO.md`** - McConkey dataset documentation
+- **`TRAINING_SUCCESS.md`** - Verified working setup
+- **`requirements.txt`** - Python dependencies
 
-## Model Zoo (Using Published NN Models)
+## Validation & Testing
 
-- **data/models/README.md** - Target published models, validation protocol  
-- **docs/MODEL_ZOO_GUIDE.md** - Detailed guide for integrating published models
+- **`VALIDATION.md`** - Test results and validation against analytical/DNS solutions
+- **`TESTING.md`** - Unit testing guide and test suite documentation
 
-## File Organization
+## Model Integration
 
-```
-Documentation:
-+-- QUICK_START.md           # Start here
-+-- README.md                # Full documentation
-+-- VALIDATION.md            # Results and validation
-+-- data/models/README.md    # Model zoo overview
-+-- docs/MODEL_ZOO_GUIDE.md  # Integration workflow
+- **`data/models/README.md`** - Model zoo and published models
+- **`docs/MODEL_ZOO_GUIDE.md`** - Detailed integration guide
 
-Code:
-+-- include/                 # All headers (well commented)
-+-- src/                     # Implementations
-+-- app/                     # Executable drivers
-+-- scripts/                 # Weight export tools
-+-- tests/                   # Unit tests
+## Documentation by Task
 
-Data:
-+-- data/                    # NN weights (text format)
-+-- data/models/             # Model zoo (presets)
-```
+| I want to... | Read this |
+|--------------|-----------|
+| Get started quickly | `README.md` or `QUICK_START.md` |
+| Train my own NN model | `QUICK_TRAIN.md` → `docs/TRAINING_GUIDE.md` |
+| Understand the dataset | `docs/DATASET_INFO.md` |
+| See validation results | `VALIDATION.md` |
+| Run unit tests | `TESTING.md` |
+| Add a published model | `data/models/README.md` |
+| Understand the code | Header files in `include/` |
+| Export PyTorch weights | `scripts/export_pytorch.py` |
+
+## Project Organization
+
+**Documentation:** README.md, QUICK_START.md, QUICK_TRAIN.md, VALIDATION.md, TESTING.md, TRAINING_SUCCESS.md, CHANGELOG.md, docs/
+
+**Code:** include/ (headers), src/ (implementations), app/ (executables), scripts/ (training), tests/ (unit tests)
+
+**Data:** data/models/ (trained weights)
+
+## Available Turbulence Models
+
+| Model | Type | Training Required | Description |
+|-------|------|-------------------|-------------|
+| `none` | Laminar | No | No turbulence model |
+| `baseline` | Algebraic | No | Mixing length |
+| `gep` | Symbolic | No | Gene Expression Programming |
+| `nn_mlp` | Neural Net | Yes | Scalar eddy viscosity |
+| `nn_tbnn` | Neural Net | Yes | Tensor Basis NN (Ling 2016) |
 
 ## Quick Reference
 
@@ -44,38 +62,25 @@ mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release && make -j4
 ```
 
-### Run
+### Train Model
 ```bash
-# Laminar validation
-./channel --Nx 32 --Ny 64 --nu 0.1 --dt 0.005 --max_iter 10000
-
-# Baseline turbulence
-./channel --model baseline --Nx 64 --Ny 128
-
-# Neural network model
-./channel --model nn_mlp --nn_preset example_scalar_nut
+source venv/bin/activate
+python scripts/train_tbnn_mcconkey.py --case periodic_hills --epochs 100
 ```
 
-### Documentation by Purpose
+### Run
+```bash
+./channel --model nn_tbnn --nn_preset your_model --adaptive_dt
+```
 
-| I want to... | Read this |
-|--------------|-----------|
-| Get started quickly | QUICK_START.md |
-| Understand the full project | README.md |
-| See validation results | VALIDATION.md |
-| Add a published NN model | data/models/README.md |
-| Understand model integration | docs/MODEL_ZOO_GUIDE.md |
-| Modify the code | include/*.hpp (headers) |
-| Export PyTorch/TF weights | scripts/export_*.py |
-
-## Project Goals (Reminder)
+## Project Goals
 
 This solver implements:
 1. Steady incompressible RANS for canonical flows
 2. Finite volume/difference on structured grids
-3. Multiple turbulence closures (baseline + NN)
+3. Multiple turbulence closures (classical + neural network)
 4. Pure C++ NN inference (no runtime dependencies)
-5. Performance instrumentation
+5. Complete ML training pipeline (Python + PyTorch)
+6. Performance instrumentation
 
-**Focus:** CFD solver + NN inference infrastructure  
-**Training:** Done externally in Python
+**Focus:** Production-ready CFD solver with state-of-the-art ML turbulence closures

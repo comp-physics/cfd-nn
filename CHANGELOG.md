@@ -1,100 +1,79 @@
 # Changelog
 
-## Latest Update
+## [Current] - Neural Network Turbulence Modeling
 
-### New Features
+### Complete Training Infrastructure
 
-1. **Adaptive Time Stepping**
-   - Automatically computes stable time step based on CFL and diffusion constraints
-   - Enable with `--adaptive_dt` flag
-   - Configure max CFL with `--CFL VALUE` (default 0.5)
-   - No more manual dt tuning required for different Reynolds numbers
+**Training Scripts:**
+- `scripts/train_tbnn_mcconkey.py` - Train TBNN (Ling et al. 2016) on DNS/LES data
+- `scripts/train_mlp_mcconkey.py` - Train MLP for scalar eddy viscosity
+- `scripts/validate_trained_model.py` - Validate against test data
+- `scripts/run_all_models.py` - Automated model comparison
+- `scripts/download_mcconkey_data.sh` - Dataset download script
 
-2. **VTK Output**
-   - Generates ParaView-compatible VTK files
-   - Includes: velocity vectors, pressure, velocity magnitude, nu_t (if turbulent)
-   - Output: `<output_dir>/channel.vtk`
+**Documentation:**
+- `docs/TRAINING_GUIDE.md` - Complete training workflow
+- `docs/DATASET_INFO.md` - Dataset documentation
+- `QUICK_TRAIN.md` - 30-minute quick start
+- `requirements.txt` - Python dependencies
 
-3. **GEP Turbulence Model**
-   - Gene Expression Programming algebraic model (Weatheritt-Sandberg style)
-   - No pre-trained weights needed - uses algebraic formulas
-   - Enable with `--model gep`
-   - Three variants: channel flow, periodic hills, simple
+**Dataset Integration:**
+- McConkey et al. (2021) curated turbulence dataset
+- Pre-computed TBNN features (invariants, tensor basis)
+- Multiple flow cases (channel, periodic hills, square duct)
+- Automatic synthetic data generation for testing
 
-4. **Model Comparison Script**
-   - Python script to compare multiple turbulence models
-   - Generates velocity profiles and comparison plots
-   - Usage: `python scripts/compare_models.py`
+**Key Features:**
+- ✅ Train TBNN following Ling et al. (2016) architecture
+- ✅ Export to C++ compatible format
+- ✅ A priori and a posteriori validation
+- ✅ Comprehensive benchmarking tools
+- ✅ Works with or without real dataset
 
-### Model Zoo Infrastructure
+### Core Solver Features
 
-- `--nn_preset NAME` option to load models from `data/models/<NAME>/`
-- Metadata.json schema for documenting models
-- Example models: `example_scalar_nut`, `example_tbnn`
-- Export scripts for PyTorch and TensorFlow
+**Turbulence Models:**
+- Laminar flow (none)
+- Mixing length with van Driest damping (baseline)
+- Gene Expression Programming algebraic model (gep)
+- Neural network scalar eddy viscosity (nn_mlp)
+- Tensor Basis Neural Network (nn_tbnn)
 
-### Bug Fixes
+**Numerics:**
+- Adaptive time stepping based on CFL and diffusion limits
+- Projection method for pressure-velocity coupling
+- Second-order finite differences
+- SOR solver for pressure Poisson equation
 
-- Fixed MLP weight loading to auto-detect layers from files
-- Added divergence detection in solver
+**Output:**
+- VTK format for ParaView visualization
+- Velocity profiles and field data
+- Performance timing analysis
 
-## Available Turbulence Models
-
-| Model | Type | Weights Required | Description |
-|-------|------|-----------------|-------------|
-| `none` | Laminar | No | No turbulence model |
-| `baseline` | Algebraic | No | Mixing length with van Driest damping |
-| `gep` | Algebraic | No | GEP-style algebraic corrections |
-| `nn_mlp` | Neural Network | Yes | Scalar eddy viscosity prediction |
-| `nn_tbnn` | Neural Network | Yes | TBNN anisotropy prediction |
-
-## Usage Examples
+### Usage
 
 ```bash
-# Laminar with adaptive dt
-./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_iter 20000
+# Build
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release && make -j4
 
-# Baseline turbulence
-./channel --Nx 64 --Ny 128 --nu 0.001 --model baseline --adaptive_dt
+# Train model
+source venv/bin/activate
+python scripts/train_tbnn_mcconkey.py --case periodic_hills --epochs 100
 
-# GEP model
-./channel --Nx 64 --Ny 128 --nu 0.001 --model gep --adaptive_dt
+# Run solver
+./channel --model nn_tbnn --nn_preset your_model --adaptive_dt
 
-# NN model with preset
-./channel --model nn_mlp --nn_preset example_scalar_nut --adaptive_dt
+# Compare models
+python scripts/run_all_models.py --case channel --plot
 ```
 
-## Public NN Weights Status
+### Files Added
 
-After extensive search, **no publicly downloadable pre-trained NN turbulence model weights** were found. Available resources:
-- DNS/LES data for training (Johns Hopkins, KTH, etc.)
-- Code frameworks requiring you to train models
-- OpenFOAM implementations using DNS data directly
+**Scripts (5):** train_tbnn_mcconkey.py, train_mlp_mcconkey.py, validate_trained_model.py, run_all_models.py, download_mcconkey_data.sh
 
-The GEP algebraic model provides a data-driven alternative without requiring trained weights.
+**Documentation (4):** TRAINING_GUIDE.md, DATASET_INFO.md, QUICK_TRAIN.md, TRAINING_SUCCESS.md
 
-## Files Changed
+**Configuration:** requirements.txt, activate_venv.sh
 
-### New Files
-- `include/turbulence_gep.hpp` - GEP model header
-- `src/turbulence_gep.cpp` - GEP model implementation
-- `scripts/compare_models.py` - Model comparison script
-
-### Modified Files
-- `include/solver.hpp` - Added adaptive dt and VTK methods
-- `src/solver.cpp` - Implemented adaptive dt and VTK output
-- `include/config.hpp` - Added GEP enum
-- `src/config.cpp` - Added CLI options for adaptive dt, CFL, GEP
-- `src/turbulence_baseline.cpp` - Added GEP to factory
-- `CMakeLists.txt` - Added GEP source
-- `app/main_channel.cpp` - Added VTK output call
-
-## Performance Notes
-
-With adaptive time stepping, the solver automatically selects appropriate dt:
-- High viscosity (nu=0.1): dt ~ 0.005
-- Low viscosity (nu=0.01): dt ~ 0.0003
-- Turbulent flows: dt adapts to local nu_t
-
-This eliminates the manual parameter tuning previously required.
-
+**Total:** ~3,400 lines of code and documentation

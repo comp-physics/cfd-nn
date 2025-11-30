@@ -1,36 +1,78 @@
-# Build directories
+# Build artifacts
 build/
-build-*/
 cmake-build-*/
-
-# Compiled object files
 *.o
-*.obj
 *.a
-*.lib
 *.so
 *.dylib
-*.dll
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
 
 # Executables
 channel
 periodic_hills
 test_mesh
 test_poisson
-*.exe
-*.out
-*.app
+test_nn_simple
+test_solver
+test_features
+test_turbulence
+test_nn_core
 
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-CTestTestfile.cmake
-Makefile
-*.cmake
-!CMakeLists.txt
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
 
-# IDE and editor files
+# Data (can be very large - mcconkey_data is 71GB!)
+mcconkey_data/
+mcconkey_data_processed/
+*.npz
+*.npy
+*.csv
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+training_log.txt
+*.h5
+*.hdf5
+*.pth
+*.pt
+*.ckpt
+*.pb
+*.onnx
+*.safetensors
+
+# Output
+output/
+results/
+*.vtk
+*.vtu
+*.pvd
+*.dat
+*.txt.gz
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.gif
+*.mp4
+*.avi
+model_comparison.*
+
+# IDE
 .vscode/
 .idea/
 *.swp
@@ -38,45 +80,33 @@ Makefile
 *~
 .DS_Store
 
-# Output and data files
-output/*.dat
-output/*.txt
-output/*.csv
-output/*.vtk
-*.dat
-*.vtk
-*.csv
+# CI/CD (keep workflows)
+!.github/
 
-# Keep data directory structure but ignore weight files
-data/*
-!data/.gitkeep
-!data/README.md
+# Kaggle
+.kaggle/
 
-# Python (if used for weight export)
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-*.egg-info/
-
-# Temporary files
+# Logs
 *.log
-*.tmp
-core
-*.core
 
-# Profiling and debugging
-*.dSYM/
-callgrind.out.*
-perf.data*
-gmon.out
+# Keep example models but ignore trained models
+data/models/test_*
+data/models/*_real
+data/models/tbnn_*
+data/models/mlp_*
+!data/models/example_*
+!data/models/README.md
 
-# Keep important documentation
-!README.md
-!VALIDATION.md
-!LICENSE
-
-
+# Temp files
+ML_COMPARISON_SUMMARY.txt
+ML_TRAINING_COMPLETE.md
+QUICK_WIN_RESULTS.md
+TRAINING_SUCCESS.md
+PROJECT_STATUS.md
+FINAL_RESULTS.md
+*_SUMMARY.md
+*_RESULTS.md
+*_STATUS.md
+*_COMPLETE.md
+# But keep the main project summary
+!PROJECT_SUMMARY.md

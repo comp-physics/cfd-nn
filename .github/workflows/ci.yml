@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        build_type: [Release, Debug]
+        
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential
+    
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake
+    
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+    
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+    
+    - name: Run Tests
+      run: |
+        cd build
+        ctest --output-on-failure --verbose
+    
+    - name: Run test_mesh
+      run: ./build/test_mesh
+    
+    - name: Run test_poisson
+      run: ./build/test_poisson
+    
+    - name: Run test_solver
+      run: ./build/test_solver
+    
+    - name: Run test_features
+      run: ./build/test_features
+    
+    - name: Run test_nn_core
+      run: ./build/test_nn_core
+    
+    - name: Run test_turbulence
+      run: ./build/test_turbulence
+    
+    - name: Check for warnings
+      if: matrix.build_type == 'Release'
+      run: |
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make clean
+        make 2>&1 | tee build.log
+        if grep -i "warning:" build.log; then
+          echo "Warnings detected!"
+          exit 1
+        fi
+

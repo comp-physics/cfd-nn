@@ -64,6 +64,7 @@ target_link_libraries(test_nn_simple nn_cfd_core)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
     enable_testing()
+    
     add_executable(test_mesh tests/test_mesh.cpp)
     target_link_libraries(test_mesh nn_cfd_core)
     add_test(NAME MeshTest COMMAND test_mesh)
@@ -71,6 +72,22 @@ if(BUILD_TESTS)
     add_executable(test_poisson tests/test_poisson.cpp)
     target_link_libraries(test_poisson nn_cfd_core)
     add_test(NAME PoissonTest COMMAND test_poisson)
+    
+    add_executable(test_solver tests/test_solver.cpp)
+    target_link_libraries(test_solver nn_cfd_core)
+    add_test(NAME SolverTest COMMAND test_solver)
+    
+    add_executable(test_features tests/test_features.cpp)
+    target_link_libraries(test_features nn_cfd_core)
+    add_test(NAME FeaturesTest COMMAND test_features)
+    
+    add_executable(test_nn_core tests/test_nn_core.cpp)
+    target_link_libraries(test_nn_core nn_cfd_core)
+    add_test(NAME NNCoreTest COMMAND test_nn_core)
+    
+    add_executable(test_turbulence tests/test_turbulence.cpp)
+    target_link_libraries(test_turbulence nn_cfd_core)
+    add_test(NAME TurbulenceTest COMMAND test_turbulence)
 endif()
 
 # Installation

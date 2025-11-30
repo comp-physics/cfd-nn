@@ -1,0 +1,34 @@
+name: Documentation Check
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Check for broken links in documentation
+      run: |
+        # Check that key documentation files exist
+        test -f README.md
+        test -f QUICK_START.md
+        test -f TESTING.md
+        test -f VALIDATION.md
+        test -f DOCUMENTATION_INDEX.md
+        echo "All required documentation files present"
+    
+    - name: Verify no large files committed
+      run: |
+        # Check that no large files (>10MB) are committed
+        if git ls-files | xargs du -h 2>/dev/null | awk '$1 ~ /M$/ {sub(/M/, "", $1); if ($1 > 10) print}' | grep .; then
+          echo "ERROR: Large files detected in repository!"
+          exit 1
+        fi
+        echo "No large files detected"
+

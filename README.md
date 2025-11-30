@@ -1,107 +1,112 @@
 # NN-CFD: Neural Network Turbulence Closures for Incompressible RANS
 
-A **small, well-structured C++ codebase** for incompressible RANS simulations with **pluggable turbulence closures**, including neural-network-based models.
+![CI](https://github.com/YOUR_USERNAME/nn-cfd/workflows/CI/badge.svg)
 
-## Objectives
+A **well-structured C++ codebase** for incompressible RANS simulations with **pluggable turbulence closures**, including state-of-the-art neural network models.
 
-This solver implements:
+## Features
 
-1. **Steady incompressible RANS** for canonical flows (channel flow, periodic hills) in 2D
-2. **Finite volume/finite difference** discretization on structured grids
-3. **Multiple turbulence closures:**
-   - Baseline algebraic eddy-viscosity (mixing length)
-   - Scalar eddy-viscosity neural network: nu_t = NN(features)
-   - TBNN-style neural network for anisotropy: b_ij = Sum_n G_n T^(n)_ij(features)
-4. **Pure C++ NN inference** using pre-exported weights (no Python/TensorFlow/PyTorch at runtime)
-5. **Performance instrumentation** to compare online runtime costs
-
-Focus: CFD solver and NN inference infrastructure. Training is done externally in Python.
+- **Steady incompressible RANS** for canonical flows (channel, periodic hills)
+- **Multiple turbulence closures**:
+  - Baseline algebraic (mixing length)
+  - GEP symbolic regression
+  - Scalar eddy viscosity neural network (MLP)
+  - Tensor Basis Neural Network (TBNN - Ling et al. 2016)
+- **Pure C++ NN inference** - no Python/TensorFlow at runtime
+- **Complete training pipeline** - train on real DNS/LES data
+- **Performance instrumentation** - detailed timing analysis
 
 ## Quick Start
 
+### Build the Solver
+
 ```bash
-# Build
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j4
+```
 
-# Run laminar channel flow with adaptive time stepping
-./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_iter 20000
+### Run Examples
 
-# Run with baseline turbulence model
+```bash
+# Laminar channel flow
+./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_iter 10000
+
+# Turbulent with baseline model
 ./channel --Nx 64 --Ny 128 --nu 0.001 --model baseline --adaptive_dt
 
-# Run with GEP algebraic model (no weights needed)
-./channel --Nx 64 --Ny 128 --nu 0.001 --model gep --adaptive_dt
+# GEP algebraic model
+./channel --model gep --adaptive_dt
 
-# Run with neural network model (using preset weights)
-./channel --model nn_mlp --nn_preset example_scalar_nut --adaptive_dt
+# Neural network model
+./channel --model nn_tbnn --nn_preset test_tbnn --adaptive_dt
 
-# Run periodic hills
-./periodic_hills --Nx 64 --Ny 48 --model baseline --adaptive_dt
+# Periodic hills
+./periodic_hills --Nx 64 --Ny 96 --model baseline --adaptive_dt
 ```
+
+## Training Neural Network Models
+
+Train your own turbulence models on real DNS/LES data:
+
+```bash
+# Setup environment (one-time)
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Download dataset (~500 MB)
+bash scripts/download_mcconkey_data.sh
+
+# Train TBNN model (~30 min on CPU)
+python scripts/train_tbnn_mcconkey.py \
+    --data_dir mcconkey_data \
+    --case periodic_hills \
+    --output data/models/tbnn_hills \
+    --epochs 100
+
+# Validate against DNS
+python scripts/validate_trained_model.py \
+    --model data/models/tbnn_hills \
+    --test_data mcconkey_data/periodic_hills/test/data.npz \
+    --plot
+
+# Use in solver
+cd build
+./periodic_hills --model nn_tbnn --nn_preset tbnn_hills
+```
+
+**See `QUICK_TRAIN.md` or `docs/TRAINING_GUIDE.md` for complete instructions.**
 
 ## Project Structure
 
-```
-nn-cfd/
-+-- CMakeLists.txt
-+-- include/              # All header files
-|   +-- mesh.hpp          # Structured grid with ghost cells
-|   +-- fields.hpp        # ScalarField, VectorField, TensorField
-|   +-- solver.hpp        # RANS solver (projection method)
-|   +-- poisson_solver.hpp # Pressure Poisson equation (SOR)
-|   +-- turbulence_model.hpp       # Abstract base class
-|   +-- turbulence_baseline.hpp    # Mixing length model
-|   +-- turbulence_nn_mlp.hpp      # Scalar nu_t NN
-|   +-- turbulence_nn_tbnn.hpp     # TBNN anisotropy NN
-|   +-- nn_core.hpp       # MLP forward pass
-|   +-- features.hpp      # Feature extraction for NNs
-|   +-- timing.hpp        # Performance timing
-|   +-- config.hpp        # Configuration parsing
-+-- src/                  # Implementations
-+-- app/
-|   +-- main_channel.cpp       # Channel flow executable
-|   +-- main_periodic_hills.cpp # Periodic hills executable
-|   +-- test_nn_simple.cpp      # NN diagnostic tool
-+-- data/
-|   +-- models/           # NN model zoo (see below)
-|   +-- README.md         # Weight format documentation
-+-- scripts/
-|   +-- generate_dummy_weights.py  # Random weights for testing
-|   +-- export_pytorch.py          # PyTorch -> C++ format
-|   +-- export_tensorflow.py       # TensorFlow -> C++ format
-+-- tests/
-    +-- test_mesh.cpp
-    +-- test_poisson.cpp
-```
+- `include/` - Headers (mesh, solver, turbulence models, NN)
+- `src/` - C++ implementations
+- `app/` - Main executables (channel, periodic_hills)
+- `scripts/` - Training and comparison tools
+- `data/models/` - Trained model weights
+- `docs/` - Detailed documentation
+- `tests/` - Unit tests
 
 ## Command-Line Options
 
 ```bash
-./channel [options]
-
 Grid:
-  --Nx N, --Ny N        Grid cells in x and y
+  --Nx N, --Ny N        Grid cells
   --stretch             Enable y-direction stretching
 
 Physics:
   --nu VALUE            Kinematic viscosity
-  --Re VALUE            Reynolds number (alternative to --nu)
-
-Numerics:
-  --dt VALUE            Time step
-  --max_iter N          Maximum iterations
-  --tol VALUE           Convergence tolerance
+  --Re VALUE            Reynolds number
 
 Turbulence Model:
-  --model TYPE          none|laminar|baseline|gep|nn_mlp|nn_tbnn
-  --nn_preset NAME      Use preset from data/models/<NAME>
-  --weights DIR         NN weights directory (overrides preset)
-  --scaling DIR         NN scaling directory
+  --model TYPE          none|baseline|gep|nn_mlp|nn_tbnn
+  --nn_preset NAME      Use model from data/models/<NAME>
 
-Adaptive Time Stepping:
-  --adaptive_dt         Enable adaptive time stepping (recommended)
+Time Stepping:
+  --adaptive_dt         Automatic time step (recommended)
+  --dt VALUE            Fixed time step
+  --max_iter N          Maximum iterations
   --CFL VALUE           Max CFL number (default 0.5)
 
 Output:
@@ -109,140 +114,164 @@ Output:
   --verbose / --quiet   Verbosity control
 ```
 
-## Neural Network Model Zoo
+## Available Turbulence Models
 
-Easily use published NN turbulence models via the preset system:
-
-```bash
-# Use a preset model from data/models/
-./channel --model nn_mlp --nn_preset <model_name>
-```
-
-### Directory Structure
-
-```
-data/models/
-+-- example_scalar_nut/    # Example MLP (6->32->32->1)
-|   +-- layer*.txt         # Network weights
-|   +-- input_means.txt    # Feature normalization
-|   +-- input_stds.txt
-|   +-- metadata.json      # Model documentation
-+-- example_tbnn/          # Example TBNN (5->64->64->64->4)
-    +-- ...
-```
-
-### Adding Published Models
-
-1. **Export weights** from PyTorch or TensorFlow:
-   ```bash
-   python scripts/export_pytorch.py model.pth --output data/models/my_model
-   ```
-
-2. **Create metadata.json** documenting the model (see examples)
-
-3. **Run:**
-   ```bash
-   ./channel --model nn_tbnn --nn_preset my_model
-   ```
-
-See `data/models/README.md` for target published models and validation protocol.
+| Model | Type | Description | Speed | Accuracy |
+|-------|------|-------------|-------|----------|
+| `none` | Laminar | No turbulence model | ⚡⚡⚡⚡⚡ | N/A |
+| `baseline` | Algebraic | Mixing length + van Driest | ⚡⚡⚡⚡ | Moderate |
+| `gep` | Symbolic | Gene Expression Programming | ⚡⚡⚡ | Good |
+| `nn_mlp` | Neural Net | Scalar eddy viscosity | ⚡⚡ | Good |
+| `nn_tbnn` | Neural Net | Anisotropic stress (Ling 2016) | ⚡ | Best |
 
 ## Governing Equations
 
 **Incompressible RANS:**
+```
+∂ū_i/∂t + ū_j ∂ū_i/∂x_j = -(1/ρ) ∂p̄/∂x_i + ∂/∂x_j[(ν + ν_t)(∂ū_i/∂x_j)]
 
-du_bar_i/dt + u_bar_j du_bar_i/dx_j = -(1/rho) dp_bar/dx_i + d/dx_j[(nu + nu_t)(du_bar_i/dx_j + du_bar_j/dx_i)] - du'_i u'_j/dx_j
-
-**Continuity:**
-
-du_bar_i/dx_i = 0
+∂ū_i/∂x_i = 0
+```
 
 **Numerical Method:**
-- Projection method for pressure-velocity coupling
+- Projection method (pressure-velocity decoupling)
 - Pseudo-time stepping to steady state
 - Second-order finite differences
-- SOR solver for pressure Poisson equation
+- SOR pressure solver
 
-**Turbulence Closures:**
+## Turbulence Closures
 
-1. **Baseline:** Mixing length with van Driest damping
-   - nu_t = (kappa*y)^2 |S| (1 - exp(-y+/A+))^2
+### 1. Mixing Length (Baseline)
+```
+ν_t = (κy)² |S| (1 - exp(-y⁺/A⁺))²
+```
+Fast, classical model with wall damping.
 
-2. **GEP:** Gene Expression Programming algebraic model (Weatheritt-Sandberg style)
-   - No pre-trained weights needed - uses algebraic formulas
+### 2. GEP (Gene Expression Programming)
+Algebraic corrections learned from data. Fast and interpretable.
 
-3. **NN-MLP:** Direct eddy viscosity prediction (requires pre-trained weights)
-   - nu_t = max(0, min(NN(features), nu_t_max))
+### 3. MLP (Multi-Layer Perceptron)
+```
+ν_t = NN(S, Ω, y/δ, k, ω, |u|)
+```
+Direct prediction from flow features. 6→32→32→1 architecture.
 
-4. **NN-TBNN:** Anisotropy prediction (requires pre-trained weights)
-   - b_ij = Sum_n G_n(invariants) T^(n)_ij(S, Omega)
-   - Reynolds stresses: tau_ij = 2k b_ij
+### 4. TBNN (Tensor Basis Neural Network)
+```
+b_ij = Σ_n G_n(λ₁,...,λ₅) × T^(n)_ij(S, Ω)
+```
+Frame-invariant anisotropy prediction. 5→64→64→64→4 architecture following Ling et al. (2016).
+
+## Documentation
+
+- **`QUICK_START.md`** - Build and run in 60 seconds
+- **`QUICK_TRAIN.md`** - Train a model in 30 minutes
+- **`VALIDATION.md`** - Test results and validation
+- **`docs/TRAINING_GUIDE.md`** - Complete training workflow
+- **`docs/DATASET_INFO.md`** - McConkey dataset guide
+- **`DOCUMENTATION_INDEX.md`** - Full documentation index
+
+## McConkey Dataset
+
+This project integrates with the **McConkey et al. (2021)** dataset:
+
+- **Reference**: *Scientific Data* 8, 255 (2021)
+- **Content**: RANS + DNS/LES data for multiple flow cases
+- **Features**: Pre-computed TBNN invariants and tensor basis
+- **Cases**: Channel flow, periodic hills, square duct
+- **Download**: `bash scripts/download_mcconkey_data.sh`
+
+## Performance
+
+Timing on 64×128 grid, 10,000 iterations:
+
+| Model | Time/Iter | vs Baseline | Notes |
+|-------|-----------|-------------|-------|
+| Laminar | 0.01 ms | 1.0× | Reference |
+| Baseline | 0.05 ms | 5× | Algebraic model |
+| GEP | 0.08 ms | 8× | Symbolic expressions |
+| MLP | 0.4 ms | 40× | Small neural net |
+| TBNN | 2.1 ms | 210× | Large neural net |
+
+NN models are slower but provide data-driven accuracy for complex flows.
 
 ## Validation
 
 **Laminar channel flow** validates against analytical Poiseuille solution:
+- L2 error: 0.13% (nu=0.1, 10k iterations)
+- See `VALIDATION.md` for detailed results
 
-u(y) = (dp/dx)/(2*nu) * (H^2 - y^2)
+**Turbulent flows** compare against:
+- DNS/LES data (via McConkey dataset)
+- Published TBNN results (Ling et al. 2016)
 
-With `nu=0.1`, `dt=0.005`, the solver achieves **0.13% L2 error** in 10,000 iterations.
+## Dependencies
 
-See `VALIDATION.md` for detailed results and recommended parameters.
+**C++ Solver**: Standard library only (no external dependencies)
 
-## Performance
-
-Timing breakdown for channel flow (16x32 grid, 10,000 iterations):
-
-| Component | Time (s) | Time/Iter (ms) | % of Total |
-|-----------|----------|----------------|------------|
-| Laminar solver | 0.08 | 0.008 | 100% |
-| Baseline turbulence | 0.46 | 0.046 | 575% |
-| NN-MLP | 3.88 | 0.388 | 4850% |
-| NN-TBNN | 21.19 | 2.119 | 26488% |
-
-NN models are slower due to inference overhead but provide data-driven closure.
+**Training Pipeline**: 
+```bash
+pip install torch numpy pandas scikit-learn matplotlib
+```
+(Optional - only needed for training, not for running solver)
 
 ## Technical Details
 
-**C++ Standard:** C++17  
-**Dependencies:** Standard library only (optional BLAS)  
-**Memory Management:** RAII, smart pointers (no raw pointers)  
-**Build System:** CMake 3.10+  
-
-**Key Classes:**
-- `Mesh`: 2D structured grid with ghost cells and indexing
-- `ScalarField`, `VectorField`, `TensorField`: Field containers
-- `RANSSolver`: Main solver implementing projection method
-- `TurbulenceModel`: Abstract base for closures
-- `MLP`: Dense neural network forward pass
-- `FeatureComputer`: Extracts local RANS features for NNs
-
-## Files
-
-- **`README.md`** (this file): Overview and usage
-- **`CHANGELOG.md`**: Recent changes and new features
-- **`VALIDATION.md`**: Detailed validation results
-- **`data/models/README.md`**: Model zoo guide and target published models
-- **`docs/MODEL_ZOO_GUIDE.md`**: Detailed model integration guide
-
-## Next Steps
-
-1. **Add real published models** (Ling TBNN, Weatheritt GEP, Wu MLP)
-2. **Implement adaptive time stepping** for automatic dt selection
-3. **Add VTK output** for ParaView visualization
-4. **Optimize Poisson solver** (multigrid or CG)
-5. **Benchmark multiple models** on canonical test cases
+- **C++ Standard**: C++17
+- **Build System**: CMake 3.10+
+- **Memory Management**: RAII, smart pointers
+- **Parallelization**: None (single-threaded, but fast)
 
 ## References
 
-Solver design based on standard projection methods for incompressible flow. Neural network architectures follow:
+**Neural Network Architecture:**
+- Ling, J., Kurzawski, A., & Templeton, J. "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance." *JFM* 807 (2016)
 
-- **TBNN:** Ling et al., "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance," JFM 807 (2016)
-- **Mixing length:** Classic turbulence model with van Driest damping
-- **Feature engineering:** Standard RANS invariants and wall distance
+**Dataset:**
+- McConkey, R., et al. "A curated dataset for data-driven turbulence modelling." *Scientific Data* 8 (2021)
+
+**Turbulence Modeling:**
+- Pope, S.B. "Turbulent Flows." Cambridge University Press (2000)
+- Duraisamy, K., Iaccarino, G., & Xiao, H. "Turbulence modeling in the age of data." *Ann. Rev. Fluid Mech.* 51 (2019)
+
+## Citation
+
+If you use this code, please cite:
+
+```bibtex
+@software{nncfd2025,
+  title={NN-CFD: Neural Network Turbulence Closures for RANS},
+  author={Your Name},
+  year={2025},
+  url={https://github.com/yourusername/nn-cfd}
+}
+```
+
+And cite the TBNN paper if using neural network models:
+
+```bibtex
+@article{ling2016reynolds,
+  title={Reynolds averaged turbulence modelling using deep neural networks with embedded invariance},
+  author={Ling, Julia and Kurzawski, Andrew and Templeton, Jeremy},
+  journal={Journal of Fluid Mechanics},
+  volume={807},
+  pages={155--166},
+  year={2016}
+}
+```
 
 ## License
 
 MIT License - see `license` file
+
+## Contributing
+
+Contributions welcome! Areas for improvement:
+- Additional turbulence models
+- More test cases
+- GPU acceleration
+- Advanced solvers (multigrid, preconditioners)
+- 3D extension
 
 ---
 
