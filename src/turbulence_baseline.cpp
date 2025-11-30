@@ -1,4 +1,5 @@
 #include "turbulence_baseline.hpp"
+#include "turbulence_gep.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
 #include <cmath>
@@ -161,6 +162,9 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             
         case TurbulenceModelType::Baseline:
             return std::make_unique<MixingLengthModel>();
+            
+        case TurbulenceModelType::GEP:
+            return std::make_unique<TurbulenceGEP>();
             
         case TurbulenceModelType::NNMLP: {
             auto model = std::make_unique<TurbulenceNNMLP>();

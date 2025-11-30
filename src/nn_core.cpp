@@ -137,11 +137,46 @@ void MLP::forward(const double* x, double* output,
 }
 
 void MLP::load_weights(const std::string& dir) {
-    // Expects files: layer0_W.txt, layer0_b.txt, layer1_W.txt, ...
-    for (size_t i = 0; i < layers_.size(); ++i) {
-        std::string W_file = dir + "/layer" + std::to_string(i) + "_W.txt";
-        std::string b_file = dir + "/layer" + std::to_string(i) + "_b.txt";
-        layers_[i].load_weights(W_file, b_file);
+    // Auto-detect layers from files: layer0_W.txt, layer0_b.txt, layer1_W.txt, ...
+    layers_.clear();
+    activations_.clear();
+    
+    int layer_idx = 0;
+    while (true) {
+        std::string W_file = dir + "/layer" + std::to_string(layer_idx) + "_W.txt";
+        std::string b_file = dir + "/layer" + std::to_string(layer_idx) + "_b.txt";
+        
+        // Check if files exist
+        std::ifstream wf(W_file);
+        std::ifstream bf(b_file);
+        
+        if (!wf || !bf) {
+            // No more layers
+            break;
+        }
+        
+        // Load the weight matrix to determine dimensions
+        int rows, cols;
+        std::vector<double> W_data = load_matrix(W_file, rows, cols);
+        std::vector<double> b_data = load_vector(b_file);
+        
+        // Create layer
+        DenseLayer layer(cols, rows);  // (in_dim, out_dim)
+        layer.W = W_data;
+        layer.b = b_data;
+        
+        layers_.push_back(layer);
+        
+        // Use Tanh for hidden layers, Linear for output layer
+        // (Will be updated if this is the last layer)
+        activations_.push_back(Activation::Tanh);
+        
+        layer_idx++;
+    }
+    
+    // Set last layer activation to Linear
+    if (!activations_.empty()) {
+        activations_.back() = Activation::Linear;
     }
 }
 

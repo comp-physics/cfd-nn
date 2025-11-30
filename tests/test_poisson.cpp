@@ -50,7 +50,7 @@ void test_poisson_constant_rhs() {
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 1.0, 0.0, 1.0);
     
-    // Solve ∇²p = 1 with Dirichlet BC p = 0
+    // Solve nabla^2p = 1 with Dirichlet BC p = 0
     ScalarField rhs(mesh, 1.0);
     ScalarField p(mesh, 0.0);
     
@@ -92,7 +92,7 @@ void test_poisson_periodic() {
     double L = 2.0 * M_PI;
     mesh.init_uniform(N, N, 0.0, L, 0.0, L);
     
-    // Solve ∇²p = -sin(x) * sin(y)
+    // Solve nabla^2p = -sin(x) * sin(y)
     // Exact solution: p = sin(x) * sin(y) / 2
     ScalarField rhs(mesh);
     ScalarField p(mesh, 0.0);

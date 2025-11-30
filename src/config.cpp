@@ -112,6 +112,8 @@ void Config::load(const std::string& filename) {
     auto model_str = get_string("turb_model", "none");
     if (model_str == "baseline") {
         turb_model = TurbulenceModelType::Baseline;
+    } else if (model_str == "gep") {
+        turb_model = TurbulenceModelType::GEP;
     } else if (model_str == "nn_mlp") {
         turb_model = TurbulenceModelType::NNMLP;
     } else if (model_str == "nn_tbnn") {
@@ -124,6 +126,7 @@ void Config::load(const std::string& filename) {
     blend_alpha = get_double("blend_alpha", blend_alpha);
     nn_weights_path = get_string("nn_weights_path", nn_weights_path);
     nn_scaling_path = get_string("nn_scaling_path", nn_scaling_path);
+    nn_preset = get_string("nn_preset", nn_preset);
     
     // Output
     output_dir = get_string("output_dir", output_dir);
@@ -164,6 +167,8 @@ void Config::parse_args(int argc, char** argv) {
                 turb_model = TurbulenceModelType::None;
             } else if (model == "baseline") {
                 turb_model = TurbulenceModelType::Baseline;
+            } else if (model == "gep") {
+                turb_model = TurbulenceModelType::GEP;
             } else if (model == "nn_mlp") {
                 turb_model = TurbulenceModelType::NNMLP;
             } else if (model == "nn_tbnn") {
@@ -173,6 +178,8 @@ void Config::parse_args(int argc, char** argv) {
             nn_weights_path = argv[++i];
         } else if (arg == "--scaling" && i + 1 < argc) {
             nn_scaling_path = argv[++i];
+        } else if (arg == "--nn_preset" && i + 1 < argc) {
+            nn_preset = argv[++i];
         } else if (arg == "--output" && i + 1 < argc) {
             output_dir = argv[++i];
         } else if (arg == "--verbose") {
@@ -181,6 +188,10 @@ void Config::parse_args(int argc, char** argv) {
             verbose = false;
         } else if (arg == "--stretch") {
             stretch_y = true;
+        } else if (arg == "--adaptive_dt") {
+            adaptive_dt = true;
+        } else if (arg == "--CFL" && i + 1 < argc) {
+            CFL_max = std::stod(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -192,11 +203,14 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --dt T            Time step\n"
                       << "  --max_iter N      Maximum iterations\n"
                       << "  --tol T           Convergence tolerance\n"
-                      << "  --model M         Turbulence model (none, baseline, nn_mlp, nn_tbnn)\n"
-                      << "  --weights DIR     NN weights directory\n"
-                      << "  --scaling DIR     NN scaling directory\n"
+                      << "  --model M         Turbulence model (none, baseline, gep, nn_mlp, nn_tbnn)\n"
+                      << "  --nn_preset NAME  Use preset model from data/models/<NAME>\n"
+                      << "  --weights DIR     NN weights directory (overrides preset)\n"
+                      << "  --scaling DIR     NN scaling directory (overrides preset)\n"
                       << "  --output DIR      Output directory\n"
                       << "  --stretch         Use stretched mesh in y\n"
+                      << "  --adaptive_dt     Enable adaptive time stepping\n"
+                      << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n";
             std::exit(0);
@@ -207,9 +221,23 @@ void Config::parse_args(int argc, char** argv) {
 }
 
 void Config::finalize() {
+    // Map nn_preset to weights/scaling paths if provided
+    // Convention: data/models/<preset>/ contains the weights
+    if (!nn_preset.empty()) {
+        // Check if weights_path was explicitly set via --weights
+        // If not, use the preset path
+        if (nn_weights_path == "data/") {
+            nn_weights_path = "data/models/" + nn_preset;
+        }
+        if (nn_scaling_path == "data/") {
+            nn_scaling_path = "data/models/" + nn_preset;
+        }
+    }
+    
     // Compute nu from Re if Re is specified and nu is default
     // Convention: Re = U_bulk * delta / nu, where delta = (y_max - y_min) / 2
     double delta = (y_max - y_min) / 2.0;
+    (void)delta;
     
     // If user specifies Re and default nu, compute nu
     // Otherwise keep nu as specified
@@ -230,12 +258,16 @@ void Config::print() const {
     switch (turb_model) {
         case TurbulenceModelType::None: std::cout << "None (laminar)"; break;
         case TurbulenceModelType::Baseline: std::cout << "Baseline"; break;
+        case TurbulenceModelType::GEP: std::cout << "GEP (Weatheritt-Sandberg)"; break;
         case TurbulenceModelType::NNMLP: std::cout << "NN-MLP"; break;
         case TurbulenceModelType::NNTBNN: std::cout << "NN-TBNN"; break;
     }
     std::cout << "\n";
     
     if (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN) {
+        if (!nn_preset.empty()) {
+            std::cout << "NN preset: " << nn_preset << "\n";
+        }
         std::cout << "NN weights: " << nn_weights_path << "\n"
                   << "NN scaling: " << nn_scaling_path << "\n"
                   << "Blend alpha: " << blend_alpha << "\n";

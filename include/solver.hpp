@@ -49,6 +49,12 @@ public:
     /// Returns final residual and number of iterations
     std::pair<double, int> solve_steady();
     
+    /// Compute adaptive time step based on CFL and diffusion stability
+    double compute_adaptive_dt() const;
+    
+    /// Get current time step
+    double current_dt() const { return current_dt_; }
+    
     /// Access fields
     const VectorField& velocity() const { return velocity_; }
     const ScalarField& pressure() const { return pressure_; }
@@ -77,6 +83,9 @@ public:
     
     /// Write fields to files
     void write_fields(const std::string& prefix) const;
+    
+    /// Write VTK output for ParaView visualization
+    void write_vtk(const std::string& filename) const;
     
 private:
     const Mesh* mesh_;

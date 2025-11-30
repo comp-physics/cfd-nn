@@ -22,7 +22,7 @@ struct PoissonConfig {
 };
 
 /// Poisson solver for pressure equation
-/// Solves: ∇²p = f with specified boundary conditions
+/// Solves: nabla^2p = f with specified boundary conditions
 class PoissonSolver {
 public:
     explicit PoissonSolver(const Mesh& mesh);
@@ -36,11 +36,11 @@ public:
     /// Set Dirichlet boundary value (for Dirichlet BC)
     void set_dirichlet_value(double val) { dirichlet_val_ = val; }
     
-    /// Solve ∇²p = rhs
+    /// Solve nabla^2p = rhs
     /// Returns number of iterations taken
     int solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg = PoissonConfig());
     
-    /// Solve with variable coefficient: ∇·(α∇p) = rhs
+    /// Solve with variable coefficient: nabla*(alphanablap) = rhs
     int solve_variable(const ScalarField& alpha, const ScalarField& rhs, 
                        ScalarField& p, const PoissonConfig& cfg = PoissonConfig());
     

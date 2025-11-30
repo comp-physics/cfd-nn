@@ -38,6 +38,7 @@ set(LIB_SOURCES
     src/features.cpp
     src/nn_core.cpp
     src/turbulence_baseline.cpp
+    src/turbulence_gep.cpp
     src/turbulence_nn_mlp.cpp
     src/turbulence_nn_tbnn.cpp
 )
@@ -55,6 +56,9 @@ target_link_libraries(channel nn_cfd_core)
 
 add_executable(periodic_hills app/main_periodic_hills.cpp)
 target_link_libraries(periodic_hills nn_cfd_core)
+
+add_executable(test_nn_simple app/test_nn_simple.cpp)
+target_link_libraries(test_nn_simple nn_cfd_core)
 
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)

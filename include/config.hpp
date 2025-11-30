@@ -12,6 +12,7 @@ namespace nncfd {
 enum class TurbulenceModelType {
     None,       ///< Laminar (no turbulence model)
     Baseline,   ///< Simple algebraic or k-omega like model
+    GEP,        ///< Gene Expression Programming algebraic model (Weatheritt-Sandberg 2016)
     NNMLP,      ///< Neural network scalar eddy viscosity
     NNTBNN      ///< TBNN-style anisotropy model
 };
@@ -59,6 +60,7 @@ struct Config {
     // NN model paths
     std::string nn_weights_path = "data/";
     std::string nn_scaling_path = "data/";
+    std::string nn_preset;      ///< Optional preset model name (e.g., "ling_tbnn_2016")
     
     // Output
     std::string output_dir = "output/";

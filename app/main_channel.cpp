@@ -246,6 +246,8 @@ int main(int argc, char** argv) {
         write_profile(config.output_dir + "velocity_profile.dat", mesh, 
                       solver.velocity(), config.dp_dx, config.nu);
         solver.write_fields(config.output_dir + "channel");
+        solver.write_vtk(config.output_dir + "channel.vtk");
+        std::cout << "VTK output: " << config.output_dir << "channel.vtk\n";
     } catch (const std::exception& e) {
         std::cerr << "Warning: Could not write output files: " << e.what() << "\n";
     }

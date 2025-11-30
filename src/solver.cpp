@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <iomanip>
+#include <fstream>
 
 namespace nncfd {
 
@@ -140,7 +141,7 @@ void RANSSolver::apply_velocity_bc() {
 }
 
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
-    // Compute: (u·∇)u using specified scheme
+    // Compute: (u*nabla)u using specified scheme
     // Central difference or upwind
     
     double dx = mesh_->dx;
@@ -186,8 +187,8 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
 
 void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, 
                                         VectorField& diff) {
-    // Compute: ∇·(ν_eff ∇u)  (simplified: ν_eff ∇²u for uniform ν_eff)
-    // For variable ν_eff, use proper flux formulation
+    // Compute: nabla*(nu_eff nablau)  (simplified: nu_eff nabla^2u for uniform nu_eff)
+    // For variable nu_eff, use proper flux formulation
     
     double dx = mesh_->dx;
     double dy = mesh_->dy;
@@ -344,7 +345,7 @@ double RANSSolver::step() {
     std::swap(velocity_, velocity_star_);
     
     // 4. Solve pressure Poisson equation
-    // ∇²p' = (1/dt) ∇·u*
+    // nabla^2p' = (1/dt) nabla*u*
     {
         TIMED_SCOPE("divergence");
         compute_divergence(velocity_star_, div_velocity_);
@@ -394,27 +395,56 @@ std::pair<double, int> RANSSolver::solve_steady() {
     double residual = 1.0;
     
     if (config_.verbose) {
-        std::cout << std::setw(8) << "Iter" 
-                  << std::setw(15) << "Residual"
-                  << std::setw(15) << "Max |u|"
-                  << "\n";
+        if (config_.adaptive_dt) {
+            std::cout << std::setw(8) << "Iter" 
+                      << std::setw(15) << "Residual"
+                      << std::setw(15) << "Max |u|"
+                      << std::setw(12) << "dt"
+                      << "\n";
+        } else {
+            std::cout << std::setw(8) << "Iter" 
+                      << std::setw(15) << "Residual"
+                      << std::setw(15) << "Max |u|"
+                      << "\n";
+        }
     }
     
     for (iter_ = 0; iter_ < config_.max_iter; ++iter_) {
+        // Update time step if adaptive
+        if (config_.adaptive_dt) {
+            current_dt_ = compute_adaptive_dt();
+        }
+        
         residual = step();
         
         if (config_.verbose && (iter_ + 1) % config_.output_freq == 0) {
             double max_vel = velocity_.max_magnitude();
-            std::cout << std::setw(8) << iter_ + 1
-                      << std::setw(15) << std::scientific << std::setprecision(3) << residual
-                      << std::setw(15) << std::fixed << max_vel
-                      << "\n";
+            if (config_.adaptive_dt) {
+                std::cout << std::setw(8) << iter_ + 1
+                          << std::setw(15) << std::scientific << std::setprecision(3) << residual
+                          << std::setw(15) << std::fixed << max_vel
+                          << std::setw(12) << std::scientific << std::setprecision(2) << current_dt_
+                          << "\n";
+            } else {
+                std::cout << std::setw(8) << iter_ + 1
+                          << std::setw(15) << std::scientific << std::setprecision(3) << residual
+                          << std::setw(15) << std::fixed << max_vel
+                          << "\n";
+            }
         }
         
         if (residual < config_.tol) {
             if (config_.verbose) {
                 std::cout << "Converged at iteration " << iter_ + 1 
                           << " with residual " << residual << "\n";
+            }
+            break;
+        }
+        
+        // Check for divergence
+        if (std::isnan(residual) || std::isinf(residual)) {
+            if (config_.verbose) {
+                std::cerr << "Solver diverged at iteration " << iter_ + 1 << "\n";
             }
             break;
         }
@@ -502,6 +532,96 @@ void RANSSolver::write_fields(const std::string& prefix) const {
     if (turb_model_) {
         nu_t_.write(prefix + "_nu_t.dat");
     }
+}
+
+double RANSSolver::compute_adaptive_dt() const {
+    // CFL condition: dt <= CFL * min(dx, dy) / |u_max|
+    double u_max = 1e-10;  // Small value to avoid division by zero
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            double u_mag = std::sqrt(velocity_.u(i, j) * velocity_.u(i, j) + 
+                                    velocity_.v(i, j) * velocity_.v(i, j));
+            u_max = std::max(u_max, u_mag);
+        }
+    }
+    double dt_cfl = config_.CFL_max * std::min(mesh_->dx, mesh_->dy) / u_max;
+    
+    // Diffusion stability: dt <= factor * min(dx^2, dy^2) / nu_eff_max
+    double nu_eff_max = config_.nu;
+    if (turb_model_) {
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                nu_eff_max = std::max(nu_eff_max, config_.nu + nu_t_(i, j));
+            }
+        }
+    }
+    double dx_min = std::min(mesh_->dx, mesh_->dy);
+    double dt_diff = 0.25 * dx_min * dx_min / nu_eff_max;
+    
+    // Take minimum of both constraints
+    return std::min(dt_cfl, dt_diff);
+}
+
+void RANSSolver::write_vtk(const std::string& filename) const {
+    std::ofstream file(filename);
+    if (!file) {
+        std::cerr << "Error: Cannot open " << filename << " for writing\n";
+        return;
+    }
+    
+    int Nx = mesh_->Nx;
+    int Ny = mesh_->Ny;
+    
+    // VTK header
+    file << "# vtk DataFile Version 3.0\n";
+    file << "RANS simulation output\n";
+    file << "ASCII\n";
+    file << "DATASET STRUCTURED_POINTS\n";
+    file << "DIMENSIONS " << Nx << " " << Ny << " 1\n";
+    file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " 0\n";
+    file << "SPACING " << mesh_->dx << " " << mesh_->dy << " 1\n";
+    file << "POINT_DATA " << Nx * Ny << "\n";
+    
+    // Velocity vector field
+    file << "VECTORS velocity double\n";
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            file << velocity_.u(i, j) << " " << velocity_.v(i, j) << " 0\n";
+        }
+    }
+    
+    // Pressure scalar field
+    file << "SCALARS pressure double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            file << pressure_(i, j) << "\n";
+        }
+    }
+    
+    // Velocity magnitude
+    file << "SCALARS velocity_magnitude double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            double mag = std::sqrt(velocity_.u(i, j) * velocity_.u(i, j) + 
+                                  velocity_.v(i, j) * velocity_.v(i, j));
+            file << mag << "\n";
+        }
+    }
+    
+    // Eddy viscosity (if turbulence model is active)
+    if (turb_model_) {
+        file << "SCALARS nu_t double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << nu_t_(i, j) << "\n";
+            }
+        }
+    }
+    
+    file.close();
 }
 
 } // namespace nncfd
