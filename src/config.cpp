@@ -131,6 +131,7 @@ void Config::load(const std::string& filename) {
     // Output
     output_dir = get_string("output_dir", output_dir);
     output_freq = get_int("output_freq", output_freq);
+    num_snapshots = get_int("num_snapshots", num_snapshots);
     verbose = get_bool("verbose", verbose);
     
     // Poisson
@@ -182,6 +183,8 @@ void Config::parse_args(int argc, char** argv) {
             nn_preset = argv[++i];
         } else if (arg == "--output" && i + 1 < argc) {
             output_dir = argv[++i];
+        } else if (arg == "--num_snapshots" && i + 1 < argc) {
+            num_snapshots = std::stoi(argv[++i]);
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg == "--quiet") {
@@ -208,6 +211,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --weights DIR     NN weights directory (overrides preset)\n"
                       << "  --scaling DIR     NN scaling directory (overrides preset)\n"
                       << "  --output DIR      Output directory\n"
+                      << "  --num_snapshots N Number of VTK snapshots (default 10)\n"
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"

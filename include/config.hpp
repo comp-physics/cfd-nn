@@ -64,7 +64,8 @@ struct Config {
     
     // Output
     std::string output_dir = "output/";
-    int output_freq = 100;      ///< Output frequency (iterations)
+    int output_freq = 100;      ///< Console output frequency (iterations)
+    int num_snapshots = 10;     ///< Number of VTK snapshots during simulation
     bool verbose = true;
     
     // Poisson solver

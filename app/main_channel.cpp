@@ -211,10 +211,53 @@ int main(int argc, char** argv) {
     // Initialize with small perturbation
     solver.initialize_uniform(0.1 * u_max_expected, 0.0);
     
-    // Solve to steady state
+    // Calculate snapshot frequency
+    int snapshot_freq = (config.num_snapshots > 0) ? 
+                        std::max(1, config.max_iter / config.num_snapshots) : 
+                        config.max_iter + 1;  // No snapshots if num_snapshots = 0
+    
+    std::cout << "Will output " << config.num_snapshots << " VTK snapshots";
+    if (config.num_snapshots > 0) {
+        std::cout << " (every " << snapshot_freq << " iterations)";
+    }
+    std::cout << "\n\n";
+    
+    // Manual time stepping loop with VTK output
     ScopedTimer total_timer("Total simulation", true);
     
-    auto [residual, iterations] = solver.solve_steady();
+    double residual = 1e10;
+    int iterations = 0;
+    int snapshot_count = 0;
+    
+    while (iterations < config.max_iter && residual > config.tol) {
+        residual = solver.step();  // step() returns the residual
+        iterations++;
+        
+        // Write VTK snapshots at regular intervals
+        if (config.num_snapshots > 0 && iterations % snapshot_freq == 0) {
+            snapshot_count++;
+            std::string vtk_file = config.output_dir + "channel_" + 
+                                  std::to_string(snapshot_count) + ".vtk";
+            try {
+                solver.write_vtk(vtk_file);
+                if (config.verbose) {
+                    std::cout << "Wrote snapshot " << snapshot_count << ": " << vtk_file << "\n";
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Could not write VTK snapshot: " << e.what() << "\n";
+            }
+        }
+        
+        // Console output periodically
+        if (config.verbose && iterations % config.output_freq == 0) {
+            std::cout << "  Iter " << std::setw(6) << iterations 
+                     << "  Residual: " << std::scientific << std::setprecision(3) << residual;
+            if (config.adaptive_dt) {
+                std::cout << "  dt: " << std::scientific << solver.current_dt();
+            }
+            std::cout << "\n";
+        }
+    }
     
     total_timer.stop();
     
@@ -222,6 +265,7 @@ int main(int argc, char** argv) {
     std::cout << "\n=== Results ===\n";
     std::cout << "Final residual: " << std::scientific << residual << "\n";
     std::cout << "Iterations: " << iterations << "\n";
+    std::cout << "Converged: " << (residual < config.tol ? "YES" : "NO") << "\n";
     std::cout << "Bulk velocity: " << std::fixed << std::setprecision(6) << solver.bulk_velocity() << "\n";
     std::cout << "Wall shear stress: " << solver.wall_shear_stress() << "\n";
     std::cout << "Friction velocity u_tau: " << solver.friction_velocity() << "\n";
@@ -241,13 +285,21 @@ int main(int argc, char** argv) {
         }
     }
     
-    // Write output files (skip if file cannot be opened)
+    // Write final output files
     try {
         write_profile(config.output_dir + "velocity_profile.dat", mesh, 
                       solver.velocity(), config.dp_dx, config.nu);
         solver.write_fields(config.output_dir + "channel");
-        solver.write_vtk(config.output_dir + "channel.vtk");
-        std::cout << "VTK output: " << config.output_dir << "channel.vtk\n";
+        
+        // Write final VTK snapshot
+        std::string final_vtk = config.output_dir + "channel_final.vtk";
+        solver.write_vtk(final_vtk);
+        std::cout << "Final VTK output: " << final_vtk << "\n";
+        
+        if (config.num_snapshots > 0) {
+            std::cout << "Total VTK snapshots written: " << snapshot_count + 1 
+                     << " (" << snapshot_count << " during simulation + 1 final)\n";
+        }
     } catch (const std::exception& e) {
         std::cerr << "Warning: Could not write output files: " << e.what() << "\n";
     }
