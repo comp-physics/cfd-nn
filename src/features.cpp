@@ -188,6 +188,9 @@ void TensorBasis::compute(
     double OSyx = Oxy * Sxx;      // = Oxy*Sxx
     double OSyy = Oxy * Sxy;      // = Oxy*Sxy
     
+    // Suppress warnings for intermediate calculations
+    (void)SOyx; (void)OSyx;
+    
     // T^(2) = S*Omega - Omega*S
     basis[1][0] = SOxx - OSxx;  // = 0
     basis[1][1] = SOxy - OSxy;  // = Sxx*Oxy + Oxy*Syy = Oxy*(Sxx + Syy)

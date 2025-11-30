@@ -10,6 +10,7 @@ TurbulenceGEP::TurbulenceGEP()
 }
 
 void TurbulenceGEP::initialize(const Mesh& mesh, const VectorField& velocity) {
+    (void)velocity;  // Reserved for future use
     ensure_initialized(mesh);
 }
 
@@ -27,6 +28,9 @@ double TurbulenceGEP::compute_gep_factor(double I1_S, double I2_S,
     // GEP-discovered algebraic expressions
     // These are simplified versions inspired by Weatheritt & Sandberg (2016)
     // The actual GEP expressions are more complex and case-specific
+    
+    // Suppress warnings for parameters reserved for future GEP variants
+    (void)I2_S; (void)I2_Omega; (void)Re_d;
     
     switch (variant_) {
         case Variant::WS2016_Channel: {
@@ -70,6 +74,7 @@ double TurbulenceGEP::compute_gep_factor(double I1_S, double I2_S,
         default: {
             // Simple algebraic model: mixing length with corrections
             double S_mag = std::sqrt(std::max(0.0, I1_S));
+            (void)S_mag;  // Reserved for future use
             
             // Basic mixing length: l = kappa * y * (1 - exp(-y+/A+))
             double kappa = 0.41;
@@ -81,6 +86,7 @@ double TurbulenceGEP::compute_gep_factor(double I1_S, double I2_S,
             
             // Mixing length squared (normalized)
             double l_plus = kappa * y_plus * f_damp;
+            (void)l_plus;  // Computed for documentation; nu_t uses f_damp directly
             
             // nu_t = l^2 * |S|
             // Return correction factor relative to base model
@@ -95,6 +101,7 @@ void TurbulenceGEP::update(const Mesh& mesh,
                            const ScalarField& omega,
                            ScalarField& nu_t,
                            TensorField* tau_ij) {
+    (void)tau_ij;  // GEP provides eddy viscosity only, not explicit Reynolds stresses
     TIMED_SCOPE("gep_update");
     
     ensure_initialized(mesh);

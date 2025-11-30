@@ -38,6 +38,7 @@ void test_laplacian() {
             
             // Should be 4 for p = x^2 + y^2
             assert(std::abs(laplacian - 4.0) < 0.01);
+            (void)laplacian;  // Used in assert
         }
     }
     
@@ -79,6 +80,7 @@ void test_poisson_constant_rhs() {
     }
     
     assert(positive_interior);
+    (void)positive_interior;  // Used in assert
     assert(solver.residual() < 1e-6);
     
     std::cout << "PASSED\n";

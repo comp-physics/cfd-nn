@@ -55,6 +55,7 @@ void test_stretched_mesh() {
     double dy_center = mesh.dyv[mesh.Nghost + mesh.Ny/2];  // Center
     
     assert(dy_wall < dy_center);  // Finer at wall
+    (void)dy_wall; (void)dy_center;  // Used in assert
     
     std::cout << "PASSED\n";
 }
@@ -73,6 +74,7 @@ void test_wall_distance() {
     assert(dist_bottom < 0.1);
     assert(dist_top < 0.1);
     assert(dist_center > 0.9);  // Near centerline
+    (void)dist_bottom; (void)dist_top; (void)dist_center;  // Used in assert
     
     std::cout << "PASSED\n";
 }
@@ -113,6 +115,7 @@ void test_vector_field() {
     // Check magnitude
     double mag = v.magnitude(5, 5);
     assert(std::abs(mag - std::sqrt(5.0)) < 1e-10);
+    (void)mag;  // Used in assert
     
     std::cout << "PASSED\n";
 }

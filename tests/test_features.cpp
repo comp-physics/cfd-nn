@@ -39,6 +39,7 @@ void test_velocity_gradient() {
     assert(std::abs(grad.Syy() - 1.0) < 1e-6);
     assert(std::abs(grad.Sxy() - 0.0) < 1e-6);
     assert(std::abs(grad.Oxy() - 0.0) < 1e-6);
+    (void)grad;  // Used in assert
     
     std::cout << "PASSED\n";
 }
