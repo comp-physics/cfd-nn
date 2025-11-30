@@ -47,12 +47,12 @@ bool is_velocity_valid(const VectorField& vel, const Mesh& mesh) {
 void test_nn_mlp_validity() {
     std::cout << "Testing NN-MLP model validity... ";
     
-    // Check if example model exists
-    std::string model_path = "data/models/example_mlp";
-    if (!file_exists(model_path + "/weights_layer_0.txt")) {
+    // Check if example model exists (use example_scalar_nut which is an MLP model)
+    std::string model_path = "data/models/example_scalar_nut";
+    if (!file_exists(model_path + "/layer0_W.txt")) {
         // Try from build directory
-        model_path = "../data/models/example_mlp";
-        if (!file_exists(model_path + "/weights_layer_0.txt")) {
+        model_path = "../data/models/example_scalar_nut";
+        if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
         }
@@ -106,10 +106,10 @@ void test_nn_tbnn_validity() {
     
     // Check if example model exists
     std::string model_path = "data/models/example_tbnn";
-    if (!file_exists(model_path + "/weights_layer_0.txt")) {
+    if (!file_exists(model_path + "/layer0_W.txt")) {
         // Try from build directory
         model_path = "../data/models/example_tbnn";
-        if (!file_exists(model_path + "/weights_layer_0.txt")) {
+        if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
         }
@@ -160,9 +160,9 @@ void test_nn_tbnn_solver_integration() {
     
     // Check if example model exists
     std::string model_path = "data/models/example_tbnn";
-    if (!file_exists(model_path + "/weights_layer_0.txt")) {
+    if (!file_exists(model_path + "/layer0_W.txt")) {
         model_path = "../data/models/example_tbnn";
-        if (!file_exists(model_path + "/weights_layer_0.txt")) {
+        if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
         }
@@ -206,9 +206,9 @@ void test_nn_repeated_updates() {
     std::cout << "Testing repeated NN updates... ";
     
     std::string model_path = "data/models/example_tbnn";
-    if (!file_exists(model_path + "/weights_layer_0.txt")) {
+    if (!file_exists(model_path + "/layer0_W.txt")) {
         model_path = "../data/models/example_tbnn";
-        if (!file_exists(model_path + "/weights_layer_0.txt")) {
+        if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
         }
@@ -258,9 +258,9 @@ void test_nn_different_grid_sizes() {
     std::cout << "Testing NN with different grid sizes... ";
     
     std::string model_path = "data/models/example_tbnn";
-    if (!file_exists(model_path + "/weights_layer_0.txt")) {
+    if (!file_exists(model_path + "/layer0_W.txt")) {
         model_path = "../data/models/example_tbnn";
-        if (!file_exists(model_path + "/weights_layer_0.txt")) {
+        if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
         }
