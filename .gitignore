@@ -110,3 +110,6 @@ FINAL_RESULTS.md
 *_COMPLETE.md
 # But keep the main project summary
 !PROJECT_SUMMARY.md
+
+*.err
+*.out

@@ -15,11 +15,11 @@ namespace nncfd {
 /// b_ij = sum_n G_n(lambda) * T^(n)_ij(S, Omega)
 /// where G_n are NN outputs and T^(n) are tensor basis functions
 ///
-/// GPU Strategy:
+/// GPU Strategy (Full Offload):
 /// - NN weights uploaded once and kept on GPU
-/// - Features computed on CPU, uploaded in batch
-/// - NN inference runs on GPU for all grid cells in parallel
-/// - Results downloaded for post-processing
+/// - Velocity field uploaded per timestep
+/// - ALL computation on GPU: gradients, features, tensor basis, NN inference, postprocessing
+/// - Only nu_t (and optionally tau_ij) downloaded back
 class TurbulenceNNTBNN : public TurbulenceModel {
 public:
     TurbulenceNNTBNN();
@@ -63,23 +63,49 @@ private:
     double u_ref_ = 1.0;
     double k_min_ = 1e-10;  // Minimum k to avoid division by zero
     
-    // Work buffers (CPU)
+    // Work buffers (CPU fallback)
     std::vector<Features> features_;
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis_;
     
-    // Flattened buffers for GPU batching
+    // Flattened buffers for GPU batching (legacy path)
     std::vector<double> features_flat_;
     std::vector<double> outputs_flat_;
     std::vector<double> workspace_;
     
+    // Full GPU pipeline buffers
+    std::vector<double> u_flat_;           // Velocity u (with ghost cells)
+    std::vector<double> v_flat_;           // Velocity v (with ghost cells)
+    std::vector<double> k_flat_;           // TKE (interior only)
+    std::vector<double> omega_flat_;       // Omega (interior only)
+    std::vector<double> wall_dist_flat_;   // Wall distance (interior only)
+    std::vector<double> nu_t_flat_;        // Output nu_t (interior only)
+    std::vector<double> tau_xx_flat_;      // Output tau_xx (interior only)
+    std::vector<double> tau_xy_flat_;      // Output tau_xy (interior only)
+    std::vector<double> tau_yy_flat_;      // Output tau_yy (interior only)
+    std::vector<double> full_workspace_;   // GPU workspace for full pipeline
+    
     // GPU state
     bool gpu_ready_ = false;
+    bool full_gpu_ready_ = false;   // True when full pipeline is available
     bool initialized_ = false;
     int cached_n_cells_ = 0;
+    int cached_total_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);
     void allocate_gpu_buffers(int n_cells);
+    void allocate_full_gpu_buffers(const Mesh& mesh);
     void free_gpu_buffers();
+    void free_full_gpu_buffers();
+    
+    /// Update using full GPU pipeline (all computation on GPU)
+    void update_full_gpu(
+        const Mesh& mesh,
+        const VectorField& velocity,
+        const ScalarField& k,
+        const ScalarField& omega,
+        ScalarField& nu_t,
+        TensorField* tau_ij
+    );
     
     /// Estimate k field from velocity gradient (simple algebraic model)
     void estimate_k(const Mesh& mesh, const VectorField& velocity, ScalarField& k);

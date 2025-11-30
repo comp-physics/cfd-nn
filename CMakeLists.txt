@@ -73,6 +73,7 @@ set(LIB_SOURCES
     src/turbulence_gep.cpp
     src/turbulence_nn_mlp.cpp
     src/turbulence_nn_tbnn.cpp
+    src/gpu_kernels.cpp
 )
 
 # Core library

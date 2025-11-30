@@ -123,6 +123,21 @@ public:
     const double* input_stds_ptr() const { return input_stds_.data(); }
     int scaling_size() const { return static_cast<int>(input_means_.size()); }
     
+    /// Access layer info
+    const DenseLayer& layer(int i) const { return layers_[i]; }
+    
+    /// GPU pointer accessors (for full GPU pipeline)
+    /// These return device pointers when GPU is ready, nullptr otherwise
+    const double* weights_gpu() const { return gpu_ready_ ? all_weights_.data() : nullptr; }
+    const double* biases_gpu() const { return gpu_ready_ ? all_biases_.data() : nullptr; }
+    const int* weight_offsets_gpu() const { return gpu_ready_ ? weight_offsets_.data() : nullptr; }
+    const int* bias_offsets_gpu() const { return gpu_ready_ ? bias_offsets_.data() : nullptr; }
+    const int* layer_dims_gpu() const { return gpu_ready_ ? layer_dims_.data() : nullptr; }
+    const int* activation_types_gpu() const { return gpu_ready_ ? activation_types_.data() : nullptr; }
+    const double* input_means_gpu() const { return (gpu_ready_ && has_scaling_) ? input_means_.data() : nullptr; }
+    const double* input_stds_gpu() const { return (gpu_ready_ && has_scaling_) ? input_stds_.data() : nullptr; }
+    int scale_size() const { return has_scaling_ ? static_cast<int>(input_means_.size()) : 0; }
+    
 private:
     std::vector<DenseLayer> layers_;
     std::vector<Activation> activations_;  ///< One per layer (after the layer)
