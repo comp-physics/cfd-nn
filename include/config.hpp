@@ -45,7 +45,7 @@ struct Config {
     // Time stepping
     double dt = 0.001;          ///< Time step
     double CFL_max = 0.5;       ///< Maximum CFL number for adaptive dt
-    bool adaptive_dt = false;   ///< Use adaptive time stepping
+    bool adaptive_dt = true;    ///< Use adaptive time stepping (required for stability on fine grids)
     int max_iter = 10000;       ///< Maximum pseudo-time iterations
     double tol = 1e-6;          ///< Convergence tolerance
     

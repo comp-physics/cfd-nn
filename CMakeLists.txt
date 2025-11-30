@@ -8,8 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # GPU offload option (must be set before finding OpenMP)
 option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
-# Find OpenMP
-find_package(OpenMP REQUIRED)
+# Find OpenMP (optional on macOS where AppleClang lacks OpenMP)
+find_package(OpenMP)
+if(NOT OpenMP_CXX_FOUND)
+    message(WARNING "OpenMP not found - building without OpenMP parallelization")
+endif()
 
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
@@ -18,6 +21,9 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
 
 # GPU offloading configuration
 if(USE_GPU_OFFLOAD)
+    if(NOT OpenMP_CXX_FOUND)
+        message(FATAL_ERROR "GPU offloading requires OpenMP support")
+    endif()
     add_definitions(-DUSE_GPU_OFFLOAD)
     message(STATUS "GPU offloading ENABLED")
     
@@ -38,8 +44,10 @@ if(USE_GPU_OFFLOAD)
     else()
         message(WARNING "Unknown compiler for GPU offloading: ${CMAKE_CXX_COMPILER_ID}")
     endif()
-else()
+elseif(OpenMP_CXX_FOUND)
     message(STATUS "GPU offloading DISABLED (CPU-only OpenMP)")
+else()
+    message(STATUS "OpenMP not available - single-threaded build")
 endif()
 
 # Default to Release build
@@ -78,7 +86,9 @@ set(LIB_SOURCES
 
 # Core library
 add_library(nn_cfd_core ${LIB_SOURCES})
-target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
+endif()
 
 if(USE_BLAS AND BLAS_FOUND)
     target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})

@@ -147,9 +147,9 @@ void TurbulenceNNMLP::update(
         baseline_->update(mesh, velocity, k, omega, baseline_nu_t_);
     }
     
-    int n_cells = mesh.Nx * mesh.Ny;
-    int feature_dim = mlp_.input_dim();
-    int output_dim = mlp_.output_dim();
+    [[maybe_unused]] int n_cells = mesh.Nx * mesh.Ny;
+    [[maybe_unused]] int feature_dim = mlp_.input_dim();
+    [[maybe_unused]] int output_dim = mlp_.output_dim();
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: batched inference

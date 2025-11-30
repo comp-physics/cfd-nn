@@ -327,7 +327,7 @@ void MLP::free_gpu() {
 }
 
 void MLP::forward_batch_gpu(double* x_batch, double* y_batch, 
-                            int batch_size, double* workspace) const {
+                            int batch_size, [[maybe_unused]] double* workspace) const {
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_ready_ || layers_.empty()) {
         // Fallback to CPU
