@@ -5,10 +5,42 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# GPU offload option (must be set before finding OpenMP)
+option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
+
+# Find OpenMP
+find_package(OpenMP REQUIRED)
+
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
+
+# GPU offloading configuration
+if(USE_GPU_OFFLOAD)
+    add_definitions(-DUSE_GPU_OFFLOAD)
+    message(STATUS "GPU offloading ENABLED")
+    
+    # Detect compiler and set appropriate flags
+    if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
+        # NVIDIA HPC SDK - best for NVIDIA GPUs
+        # No -gpu=ccXX specified - will auto-detect at runtime or use PTX JIT
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu")
+        message(STATUS "Using NVIDIA HPC SDK GPU offloading")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Clang/LLVM with CUDA backend (auto-detect GPU arch)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=nvptx64-nvidia-cuda")
+        message(STATUS "Using Clang OpenMP GPU offloading")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        # GCC with nvptx offloading
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -foffload=nvptx-none -foffload=-lm -fno-lto")
+        message(STATUS "Using GCC OpenMP GPU offloading")
+    else()
+        message(WARNING "Unknown compiler for GPU offloading: ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+else()
+    message(STATUS "GPU offloading DISABLED (CPU-only OpenMP)")
+endif()
 
 # Default to Release build
 if(NOT CMAKE_BUILD_TYPE)
@@ -45,6 +77,7 @@ set(LIB_SOURCES
 
 # Core library
 add_library(nn_cfd_core ${LIB_SOURCES})
+target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
 
 if(USE_BLAS AND BLAS_FOUND)
     target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})
@@ -93,5 +126,3 @@ endif()
 # Installation
 install(TARGETS channel periodic_hills DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
-
-

@@ -170,6 +170,8 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             auto model = std::make_unique<TurbulenceNNMLP>();
             if (!weights_path.empty()) {
                 model->load(weights_path, scaling_path);
+                // Upload NN weights to GPU (if available)
+                model->upload_to_gpu();
             }
             return model;
         }
@@ -178,6 +180,8 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             auto model = std::make_unique<TurbulenceNNTBNN>();
             if (!weights_path.empty()) {
                 model->load(weights_path, scaling_path);
+                // Upload NN weights to GPU (if available)
+                model->upload_to_gpu();
             }
             return model;
         }

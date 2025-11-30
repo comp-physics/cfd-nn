@@ -3,10 +3,17 @@
 #include "timing.hpp"
 #include <algorithm>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 TurbulenceNNMLP::TurbulenceNNMLP()
-    : feature_computer_(Mesh()) {  // Will be re-initialized
+    : feature_computer_(Mesh()) {}
+
+TurbulenceNNMLP::~TurbulenceNNMLP() {
+    free_gpu_buffers();
 }
 
 void TurbulenceNNMLP::load(const std::string& weights_dir, const std::string& scaling_dir) {
@@ -21,8 +28,75 @@ void TurbulenceNNMLP::load(const std::string& weights_dir, const std::string& sc
     }
 }
 
+void TurbulenceNNMLP::upload_to_gpu() {
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_ready_) {
+        mlp_.upload_to_gpu();
+        gpu_ready_ = mlp_.is_on_gpu();
+    }
+#endif
+}
+
+void TurbulenceNNMLP::allocate_gpu_buffers(int n_cells) {
+#ifdef USE_GPU_OFFLOAD
+    if (n_cells == cached_n_cells_ && !features_flat_.empty()) {
+        return;  // Already allocated
+    }
+    
+    free_gpu_buffers();
+    
+    int feature_dim = mlp_.input_dim();
+    int output_dim = mlp_.output_dim();
+    size_t workspace_size = mlp_.workspace_size(n_cells);
+    
+    // Allocate CPU buffers
+    features_flat_.resize(n_cells * feature_dim);
+    outputs_flat_.resize(n_cells * output_dim);
+    workspace_.resize(workspace_size);
+    
+    // Map to GPU
+    double* feat_ptr = features_flat_.data();
+    double* out_ptr = outputs_flat_.data();
+    double* work_ptr = workspace_.data();
+    size_t feat_size = features_flat_.size();
+    size_t out_size = outputs_flat_.size();
+    size_t work_size = workspace_.size();
+    
+    #pragma omp target enter data \
+        map(alloc: feat_ptr[0:feat_size]) \
+        map(alloc: out_ptr[0:out_size]) \
+        map(alloc: work_ptr[0:work_size])
+    
+    cached_n_cells_ = n_cells;
+#else
+    (void)n_cells;
+#endif
+}
+
+void TurbulenceNNMLP::free_gpu_buffers() {
+#ifdef USE_GPU_OFFLOAD
+    if (!features_flat_.empty()) {
+        double* feat_ptr = features_flat_.data();
+        double* out_ptr = outputs_flat_.data();
+        double* work_ptr = workspace_.data();
+        size_t feat_size = features_flat_.size();
+        size_t out_size = outputs_flat_.size();
+        size_t work_size = workspace_.size();
+        
+        #pragma omp target exit data \
+            map(delete: feat_ptr[0:feat_size]) \
+            map(delete: out_ptr[0:out_size]) \
+            map(delete: work_ptr[0:work_size])
+    }
+#endif
+    features_flat_.clear();
+    outputs_flat_.clear();
+    workspace_.clear();
+    cached_n_cells_ = 0;
+}
+
 void TurbulenceNNMLP::ensure_initialized(const Mesh& mesh) {
-    if (features_.empty()) {
+    if (!initialized_) {
         feature_computer_ = FeatureComputer(mesh);
         feature_computer_.set_reference(nu_, delta_, u_ref_);
         
@@ -39,6 +113,8 @@ void TurbulenceNNMLP::ensure_initialized(const Mesh& mesh) {
             }
             baseline_nu_t_ = ScalarField(mesh);
         }
+        
+        initialized_ = true;
     }
 }
 
@@ -59,7 +135,7 @@ void TurbulenceNNMLP::update(
     // Update reference quantities
     feature_computer_.set_reference(nu_, delta_, u_ref_);
     
-    // Compute features for all cells
+    // Compute features for all cells (CPU)
     {
         TIMED_SCOPE("nn_mlp_features");
         feature_computer_.compute_scalar_features(velocity, k, omega, features_);
@@ -71,9 +147,83 @@ void TurbulenceNNMLP::update(
         baseline_->update(mesh, velocity, k, omega, baseline_nu_t_);
     }
     
-    // NN inference for each cell
+    int n_cells = mesh.Nx * mesh.Ny;
+    int feature_dim = mlp_.input_dim();
+    int output_dim = mlp_.output_dim();
+    
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: batched inference
+    if (gpu_ready_) {
+        TIMED_SCOPE("nn_mlp_inference_gpu");
+        
+        // Ensure GPU buffers are allocated
+        allocate_gpu_buffers(n_cells);
+        
+        // Flatten features for GPU (CPU side)
+        {
+            TIMED_SCOPE("nn_mlp_flatten");
+            for (int idx = 0; idx < n_cells; ++idx) {
+                for (int f = 0; f < feature_dim; ++f) {
+                    features_flat_[idx * feature_dim + f] = features_[idx].values[f];
+                }
+            }
+        }
+        
+        // Upload features to GPU
+        {
+            TIMED_SCOPE("nn_mlp_upload");
+            double* feat_ptr = features_flat_.data();
+            size_t feat_size = features_flat_.size();
+            #pragma omp target update to(feat_ptr[0:feat_size])
+        }
+        
+        // Run batched NN inference on GPU
+        {
+            TIMED_SCOPE("nn_mlp_kernel");
+            double* feat_ptr = features_flat_.data();
+            double* out_ptr = outputs_flat_.data();
+            double* work_ptr = workspace_.data();
+            mlp_.forward_batch_gpu(feat_ptr, out_ptr, n_cells, work_ptr);
+        }
+        
+        // Download outputs from GPU
+        {
+            TIMED_SCOPE("nn_mlp_download");
+            double* out_ptr = outputs_flat_.data();
+            size_t out_size = outputs_flat_.size();
+            #pragma omp target update from(out_ptr[0:out_size])
+        }
+        
+        // Post-process: apply clipping and blending (CPU)
+        {
+            TIMED_SCOPE("nn_mlp_postprocess");
+            int idx = 0;
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    // Output is raw nu_t prediction
+                    double nu_t_nn = outputs_flat_[idx * output_dim];
+                    
+                    // Ensure positivity and apply clipping
+                    nu_t_nn = std::max(0.0, nu_t_nn);
+                    nu_t_nn = std::min(nu_t_nn, nu_t_max_);
+                    
+                    // Apply blending with baseline if enabled
+                    if (blend_with_baseline_ && baseline_) {
+                        nu_t(i, j) = (1.0 - blend_alpha_) * baseline_nu_t_(i, j) 
+                                   + blend_alpha_ * nu_t_nn;
+                    } else {
+                        nu_t(i, j) = nu_t_nn;
+                    }
+                    
+                    ++idx;
+                }
+            }
+        }
+    } else
+#endif
     {
-        TIMED_SCOPE("nn_mlp_inference");
+        // CPU fallback: sequential inference
+        TIMED_SCOPE("nn_mlp_inference_cpu");
         
         int idx = 0;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -103,5 +253,3 @@ void TurbulenceNNMLP::update(
 }
 
 } // namespace nncfd
-
-

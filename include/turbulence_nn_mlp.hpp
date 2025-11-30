@@ -5,13 +5,23 @@
 #include "features.hpp"
 #include <memory>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 /// Neural network scalar eddy viscosity model
 /// nu_t = NN(features)
+/// 
+/// GPU Strategy:
+/// - NN weights uploaded once and kept on GPU
+/// - Features computed on CPU, uploaded in batch
+/// - NN inference runs on GPU for all grid cells in parallel
 class TurbulenceNNMLP : public TurbulenceModel {
 public:
     TurbulenceNNMLP();
+    ~TurbulenceNNMLP();
     
     /// Load network weights and scaling from directory
     void load(const std::string& weights_dir, const std::string& scaling_dir);
@@ -39,6 +49,12 @@ public:
     /// Access the MLP
     const MLP& mlp() const { return mlp_; }
     
+    /// Upload NN weights to GPU (call after load())
+    void upload_to_gpu();
+    
+    /// Check if GPU is ready
+    bool is_gpu_ready() const { return gpu_ready_; }
+    
 private:
     MLP mlp_;
     FeatureComputer feature_computer_;
@@ -57,9 +73,19 @@ private:
     std::vector<double> buffer1_, buffer2_;
     ScalarField baseline_nu_t_;
     
+    // GPU batching buffers
+    std::vector<double> features_flat_;
+    std::vector<double> outputs_flat_;
+    std::vector<double> workspace_;
+    
+    // GPU state
+    bool gpu_ready_ = false;
+    bool initialized_ = false;
+    int cached_n_cells_ = 0;
+    
     void ensure_initialized(const Mesh& mesh);
+    void allocate_gpu_buffers(int n_cells);
+    void free_gpu_buffers();
 };
 
 } // namespace nncfd
-
-
