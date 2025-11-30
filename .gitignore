@@ -1,0 +1,82 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# Compiled object files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# Executables
+channel
+periodic_hills
+test_mesh
+test_poisson
+*.exe
+*.out
+*.app
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Output and data files
+output/*.dat
+output/*.txt
+output/*.csv
+output/*.vtk
+*.dat
+*.vtk
+*.csv
+
+# Keep data directory structure but ignore weight files
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Python (if used for weight export)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+
+# Temporary files
+*.log
+*.tmp
+core
+*.core
+
+# Profiling and debugging
+*.dSYM/
+callgrind.out.*
+perf.data*
+gmon.out
+
+# Keep important documentation
+!README.md
+!VALIDATION.md
+!LICENSE
+
+
