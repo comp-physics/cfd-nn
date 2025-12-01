@@ -111,9 +111,9 @@ void TurbulenceGEP::update(const Mesh& mesh,
     ensure_initialized(mesh);
     feature_computer_.set_reference(nu_, u_ref_, delta_);
     
-    double delta = delta_;
-    double kappa = 0.41;
-    double A_plus = 26.0;
+    [[maybe_unused]] double delta = delta_;  // Used in CPU path below
+    constexpr double kappa = 0.41;
+    constexpr double A_plus = 26.0;
     
     // Compute velocity gradients for all cells
     std::vector<Features> features;

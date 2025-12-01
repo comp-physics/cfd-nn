@@ -70,7 +70,7 @@ void test_poisson_constant_rhs() {
     std::cout << "(iters=" << iters << ", res=" << solver.residual() << ") ";
     
     // Check that solution is reasonable (positive in interior)
-    bool positive_interior = true;
+    [[maybe_unused]] bool positive_interior = true;
     for (int j = mesh.j_begin() + 1; j < mesh.j_end() - 1; ++j) {
         for (int i = mesh.i_begin() + 1; i < mesh.i_end() - 1; ++i) {
             if (p(i, j) < 0) {

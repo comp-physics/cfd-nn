@@ -137,7 +137,7 @@ void test_turbulence_nn_mlp_gpu() {
         model.update(mesh, vel, k, omega, nu_t);
         
         // Verify results
-        bool all_finite = true;
+        [[maybe_unused]] bool all_finite = true;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 if (!std::isfinite(nu_t(i, j))) {
@@ -194,7 +194,7 @@ void test_turbulence_nn_tbnn_gpu() {
         model.update(mesh, vel, k, omega, nu_t);
         
         // Verify results
-        bool all_finite = true;
+        [[maybe_unused]] bool all_finite = true;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 if (!std::isfinite(nu_t(i, j))) {

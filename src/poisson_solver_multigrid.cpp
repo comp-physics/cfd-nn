@@ -188,7 +188,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     // CPU path
     for (int iter = 0; iter < iterations; ++iter) {
         // Red sweep (i + j even)
-        for (int j = Ng; j < Nx + Ng; ++j) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
             int start = Ng + ((Ng + j) % 2);
             for (int i = start; i < Nx + Ng; i += 2) {
                 double u_old = grid.u(i, j);
