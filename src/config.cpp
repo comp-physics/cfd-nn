@@ -102,11 +102,6 @@ void Config::load(const std::string& filename) {
     dt = get_double("dt", dt);
     CFL_max = get_double("CFL_max", CFL_max);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
-    use_imex = get_bool("use_imex", use_imex);
-    time_integrator = get_string("time_integrator", time_integrator);
-    use_ssprk3_for_steady = get_bool("use_ssprk3_for_steady", use_ssprk3_for_steady);
-    unsteady = get_bool("unsteady", unsteady);
-    t_end = get_double("t_end", t_end);
     max_iter = get_int("max_iter", max_iter);
     tol = get_double("tol", tol);
     
@@ -114,12 +109,9 @@ void Config::load(const std::string& filename) {
     auto scheme_str = get_string("convective_scheme", "central");
     if (scheme_str == "upwind") {
         convective_scheme = ConvectiveScheme::Upwind;
-    } else if (scheme_str == "quick") {
-        convective_scheme = ConvectiveScheme::QUICK;
     } else {
         convective_scheme = ConvectiveScheme::Central;
     }
-    use_skew_convective = get_bool("use_skew_convective", use_skew_convective);
     
     // Turbulence
     auto model_str = get_string("turb_model", "none");
@@ -211,24 +203,6 @@ void Config::parse_args(int argc, char** argv) {
             stretch_y = true;
         } else if (arg == "--adaptive_dt") {
             adaptive_dt = true;
-        } else if (arg == "--explicit") {
-            use_imex = false;
-        } else if (arg == "--imex") {
-            use_imex = true;
-        } else if (arg == "--unsteady") {
-            unsteady = true;
-        } else if (arg == "--t_end" && i + 1 < argc) {
-            t_end = std::stod(argv[++i]);
-        } else if (arg == "--time_integrator" && i + 1 < argc) {
-            time_integrator = argv[++i];
-        } else if (arg == "--ssprk3_steady") {
-            use_ssprk3_for_steady = true;
-        } else if (arg == "--no_ssprk3_steady") {
-            use_ssprk3_for_steady = false;
-        } else if (arg == "--skew") {
-            use_skew_convective = true;
-        } else if (arg == "--no-skew") {
-            use_skew_convective = false;
         } else if (arg == "--CFL" && i + 1 < argc) {
             CFL_max = std::stod(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
@@ -251,15 +225,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --num_snapshots N Number of VTK snapshots (default 10)\n"
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
-                      << "  --CFL VALUE       Max CFL number for adaptive dt (default 2.0)\n"
-                      << "  --explicit        Use explicit Euler (disable IMEX)\n"
-                      << "  --imex            Use IMEX time stepping (implicit diffusion)\n"
-                      << "  --unsteady        Run time-accurate unsteady simulation\n"
-                      << "  --t_end T         End time for unsteady runs\n"
-                      << "  --time_integrator I  Time integrator: ssprk3 (default), explicit_euler\n"
-                      << "  --ssprk3_steady   Use SSPRK3 for steady-state (default: on)\n"
-                      << "  --no_ssprk3_steady  Use explicit Euler for steady-state\n"
-                      << "  --skew            Use skew-symmetric convection (default: on)\n"
+                      << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
                       << "  --no-skew         Use standard convection\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
@@ -382,8 +348,8 @@ void Config::print() const {
               << "Stretched y: " << (stretch_y ? "yes" : "no") << "\n"
               << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
-              << "Time stepping: " << (use_ssprk3_for_steady ? "SSPRK3 (3rd-order)" : (use_imex ? "IMEX" : "Explicit Euler")) << "\n"
-              << "Poisson solver: Multigrid (state-of-the-art)\n"
+              << "Time stepping: Explicit Euler + Projection\n"
+              << "Poisson solver: Multigrid\n"
               << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     

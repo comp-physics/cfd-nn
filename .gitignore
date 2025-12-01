@@ -108,8 +108,8 @@ FINAL_RESULTS.md
 *_RESULTS.md
 *_STATUS.md
 *_COMPLETE.md
-# But keep the main project summary
-!PROJECT_SUMMARY.md
 
 *.err
 *.out
+build_*
+

@@ -2,17 +2,15 @@
 
 ![CI](https://github.com/YOUR_USERNAME/nn-cfd/workflows/CI/badge.svg)
 
-A **high-performance C++ solver** for **time-accurate incompressible turbulence simulations** with **pluggable neural network closures**. Features state-of-the-art SSPRK3 time integration with multigrid Poisson solver, energy-conserving numerics, and pure C++ NN inference.
+A **high-performance C++ solver** for **incompressible turbulence simulations** with **pluggable neural network closures**. Features fractional-step projection method with multigrid Poisson solver and pure C++ NN inference.
 
 ## Features
 
-- **State-of-the-art time-accurate solver (default)**
-  - **SSPRK3** (Strong Stability Preserving RK3, 3rd-order) time integration
+- **Fractional-step projection method** for incompressible Navier-Stokes
+  - Explicit Euler time integration with adaptive time stepping
   - **Multigrid Poisson solver** (O(N) complexity, 10-100x faster than SOR)
-  - **Skew-symmetric** (energy-conserving) convective form
-  - **Per-stage projection** for incompressibility
-- **Time-accurate incompressible NS** for turbulence simulations (LES/DNS)
-- **Pseudo-time steady RANS** for canonical flows (channel, periodic hills)
+  - Pressure projection for divergence-free velocity
+- **Pseudo-time marching to steady RANS** for canonical flows (channel, periodic hills)
 - **Multiple turbulence closures**:
   - Baseline algebraic (mixing length)
   - GEP symbolic regression
@@ -55,15 +53,8 @@ make -j4
 # Periodic hills
 ./periodic_hills --Nx 64 --Ny 96 --model baseline --adaptive_dt
 
-# Time-accurate (unsteady) examples
-# ----------------------------------
-# Taylor-Green vortex decay with SSPRK3
-./channel --unsteady --t_end 1.0 --dt 0.001 --Nx 64 --Ny 64 \
-  --time_integrator ssprk3 --skew --num_snapshots 20
-
-# LES-style run with energy-conserving convection
-./channel --unsteady --t_end 5.0 --dt 0.0005 --Nx 128 --Ny 256 \
-  --nu 0.001 --time_integrator ssprk3 --skew --num_snapshots 50
+# Higher Reynolds number turbulent channel
+./channel --Nx 128 --Ny 256 --Re 5000 --model baseline --adaptive_dt
 ```
 
 ## Training Neural Network Models
@@ -113,12 +104,12 @@ cd build
 
 ```bash
 Grid:
-  --Nx N, --Ny N        Grid cells
-  --stretch             Enable y-direction stretching
+  --Nx N, --Ny N        Grid cells (default: 64 x 64)
+  --stretch             Enable y-direction stretching (default: off)
 
 Physics:
-  --Re VALUE            Reynolds number (auto-computes nu or dp_dx)
-  --nu VALUE            Kinematic viscosity (default: 1.5e-5 m²/s, air at 20°C)
+  --Re VALUE            Reynolds number (default: 1000)
+  --nu VALUE            Kinematic viscosity (default: 0.001)
   --dp_dx VALUE         Pressure gradient (driving force, default: -1.0)
   
   Note: Specify ONLY TWO of (Re, nu, dp_dx); the third is computed automatically:
@@ -126,31 +117,25 @@ Physics:
     - --Re --nu          → computes dp_dx to achieve desired Re
     - --Re --dp_dx       → computes nu to achieve desired Re
     - --nu --dp_dx       → computes Re from these
-    - none specified     → uses air viscosity defaults, computes Re
+    - none specified     → uses defaults (Re=1000, nu=0.001, dp_dx=-1.0)
   
   Specifying all three will error unless they are mutually consistent.
 
 Turbulence Model:
-  --model TYPE          none|baseline|gep|nn_mlp|nn_tbnn
+  --model TYPE          none|baseline|gep|nn_mlp|nn_tbnn (default: none)
   --nn_preset NAME      Use model from data/models/<NAME>
 
 Time Stepping:
-  --adaptive_dt         Automatic time step (recommended)
-  --dt VALUE            Fixed time step
-  --max_iter N          Maximum iterations (for steady state)
-  --CFL VALUE           Max CFL number (default 0.5)
+  --adaptive_dt         Automatic time step (default: on)
+  --dt VALUE            Fixed time step (default: 0.001)
+  --max_iter N          Maximum iterations (default: 10000)
+  --CFL VALUE           Max CFL number (default: 0.5)
+  --tol VALUE           Convergence tolerance (default: 1e-6)
   
-Unsteady Simulation:
-  --unsteady            Run time-accurate simulation
-  --t_end VALUE         End time for unsteady runs
-  --time_integrator STR ssprk3 (default) | explicit_euler
-  --skew                Use skew-symmetric convection (energy-conserving)
-  --no-skew             Use standard convection
-
 Output:
-  --output DIR          Output directory
-  --num_snapshots N     Number of VTK snapshots (default 10)
-  --verbose / --quiet   Verbosity control
+  --output DIR          Output directory (default: ./output)
+  --num_snapshots N     Number of VTK snapshots (default: 10)
+  --verbose / --quiet   Verbosity control (default: verbose)
 ```
 
 ### VTK Visualization Output

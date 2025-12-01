@@ -168,7 +168,7 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
    - **Solution:** Implement multigrid or conjugate gradient
 
 3. **First-order upwind** for convection is diffusive
-   - **Solution:** Implement QUICK or higher-order schemes
+   - **Solution:** Use central differences (default) or implement higher-order schemes
 
 ### Model-Related
 
