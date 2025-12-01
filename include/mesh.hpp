@@ -99,6 +99,9 @@ struct Mesh {
     /// Tanh stretching function for wall clustering
     /// Returns a function that maps [0,1] -> [0,1] with clustering near 0 and 1
     static StretchingFunc tanh_stretching(double beta);
+    
+    /// Create a simple uniform mesh (for multigrid levels)
+    static Mesh create_uniform(int nx, int ny, int nghost = 1);
 };
 
 } // namespace nncfd

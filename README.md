@@ -1,12 +1,18 @@
-# NN-CFD: Neural Network Turbulence Closures for Incompressible RANS
+# NN-CFD: Neural Network Turbulence Closures for Time-Accurate Incompressible Flow
 
 ![CI](https://github.com/YOUR_USERNAME/nn-cfd/workflows/CI/badge.svg)
 
-A **well-structured C++ codebase** for incompressible RANS simulations with **pluggable turbulence closures**, including state-of-the-art neural network models.
+A **high-performance C++ solver** for **time-accurate incompressible turbulence simulations** with **pluggable neural network closures**. Features state-of-the-art SSPRK3 time integration with multigrid Poisson solver, energy-conserving numerics, and pure C++ NN inference.
 
 ## Features
 
-- **Steady incompressible RANS** for canonical flows (channel, periodic hills)
+- **State-of-the-art time-accurate solver (default)**
+  - **SSPRK3** (Strong Stability Preserving RK3, 3rd-order) time integration
+  - **Multigrid Poisson solver** (O(N) complexity, 10-100x faster than SOR)
+  - **Skew-symmetric** (energy-conserving) convective form
+  - **Per-stage projection** for incompressibility
+- **Time-accurate incompressible NS** for turbulence simulations (LES/DNS)
+- **Pseudo-time steady RANS** for canonical flows (channel, periodic hills)
 - **Multiple turbulence closures**:
   - Baseline algebraic (mixing length)
   - GEP symbolic regression
@@ -29,8 +35,13 @@ make -j4
 ### Run Examples
 
 ```bash
-# Laminar channel flow
+# Steady-state examples
+# --------------------
+# Laminar channel flow (steady state)
 ./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_iter 10000
+
+# Same, but using Reynolds number (auto-computes nu)
+./channel --Nx 32 --Ny 64 --Re 2000 --adaptive_dt --max_iter 10000
 
 # Turbulent with baseline model
 ./channel --Nx 64 --Ny 128 --nu 0.001 --model baseline --adaptive_dt
@@ -43,6 +54,16 @@ make -j4
 
 # Periodic hills
 ./periodic_hills --Nx 64 --Ny 96 --model baseline --adaptive_dt
+
+# Time-accurate (unsteady) examples
+# ----------------------------------
+# Taylor-Green vortex decay with SSPRK3
+./channel --unsteady --t_end 1.0 --dt 0.001 --Nx 64 --Ny 64 \
+  --time_integrator ssprk3 --skew --num_snapshots 20
+
+# LES-style run with energy-conserving convection
+./channel --unsteady --t_end 5.0 --dt 0.0005 --Nx 128 --Ny 256 \
+  --nu 0.001 --time_integrator ssprk3 --skew --num_snapshots 50
 ```
 
 ## Training Neural Network Models
@@ -96,8 +117,18 @@ Grid:
   --stretch             Enable y-direction stretching
 
 Physics:
-  --nu VALUE            Kinematic viscosity
-  --Re VALUE            Reynolds number
+  --Re VALUE            Reynolds number (auto-computes nu or dp_dx)
+  --nu VALUE            Kinematic viscosity (default: 1.5e-5 m²/s, air at 20°C)
+  --dp_dx VALUE         Pressure gradient (driving force, default: -1.0)
+  
+  Note: Specify ONLY TWO of (Re, nu, dp_dx); the third is computed automatically:
+    - --Re only          → uses default dp_dx, computes nu
+    - --Re --nu          → computes dp_dx to achieve desired Re
+    - --Re --dp_dx       → computes nu to achieve desired Re
+    - --nu --dp_dx       → computes Re from these
+    - none specified     → uses air viscosity defaults, computes Re
+  
+  Specifying all three will error unless they are mutually consistent.
 
 Turbulence Model:
   --model TYPE          none|baseline|gep|nn_mlp|nn_tbnn
@@ -106,8 +137,15 @@ Turbulence Model:
 Time Stepping:
   --adaptive_dt         Automatic time step (recommended)
   --dt VALUE            Fixed time step
-  --max_iter N          Maximum iterations
+  --max_iter N          Maximum iterations (for steady state)
   --CFL VALUE           Max CFL number (default 0.5)
+  
+Unsteady Simulation:
+  --unsteady            Run time-accurate simulation
+  --t_end VALUE         End time for unsteady runs
+  --time_integrator STR ssprk3 (default) | explicit_euler
+  --skew                Use skew-symmetric convection (energy-conserving)
+  --no-skew             Use standard convection
 
 Output:
   --output DIR          Output directory

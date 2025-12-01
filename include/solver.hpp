@@ -3,6 +3,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "poisson_solver.hpp"
+#include "poisson_solver_multigrid.hpp"
 #include "turbulence_model.hpp"
 #include "config.hpp"
 #include <memory>
@@ -59,6 +60,11 @@ public:
         int num_snapshots = 0,
         int snapshot_freq = -1
     );
+    
+    /// Advance unsteady simulation for multiple time steps
+    /// @param dt Time step size
+    /// @param nsteps Number of time steps to take
+    void advance_unsteady(double dt, int nsteps);
     
     /// Compute adaptive time step based on CFL and diffusion stability
     double compute_adaptive_dt() const;
@@ -118,7 +124,9 @@ private:
     
     // Solvers
     PoissonSolver poisson_solver_;
+    MultigridPoissonSolver mg_poisson_solver_;
     std::unique_ptr<TurbulenceModel> turb_model_;
+    bool use_multigrid_ = true;  // Use multigrid by default for speed
     
     // Boundary conditions
     VelocityBC velocity_bc_;
@@ -131,10 +139,19 @@ private:
     // Internal methods
     void apply_velocity_bc();
     void compute_convective_term(const VectorField& vel, VectorField& conv);
+    void compute_convective_term_skew(const VectorField& vel, VectorField& conv);
     void compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, VectorField& diff);
     void compute_divergence(const VectorField& vel, ScalarField& div);
     void correct_velocity();
     double compute_residual();
+    
+    // IMEX methods
+    void solve_implicit_diffusion(const VectorField& u_explicit, const ScalarField& nu_eff, 
+                                  VectorField& u_new, double dt);
+    
+    // Time integration methods
+    void project_velocity(VectorField& vel_star, double dt);
+    void ssprk3_step(double dt);
     
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);

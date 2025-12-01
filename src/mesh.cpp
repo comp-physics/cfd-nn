@@ -143,6 +143,12 @@ StretchingFunc Mesh::tanh_stretching(double beta) {
     };
 }
 
+Mesh Mesh::create_uniform(int nx, int ny, int nghost) {
+    Mesh mesh;
+    mesh.init_uniform(nx, ny, 0.0, 1.0, 0.0, 1.0, nghost);
+    return mesh;
+}
+
 } // namespace nncfd
 
 

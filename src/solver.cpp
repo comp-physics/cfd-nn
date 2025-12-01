@@ -21,11 +21,15 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , rhs_poisson_(mesh)
     , div_velocity_(mesh)
     , poisson_solver_(mesh)
+    , mg_poisson_solver_(mesh)
+    , use_multigrid_(true)
     , current_dt_(config.dt)
 {
     // Set up Poisson solver BCs (periodic in x, Neumann in y for channel)
     poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                            PoissonBC::Neumann, PoissonBC::Neumann);
+    mg_poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                              PoissonBC::Neumann, PoissonBC::Neumann);
 }
 
 void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {

@@ -183,7 +183,7 @@ ctest --output-on-failure
 
 ## Test Philosophy
 
-- Tests should be fast (< 1 second per suite)
+- Tests should be fast (< 5 min per suite)
 - Tests should be deterministic
 - Tests should validate against known analytical solutions where possible
 - Tests should check edge cases and error conditions

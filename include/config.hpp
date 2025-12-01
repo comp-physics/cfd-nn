@@ -42,15 +42,26 @@ struct Config {
     double rho = 1.0;           ///< Density
     double dp_dx = -1.0;        ///< Pressure gradient (or body force) driving the flow
     
+    // Control flags for Re-based setup
+    bool Re_specified = false;
+    bool nu_specified = false;
+    bool dp_dx_specified = false;
+    
     // Time stepping
     double dt = 0.001;          ///< Time step
     double CFL_max = 0.5;       ///< Maximum CFL number for adaptive dt
     bool adaptive_dt = true;    ///< Use adaptive time stepping (required for stability on fine grids)
+    bool use_imex = false;      ///< Use IMEX (implicit diffusion, explicit convection)
+    std::string time_integrator = "ssprk3"; ///< Time integrator: "ssprk3" or "explicit_euler"
+    bool use_ssprk3_for_steady = false; ///< Use SSPRK3 for steady-state (false = explicit Euler, safer default)
+    bool unsteady = false;      ///< Run unsteady simulation
+    double t_end = 1.0;         ///< End time for unsteady runs
     int max_iter = 10000;       ///< Maximum pseudo-time iterations
     double tol = 1e-6;          ///< Convergence tolerance
     
     // Numerical schemes
     ConvectiveScheme convective_scheme = ConvectiveScheme::Central;
+    bool use_skew_convective = false;  ///< Use skew-symmetric convective form
     
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;

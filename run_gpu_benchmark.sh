@@ -51,3 +51,4 @@ nvidia-smi
 echo ""
 echo "=== Benchmark Complete ==="
 
+

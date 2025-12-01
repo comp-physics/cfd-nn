@@ -2,6 +2,32 @@
 
 ## Testing Requirements
 
+### Physics Validation Tests
+
+The test suite now includes comprehensive physics-based tests to verify the incompressible Navier-Stokes solver:
+
+1. **Divergence-Free Constraint** (`test_solver.cpp`)
+   - Verifies ∇·u ≈ 0 (incompressibility)
+   - Checks both max and RMS divergence
+   - Ensures pressure-velocity coupling works correctly
+
+2. **Mass Conservation** (`test_solver.cpp`)
+   - Verifies mass flux conservation through periodic boundaries
+   - Tests over multiple time steps
+   - Ensures no numerical mass loss/gain
+
+3. **Momentum Balance** (`test_solver.cpp`)
+   - Validates dp/dx = ν ∇²u for Poiseuille flow
+   - Checks momentum equation is satisfied
+   - Verifies viscous stress calculation
+
+4. **Energy Dissipation** (`test_solver.cpp`)
+   - Validates energy input = energy dissipation at steady state
+   - Tests thermodynamic consistency
+   - Ensures proper viscous dissipation
+
+These tests verify the solver obeys fundamental physics, not just numerical convergence.
+
 ### CRITICAL: Pre-Push Testing Protocol
 
 **BEFORE EVERY PUSH TO REPOSITORY:**

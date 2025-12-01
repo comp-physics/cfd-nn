@@ -3,6 +3,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 namespace nncfd {
 
@@ -86,15 +87,26 @@ void Config::load(const std::string& filename) {
     stretch_beta = get_double("stretch_beta", stretch_beta);
     
     // Physical
+    auto params_map = params; // Save for checking if key exists
     Re = get_double("Re", Re);
     nu = get_double("nu", nu);
     rho = get_double("rho", rho);
     dp_dx = get_double("dp_dx", dp_dx);
     
+    // Track which parameters were explicitly set in config file
+    if (params_map.find("Re") != params_map.end()) Re_specified = true;
+    if (params_map.find("nu") != params_map.end()) nu_specified = true;
+    if (params_map.find("dp_dx") != params_map.end()) dp_dx_specified = true;
+    
     // Time stepping
     dt = get_double("dt", dt);
     CFL_max = get_double("CFL_max", CFL_max);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
+    use_imex = get_bool("use_imex", use_imex);
+    time_integrator = get_string("time_integrator", time_integrator);
+    use_ssprk3_for_steady = get_bool("use_ssprk3_for_steady", use_ssprk3_for_steady);
+    unsteady = get_bool("unsteady", unsteady);
+    t_end = get_double("t_end", t_end);
     max_iter = get_int("max_iter", max_iter);
     tol = get_double("tol", tol);
     
@@ -107,6 +119,7 @@ void Config::load(const std::string& filename) {
     } else {
         convective_scheme = ConvectiveScheme::Central;
     }
+    use_skew_convective = get_bool("use_skew_convective", use_skew_convective);
     
     // Turbulence
     auto model_str = get_string("turb_model", "none");
@@ -154,8 +167,13 @@ void Config::parse_args(int argc, char** argv) {
             Ny = std::stoi(argv[++i]);
         } else if (arg == "--Re" && i + 1 < argc) {
             Re = std::stod(argv[++i]);
+            Re_specified = true;
         } else if (arg == "--nu" && i + 1 < argc) {
             nu = std::stod(argv[++i]);
+            nu_specified = true;
+        } else if (arg == "--dp_dx" && i + 1 < argc) {
+            dp_dx = std::stod(argv[++i]);
+            dp_dx_specified = true;
         } else if (arg == "--dt" && i + 1 < argc) {
             dt = std::stod(argv[++i]);
         } else if (arg == "--max_iter" && i + 1 < argc) {
@@ -193,6 +211,24 @@ void Config::parse_args(int argc, char** argv) {
             stretch_y = true;
         } else if (arg == "--adaptive_dt") {
             adaptive_dt = true;
+        } else if (arg == "--explicit") {
+            use_imex = false;
+        } else if (arg == "--imex") {
+            use_imex = true;
+        } else if (arg == "--unsteady") {
+            unsteady = true;
+        } else if (arg == "--t_end" && i + 1 < argc) {
+            t_end = std::stod(argv[++i]);
+        } else if (arg == "--time_integrator" && i + 1 < argc) {
+            time_integrator = argv[++i];
+        } else if (arg == "--ssprk3_steady") {
+            use_ssprk3_for_steady = true;
+        } else if (arg == "--no_ssprk3_steady") {
+            use_ssprk3_for_steady = false;
+        } else if (arg == "--skew") {
+            use_skew_convective = true;
+        } else if (arg == "--no-skew") {
+            use_skew_convective = false;
         } else if (arg == "--CFL" && i + 1 < argc) {
             CFL_max = std::stod(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
@@ -201,8 +237,9 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --config FILE     Load config file\n"
                       << "  --Nx N            Grid cells in x\n"
                       << "  --Ny N            Grid cells in y\n"
-                      << "  --Re R            Reynolds number\n"
+                      << "  --Re R            Reynolds number (auto-computes nu or dp_dx)\n"
                       << "  --nu V            Kinematic viscosity\n"
+                      << "  --dp_dx D         Pressure gradient (driving force)\n"
                       << "  --dt T            Time step\n"
                       << "  --max_iter N      Maximum iterations\n"
                       << "  --tol T           Convergence tolerance\n"
@@ -214,9 +251,22 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --num_snapshots N Number of VTK snapshots (default 10)\n"
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
-                      << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
+                      << "  --CFL VALUE       Max CFL number for adaptive dt (default 2.0)\n"
+                      << "  --explicit        Use explicit Euler (disable IMEX)\n"
+                      << "  --imex            Use IMEX time stepping (implicit diffusion)\n"
+                      << "  --unsteady        Run time-accurate unsteady simulation\n"
+                      << "  --t_end T         End time for unsteady runs\n"
+                      << "  --time_integrator I  Time integrator: ssprk3 (default), explicit_euler\n"
+                      << "  --ssprk3_steady   Use SSPRK3 for steady-state (default: on)\n"
+                      << "  --no_ssprk3_steady  Use explicit Euler for steady-state\n"
+                      << "  --skew            Use skew-symmetric convection (default: on)\n"
+                      << "  --no-skew         Use standard convection\n"
                       << "  --verbose/--quiet Print progress\n"
-                      << "  --help            Show this message\n";
+                      << "  --help            Show this message\n"
+                      << "\nPhysical Parameter Coupling:\n"
+                      << "  Only TWO of {Re, nu, dp_dx} can be specified independently.\n"
+                      << "  The third is computed from Re = sqrt(|dp_dx|) * H / nu.\n"
+                      << "  Default: nu = 1.5e-5 (air viscosity), dp_dx = -1.0\n";
             std::exit(0);
         }
     }
@@ -238,24 +288,102 @@ void Config::finalize() {
         }
     }
     
-    // Compute nu from Re if Re is specified and nu is default
-    // Convention: Re = U_bulk * delta / nu, where delta = (y_max - y_min) / 2
-    double delta = (y_max - y_min) / 2.0;
-    (void)delta;
+    // Reynolds number coupling for channel flow
+    // For laminar Poiseuille: U_bulk = -dp_dx * delta^2 / (3*nu)
+    // Re = U_bulk * delta / nu = -dp_dx * delta^3 / (3*nu^2)
+    // Therefore: dp_dx = -3 * Re * nu^2 / delta^3
+    //        or: nu = sqrt(-dp_dx * delta^3 / (3 * Re))
     
-    // If user specifies Re and default nu, compute nu
-    // Otherwise keep nu as specified
-    // For simplicity, we'll use: nu = U_bulk * delta / Re
-    // Assume U_bulk will be determined from dp_dx and nu for Poiseuille
+    double delta = (y_max - y_min) / 2.0;
+    
+    // Check for over-constrained input (all three specified)
+    if (Re_specified && nu_specified && dp_dx_specified) {
+        // Verify consistency: compute what Re would be from nu and dp_dx
+        double Re_check = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
+        double relative_error = std::abs(Re_check - Re) / Re;
+        
+        if (relative_error > 0.01) { // 1% tolerance
+            std::cerr << "ERROR: Over-constrained input! You specified all three:\n"
+                      << "  --Re " << Re << "\n"
+                      << "  --nu " << nu << "\n"
+                      << "  --dp_dx " << dp_dx << "\n"
+                      << "But these are inconsistent (computed Re = " << Re_check << ").\n"
+                      << "\n"
+                      << "Please specify only TWO of (Re, nu, dp_dx):\n"
+                      << "  --Re --nu        → code computes dp_dx\n"
+                      << "  --Re --dp_dx     → code computes nu\n"
+                      << "  --nu --dp_dx     → code computes Re\n";
+            std::exit(1);
+        } else {
+            // All three specified and consistent - just use them
+            if (verbose) {
+                std::cout << "Note: All three (Re, nu, dp_dx) specified and are consistent.\n";
+            }
+        }
+    }
+    // Case 1: User specified Re but not nu → compute nu from Re and dp_dx
+    else if (Re_specified && !nu_specified) {
+        if (!dp_dx_specified || dp_dx >= 0.0) {
+            if (verbose) {
+                std::cout << "Re specified without nu or dp_dx. Using default dp_dx = -1.0\n";
+            }
+            if (dp_dx >= 0.0) {
+                dp_dx = -1.0;
+            }
+        }
+        // nu = sqrt(-dp_dx * delta^3 / (3 * Re))
+        nu = std::sqrt(-dp_dx * delta * delta * delta / (3.0 * Re));
+        if (verbose) {
+            std::cout << "Computing nu from Re and dp_dx: nu = " << std::scientific << nu 
+                      << " (Re = " << Re << ", dp_dx = " << dp_dx << ")\n" << std::defaultfloat;
+        }
+    }
+    // Case 2: User specified Re and nu → compute dp_dx to achieve desired Re
+    else if (Re_specified && nu_specified && !dp_dx_specified) {
+        // dp_dx = -3 * Re * nu^2 / delta^3
+        dp_dx = -3.0 * Re * nu * nu / (delta * delta * delta);
+        if (verbose) {
+            std::cout << "Computing dp_dx from Re and nu: dp_dx = " << dp_dx 
+                      << " (Re = " << Re << ", nu = " << std::scientific << nu << ")\n" << std::defaultfloat;
+        }
+    }
+    // Case 3: User specified nu and dp_dx → compute Re from these
+    else if (nu_specified && dp_dx_specified && !Re_specified) {
+        // Re = -dp_dx * delta^3 / (3 * nu^2)
+        if (dp_dx < 0.0) {
+            Re = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
+            if (verbose) {
+                std::cout << "Computing Re from nu and dp_dx: Re = " << Re 
+                          << " (nu = " << std::scientific << nu << ", dp_dx = " << dp_dx << ")\n" << std::defaultfloat;
+            }
+        }
+    }
+    // Case 4: Only one or none specified - use defaults and compute Re
+    else {
+        // Compute Re from defaults
+        if (dp_dx < 0.0) {
+            Re = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
+            if (verbose) {
+                std::cout << "Using default parameters: nu = " << std::scientific << nu 
+                          << " (air at 20°C), dp_dx = " << dp_dx << "\n"
+                          << "Computed Re = " << Re << "\n" << std::defaultfloat;
+            }
+        }
+    }
 }
 
 void Config::print() const {
+    double delta = (y_max - y_min) / 2.0;
+    double Re_actual = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
+    
     std::cout << "=== Configuration ===\n"
               << "Mesh: " << Nx << " x " << Ny << "\n"
               << "Domain: [" << x_min << ", " << x_max << "] x [" << y_min << ", " << y_max << "]\n"
               << "Stretched y: " << (stretch_y ? "yes" : "no") << "\n"
-              << "Re: " << Re << ", nu: " << nu << "\n"
+              << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
+              << "Time stepping: " << (use_ssprk3_for_steady ? "SSPRK3 (3rd-order)" : (use_imex ? "IMEX" : "Explicit Euler")) << "\n"
+              << "Poisson solver: Multigrid (state-of-the-art)\n"
               << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     
