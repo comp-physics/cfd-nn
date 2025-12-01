@@ -1,8 +1,9 @@
 # NN-CFD: Neural Network Turbulence Closures for Time-Accurate Incompressible Flow
 
-![CI](https://github.com/comp-physics/nn-cfd/workflows/CI/badge.svg)
+![CI](https://github.com/comp-physics/cfd-nn/workflows/CI/badge.svg)
 
-A **high-performance C++ solver** for **incompressible turbulence simulations** with **pluggable neural network closures**. Features fractional-step projection method with multigrid Poisson solver and pure C++ NN inference.
+A **high-performance C++ solver** for **incompressible turbulence simulations** with **pluggable neural network closures**.
+Features a fractional-step projection method with a multigrid Poisson solver and pure C++ NN inference.
 
 ## Features
 
@@ -87,18 +88,6 @@ python scripts/validate_trained_model.py \
 cd build
 ./periodic_hills --model nn_tbnn --nn_preset tbnn_hills
 ```
-
-**See `QUICK_TRAIN.md` or `docs/TRAINING_GUIDE.md` for complete instructions.**
-
-## Project Structure
-
-- `include/` - Headers (mesh, solver, turbulence models, NN)
-- `src/` - C++ implementations
-- `app/` - Main executables (channel, periodic_hills)
-- `scripts/` - Training and comparison tools
-- `data/models/` - Trained model weights
-- `docs/` - Detailed documentation
-- `tests/` - Unit tests
 
 ## Command-Line Options
 
@@ -261,9 +250,6 @@ pip install torch numpy pandas scikit-learn matplotlib
 
 **Dataset:**
 - McConkey, R., et al. "A curated dataset for data-driven turbulence modelling." *Scientific Data* 8 (2021)
-
-
-
 
 
 ```bibtex
