@@ -283,6 +283,7 @@ void test_zero_initial_velocity() {
     config.verbose = false;
     
     RANSSolver solver(mesh, config);
+    solver.set_body_force(-config.dp_dx, 0.0);  // Apply the driving force!
     
     // Velocity starts at zero - solver should handle this gracefully
     // The main test is that it doesn't crash or produce NaN/Inf
