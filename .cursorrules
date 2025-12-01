@@ -1,0 +1,282 @@
+# Cursor Rules for CFD-NN Project
+
+## Testing Requirements
+
+### CRITICAL: Pre-Push Testing Protocol
+
+**BEFORE EVERY PUSH TO REPOSITORY:**
+
+1. **Run the pre-CI test script:**
+   ```bash
+   ./test_before_ci.sh
+   ```
+   This script MUST pass before pushing. It tests:
+   - Debug build (like CI does)
+   - Release build (like CI does)
+   - All unit tests in both configurations
+   - Checks for compiler warnings
+
+2. **Why this matters:**
+   - CI runs 4 configurations: (Ubuntu + macOS) × (Debug + Release)
+   - Local development often only tests one configuration
+   - Debug builds have different behavior than Release
+   - Tests that pass locally in Release may fail in CI's Debug build
+
+### Test Development Guidelines
+
+1. **No Platform-Specific Tolerances**
+   - DO NOT add `#ifdef __APPLE__` or similar platform checks
+   - DO NOT relax tolerances for different compilers
+   - If a test is numerically sensitive, fix the root cause, don't hide it
+
+2. **Build-Type Independence**
+   - Tests should pass in BOTH Debug and Release builds
+   - If different behavior is needed, it's a code smell - investigate why
+
+3. **Numerical Robustness**
+   - Avoid overly strict floating-point comparisons (e.g., `==` for doubles)
+   - Use appropriate tolerances based on algorithm, not platform
+   - For iterative solvers: check residual convergence, not exact iteration count
+
+4. **Test Isolation**
+   - Each test should be independent
+   - Don't rely on execution order
+   - Clean up any state/files created during tests
+
+### Common CI Failure Patterns to Avoid
+
+❌ **Bad: Tests that only pass in Release**
+```cpp
+// This might fail in Debug due to different optimization
+assert(iterations < 100);  // Iteration count is optimization-dependent!
+```
+
+✅ **Good: Tests that work in both Debug and Release**
+```cpp
+// Check convergence, not iteration count
+assert(residual < tolerance);
+assert(std::isfinite(result));
+```
+
+❌ **Bad: Missing body force setup**
+```cpp
+RANSSolver solver(mesh, config);
+// Forgot to set body force - flow won't develop!
+solver.step();
+```
+
+✅ **Good: Complete initialization**
+```cpp
+RANSSolver solver(mesh, config);
+solver.set_body_force(-config.dp_dx, 0.0);
+solver.initialize_uniform(0.1, 0.0);
+solver.step();
+```
+
+❌ **Bad: Exact floating-point comparisons**
+```cpp
+assert(max_u == 1.0);  // Will fail due to numerical precision
+```
+
+✅ **Good: Tolerance-based comparisons**
+```cpp
+assert(std::abs(max_u - 1.0) < 1e-10);
+```
+
+### Code Quality Standards
+
+1. **No Compiler Warnings**
+   - Fix ALL warnings before pushing
+   - Use `[[maybe_unused]]` for intentionally unused variables in assertions
+   - Don't suppress warnings with flags
+
+2. **Const Correctness**
+   - Use `const` for read-only references
+   - Mark methods `const` if they don't modify state
+
+3. **RAII for Resource Management**
+   - Use smart pointers or RAII wrappers
+   - No manual `new`/`delete` or `malloc`/`free`
+   - GPU buffers use `OmpDeviceBuffer` wrapper
+
+4. **Error Handling**
+   - Check return values
+   - Use exceptions for error conditions
+   - Provide informative error messages
+
+### Performance Guidelines
+
+1. **Data Movement (CPU-GPU)**
+   - Minimize CPU↔GPU transfers
+   - Keep frequently accessed data on GPU
+   - Batch operations when possible
+
+2. **Algorithmic Choices**
+   - Profile before optimizing
+   - Document complexity assumptions
+   - Use appropriate data structures
+
+### Documentation Requirements
+
+1. **Public API Documentation**
+   - Every public function needs a comment
+   - Explain parameters, return values, side effects
+   - Include usage examples for complex functions
+
+2. **Code Comments**
+   - Explain WHY, not WHAT
+   - Document numerical algorithms
+   - Note any non-obvious optimizations
+
+3. **README Updates**
+   - Keep command-line options up to date
+   - Document new features
+   - Update examples when behavior changes
+
+## Workflow Best Practices
+
+### Before Starting Work
+1. Pull latest changes from main
+2. Create feature branch
+3. Run `./test_before_ci.sh` to verify starting state
+
+### During Development
+1. Build and test frequently
+2. Test in Debug mode during development
+3. Fix warnings immediately (don't accumulate)
+
+### Before Committing
+1. Run all tests: `cd build && ctest`
+2. Check for warnings: Review build output
+3. Verify changes don't break existing functionality
+
+### Before Pushing
+1. **MANDATORY**: Run `./test_before_ci.sh`
+2. Only push if script passes completely
+3. If it fails, fix issues before pushing
+
+### After Pushing
+1. Monitor CI status on GitHub
+2. If CI fails, fix immediately (don't push more changes on top)
+3. Learn from CI failures to prevent similar issues
+
+## Git Commit Guidelines
+
+1. **Descriptive Messages**
+   - First line: Brief summary (<50 chars)
+   - Blank line
+   - Detailed explanation if needed
+
+2. **Atomic Commits**
+   - One logical change per commit
+   - Don't mix refactoring with feature additions
+   - Each commit should leave code in working state
+
+3. **Test Coverage**
+   - Add tests for new features
+   - Update tests when changing behavior
+   - Don't commit broken tests
+
+## File Organization
+
+- `/src/` - Implementation files
+- `/include/` - Header files (public API)
+- `/app/` - Application entry points
+- `/tests/` - Unit and integration tests
+- `/data/models/` - Neural network model files
+- `/output/` - Generated output (VTK, data files)
+- `/scripts/` - Utility scripts
+- `/docs/` - Documentation
+
+## Common Gotchas
+
+1. **Solver Initialization**
+   - Always call `set_body_force()` for driven flows
+   - Initialize velocity field before solving
+   - Set turbulence model before first step
+
+2. **Boundary Conditions**
+   - Ensure BCs are consistent across solver components
+   - Periodic BCs require special handling in Poisson solver
+
+3. **GPU Offload**
+   - Data must be explicitly uploaded to GPU
+   - Check `USE_GPU_OFFLOAD` is defined
+   - Verify `omp_get_num_devices() > 0` at runtime
+
+4. **VTK Output**
+   - Use `solve_steady_with_snapshots()` for automatic output
+   - Specify `num_snapshots` in config
+   - Files are numbered sequentially + final
+
+## Quick Reference
+
+**Run tests locally (like CI):**
+```bash
+./test_before_ci.sh
+```
+
+**Build for debugging:**
+```bash
+mkdir -p build_debug && cd build_debug
+cmake .. -DCMAKE_BUILD_TYPE=Debug
+make -j4
+ctest --output-on-failure
+```
+
+**Build for performance:**
+```bash
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j4
+```
+
+**Check for warnings:**
+```bash
+cd build
+make clean
+make 2>&1 | grep -i "warning:"
+```
+
+**Run single test:**
+```bash
+cd build
+./test_solver
+```
+
+**Run with verbose output:**
+```bash
+cd build
+ctest --output-on-failure --verbose
+```
+
+## Emergency: CI is Failing
+
+1. **Check which configuration failed:**
+   - Ubuntu Debug? Ubuntu Release?
+   - macOS Debug? macOS Release?
+
+2. **Reproduce locally:**
+   ```bash
+   # For Ubuntu Debug failure:
+   ./test_before_ci.sh
+   # Check Debug output specifically
+   ```
+
+3. **Common fixes:**
+   - Missing initialization (body force, etc.)
+   - Unused variables in assertions (use `[[maybe_unused]]`)
+   - Platform paths (use relative paths)
+   - Missing `#include` that worked locally
+
+4. **Don't:**
+   - Push "fixes" without running `test_before_ci.sh`
+   - Add platform-specific workarounds
+   - Disable failing tests
+   - Relax tolerances to hide issues
+
+---
+
+Remember: **CI failures are usually legitimate bugs or test issues, not platform quirks.**
+Fix the root cause, don't work around it!
+

@@ -43,25 +43,7 @@ jobs:
     - name: Run Tests
       run: |
         cd build
-        ctest --output-on-failure --verbose
-    
-    - name: Run test_mesh
-      run: ./build/test_mesh
-    
-    - name: Run test_poisson
-      run: ./build/test_poisson
-    
-    - name: Run test_solver
-      run: ./build/test_solver
-    
-    - name: Run test_features
-      run: ./build/test_features
-    
-    - name: Run test_nn_core
-      run: ./build/test_nn_core
-    
-    - name: Run test_turbulence
-      run: ./build/test_turbulence
+        ctest --output-on-failure
     
     - name: Check for warnings
       if: matrix.build_type == 'Release'
