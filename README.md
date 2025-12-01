@@ -1,6 +1,6 @@
 # NN-CFD: Neural Network Turbulence Closures for Time-Accurate Incompressible Flow
 
-![CI](https://github.com/YOUR_USERNAME/nn-cfd/workflows/CI/badge.svg)
+![CI](https://github.com/comp-physics/nn-cfd/workflows/CI/badge.svg)
 
 A **high-performance C++ solver** for **incompressible turbulence simulations** with **pluggable neural network closures**. Features fractional-step projection method with multigrid Poisson solver and pure C++ NN inference.
 
