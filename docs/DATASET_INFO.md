@@ -179,7 +179,7 @@ Where:
 **Properties**:
 - Trace-free: b_ii = 0
 - Symmetric: b_ij = b_ji
-- Bounded: -1/3 ≤ b_ij ≤ 2/3
+- Bounded: -1/3 <= b_ij <= 2/3
 
 In 2D, only 3 independent components: b_xx, b_xy, b_yy (with b_xx + b_yy = 0).
 
@@ -318,9 +318,9 @@ basis = data['basis']            # [N, 10, 6] or [N, 4, 3]
 The McConkey dataset is released under **CC BY 4.0** (Creative Commons Attribution).
 
 You are free to:
-- ✅ Share - copy and redistribute
-- ✅ Adapt - remix, transform, build upon
-- ✅ Commercial use allowed
+- [OK] Share - copy and redistribute
+- [OK] Adapt - remix, transform, build upon
+- [OK] Commercial use allowed
 
 Attribution required: Cite McConkey et al. (2021) in any publications.
 

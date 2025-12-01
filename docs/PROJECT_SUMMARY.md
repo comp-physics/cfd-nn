@@ -112,7 +112,7 @@ GitHub Actions runs on every push:
 1. Fully working RANS solver with multiple turbulence closures
 2. Successfully integrated and trained TBNN on real DNS data (McConkey 2021)
 3. Pure C++ NN inference with no runtime dependencies
-4. Complete training infrastructure (download → preprocess → train → integrate)
+4. Complete training infrastructure (download --> preprocess --> train --> integrate)
 5. Comprehensive testing (6 suites, all passing)
 6. Production-ready code quality (C++17, -Wall -Wextra -O3)
 

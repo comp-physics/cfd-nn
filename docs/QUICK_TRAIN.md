@@ -127,7 +127,7 @@ python scripts/train_tbnn_mcconkey.py \
 - Reduce batch size: `--batch_size 128`
 
 ### "Model runs but results are bad"
-- Trained on dummy data? → Download real dataset
+- Trained on dummy data? --> Download real dataset
 - Need more epochs: `--epochs 200`
 - Try different case: Channel is easier than periodic hills
 

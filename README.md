@@ -113,11 +113,11 @@ Physics:
   --dp_dx VALUE         Pressure gradient (driving force, default: -1.0)
   
   Note: Specify ONLY TWO of (Re, nu, dp_dx); the third is computed automatically:
-    - --Re only          → uses default dp_dx, computes nu
-    - --Re --nu          → computes dp_dx to achieve desired Re
-    - --Re --dp_dx       → computes nu to achieve desired Re
-    - --nu --dp_dx       → computes Re from these
-    - none specified     → uses defaults (Re=1000, nu=0.001, dp_dx=-1.0)
+    - --Re only          --> uses default dp_dx, computes nu
+    - --Re --nu          --> computes dp_dx to achieve desired Re
+    - --Re --dp_dx       --> computes nu to achieve desired Re
+    - --nu --dp_dx       --> computes Re from these
+    - none specified     --> uses defaults (Re=1000, nu=0.001, dp_dx=-1.0)
   
   Specifying all three will error unless they are mutually consistent.
 
@@ -163,19 +163,19 @@ VTK files can be visualized with ParaView, VisIt, or similar tools.
 
 | Model | Type | Description | Speed | Accuracy |
 |-------|------|-------------|-------|----------|
-| `none` | Laminar | No turbulence model | ⚡⚡⚡⚡⚡ | N/A |
-| `baseline` | Algebraic | Mixing length + van Driest | ⚡⚡⚡⚡ | Moderate |
-| `gep` | Symbolic | Gene Expression Programming | ⚡⚡⚡ | Good |
-| `nn_mlp` | Neural Net | Scalar eddy viscosity | ⚡⚡ | Good |
-| `nn_tbnn` | Neural Net | Anisotropic stress (Ling 2016) | ⚡ | Best |
+| `none` | Laminar | No turbulence model | ***** | N/A |
+| `baseline` | Algebraic | Mixing length + van Driest | **** | Moderate |
+| `gep` | Symbolic | Gene Expression Programming | *** | Good |
+| `nn_mlp` | Neural Net | Scalar eddy viscosity | ** | Good |
+| `nn_tbnn` | Neural Net | Anisotropic stress (Ling 2016) | * | Best |
 
 ## Governing Equations
 
 **Incompressible RANS:**
 ```
-∂ū_i/∂t + ū_j ∂ū_i/∂x_j = -(1/ρ) ∂p̄/∂x_i + ∂/∂x_j[(ν + ν_t)(∂ū_i/∂x_j)]
+du_bar_i/dt + u_bar_j du_bar_i/dx_j = -(1/rho) dp_bar/dx_i + d/dx_j[(nu + nu_t)(du_bar_i/dx_j)]
 
-∂ū_i/∂x_i = 0
+du_bar_i/dx_i = 0
 ```
 
 **Numerical Method:**
@@ -188,7 +188,7 @@ VTK files can be visualized with ParaView, VisIt, or similar tools.
 
 ### 1. Mixing Length (Baseline)
 ```
-ν_t = (κy)² |S| (1 - exp(-y⁺/A⁺))²
+nu_t = (kappay)^2 |S| (1 - exp(-y+/A+))^2
 ```
 Fast, classical model with wall damping.
 
@@ -197,24 +197,16 @@ Algebraic corrections learned from data. Fast and interpretable.
 
 ### 3. MLP (Multi-Layer Perceptron)
 ```
-ν_t = NN(S, Ω, y/δ, k, ω, |u|)
+nu_t = NN(S, Omega, y/delta, k, omega, |u|)
 ```
-Direct prediction from flow features. 6→32→32→1 architecture.
+Direct prediction from flow features. 6-->32-->32-->1 architecture.
 
 ### 4. TBNN (Tensor Basis Neural Network)
 ```
-b_ij = Σ_n G_n(λ₁,...,λ₅) × T^(n)_ij(S, Ω)
+b_ij = Sum_n G_n(lambda1,...,lambda5) x T^(n)_ij(S, Omega)
 ```
-Frame-invariant anisotropy prediction. 5→64→64→64→4 architecture following Ling et al. (2016).
+Frame-invariant anisotropy prediction. 5-->64-->64-->64-->4 architecture following Ling et al. (2016).
 
-## Documentation
-
-- **`QUICK_START.md`** - Build and run in 60 seconds
-- **`QUICK_TRAIN.md`** - Train a model in 30 minutes
-- **`VALIDATION.md`** - Test results and validation
-- **`docs/TRAINING_GUIDE.md`** - Complete training workflow
-- **`docs/DATASET_INFO.md`** - McConkey dataset guide
-- **`DOCUMENTATION_INDEX.md`** - Full documentation index
 
 ## McConkey Dataset
 
@@ -228,15 +220,15 @@ This project integrates with the **McConkey et al. (2021)** dataset:
 
 ## Performance
 
-Timing on 64×128 grid, 10,000 iterations:
+Timing on 64x128 grid, 10,000 iterations:
 
 | Model | Time/Iter | vs Baseline | Notes |
 |-------|-----------|-------------|-------|
-| Laminar | 0.01 ms | 1.0× | Reference |
-| Baseline | 0.05 ms | 5× | Algebraic model |
-| GEP | 0.08 ms | 8× | Symbolic expressions |
-| MLP | 0.4 ms | 40× | Small neural net |
-| TBNN | 2.1 ms | 210× | Large neural net |
+| Laminar | 0.01 ms | 1.0x | Reference |
+| Baseline | 0.05 ms | 5x | Algebraic model |
+| GEP | 0.08 ms | 8x | Symbolic expressions |
+| MLP | 0.4 ms | 40x | Small neural net |
+| TBNN | 2.1 ms | 210x | Large neural net |
 
 NN models are slower but provide data-driven accuracy for complex flows.
 
@@ -260,12 +252,7 @@ pip install torch numpy pandas scikit-learn matplotlib
 ```
 (Optional - only needed for training, not for running solver)
 
-## Technical Details
 
-- **C++ Standard**: C++17
-- **Build System**: CMake 3.10+
-- **Memory Management**: RAII, smart pointers
-- **Parallelization**: None (single-threaded, but fast)
 
 ## References
 
@@ -275,24 +262,9 @@ pip install torch numpy pandas scikit-learn matplotlib
 **Dataset:**
 - McConkey, R., et al. "A curated dataset for data-driven turbulence modelling." *Scientific Data* 8 (2021)
 
-**Turbulence Modeling:**
-- Pope, S.B. "Turbulent Flows." Cambridge University Press (2000)
-- Duraisamy, K., Iaccarino, G., & Xiao, H. "Turbulence modeling in the age of data." *Ann. Rev. Fluid Mech.* 51 (2019)
 
-## Citation
 
-If you use this code, please cite:
 
-```bibtex
-@software{nncfd2025,
-  title={NN-CFD: Neural Network Turbulence Closures for RANS},
-  author={Your Name},
-  year={2025},
-  url={https://github.com/yourusername/nn-cfd}
-}
-```
-
-And cite the TBNN paper if using neural network models:
 
 ```bibtex
 @article{ling2016reynolds,
@@ -308,16 +280,3 @@ And cite the TBNN paper if using neural network models:
 ## License
 
 MIT License - see `license` file
-
-## Contributing
-
-Contributions welcome! Areas for improvement:
-- Additional turbulence models
-- More test cases
-- GPU acceleration
-- Advanced solvers (multigrid, preconditioners)
-- 3D extension
-
----
-
-**For detailed implementation, see header files in `include/` with extensive comments.**

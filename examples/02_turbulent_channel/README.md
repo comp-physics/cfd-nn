@@ -15,12 +15,12 @@ Compare **5 turbulence closure models** for turbulent channel flow at Re_τ = 18
 ## Physical Problem
 
 **Geometry**: 2D turbulent channel flow
-- Domain: 6.28 × 2.0 (≈ 2π × H)
+- Domain: 6.28 x 2.0 (~= 2π x H)
 - Walls at y = ±1.0
 
 **Flow Conditions**:
 - **Re_τ = 180** (friction Reynolds number)
-- Bulk Reynolds number: Re ≈ 3000
+- Bulk Reynolds number: Re ~= 3000
 - Viscosity: ν = 0.000667
 - Pressure gradient: dp/dx = -0.0002
 
@@ -83,7 +83,7 @@ cd ../../build
 | **NN-MLP** | Random (meaningless) | Good (~Re_τ = 175-180) |
 | **NN-TBNN** | Random (meaningless) | Best (~Re_τ = 177-182) |
 
-⚠️ **Important**: NN models with example weights produce random results! You need to train them first (see below).
+[WARNING] **Important**: NN models with example weights produce random results! You need to train them first (see below).
 
 ## Training Neural Network Models
 
@@ -148,9 +148,9 @@ paraview output/*/velocity_final.vtk
 ### Velocity Profile (Inner Scaling)
 
 **What to look for**:
-- ✅ **Viscous sublayer** (y+ < 5): Should follow u+ = y+
-- ✅ **Log layer** (30 < y+ < 100): Should follow u+ = 1/κ ln(y+) + B
-- ✅ **Wake region** (y+ > 100): Deviates from log law
+- [OK] **Viscous sublayer** (y+ < 5): Should follow u+ = y+
+- [OK] **Log layer** (30 < y+ < 100): Should follow u+ = 1/κ ln(y+) + B
+- [OK] **Wake region** (y+ > 100): Deviates from log law
 
 **Model Performance**:
 - **None**: Underpredicts everywhere (no turbulent mixing)
@@ -167,10 +167,10 @@ Extract nu_t from VTK files to see:
 
 ## Success Criteria
 
-✅ **Excellent**: Re_τ = 178-182 (within 1% of DNS)  
-✅ **Good**: Re_τ = 170-178 (within 5%)  
-⚠️ **Fair**: Re_τ = 160-170 (qualitatively correct)  
-❌ **Poor**: Re_τ < 160 or > 190 (model issue)
+[OK] **Excellent**: Re_τ = 178-182 (within 1% of DNS)  
+[OK] **Good**: Re_τ = 170-178 (within 5%)  
+[WARNING] **Fair**: Re_τ = 160-170 (qualitatively correct)  
+[FAIL] **Poor**: Re_τ < 160 or > 190 (model issue)
 
 ## Output Files
 

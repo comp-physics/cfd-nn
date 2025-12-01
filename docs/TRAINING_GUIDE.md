@@ -30,11 +30,11 @@ McConkey et al. compiled a comprehensive dataset of RANS and DNS/LES data specif
 
 The dataset includes **exactly the features needed for TBNN and MLP models**:
 
-- ✅ **5 scalar invariants** (λ₁, λ₂, λ₃, λ₄, λ₅) from strain and rotation tensors
-- ✅ **10 tensor basis functions** (Pope's basis: T⁽¹⁾, T⁽²⁾, ..., T⁽¹⁰⁾)
-- ✅ **Anisotropy tensor** b_ij from DNS/LES (ground truth labels)
-- ✅ **RANS flow fields** (velocity, pressure, k, ω)
-- ✅ **Wall distance** and geometric information
+- [OK] **5 scalar invariants** (λ₁, λ₂, λ₃, λ₄, λ₅) from strain and rotation tensors
+- [OK] **10 tensor basis functions** (Pope's basis: T⁽¹⁾, T⁽²⁾, ..., T⁽¹⁰⁾)
+- [OK] **Anisotropy tensor** b_ij from DNS/LES (ground truth labels)
+- [OK] **RANS flow fields** (velocity, pressure, k, ω)
+- [OK] **Wall distance** and geometric information
 
 This means you can train models **without preprocessing** - all features are ready to use.
 
@@ -137,14 +137,14 @@ The TBNN architecture follows **Ling et al. (2016)**:
 ```
 Input:  5 invariants (λ₁, λ₂, η₁, η₂, y/δ)
         ↓
-Hidden: 64 → 64 → 64 (tanh activation)
+Hidden: 64 --> 64 --> 64 (tanh activation)
         ↓
 Output: 4 coefficients (G₁, G₂, G₃, G₄) for 2D tensor basis
 ```
 
 The model learns to predict:
 
-**b_ij = Σ_n G_n(invariants) × T⁽ⁿ⁾_ij(S, Ω)**
+**b_ij = Σ_n G_n(invariants) x T⁽ⁿ⁾_ij(S, Ω)**
 
 where b_ij is the Reynolds stress anisotropy tensor.
 
@@ -165,19 +165,19 @@ The MLP directly predicts scalar eddy viscosity:
 ```
 Input:  6 features (S, Ω, y/δ, k, ω, |u|)
         ↓
-Hidden: 32 → 32 (tanh)
+Hidden: 32 --> 32 (tanh)
         ↓
-Output: 1 (nu_t, with ReLU to ensure ≥ 0)
+Output: 1 (nu_t, with ReLU to ensure >= 0)
 ```
 
 **Advantages of MLP**:
-- ✅ Faster training (smaller network)
-- ✅ Faster inference in CFD solver
-- ✅ Easier to interpret
+- [OK] Faster training (smaller network)
+- [OK] Faster inference in CFD solver
+- [OK] Easier to interpret
 
 **Disadvantages**:
-- ❌ Less physically consistent (no frame invariance)
-- ❌ Cannot predict anisotropic Reynolds stresses
+- [FAIL] Less physically consistent (no frame invariance)
+- [FAIL] Cannot predict anisotropic Reynolds stresses
 
 ## Step 5: Use Trained Model in Solver
 
@@ -281,9 +281,9 @@ Based on published literature, you should see:
 
 If you don't have the McConkey dataset, the scripts will generate **synthetic dummy data** for testing. This allows you to:
 
-- ✅ Test the training pipeline
-- ✅ Verify export to C++ works
-- ✅ Run the solver with a "mock" model
+- [OK] Test the training pipeline
+- [OK] Verify export to C++ works
+- [OK] Run the solver with a "mock" model
 
 But results won't be physically meaningful.
 

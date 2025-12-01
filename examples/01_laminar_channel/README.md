@@ -13,7 +13,7 @@ This example validates the CFD solver against the **analytical Poiseuille soluti
 ## Physical Problem
 
 **Geometry**: 2D channel with parallel walls
-- Domain: 4.0 × 2.0 (Lx × Ly)
+- Domain: 4.0 x 2.0 (Lx x Ly)
 - Walls at y = ±1.0
 
 **Flow Conditions**:
@@ -25,7 +25,7 @@ This example validates the CFD solver against the **analytical Poiseuille soluti
 **Expected Result**: Parabolic velocity profile matching:
 
 ```
-u(y) = -(dp/dx)/(2ν) × (H²/4 - y²)
+u(y) = -(dp/dx)/(2ν) x (H²/4 - y²)
 ```
 
 where H = 2.0 is the channel height and y is measured from the centerline.
@@ -36,12 +36,12 @@ For plane Poiseuille flow, the exact solution is:
 
 **Velocity Profile**:
 ```
-u_max = (dp/dx) × H² / (8ν)
-u(y) = u_max × (1 - (2y/H)²)
+u_max = (dp/dx) x H² / (8ν)
+u(y) = u_max x (1 - (2y/H)²)
 ```
 
 **With our parameters**:
-- u_max = 0.001 × 4 / (8 × 0.01) = **0.05**
+- u_max = 0.001 x 4 / (8 x 0.01) = **0.05**
 - Parabolic profile symmetric about centerline
 
 ## Running the Example
@@ -83,7 +83,7 @@ python3 analyze.py
 ### Accuracy
 - **Velocity error**: < 1% relative to analytical solution
 - **Profile**: Smooth parabola with no oscillations
-- **Symmetry**: Centerline at u_max ≈ 0.05
+- **Symmetry**: Centerline at u_max ~= 0.05
 
 ### Output Files
 
@@ -98,9 +98,9 @@ output/
 
 ## Success Criteria
 
-✅ **PASS**: Relative error < 1%  
-⚠️ **WARNING**: Error between 1-5% (check grid resolution)  
-❌ **FAIL**: Error > 5% (solver issue!)
+[OK] **PASS**: Relative error < 1%  
+[WARNING] **WARNING**: Error between 1-5% (check grid resolution)  
+[FAIL] **FAIL**: Error > 5% (solver issue!)
 
 ## Visualization
 
@@ -124,15 +124,15 @@ The `analyze.py` script generates:
 ## What This Tests
 
 ### Physics
-- ✅ Incompressibility (∇·u = 0)
-- ✅ Momentum balance (dp/dx = ν∇²u)
-- ✅ No-slip boundary conditions
-- ✅ Steady-state convergence
+- [OK] Incompressibility (nabla*u = 0)
+- [OK] Momentum balance (dp/dx = νnabla²u)
+- [OK] No-slip boundary conditions
+- [OK] Steady-state convergence
 
 ### Numerics
-- ✅ Pressure Poisson solver
-- ✅ Viscous term discretization
-- ✅ Spatial accuracy (should be 2nd order with central differencing)
+- [OK] Pressure Poisson solver
+- [OK] Viscous term discretization
+- [OK] Spatial accuracy (should be 2nd order with central differencing)
 
 ## Troubleshooting
 
@@ -166,7 +166,7 @@ Expected: 2nd order convergence (error ∝ Δy²)
 Change `Re` and `nu`:
 ```bash
 # Re = 10, 100, 1000
-# Observe: Higher Re → flatter center, steeper gradients at walls
+# Observe: Higher Re --> flatter center, steeper gradients at walls
 ```
 
 ### 3. Different Pressure Gradients

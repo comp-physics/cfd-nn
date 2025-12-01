@@ -16,7 +16,7 @@ cd examples/01_laminar_channel
 # - Comparison plots generated automatically
 ```
 
-## Phase 1: Core Validation Examples ✅
+## Phase 1: Core Validation Examples [OK]
 
 Essential examples for **verification and validation** of the solver.
 
@@ -61,7 +61,7 @@ Demonstrates performance differences between turbulence closures on Re_τ = 180 
 Quantifies numerical error using Richardson extrapolation across 4 grid levels.
 
 **Key Learning**:
-- Verify spatial order of accuracy (p ≈ 2.0)
+- Verify spatial order of accuracy (p ~= 2.0)
 - Compute Grid Convergence Index (GCI)
 - Demonstrate V&V best practices
 
@@ -131,14 +131,14 @@ paraview output/velocity_final.vtk
 ## Example Progression (Learning Path)
 
 **New users** - Start here:
-1. ✅ **Example 1** (Laminar channel) - Verify installation works
-2. ✅ **Example 4** (Validation suite) - See solver accuracy across cases
-3. ✅ **Example 2** (Model comparison) - Understand turbulence modeling
+1. [OK] **Example 1** (Laminar channel) - Verify installation works
+2. [OK] **Example 4** (Validation suite) - See solver accuracy across cases
+3. [OK] **Example 2** (Model comparison) - Understand turbulence modeling
 
 **Researchers** - Advanced studies:
-4. ✅ **Example 3** (Grid refinement) - Quantify numerical uncertainty
+4. [OK] **Example 3** (Grid refinement) - Quantify numerical uncertainty
 5. 📚 **Train your own models** - See `docs/TRAINING_GUIDE.md`
-6. 🚀 **Create custom examples** - Adapt templates for your cases
+6. [->] **Create custom examples** - Adapt templates for your cases
 
 ## Expected Runtime
 
@@ -155,14 +155,14 @@ paraview output/velocity_final.vtk
 
 ### Verification (Analytical Cases)
 
-✅ **PASS**: Error < 1-5%  
-❌ **FAIL**: Error > 5% → Check solver implementation
+[OK] **PASS**: Error < 1-5%  
+[FAIL] **FAIL**: Error > 5% --> Check solver implementation
 
 ### Validation (DNS Cases)
 
-✅ **PASS**: Error < 15-25% (RANS models)  
-⚠️ **ACCEPTABLE**: Error < 35%  
-❌ **FAIL**: Error > 35% → Check turbulence model
+[OK] **PASS**: Error < 15-25% (RANS models)  
+[WARNING] **ACCEPTABLE**: Error < 35%  
+[FAIL] **FAIL**: Error > 35% --> Check turbulence model
 
 ## Turbulence Models Available
 
@@ -275,9 +275,9 @@ pip install numpy matplotlib scipy
 ### VTK Files Look Wrong in ParaView
 
 **Common issues**:
-- Empty fields → Simulation didn't converge
-- NaN values → Numerical instability (reduce CFL)
-- Oscillations → Use upwind convection scheme
+- Empty fields --> Simulation didn't converge
+- NaN values --> Numerical instability (reduce CFL)
+- Oscillations --> Use upwind convection scheme
 
 ### NN Models Give Nonsense Results
 
@@ -320,7 +320,7 @@ Use existing examples as templates:
 
 If compiled with `USE_GPU_OFFLOAD=ON`:
 - NN models automatically use GPU
-- 3-5× speedup for NNMLP/NNTBNN
+- 3-5x speedup for NNMLP/NNTBNN
 - No config changes needed
 
 ## Citing This Work
@@ -368,12 +368,12 @@ And the relevant turbulence model papers (see individual example READMEs).
 
 | # | Name | Purpose | Time | Difficulty | Models Tested |
 |---|------|---------|------|------------|---------------|
-| 01 | Laminar Channel | Verification | 2 min | ⭐ | None |
-| 02 | Model Comparison | Model evaluation | 25 min | ⭐⭐ | All 5 |
-| 03 | Grid Refinement | Convergence study | 25 min | ⭐⭐⭐ | None |
-| 04 | Validation Suite | Benchmarking | 35 min | ⭐⭐ | None, Baseline |
+| 01 | Laminar Channel | Verification | 2 min | [*] | None |
+| 02 | Model Comparison | Model evaluation | 25 min | [*][*] | All 5 |
+| 03 | Grid Refinement | Convergence study | 25 min | [*][*][*] | None |
+| 04 | Validation Suite | Benchmarking | 35 min | [*][*] | None, Baseline |
 
-**Legend**: ⭐ Beginner | ⭐⭐ Intermediate | ⭐⭐⭐ Advanced
+**Legend**: [*] Beginner | [*][*] Intermediate | [*][*][*] Advanced
 
 ---
 
@@ -384,5 +384,5 @@ cd 01_laminar_channel
 ./run.sh
 ```
 
-Good luck! 🚀
+Good luck! [->]
 

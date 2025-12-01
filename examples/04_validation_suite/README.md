@@ -10,12 +10,12 @@ Comprehensive **validation test suite** comparing solver predictions against:
 
 ## Validation Philosophy
 
-**Verification**: Solving the equations correctly (math → code)  
-**Validation**: Solving the correct equations (physics → math)
+**Verification**: Solving the equations correctly (math --> code)  
+**Validation**: Solving the correct equations (physics --> math)
 
 This suite provides both:
-- ✅ Analytical cases verify numerical implementation
-- ✅ DNS cases validate turbulence models
+- [OK] Analytical cases verify numerical implementation
+- [OK] DNS cases validate turbulence models
 
 ## Test Cases
 
@@ -123,27 +123,27 @@ cd ../../build
 
 | Metric | Threshold | Interpretation |
 |--------|-----------|----------------|
-| Relative Error < 1% | ✅ PASS | Excellent numerical accuracy |
-| Error 1-5% | ⚠️ ACCEPTABLE | May need finer grid |
-| Error > 5% | ❌ FAIL | Solver implementation issue |
+| Relative Error < 1% | [OK] PASS | Excellent numerical accuracy |
+| Error 1-5% | [WARNING] ACCEPTABLE | May need finer grid |
+| Error > 5% | [FAIL] FAIL | Solver implementation issue |
 
 ### Turbulent Cases (DNS)
 
 | Metric | Threshold | Interpretation |
 |--------|-----------|----------------|
-| RMS Error < 15% | ✅ PASS | Good RANS model performance |
-| Error 15-25% | ⚠️ ACCEPTABLE | Typical RANS accuracy |
-| Error > 25% | ❌ FAIL | Model calibration needed |
+| RMS Error < 15% | [OK] PASS | Good RANS model performance |
+| Error 15-25% | [WARNING] ACCEPTABLE | Typical RANS accuracy |
+| Error > 25% | [FAIL] FAIL | Model calibration needed |
 
 ## Expected Results
 
 ### Analytical Cases
 
 Both Poiseuille cases should achieve < 1% error, proving:
-- ✅ Navier-Stokes equations implemented correctly
-- ✅ Boundary conditions applied properly
-- ✅ Iterative solver converges accurately
-- ✅ Spatial discretization is 2nd-order accurate
+- [OK] Navier-Stokes equations implemented correctly
+- [OK] Boundary conditions applied properly
+- [OK] Iterative solver converges accurately
+- [OK] Spatial discretization is 2nd-order accurate
 
 ### DNS Cases
 
@@ -152,10 +152,10 @@ Baseline mixing length model typically achieves:
 - **Re_τ = 395**: 18-25% RMS error
 
 This demonstrates:
-- ✅ Turbulence model provides reasonable eddy viscosity
-- ✅ Mean velocity profile matches DNS trends
-- ✅ Log-layer slope approximately correct
-- ⚠️ Some deviation in outer layer (expected for RANS)
+- [OK] Turbulence model provides reasonable eddy viscosity
+- [OK] Mean velocity profile matches DNS trends
+- [OK] Log-layer slope approximately correct
+- [WARNING] Some deviation in outer layer (expected for RANS)
 
 ## Visualization
 
@@ -193,9 +193,9 @@ If Poiseuille cases fail:
 ### Turbulent Cases (More Tolerance)
 
 Baseline model limitations:
-- ✅ Good: Mean velocity profile
-- ⚠️ Fair: Reynolds stress magnitude
-- ❌ Poor: Reynolds stress anisotropy (needs TBNN)
+- [OK] Good: Mean velocity profile
+- [WARNING] Fair: Reynolds stress magnitude
+- [FAIL] Poor: Reynolds stress anisotropy (needs TBNN)
 
 To improve turbulent case accuracy:
 1. **Use GEP model**: Change `model = gep` in configs
@@ -241,11 +241,11 @@ Example cases to add:
 
 This suite follows **ASME V&V 20-2009** guidelines:
 
-- ✅ Multiple independent test cases
-- ✅ Known reference solutions
-- ✅ Quantitative error metrics
-- ✅ Pass/fail criteria defined a priori
-- ✅ Grid-independent solutions (medium resolution)
+- [OK] Multiple independent test cases
+- [OK] Known reference solutions
+- [OK] Quantitative error metrics
+- [OK] Pass/fail criteria defined a priori
+- [OK] Grid-independent solutions (medium resolution)
 
 ## Troubleshooting
 

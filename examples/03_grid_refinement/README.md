@@ -25,14 +25,14 @@ where \(h\) is the grid spacing. By running on multiple grids with refinement ra
    p = log(e_coarse / e_fine) / log(r)
    ```
 
-2. **Extrapolate to h→0** (estimated "exact" solution):
+2. **Extrapolate to h-->0** (estimated "exact" solution):
    ```
-   u_exact ≈ u_fine + (u_fine - u_coarse) / (r^p - 1)
+   u_exact ~= u_fine + (u_fine - u_coarse) / (r^p - 1)
    ```
 
 3. **Compute Grid Convergence Index (GCI)**:
    ```
-   GCI = F_s × |e_fine| / (r^p - 1)
+   GCI = F_s x |e_fine| / (r^p - 1)
    ```
    where F_s = 1.25 (safety factor)
 
@@ -40,20 +40,20 @@ where \(h\) is the grid spacing. By running on multiple grids with refinement ra
 
 Four systematically refined grids:
 
-| Level | Nx × Ny | h_y | Total Points |
+| Level | Nx x Ny | h_y | Total Points |
 |-------|---------|-----|--------------|
-| Coarse | 32 × 64 | 0.0317 | 2,048 |
-| Medium | 64 × 128 | 0.0157 | 8,192 |
-| Fine | 128 × 256 | 0.0078 | 32,768 |
-| Very Fine | 256 × 512 | 0.0039 | 131,072 |
+| Coarse | 32 x 64 | 0.0317 | 2,048 |
+| Medium | 64 x 128 | 0.0157 | 8,192 |
+| Fine | 128 x 256 | 0.0078 | 32,768 |
+| Very Fine | 256 x 512 | 0.0039 | 131,072 |
 
 **Refinement ratio**: r = 2.0 (each level doubles resolution)
 
 ## Test Case
 
 **Problem**: Laminar Poiseuille flow (same as Example 1)
-- Analytical solution known → can compute exact error
-- 2nd-order scheme → expect p ≈ 2.0
+- Analytical solution known --> can compute exact error
+- 2nd-order scheme --> expect p ~= 2.0
 
 ## Running the Study
 
@@ -106,16 +106,16 @@ cd ../../build
 For 2nd-order central differencing scheme:
 
 ```
-Observed order of accuracy: p ≈ 2.0 ± 0.1
+Observed order of accuracy: p ~= 2.0 ± 0.1
 ```
 
 ### Error Reduction
 
 | Grid Transition | Expected Error Reduction |
 |----------------|-------------------------|
-| Coarse → Medium | ~4× (2²) |
-| Medium → Fine | ~4× (2²) |
-| Fine → Very Fine | ~4× (2²) |
+| Coarse --> Medium | ~4x (2²) |
+| Medium --> Fine | ~4x (2²) |
+| Fine --> Very Fine | ~4x (2²) |
 
 ### Actual Errors (Typical)
 
@@ -146,22 +146,22 @@ The `convergence_analysis.py` script generates a 4-panel figure:
 
 ## Success Criteria
 
-✅ **Excellent**: p = 1.9 - 2.1 (2nd order confirmed)  
-✅ **Good**: p = 1.7 - 2.3 (roughly 2nd order)  
-⚠️ **Acceptable**: p = 1.5 - 1.7 (some 1st order contamination)  
-❌ **Fail**: p < 1.5 or p > 2.5 (scheme issue!)
+[OK] **Excellent**: p = 1.9 - 2.1 (2nd order confirmed)  
+[OK] **Good**: p = 1.7 - 2.3 (roughly 2nd order)  
+[WARNING] **Acceptable**: p = 1.5 - 1.7 (some 1st order contamination)  
+[FAIL] **Fail**: p < 1.5 or p > 2.5 (scheme issue!)
 
 ## What This Tests
 
 ### Spatial Discretization
-- ✅ Gradient operators (∇, ∇²)
-- ✅ Interpolation schemes
-- ✅ Boundary condition implementation
+- [OK] Gradient operators (nabla, nabla²)
+- [OK] Interpolation schemes
+- [OK] Boundary condition implementation
 
 ### Solver Accuracy
-- ✅ Pressure Poisson solver convergence
-- ✅ Round-off error management
-- ✅ Iterative solver tolerance effects
+- [OK] Pressure Poisson solver convergence
+- [OK] Round-off error management
+- [OK] Iterative solver tolerance effects
 
 ## Extensions
 
@@ -171,10 +171,10 @@ Modify config files to test:
 
 ```bash
 # Central differencing (2nd order)
-convection_scheme = central  # Expected: p ≈ 2
+convection_scheme = central  # Expected: p ~= 2
 
 # Upwind (1st order)
-convection_scheme = upwind   # Expected: p ≈ 1
+convection_scheme = upwind   # Expected: p ~= 1
 ```
 
 ### 2. Test Stretched Grids
@@ -189,7 +189,7 @@ beta_y = 2.0
 
 ### 3. Richardson Extrapolation
 
-Use finest 2 grids to extrapolate to h→0:
+Use finest 2 grids to extrapolate to h-->0:
 ```python
 u_extrapolated = u_fine + (u_fine - u_medium) / (2^p - 1)
 ```
@@ -209,7 +209,7 @@ Expected: 1st order for explicit Euler
 
 Compute error bounds:
 ```
-GCI_fine = 1.25 × |error_fine| / (r^p - 1)
+GCI_fine = 1.25 x |error_fine| / (r^p - 1)
 ```
 
 Interpretation: Solution on fine grid is within GCI of "exact"
@@ -255,7 +255,7 @@ dt = 0.001
 
 ### Errors Don't Decrease Below ~1e-10
 
-**Cause**: Reaching machine precision (double ≈ 1e-16)
+**Cause**: Reaching machine precision (double ~= 1e-16)
 
 **Notes**:
 - This is expected for very fine grids
@@ -275,11 +275,11 @@ This methodology is used for:
 
 This example follows ASME V&V 20-2009 guidelines:
 
-- ✅ Multiple systematically refined grids (≥3)
-- ✅ Constant refinement ratio (r = 2)
-- ✅ Monotonic convergence demonstrated
-- ✅ Observed order of accuracy computed
-- ✅ GCI for uncertainty quantification
+- [OK] Multiple systematically refined grids (>=3)
+- [OK] Constant refinement ratio (r = 2)
+- [OK] Monotonic convergence demonstrated
+- [OK] Observed order of accuracy computed
+- [OK] GCI for uncertainty quantification
 
 ## References
 
