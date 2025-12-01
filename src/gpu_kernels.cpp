@@ -33,7 +33,6 @@ void compute_velocity_gradients_gpu(
             // Full mesh index (1-based for input arrays with ghost cells)
             int ii = i + 1;
             int jj = j + 1;
-            int idx_c = jj * stride + ii;
             int idx_ip = jj * stride + (ii + 1);
             int idx_im = jj * stride + (ii - 1);
             int idx_jp = (jj + 1) * stride + ii;

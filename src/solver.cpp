@@ -5,6 +5,10 @@
 #include <iomanip>
 #include <fstream>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
@@ -146,11 +150,71 @@ void RANSSolver::apply_velocity_bc() {
 
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
     // Compute: (u*nabla)u using specified scheme
-    // Central difference or upwind
     
-    double dx = mesh_->dx;
-    double dy = mesh_->dy;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int stride = Nx + 2;
     
+#ifdef USE_GPU_OFFLOAD
+    // GPU path
+    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+        const int n_cells = Nx * Ny;
+        const int total_size = (Nx + 2) * (Ny + 2);
+        const double* u_ptr = vel.u_field().data().data();
+        const double* v_ptr = vel.v_field().data().data();
+        double* conv_u_ptr = conv.u_field().data().data();
+        double* conv_v_ptr = conv.v_field().data().data();
+        const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
+        
+        #pragma omp target teams distribute parallel for \
+            map(to: u_ptr[0:total_size], v_ptr[0:total_size]) \
+            map(from: conv_u_ptr[0:total_size], conv_v_ptr[0:total_size])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + 1;  // +1 for ghost cells
+            int j = idx / Nx + 1;
+            int cell_idx = j * stride + i;
+            
+            double uu = u_ptr[cell_idx];
+            double vv = v_ptr[cell_idx];
+            
+            double dudx, dudy, dvdx, dvdy;
+            
+            if (use_central) {
+                // Central differences
+                dudx = (u_ptr[cell_idx+1] - u_ptr[cell_idx-1]) / (2.0 * dx);
+                dudy = (u_ptr[cell_idx+stride] - u_ptr[cell_idx-stride]) / (2.0 * dy);
+                dvdx = (v_ptr[cell_idx+1] - v_ptr[cell_idx-1]) / (2.0 * dx);
+                dvdy = (v_ptr[cell_idx+stride] - v_ptr[cell_idx-stride]) / (2.0 * dy);
+            } else {
+                // First-order upwind
+                if (uu >= 0) {
+                    dudx = (u_ptr[cell_idx] - u_ptr[cell_idx-1]) / dx;
+                    dvdx = (v_ptr[cell_idx] - v_ptr[cell_idx-1]) / dx;
+                } else {
+                    dudx = (u_ptr[cell_idx+1] - u_ptr[cell_idx]) / dx;
+                    dvdx = (v_ptr[cell_idx+1] - v_ptr[cell_idx]) / dx;
+                }
+                
+                if (vv >= 0) {
+                    dudy = (u_ptr[cell_idx] - u_ptr[cell_idx-stride]) / dy;
+                    dvdy = (v_ptr[cell_idx] - v_ptr[cell_idx-stride]) / dy;
+                } else {
+                    dudy = (u_ptr[cell_idx+stride] - u_ptr[cell_idx]) / dy;
+                    dvdy = (v_ptr[cell_idx+stride] - v_ptr[cell_idx]) / dy;
+                }
+            }
+            
+            conv_u_ptr[cell_idx] = uu * dudx + vv * dudy;
+            conv_v_ptr[cell_idx] = uu * dvdx + vv * dvdy;
+        }
+        
+        return;
+    }
+#endif
+    
+    // CPU path
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             double uu = vel.u(i, j);
@@ -159,13 +223,11 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
             double dudx, dudy, dvdx, dvdy;
             
             if (config_.convective_scheme == ConvectiveScheme::Central) {
-                // Central differences
                 dudx = (vel.u(i+1, j) - vel.u(i-1, j)) / (2.0 * dx);
                 dudy = (vel.u(i, j+1) - vel.u(i, j-1)) / (2.0 * dy);
                 dvdx = (vel.v(i+1, j) - vel.v(i-1, j)) / (2.0 * dx);
                 dvdy = (vel.v(i, j+1) - vel.v(i, j-1)) / (2.0 * dy);
             } else {
-                // First-order upwind
                 if (uu >= 0) {
                     dudx = (vel.u(i, j) - vel.u(i-1, j)) / dx;
                     dvdx = (vel.v(i, j) - vel.v(i-1, j)) / dx;
@@ -191,14 +253,62 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
 
 void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, 
                                         VectorField& diff) {
-    // Compute: nabla*(nu_eff nablau)  (simplified: nu_eff nabla^2u for uniform nu_eff)
-    // For variable nu_eff, use proper flux formulation
+    // Compute: nabla*(nu_eff nabla u) with variable viscosity
     
-    double dx = mesh_->dx;
-    double dy = mesh_->dy;
-    double dx2 = dx * dx;
-    double dy2 = dy * dy;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dx2 = dx * dx;
+    const double dy2 = dy * dy;
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int stride = Nx + 2;
     
+#ifdef USE_GPU_OFFLOAD
+    // GPU path
+    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+        const int n_cells = Nx * Ny;
+        const int total_size = (Nx + 2) * (Ny + 2);
+        const double* u_ptr = vel.u_field().data().data();
+        const double* v_ptr = vel.v_field().data().data();
+        const double* nu_ptr = nu_eff.data().data();
+        double* diff_u_ptr = diff.u_field().data().data();
+        double* diff_v_ptr = diff.v_field().data().data();
+        
+        #pragma omp target teams distribute parallel for \
+            map(to: u_ptr[0:total_size], v_ptr[0:total_size], nu_ptr[0:total_size]) \
+            map(from: diff_u_ptr[0:total_size], diff_v_ptr[0:total_size])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + 1;
+            int j = idx / Nx + 1;
+            int cell_idx = j * stride + i;
+            
+            // Face-averaged effective viscosity
+            double nu_e = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx+1]);
+            double nu_w = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx-1]);
+            double nu_n = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx+stride]);
+            double nu_s = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx-stride]);
+            
+            // Diffusive flux for u
+            double diff_u_x = (nu_e * (u_ptr[cell_idx+1] - u_ptr[cell_idx]) 
+                            - nu_w * (u_ptr[cell_idx] - u_ptr[cell_idx-1])) / dx2;
+            double diff_u_y = (nu_n * (u_ptr[cell_idx+stride] - u_ptr[cell_idx]) 
+                            - nu_s * (u_ptr[cell_idx] - u_ptr[cell_idx-stride])) / dy2;
+            
+            // Diffusive flux for v
+            double diff_v_x = (nu_e * (v_ptr[cell_idx+1] - v_ptr[cell_idx]) 
+                            - nu_w * (v_ptr[cell_idx] - v_ptr[cell_idx-1])) / dx2;
+            double diff_v_y = (nu_n * (v_ptr[cell_idx+stride] - v_ptr[cell_idx]) 
+                            - nu_s * (v_ptr[cell_idx] - v_ptr[cell_idx-stride])) / dy2;
+            
+            diff_u_ptr[cell_idx] = diff_u_x + diff_u_y;
+            diff_v_ptr[cell_idx] = diff_v_x + diff_v_y;
+        }
+        
+        return;
+    }
+#endif
+    
+    // CPU path
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             // Face-averaged effective viscosity

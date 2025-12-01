@@ -5,6 +5,10 @@
 #include <cmath>
 #include <algorithm>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 MixingLengthModel::MixingLengthModel() = default;
@@ -52,6 +56,65 @@ void MixingLengthModel::update(
     
     u_tau = std::max(u_tau, 1e-10);  // Avoid division by zero
     
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: use OpenMP target offload if available
+    if (omp_get_num_devices() > 0) {
+        const int n_cells = mesh.Nx * mesh.Ny;
+        
+        // Precompute wall distances (Mesh doesn't have direct data access)
+        std::vector<double> wall_dist_flat(n_cells);
+        int idx = 0;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                wall_dist_flat[idx++] = mesh.wall_distance(i, j);
+            }
+        }
+        
+        // Get raw pointers for GPU
+        const double* dudx_ptr = dudx_.data().data();
+        const double* dudy_ptr = dudy_.data().data();
+        const double* dvdx_ptr = dvdx_.data().data();
+        const double* dvdy_ptr = dvdy_.data().data();
+        const double* wall_dist_ptr = wall_dist_flat.data();
+        double* nu_t_ptr = nu_t.data().data();
+        
+        // GPU kernel: compute mixing length eddy viscosity
+        #pragma omp target teams distribute parallel for \
+            map(to: dudx_ptr[0:n_cells], dudy_ptr[0:n_cells], \
+                    dvdx_ptr[0:n_cells], dvdy_ptr[0:n_cells], \
+                    wall_dist_ptr[0:n_cells]) \
+            map(from: nu_t_ptr[0:n_cells])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            // Get strain rate components
+            double Sxx = dudx_ptr[idx];
+            double Syy = dvdy_ptr[idx];
+            double Sxy = 0.5 * (dudy_ptr[idx] + dvdx_ptr[idx]);
+            
+            // Strain rate magnitude
+            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            
+            // Wall distance and y+
+            double y_wall = wall_dist_ptr[idx];
+            double y_plus = y_wall * u_tau / nu_;
+            
+            // van Driest damping
+            double damping = 1.0 - exp(-y_plus / A_plus_);
+            
+            // Mixing length (capped at delta/2)
+            double l_mix = kappa_ * y_wall * damping;
+            if (l_mix > 0.5 * delta_) {
+                l_mix = 0.5 * delta_;
+            }
+            
+            // Eddy viscosity
+            nu_t_ptr[idx] = l_mix * l_mix * S_mag;
+        }
+        
+        return;
+    }
+#endif
+    
+    // CPU path
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double y_wall = mesh.wall_distance(i, j);
