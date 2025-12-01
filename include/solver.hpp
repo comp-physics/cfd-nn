@@ -49,6 +49,17 @@ public:
     /// Returns final residual and number of iterations
     std::pair<double, int> solve_steady();
     
+    /// Run to steady state with optional VTK snapshots
+    /// @param output_prefix Base name for VTK files (e.g., "output/flow")
+    /// @param num_snapshots Number of snapshots to write during simulation (0 = final only)
+    /// @param snapshot_freq Override automatic snapshot frequency (optional, -1 = auto)
+    /// @return Final residual and number of iterations
+    std::pair<double, int> solve_steady_with_snapshots(
+        const std::string& output_prefix = "",
+        int num_snapshots = 0,
+        int snapshot_freq = -1
+    );
+    
     /// Compute adaptive time step based on CFL and diffusion stability
     double compute_adaptive_dt() const;
     

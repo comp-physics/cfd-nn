@@ -160,6 +160,93 @@ public:
         return {residual, iter + 1};
     }
     
+    std::pair<double, int> solve_steady_with_snapshots(
+        const std::string& output_prefix,
+        int num_snapshots) 
+    {
+        // Calculate snapshot frequency
+        int snapshot_freq = (num_snapshots > 0) ? 
+                            std::max(1, config_.max_iter / num_snapshots) : -1;
+        
+        if (config_.verbose && !output_prefix.empty()) {
+            std::cout << "Will output ";
+            if (num_snapshots > 0) {
+                std::cout << num_snapshots << " VTK snapshots (every " 
+                         << snapshot_freq << " iterations)\n";
+            } else {
+                std::cout << "final VTK snapshot only\n";
+            }
+        }
+        
+        double residual = 1.0;
+        int iter = 0;
+        int snapshot_count = 0;
+        
+        if (config_.verbose) {
+            std::cout << std::setw(8) << "Iter"
+                      << std::setw(15) << "Residual"
+                      << std::setw(15) << "Max |u|"
+                      << "\n";
+        }
+        
+        for (iter = 0; iter < config_.max_iter; ++iter) {
+            residual = step();
+            
+            // Write VTK snapshots at regular intervals
+            if (!output_prefix.empty() && num_snapshots > 0 && 
+                snapshot_freq > 0 && (iter + 1) % snapshot_freq == 0) {
+                snapshot_count++;
+                std::string vtk_file = output_prefix + "_" + 
+                                      std::to_string(snapshot_count) + ".vtk";
+                try {
+                    write_vtk(vtk_file);
+                    if (config_.verbose) {
+                        std::cout << "Wrote snapshot " << snapshot_count 
+                                 << ": " << vtk_file << "\n";
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Warning: Could not write VTK snapshot: " 
+                             << e.what() << "\n";
+                }
+            }
+            
+            if (config_.verbose && (iter + 1) % config_.output_freq == 0) {
+                double max_vel = solver_.velocity().max_magnitude();
+                std::cout << std::setw(8) << iter + 1
+                          << std::setw(15) << std::scientific << std::setprecision(3) << residual
+                          << std::setw(15) << std::fixed << max_vel
+                          << "\n";
+            }
+            
+            if (residual < config_.tol) {
+                if (config_.verbose) {
+                    std::cout << "Converged at iteration " << iter + 1 << "\n";
+                }
+                break;
+            }
+        }
+        
+        // Write final snapshot
+        if (!output_prefix.empty()) {
+            std::string final_file = output_prefix + "_final.vtk";
+            try {
+                write_vtk(final_file);
+                if (config_.verbose) {
+                    std::cout << "Final VTK output: " << final_file << "\n";
+                    if (num_snapshots > 0) {
+                        std::cout << "Total VTK snapshots: " << snapshot_count + 1 
+                                 << " (" << snapshot_count << " during + 1 final)\n";
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Could not write final VTK: " 
+                         << e.what() << "\n";
+            }
+        }
+        
+        return {residual, iter + 1};
+    }
+    
     const VectorField& velocity() const { return solver_.velocity(); }
     const ScalarField& pressure() const { return solver_.pressure(); }
     const ScalarField& mask() const { return mask_; }
@@ -184,6 +271,10 @@ public:
     void write_fields(const std::string& prefix) const {
         solver_.write_fields(prefix);
         mask_.write(prefix + "_mask.dat");
+    }
+    
+    void write_vtk(const std::string& filename) const {
+        solver_.write_vtk(filename);
     }
     
 private:
@@ -333,10 +424,13 @@ int main(int argc, char** argv) {
     // Initialize
     solver.initialize();
     
-    // Solve to steady state
+    // Solve to steady state with automatic VTK snapshots
     ScopedTimer total_timer("Total simulation", true);
     
-    auto [residual, iterations] = solver.solve_steady();
+    auto [residual, iterations] = solver.solve_steady_with_snapshots(
+        config.output_dir + "periodic_hills",
+        config.num_snapshots
+    );
     
     total_timer.stop();
     
@@ -347,7 +441,7 @@ int main(int argc, char** argv) {
     std::cout << "Bulk velocity: " << std::fixed << std::setprecision(6) 
               << solver.bulk_velocity() << "\n";
     
-    // Write output
+    // Write additional output files
     solver.write_fields(config.output_dir + "periodic_hills");
     
     // Write velocity profiles at key locations
