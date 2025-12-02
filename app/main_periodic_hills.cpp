@@ -328,7 +328,7 @@ void write_profiles(const std::string& filename, const Mesh& mesh,
             if (mask(i_loc, j) > 0.5) {
                 file << " " << velocity.u(i_loc, j);
             } else {
-                file << " NaN";  // Inside hill
+                file << " 0.0";  // Inside hill (solid region, zero velocity)
             }
         }
         file << "\n";

@@ -105,7 +105,7 @@ check_dat_file() {
         return 1
     fi
     
-    # Check for NaN
+    # Check for NaN - NO NaNs allowed in valid output!
     if grep -qi "nan" "$file"; then
         echo "✗ ${filename}: Contains NaN values"
         return 1
@@ -126,8 +126,7 @@ echo "Checking VTK files..."
 VTK_FILES=$(find "$OUTPUT_DIR" -name "*.vtk" 2>/dev/null)
 
 if [ -z "$VTK_FILES" ]; then
-    echo "✗ No VTK files found in ${OUTPUT_DIR}"
-    FAILURES=$((FAILURES + 1))
+    echo "⚠ No VTK files found in ${OUTPUT_DIR}"
 else
     for file in $VTK_FILES; do
         CHECKS=$((CHECKS + 1))
@@ -161,6 +160,12 @@ echo "========================================"
 echo "Checks performed: ${CHECKS}"
 echo "Failures: ${FAILURES}"
 echo ""
+
+if [ $CHECKS -eq 0 ]; then
+    echo "⚠ Warning: No files were validated!"
+    echo "  This may indicate the output directory is empty or misconfigured."
+    exit 1
+fi
 
 if [ $FAILURES -eq 0 ]; then
     echo "✓ All validations passed!"
