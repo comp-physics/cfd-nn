@@ -2,6 +2,11 @@ name: GPU CI
 
 on:
   push:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
   gpu-tests:
