@@ -91,6 +91,31 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
     velocity_.fill(u0, v0);
     apply_velocity_bc();
     
+    // Initialize k, omega for transport models
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
+        // Estimate initial turbulence from velocity
+        double u_ref = std::max(std::abs(u0), 0.01);
+        double Ti = 0.05;  // 5% turbulence intensity
+        double k_init = 1.5 * (u_ref * Ti) * (u_ref * Ti);
+        double omega_init = k_init / (0.09 * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
+        
+        k_.fill(k_init);
+        omega_.fill(omega_init);
+        
+        // Set wall values for omega (higher near walls)
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            // Bottom wall
+            int j_bot = mesh_->j_begin();
+            double y_bot = mesh_->wall_distance(i, j_bot);
+            omega_(i, j_bot) = 10.0 * 6.0 * config_.nu / (0.075 * y_bot * y_bot);
+            
+            // Top wall
+            int j_top = mesh_->j_end() - 1;
+            double y_top = mesh_->wall_distance(i, j_top);
+            omega_(i, j_top) = 10.0 * 6.0 * config_.nu / (0.075 * y_top * y_top);
+        }
+    }
+    
     if (turb_model_) {
         turb_model_->initialize(*mesh_, velocity_);
     }
@@ -440,7 +465,20 @@ double RANSSolver::step() {
         }
     }
     
-    // 1. Update turbulence model (if any)
+    // 1a. Advance turbulence transport equations (if model uses them)
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
+        TIMED_SCOPE("turbulence_transport");
+        turb_model_->advance_turbulence(
+            *mesh_,
+            velocity_,
+            current_dt_,
+            k_,          // Updated in-place
+            omega_,      // Updated in-place
+            nu_t_        // Previous step's nu_t for diffusion coefficients
+        );
+    }
+    
+    // 1b. Update turbulence model (compute nu_t and optional tau_ij)
     if (turb_model_) {
         TIMED_SCOPE("turbulence_update");
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 

@@ -2,6 +2,8 @@
 #include "turbulence_gep.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
+#include "turbulence_transport.hpp"
+#include "turbulence_earsm.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -247,6 +249,28 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
                 model->upload_to_gpu();
             }
             return model;
+        }
+        
+        // Transport equation models
+        case TurbulenceModelType::SSTKOmega: {
+            return std::make_unique<SSTKOmegaTransport>();
+        }
+            
+        case TurbulenceModelType::KOmega: {
+            return std::make_unique<KOmegaTransport>();
+        }
+        
+        // EARSM models (SST transport + EARSM closure)
+        case TurbulenceModelType::EARSM_WJ: {
+            return std::make_unique<SSTWithEARSM>(EARSMType::WallinJohansson2000);
+        }
+            
+        case TurbulenceModelType::EARSM_GS: {
+            return std::make_unique<SSTWithEARSM>(EARSMType::GatskiSpeziale1993);
+        }
+            
+        case TurbulenceModelType::EARSM_Pope: {
+            return std::make_unique<SSTWithEARSM>(EARSMType::Pope1975);
         }
             
         default:

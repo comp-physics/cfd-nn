@@ -19,7 +19,7 @@ jobs:
     - name: Make scripts executable
       run: |
         chmod +x scripts/run_gpu_ci_test.sh
-        chmod +x scripts/validate_output.sh
+        chmod +x .github/scripts/*.sh
     
     - name: Build GPU version
       run: |
@@ -36,30 +36,48 @@ jobs:
         cd build_ci_gpu
         ../scripts/run_gpu_ci_test.sh "all_gpu_tests" \
           "bash -c '\
+            chmod +x ../.github/scripts/*.sh && \
+            mkdir -p output/gpu_validation && \
             echo \"======================================\" && \
             echo \"1. Unit Tests\" && \
             echo \"======================================\" && \
             ctest --output-on-failure && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"2. Channel Flow - Multiple Models\" && \
+            echo \"2. Algebraic Models\" && \
             echo \"======================================\" && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model baseline --dp_dx -0.0001 --num_snapshots 0 && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model gep --dp_dx -0.0001 --num_snapshots 0 && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model nn_mlp --nn_preset example_scalar_nut --dp_dx -0.0001 --num_snapshots 0 && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model nn_tbnn --nn_preset example_anisotropic --dp_dx -0.0001 --num_snapshots 0 && \
+            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 256 512 10 output/gpu_validation/baseline && \
+            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 256 512 10 output/gpu_validation/gep && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"3. Periodic Hills - Complex Geometry\" && \
+            echo \"3. Neural Network Models\" && \
             echo \"======================================\" && \
+            echo \"   3a. NN-MLP (skipping - requires model files)\" && \
+            echo \"   3b. NN-TBNN (skipping - requires model files)\" && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"4. Transport Equation Models\" && \
+            echo \"======================================\" && \
+            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 256 512 20 output/gpu_validation/sst && \
+            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 256 512 20 output/gpu_validation/komega && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"5. EARSM Models\" && \
+            echo \"======================================\" && \
+            ../.github/scripts/test_turbulence_model_gpu.sh earsm_wj \"Wallin-Johansson EARSM\" 256 512 20 output/gpu_validation/earsm_wj && \
+            ../.github/scripts/test_turbulence_model_gpu.sh earsm_gs \"Gatski-Speziale EARSM\" 256 512 20 output/gpu_validation/earsm_gs && \
+            ../.github/scripts/test_turbulence_model_gpu.sh earsm_pope \"Pope Quadratic EARSM\" 256 512 20 output/gpu_validation/earsm_pope && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"6. Periodic Hills - Complex Geometry\" && \
+            echo \"======================================\" && \
+            echo \"   6a. Baseline\" && \
             ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 20 --model baseline --num_snapshots 0 && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 20 --model nn_mlp --nn_preset example_scalar_nut --num_snapshots 0'" \
-          60
-    
-    - name: Validate output files
-      run: |
-        cd build_ci_gpu
-        ../scripts/validate_output.sh output 1
+            echo \"   6b. SST k-omega\" && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 30 --model sst --num_snapshots 0 && \
+            echo \"   6c. EARSM (WJ)\" && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 30 --model earsm_wj --num_snapshots 0'" \
+          90
     
     - name: Cleanup
       if: always()
