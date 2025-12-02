@@ -180,6 +180,7 @@ private:
     double* diff_u_ptr_ = nullptr;
     double* diff_v_ptr_ = nullptr;
     double* rhs_poisson_ptr_ = nullptr;
+    double* div_velocity_ptr_ = nullptr;
     double* k_ptr_ = nullptr;
     double* omega_ptr_ = nullptr;
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells

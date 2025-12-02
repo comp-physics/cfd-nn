@@ -107,6 +107,10 @@ target_link_libraries(periodic_hills nn_cfd_core)
 add_executable(test_nn_simple app/test_nn_simple.cpp)
 target_link_libraries(test_nn_simple nn_cfd_core)
 
+# Verification tool for CPU/GPU unified kernels
+add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
+target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
