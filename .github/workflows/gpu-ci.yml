@@ -22,6 +22,7 @@ jobs:
         cd build_ci_gpu
         CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON
         make -j8
+        mkdir -p output
     
     - name: Comprehensive GPU tests
       run: |
