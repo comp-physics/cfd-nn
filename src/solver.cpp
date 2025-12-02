@@ -952,9 +952,11 @@ void RANSSolver::initialize_gpu_buffers() {
     diff_u_ptr_ = diff_.u_field().data().data();
     diff_v_ptr_ = diff_.v_field().data().data();
     rhs_poisson_ptr_ = rhs_poisson_.data().data();
+    k_ptr_ = k_.data().data();
+    omega_ptr_ = omega_.data().data();
     
     if (config_.verbose) {
-        std::cout << "Allocating " << (13 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
+        std::cout << "Allocating " << (15 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
                   << " MB on GPU for persistent solver arrays...\n";
     }
     
@@ -972,6 +974,8 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(alloc: diff_u_ptr_[0:field_total_size_])
     #pragma omp target enter data map(alloc: diff_v_ptr_[0:field_total_size_])
     #pragma omp target enter data map(alloc: rhs_poisson_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: k_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: omega_ptr_[0:field_total_size_])
     
     gpu_ready_ = true;
     
@@ -997,6 +1001,8 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: diff_u_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: diff_v_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: rhs_poisson_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: k_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: omega_ptr_[0:field_total_size_])
     
     gpu_ready_ = false;
 }
@@ -1013,6 +1019,8 @@ void RANSSolver::sync_to_gpu() {
     #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_eff_ptr_[0:field_total_size_])
+    #pragma omp target update to(k_ptr_[0:field_total_size_])
+    #pragma omp target update to(omega_ptr_[0:field_total_size_])
 }
 
 void RANSSolver::sync_from_gpu() {
@@ -1023,6 +1031,8 @@ void RANSSolver::sync_from_gpu() {
     #pragma omp target update from(velocity_v_ptr_[0:field_total_size_])
     #pragma omp target update from(pressure_ptr_[0:field_total_size_])
     #pragma omp target update from(nu_t_ptr_[0:field_total_size_])
+    #pragma omp target update from(k_ptr_[0:field_total_size_])
+    #pragma omp target update from(omega_ptr_[0:field_total_size_])
 }
 #endif
 
