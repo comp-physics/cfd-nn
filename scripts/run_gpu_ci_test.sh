@@ -54,27 +54,45 @@ EOF
 
 # Submit and wait for completion
 echo "Submitting job (will wait for completion)..."
+set +e  # Don't exit on error - we need to print logs first
 sbatch -W "/tmp/${JOB_NAME}.sbatch"
 SBATCH_EXIT=$?
+set -e
 
 echo ""
+echo "Job finished with exit code: ${SBATCH_EXIT}"
+echo ""
+
+# Wait a moment for files to be written
+sleep 2
+
 echo "========================================"
 echo "Job Output:"
 echo "========================================"
-cat "${LOG_FILE}" 2>/dev/null || echo "ERROR: No log file found"
+if [ -f "${LOG_FILE}" ]; then
+    cat "${LOG_FILE}"
+else
+    echo "ERROR: Log file not found: ${LOG_FILE}"
+    echo "Checking current directory..."
+    ls -lh *.log 2>/dev/null || echo "No log files found"
+fi
 
-if [ -s "${ERR_FILE}" ]; then
-    echo ""
-    echo "========================================"
-    echo "Job Errors:"
-    echo "========================================"
-    cat "${ERR_FILE}"
+echo ""
+if [ -f "${ERR_FILE}" ]; then
+    if [ -s "${ERR_FILE}" ]; then
+        echo "========================================"
+        echo "Job Errors:"
+        echo "========================================"
+        cat "${ERR_FILE}"
+        echo ""
+    fi
 fi
 
 # Cleanup
 rm -f "/tmp/${JOB_NAME}.sbatch" "${LOG_FILE}" "${ERR_FILE}"
 
-echo ""
+echo "========================================"
+echo "Final exit code: ${SBATCH_EXIT}"
 echo "========================================"
 exit ${SBATCH_EXIT}
 
