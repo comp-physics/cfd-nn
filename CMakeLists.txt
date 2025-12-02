@@ -141,6 +141,10 @@ if(BUILD_TESTS)
     add_executable(test_nn_integration tests/test_nn_integration.cpp)
     target_link_libraries(test_nn_integration nn_cfd_core)
     add_test(NAME NNIntegrationTest COMMAND test_nn_integration)
+    
+    add_executable(test_gpu_execution tests/test_gpu_execution.cpp)
+    target_link_libraries(test_gpu_execution nn_cfd_core)
+    add_test(NAME GPUExecutionTest COMMAND test_gpu_execution)
 endif()
 
 # Installation

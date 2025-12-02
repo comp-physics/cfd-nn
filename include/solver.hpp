@@ -28,6 +28,7 @@ struct VelocityBC {
 class RANSSolver {
 public:
     explicit RANSSolver(const Mesh& mesh, const Config& config);
+    ~RANSSolver();  // Clean up GPU resources
     
     /// Set turbulence model (takes ownership)
     void set_turbulence_model(std::unique_ptr<TurbulenceModel> model);
@@ -122,6 +123,11 @@ private:
     ScalarField rhs_poisson_;    // RHS for pressure Poisson equation
     ScalarField div_velocity_;   // Velocity divergence
     
+    // Persistent work fields (avoid reallocation every step)
+    ScalarField nu_eff_;         // Effective viscosity nu + nu_t
+    VectorField conv_;           // Convective term
+    VectorField diff_;           // Diffusive term
+    
     // Solvers
     PoissonSolver poisson_solver_;
     MultigridPoissonSolver mg_poisson_solver_;
@@ -155,6 +161,32 @@ private:
     
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
+    
+#ifdef USE_GPU_OFFLOAD
+    // Persistent GPU mappings for solver fields (move once, reuse across iterations)
+    bool gpu_ready_ = false;
+    
+    // Track pointers and sizes for all GPU-resident arrays
+    double* velocity_u_ptr_ = nullptr;
+    double* velocity_v_ptr_ = nullptr;
+    double* velocity_star_u_ptr_ = nullptr;
+    double* velocity_star_v_ptr_ = nullptr;
+    double* pressure_ptr_ = nullptr;
+    double* pressure_corr_ptr_ = nullptr;
+    double* nu_t_ptr_ = nullptr;
+    double* nu_eff_ptr_ = nullptr;
+    double* conv_u_ptr_ = nullptr;
+    double* conv_v_ptr_ = nullptr;
+    double* diff_u_ptr_ = nullptr;
+    double* diff_v_ptr_ = nullptr;
+    double* rhs_poisson_ptr_ = nullptr;
+    size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
+    
+    void initialize_gpu_buffers();
+    void cleanup_gpu_buffers();
+    void sync_to_gpu();      // Upload all fields to GPU
+    void sync_from_gpu();    // Download all fields from GPU (for I/O)
+#endif
 };
 
 } // namespace nncfd

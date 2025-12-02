@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <iostream>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
@@ -124,12 +128,69 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     const double coeff = 2.0 / dx2 + 2.0 / dy2;
     
     const int Ng = 1;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
     
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: red-black Gauss-Seidel on GPU
+    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+        const int stride = Nx + 2;
+        const int total_size = stride * (Ny + 2);
+        double* u_ptr = grid.u.data().data();
+        const double* f_ptr = grid.f.data().data();
+        
+        for (int iter = 0; iter < iterations; ++iter) {
+            // Red sweep (i + j even)
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(tofrom: u_ptr[0:total_size]) \
+                map(to: f_ptr[0:total_size])
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    // Only update red points (i + j even)
+                    if ((i + j) % 2 == 0) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
+                    }
+                }
+            }
+            
+            apply_bc(level);
+            
+            // Black sweep (i + j odd)
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(tofrom: u_ptr[0:total_size]) \
+                map(to: f_ptr[0:total_size])
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    // Only update black points (i + j odd)
+                    if ((i + j) % 2 == 1) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
+                    }
+                }
+            }
+            
+            apply_bc(level);
+        }
+        
+        return;
+    }
+#endif
+    
+    // CPU path
     for (int iter = 0; iter < iterations; ++iter) {
         // Red sweep (i + j even)
-        for (int j = Ng; j < grid.Ny + Ng; ++j) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
             int start = Ng + ((Ng + j) % 2);
-            for (int i = start; i < grid.Nx + Ng; i += 2) {
+            for (int i = start; i < Nx + Ng; i += 2) {
                 double u_old = grid.u(i, j);
                 double u_gs = ((grid.u(i+1, j) + grid.u(i-1, j)) / dx2
                              + (grid.u(i, j+1) + grid.u(i, j-1)) / dy2
@@ -141,9 +202,9 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
         apply_bc(level);
         
         // Black sweep (i + j odd)
-        for (int j = Ng; j < grid.Ny + Ng; ++j) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
             int start = Ng + ((Ng + j + 1) % 2);
-            for (int i = start; i < grid.Nx + Ng; i += 2) {
+            for (int i = start; i < Nx + Ng; i += 2) {
                 double u_old = grid.u(i, j);
                 double u_gs = ((grid.u(i+1, j) + grid.u(i-1, j)) / dx2
                              + (grid.u(i, j+1) + grid.u(i, j-1)) / dy2
@@ -163,9 +224,37 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const double dy2 = grid.dy * grid.dy;
     
     const int Ng = 1;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
     
-    for (int j = Ng; j < grid.Ny + Ng; ++j) {
-        for (int i = Ng; i < grid.Nx + Ng; ++i) {
+#ifdef USE_GPU_OFFLOAD
+    // GPU path
+    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+        const int stride = Nx + 2;
+        const int total_size = stride * (Ny + 2);
+        const double* u_ptr = grid.u.data().data();
+        const double* f_ptr = grid.f.data().data();
+        double* r_ptr = grid.r.data().data();
+        
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(to: u_ptr[0:total_size], f_ptr[0:total_size]) \
+            map(from: r_ptr[0:total_size])
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * stride + i;
+                double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                 + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
+                r_ptr[idx] = f_ptr[idx] - laplacian;
+            }
+        }
+        
+        return;
+    }
+#endif
+    
+    // CPU path
+    for (int j = Ng; j < Ny + Ng; ++j) {
+        for (int i = Ng; i < Nx + Ng; ++i) {
             double laplacian = (grid.u(i+1, j) - 2.0*grid.u(i, j) + grid.u(i-1, j)) / dx2
                              + (grid.u(i, j+1) - 2.0*grid.u(i, j) + grid.u(i, j-1)) / dy2;
             grid.r(i, j) = grid.f(i, j) - laplacian;

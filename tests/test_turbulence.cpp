@@ -11,6 +11,10 @@
 #include <cmath>
 #include <cassert>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 using namespace nncfd;
 
 void test_baseline_model() {
@@ -91,6 +95,15 @@ void test_nn_mlp_model() {
     
     try {
         model.load("../data/models/test_mlp", "../data/models/test_mlp");
+        
+#ifdef USE_GPU_OFFLOAD
+        // Upload to GPU if available
+        if (omp_get_num_devices() > 0) {
+            model.upload_to_gpu();
+            std::cout << "[GPU mode] ";
+        }
+#endif
+        
         model.update(mesh, vel, k, omega, nu_t);
         
         // Check all values are finite and positive
@@ -125,6 +138,15 @@ void test_nn_tbnn_model() {
     
     try {
         model.load("../data/models/test_tbnn", "../data/models/test_tbnn");
+        
+#ifdef USE_GPU_OFFLOAD
+        // Upload to GPU if available
+        if (omp_get_num_devices() > 0) {
+            model.upload_to_gpu();
+            std::cout << "[GPU mode] ";
+        }
+#endif
+        
         model.update(mesh, vel, k, omega, nu_t);
         
         // Check validity
