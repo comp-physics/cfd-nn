@@ -1,0 +1,55 @@
+name: GPU CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gpu-tests:
+    runs-on: self-hosted
+    timeout-minutes: 90
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Make scripts executable
+      run: chmod +x scripts/run_gpu_ci_test.sh
+    
+    - name: Build GPU version
+      run: |
+        module load nvhpc/25.5
+        rm -rf build_ci_gpu
+        mkdir -p build_ci_gpu
+        cd build_ci_gpu
+        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON
+        make -j8
+    
+    - name: Comprehensive GPU tests
+      run: |
+        cd build_ci_gpu
+        ../scripts/run_gpu_ci_test.sh "all_gpu_tests" \
+          "bash -c '\
+            echo \"======================================\" && \
+            echo \"1. Unit Tests\" && \
+            echo \"======================================\" && \
+            ctest --output-on-failure && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"2. Channel Flow - Multiple Models\" && \
+            echo \"======================================\" && \
+            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model baseline --dp_dx -0.0001 --num_snapshots 0 && \
+            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model gep --dp_dx -0.0001 --num_snapshots 0 && \
+            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model nn_mlp --nn_preset example_scalar_nut --dp_dx -0.0001 --num_snapshots 0 && \
+            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model nn_tbnn --nn_preset example_anisotropic --dp_dx -0.0001 --num_snapshots 0 && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"3. Periodic Hills - Complex Geometry\" && \
+            echo \"======================================\" && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 20 --model baseline --num_snapshots 0 && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 20 --model nn_mlp --nn_preset example_scalar_nut --num_snapshots 0'" \
+          60
+    
+    - name: Cleanup
+      if: always()
+      run: rm -rf build_ci_gpu
+
