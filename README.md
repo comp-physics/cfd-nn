@@ -91,41 +91,39 @@ cd build
 
 ## Command-Line Options
 
-```bash
-Grid:
-  --Nx N, --Ny N        Grid cells (default: 64 x 64)
-  --stretch             Enable y-direction stretching (default: off)
+**Grid:**
+- `--Nx N`, `--Ny N` - Grid cells (default: 64 x 64)
+- `--stretch` - Enable y-direction stretching (default: off)
 
-Physics:
-  --Re VALUE            Reynolds number (default: 1000)
-  --nu VALUE            Kinematic viscosity (default: 0.001)
-  --dp_dx VALUE         Pressure gradient (driving force, default: -1.0)
-  
-  Note: Specify ONLY TWO of (Re, nu, dp_dx); the third is computed automatically:
-    - --Re only          --> uses default dp_dx, computes nu
-    - --Re --nu          --> computes dp_dx to achieve desired Re
-    - --Re --dp_dx       --> computes nu to achieve desired Re
-    - --nu --dp_dx       --> computes Re from these
-    - none specified     --> uses defaults (Re=1000, nu=0.001, dp_dx=-1.0)
-  
-  Specifying all three will error unless they are mutually consistent.
+**Physics:**
+- `--Re VALUE` - Reynolds number (default: 1000)
+- `--nu VALUE` - Kinematic viscosity (default: 0.001)
+- `--dp_dx VALUE` - Pressure gradient (driving force, default: -1.0)
 
-Turbulence Model:
-  --model TYPE          none|baseline|gep|nn_mlp|nn_tbnn (default: none)
-  --nn_preset NAME      Use model from data/models/<NAME>
+Note: Specify ONLY TWO of (Re, nu, dp_dx); the third is computed automatically:
+- `--Re` only → uses default dp_dx, computes nu
+- `--Re --nu` → computes dp_dx to achieve desired Re
+- `--Re --dp_dx` → computes nu to achieve desired Re
+- `--nu --dp_dx` → computes Re from these
+- none specified → uses defaults (Re=1000, nu=0.001, dp_dx=-1.0)
 
-Time Stepping:
-  --adaptive_dt         Automatic time step (default: on)
-  --dt VALUE            Fixed time step (default: 0.001)
-  --max_iter N          Maximum iterations (default: 10000)
-  --CFL VALUE           Max CFL number (default: 0.5)
-  --tol VALUE           Convergence tolerance (default: 1e-6)
-  
-Output:
-  --output DIR          Output directory (default: ./output)
-  --num_snapshots N     Number of VTK snapshots (default: 10)
-  --verbose / --quiet   Verbosity control (default: verbose)
-```
+Specifying all three will error unless they are mutually consistent.
+
+**Turbulence Model:**
+- `--model TYPE` - none|baseline|gep|nn_mlp|nn_tbnn (default: none)
+- `--nn_preset NAME` - Use model from data/models/<NAME>
+
+**Time Stepping:**
+- `--adaptive_dt` - Automatic time step (default: on)
+- `--dt VALUE` - Fixed time step (default: 0.001)
+- `--max_iter N` - Maximum iterations (default: 10000)
+- `--CFL VALUE` - Max CFL number (default: 0.5)
+- `--tol VALUE` - Convergence tolerance (default: 1e-6)
+
+**Output:**
+- `--output DIR` - Output directory (default: ./output)
+- `--num_snapshots N` - Number of VTK snapshots (default: 10)
+- `--verbose` / `--quiet` - Verbosity control (default: verbose)
 
 ### VTK Visualization Output
 
@@ -146,7 +144,6 @@ The solver automatically writes VTK files for visualization during the simulatio
 ```
 
 VTK files can be visualized with ParaView, VisIt, or similar tools.
-```
 
 ## Available Turbulence Models
 
