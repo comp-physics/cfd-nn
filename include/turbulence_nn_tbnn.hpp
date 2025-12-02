@@ -86,9 +86,9 @@ private:
     
     // GPU state
     bool gpu_ready_ = false;
-    bool full_gpu_ready_ = false;
+    [[maybe_unused]] bool full_gpu_ready_ = false;
     bool initialized_ = false;
-    int cached_n_cells_ = 0;
+    [[maybe_unused]] int cached_n_cells_ = 0;
     int cached_total_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);

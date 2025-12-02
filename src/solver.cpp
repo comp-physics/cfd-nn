@@ -177,8 +177,8 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
     const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int stride = Nx + 2;
+    [[maybe_unused]] const int Ny = mesh_->Ny;
+    [[maybe_unused]] const int stride = Nx + 2;
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path - use persistent GPU arrays (no data movement!)
@@ -286,8 +286,8 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     const double dx2 = dx * dx;
     const double dy2 = dy * dy;
     const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int stride = Nx + 2;
+    [[maybe_unused]] const int Ny = mesh_->Ny;
+    [[maybe_unused]] const int stride = Nx + 2;
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path - use persistent GPU arrays (no data movement!)
