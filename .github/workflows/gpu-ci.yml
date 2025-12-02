@@ -14,7 +14,46 @@ jobs:
     timeout-minutes: 90
     
     steps:
+    - name: Clean workspace
+      run: |
+        echo "Cleaning workspace to avoid stale artifacts..."
+        rm -rf ${GITHUB_WORKSPACE}/build_*
+        rm -rf ${GITHUB_WORKSPACE}/CMakeCache.txt
+        rm -rf ${GITHUB_WORKSPACE}/CMakeFiles
+        echo "Workspace cleaned"
+    
     - uses: actions/checkout@v3
+    
+    - name: Verify GPU fix is present in source
+      run: |
+        echo "=== Verifying GPU Memory Fix ==="
+        echo "Checking for k_ptr_ and omega_ptr_ in solver.hpp..."
+        if grep -q "double\* k_ptr_" include/solver.hpp; then
+          echo "✓ Found k_ptr_ declaration"
+        else
+          echo "✗ MISSING k_ptr_ declaration!"
+          exit 1
+        fi
+        if grep -q "double\* omega_ptr_" include/solver.hpp; then
+          echo "✓ Found omega_ptr_ declaration"
+        else
+          echo "✗ MISSING omega_ptr_ declaration!"
+          exit 1
+        fi
+        echo "Checking for GPU allocation in solver.cpp..."
+        if grep -q "k_ptr_ = k_.data().data()" src/solver.cpp; then
+          echo "✓ Found k_ptr_ initialization"
+        else
+          echo "✗ MISSING k_ptr_ initialization!"
+          exit 1
+        fi
+        if grep -q "#pragma omp target enter data map(alloc: k_ptr_" src/solver.cpp; then
+          echo "✓ Found k_ptr_ GPU allocation"
+        else
+          echo "✗ MISSING k_ptr_ GPU allocation!"
+          exit 1
+        fi
+        echo "✓ All GPU fix components verified in source code"
     
     - name: Make scripts executable
       run: |
@@ -27,7 +66,13 @@ jobs:
         rm -rf build_ci_gpu
         mkdir -p build_ci_gpu
         cd build_ci_gpu
-        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON
+        echo "=== CMake Configuration ==="
+        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
+        echo ""
+        echo "=== CMake Configuration Summary ==="
+        grep -E "GPU offload|CXX compiler|OpenMP|NVIDIA" cmake_config.log || echo "No GPU-related config found"
+        echo ""
+        echo "=== Building ==="
         make -j8
         mkdir -p output
     
@@ -78,6 +123,22 @@ jobs:
             echo \"   6c. EARSM (WJ)\" && \
             ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 100 --model earsm_wj --num_snapshots 0'" \
           90
+    
+    - name: Debug info on failure
+      if: failure()
+      run: |
+        echo "=== Debug Information ==="
+        echo "Commit: $(git rev-parse HEAD)"
+        echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
+        echo ""
+        echo "=== CMake Config Log ==="
+        cat build_ci_gpu/cmake_config.log 2>/dev/null || echo "No cmake log found"
+        echo ""
+        echo "=== Checking compiled binaries ==="
+        ls -lh build_ci_gpu/test_* 2>/dev/null || echo "No test binaries found"
+        echo ""
+        echo "=== Verifying source again ==="
+        grep -c "k_ptr_" include/solver.hpp src/solver.cpp || echo "k_ptr_ not found!"
     
     - name: Cleanup
       if: always()
