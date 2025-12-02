@@ -233,6 +233,13 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
 #ifdef USE_GPU_OFFLOAD
     initialize_gpu_buffers();
+    
+    // CRITICAL: Force turbulence models to use CPU path when solver uses GPU
+    // Reason: turbulence model GPU kernels use temporary map(to:/from:) allocations
+    // which are incompatible with solver's persistent GPU arrays
+    if (gpu_ready_) {
+        setenv("NNCFD_FORCE_CPU_TURB", "1", 1);
+    }
 #endif
 }
 
@@ -670,6 +677,15 @@ double RANSSolver::step() {
         TIMED_SCOPE("turbulence_update");
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
+        
+#ifdef USE_GPU_OFFLOAD
+        // CRITICAL: Sync nu_t from CPU to GPU after turbulence model update
+        // Turbulence models compute nu_t on CPU (turbulence GPU path disabled
+        // when solver uses GPU to avoid conflicting device allocations)
+        if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+            #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
+        }
+#endif
     }
     
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)

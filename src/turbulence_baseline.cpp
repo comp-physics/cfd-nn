@@ -6,6 +6,7 @@
 #include "turbulence_earsm.hpp"
 #include <cmath>
 #include <algorithm>
+#include <iostream>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -107,54 +108,75 @@ void MixingLengthModel::update(
     const int stride = mesh.total_Nx();
     const int total_cells = mesh.total_cells();
 
-    // Mesh parameters for wall distance computation
-    const double y_min = mesh.y_min;
-    const double y_max = mesh.y_max;
-    const double dy = mesh.dy;
-    const int Ng = mesh.Nghost;
-
 #ifdef USE_GPU_OFFLOAD
+    // Allow forcing CPU path at runtime for CPU/GPU comparison
+    bool force_cpu_path = false;
+    if (const char* env = std::getenv("NNCFD_FORCE_CPU_TURB")) {
+        force_cpu_path = (std::atoi(env) != 0);
+    }
+    
+    static bool first_update = true;
+    if (first_update) {
+        std::cout << "[MixingLengthModel] GPU offload: devices=" << omp_get_num_devices()
+                  << ", force_cpu=" << force_cpu_path
+                  << ", Nx=" << Nx << ", Ny=" << Ny << std::endl;
+        first_update = false;
+    }
+    
     // GPU path: same kernel, different parallelization + data source
-    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+    if (!force_cpu_path && omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
         const int n_cells = Nx * Ny;
 
-        // Get references to underlying vectors (not pointers, to avoid NVHPC bug)
-        std::vector<double>& dudx_vec = dudx_.data();
-        std::vector<double>& dudy_vec = dudy_.data();
-        std::vector<double>& dvdx_vec = dvdx_.data();
-        std::vector<double>& dvdy_vec = dvdy_.data();
-        std::vector<double>& nu_t_vec = nu_t.data();
+        // Copy member variables to local scope (NVHPC workaround)
+        const double nu_local = nu_;
+        const double kappa_local = kappa_;
+        const double A_plus_local = A_plus_;
+        const double delta_local = delta_;
 
-        // GPU kernel: compute mixing length eddy viscosity (inlined to match CPU exactly)
+        // Precompute wall distances (using mesh.yc to match CPU exactly)
+        std::vector<double> y_wall_vec(total_cells, 0.0);
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                int cell_idx = j * stride + i;
+                y_wall_vec[cell_idx] = mesh.wall_distance(i, j);
+            }
+        }
+
+        // Get raw pointers
+        double* dudx_ptr = dudx_.data().data();
+        double* dudy_ptr = dudy_.data().data();
+        double* dvdx_ptr = dvdx_.data().data();
+        double* dvdy_ptr = dvdy_.data().data();
+        double* nu_t_ptr = nu_t.data().data();
+        double* y_wall_ptr = y_wall_vec.data();
+
+        // GPU kernel: compute mixing length eddy viscosity (matching CPU path exactly)
         #pragma omp target teams distribute parallel for \
-            map(to: dudx_vec[0:total_cells], dudy_vec[0:total_cells], \
-                    dvdx_vec[0:total_cells], dvdy_vec[0:total_cells]) \
-            map(from: nu_t_vec[0:total_cells]) \
-            firstprivate(u_tau, nu_, kappa_, A_plus_, delta_, stride, Nx, Ng, y_min, y_max, dy)
+            map(to: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells], \
+                    dvdx_ptr[0:total_cells], dvdy_ptr[0:total_cells], \
+                    y_wall_ptr[0:total_cells]) \
+            map(from: nu_t_ptr[0:total_cells])
         for (int idx = 0; idx < n_cells; ++idx) {
-            int i = idx % Nx + 1;  // interior i (skip ghost)
-            int j = idx / Nx + 1;  // interior j (skip ghost)
-            int cell_idx = j * stride + i;
+            const int i = idx % Nx + 1;  // interior i (skip ghost)
+            const int j = idx / Nx + 1;  // interior j (skip ghost)
+            const int cell_idx = j * stride + i;
 
-            // Compute wall distance on-the-fly (channel flow: min distance to y_min or y_max)
-            double y = y_min + (j - Ng + 0.5) * dy;
-            double dist_lo = (y - y_min > 0) ? (y - y_min) : -(y - y_min);
-            double dist_hi = (y_max - y > 0) ? (y_max - y) : -(y_max - y);
-            double y_wall = (dist_lo < dist_hi) ? dist_lo : dist_hi;
+            // Use precomputed wall distance (same as CPU mesh.wall_distance)
+            const double y_wall = y_wall_ptr[cell_idx];
 
             // Inline kernel computation (same as CPU path, for guaranteed matching results)
-            double Sxx = dudx_vec[cell_idx];
-            double Syy = dvdy_vec[cell_idx];
-            double Sxy = 0.5 * (dudy_vec[cell_idx] + dvdx_vec[cell_idx]);
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            const double Sxx = dudx_ptr[cell_idx];
+            const double Syy = dvdy_ptr[cell_idx];
+            const double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
+            const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
             
-            double y_plus = y_wall * u_tau / nu_;
-            double damping = 1.0 - exp(-y_plus / A_plus_);
-            double l_mix = kappa_ * y_wall * damping;
-            if (l_mix > 0.5 * delta_) {
-                l_mix = 0.5 * delta_;
+            const double y_plus = y_wall * u_tau / nu_local;
+            const double damping = 1.0 - exp(-y_plus / A_plus_local);
+            double l_mix = kappa_local * y_wall * damping;
+            if (l_mix > 0.5 * delta_local) {
+                l_mix = 0.5 * delta_local;
             }
-            nu_t_vec[cell_idx] = l_mix * l_mix * S_mag;
+            nu_t_ptr[cell_idx] = l_mix * l_mix * S_mag;
         }
 
         return;

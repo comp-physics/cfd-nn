@@ -111,6 +111,10 @@ target_link_libraries(test_nn_simple nn_cfd_core)
 add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
 target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
 
+# Lockstep CPU vs GPU comparison tool
+add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
+target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -151,6 +155,14 @@ if(BUILD_TESTS)
     add_executable(test_gpu_execution tests/test_gpu_execution.cpp)
     target_link_libraries(test_gpu_execution nn_cfd_core)
     add_test(NAME GPUExecutionTest COMMAND test_gpu_execution)
+    
+    add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
+    target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
+    add_test(NAME CPUGPUConsistencyTest COMMAND test_cpu_gpu_consistency)
+    
+    add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
+    target_link_libraries(test_time_history_consistency nn_cfd_core)
+    add_test(NAME TimeHistoryConsistencyTest COMMAND test_time_history_consistency)
 endif()
 
 # Installation
