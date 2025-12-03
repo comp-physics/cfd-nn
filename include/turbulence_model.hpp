@@ -35,6 +35,34 @@ public:
     /// Check if model provides explicit Reynolds stresses (vs. eddy viscosity only)
     virtual bool provides_reynolds_stresses() const { return false; }
     
+    /// Does this model solve transport equations (e.g., k-ω, k-ε)?
+    /// If true, advance_turbulence() should be called each time step.
+    virtual bool uses_transport_equations() const { return false; }
+    
+    /// Advance turbulence transport variables (k, ω, etc.) by one time step.
+    /// Default: no-op (for algebraic / NN models).
+    /// @param mesh       Computational mesh
+    /// @param velocity   Mean velocity field
+    /// @param dt         Time step size
+    /// @param k          [in/out] Turbulent kinetic energy
+    /// @param omega      [in/out] Specific dissipation rate
+    /// @param nu_t_prev  Eddy viscosity from previous step (for diffusion coefficients)
+    virtual void advance_turbulence(
+        const Mesh& mesh,
+        const VectorField& velocity,
+        double dt,
+        ScalarField& k,
+        ScalarField& omega,
+        const ScalarField& nu_t_prev
+    ) {
+        (void)mesh;
+        (void)velocity;
+        (void)dt;
+        (void)k;
+        (void)omega;
+        (void)nu_t_prev;
+    }
+    
     /// Initialize any model-specific fields (e.g., k, omega for transport models)
     virtual void initialize(const Mesh& /*mesh*/, const VectorField& /*velocity*/) {}
     
@@ -42,8 +70,13 @@ public:
     void set_nu(double nu) { nu_ = nu; }
     double nu() const { return nu_; }
     
+    /// Set reference length scale (channel half-height, etc.)
+    void set_delta(double delta) { delta_ = delta; }
+    double delta() const { return delta_; }
+    
 protected:
-    double nu_ = 0.001;  ///< Laminar viscosity
+    double nu_ = 0.001;    ///< Laminar viscosity
+    double delta_ = 1.0;   ///< Reference length scale
 };
 
 /// Factory function to create turbulence model from config

@@ -10,11 +10,18 @@ namespace nncfd {
 
 /// Turbulence model selection
 enum class TurbulenceModelType {
-    None,       ///< Laminar (no turbulence model)
-    Baseline,   ///< Simple algebraic or k-omega like model
-    GEP,        ///< Gene Expression Programming algebraic model (Weatheritt-Sandberg 2016)
-    NNMLP,      ///< Neural network scalar eddy viscosity
-    NNTBNN      ///< TBNN-style anisotropy model
+    None,           ///< Laminar (no turbulence model)
+    Baseline,       ///< Simple algebraic mixing length model
+    GEP,            ///< Gene Expression Programming algebraic model (Weatheritt-Sandberg 2016)
+    NNMLP,          ///< Neural network scalar eddy viscosity
+    NNTBNN,         ///< TBNN-style anisotropy model
+    // Transport equation models
+    SSTKOmega,      ///< SST k-ω transport with linear Boussinesq closure
+    KOmega,         ///< Standard k-ω (Wilcox 1988)
+    // EARSM models
+    EARSM_WJ,       ///< SST k-ω + Wallin-Johansson EARSM
+    EARSM_GS,       ///< SST k-ω + Gatski-Speziale EARSM
+    EARSM_Pope      ///< SST k-ω + Pope quadratic model
 };
 
 /// Convective scheme selection

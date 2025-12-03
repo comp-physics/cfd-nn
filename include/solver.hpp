@@ -136,6 +136,10 @@ private:
     
     // Boundary conditions
     VelocityBC velocity_bc_;
+    PoissonBC poisson_bc_x_lo_ = PoissonBC::Periodic;
+    PoissonBC poisson_bc_x_hi_ = PoissonBC::Periodic;
+    PoissonBC poisson_bc_y_lo_ = PoissonBC::Neumann;
+    PoissonBC poisson_bc_y_hi_ = PoissonBC::Neumann;
     double fx_ = 0.0, fy_ = 0.0;  // Body force
     
     // State
@@ -180,6 +184,9 @@ private:
     double* diff_u_ptr_ = nullptr;
     double* diff_v_ptr_ = nullptr;
     double* rhs_poisson_ptr_ = nullptr;
+    double* div_velocity_ptr_ = nullptr;
+    double* k_ptr_ = nullptr;
+    double* omega_ptr_ = nullptr;
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
     
     void initialize_gpu_buffers();

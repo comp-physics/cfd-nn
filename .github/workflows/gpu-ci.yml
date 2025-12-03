@@ -14,12 +14,51 @@ jobs:
     timeout-minutes: 90
     
     steps:
+    - name: Clean workspace
+      run: |
+        echo "Cleaning workspace to avoid stale artifacts..."
+        rm -rf ${GITHUB_WORKSPACE}/build_*
+        rm -rf ${GITHUB_WORKSPACE}/CMakeCache.txt
+        rm -rf ${GITHUB_WORKSPACE}/CMakeFiles
+        echo "Workspace cleaned"
+    
     - uses: actions/checkout@v3
+    
+    - name: Verify GPU fix is present in source
+      run: |
+        echo "=== Verifying GPU Memory Fix ==="
+        echo "Checking for k_ptr_ and omega_ptr_ in solver.hpp..."
+        if grep -q "double\* k_ptr_" include/solver.hpp; then
+          echo "✓ Found k_ptr_ declaration"
+        else
+          echo "✗ MISSING k_ptr_ declaration!"
+          exit 1
+        fi
+        if grep -q "double\* omega_ptr_" include/solver.hpp; then
+          echo "✓ Found omega_ptr_ declaration"
+        else
+          echo "✗ MISSING omega_ptr_ declaration!"
+          exit 1
+        fi
+        echo "Checking for GPU allocation in solver.cpp..."
+        if grep -q "k_ptr_ = k_.data().data()" src/solver.cpp; then
+          echo "✓ Found k_ptr_ initialization"
+        else
+          echo "✗ MISSING k_ptr_ initialization!"
+          exit 1
+        fi
+        if grep -q "#pragma omp target enter data map(alloc: k_ptr_" src/solver.cpp; then
+          echo "✓ Found k_ptr_ GPU allocation"
+        else
+          echo "✗ MISSING k_ptr_ GPU allocation!"
+          exit 1
+        fi
+        echo "✓ All GPU fix components verified in source code"
     
     - name: Make scripts executable
       run: |
         chmod +x scripts/run_gpu_ci_test.sh
-        chmod +x scripts/validate_output.sh
+        chmod +x .github/scripts/*.sh
     
     - name: Build GPU version
       run: |
@@ -27,7 +66,13 @@ jobs:
         rm -rf build_ci_gpu
         mkdir -p build_ci_gpu
         cd build_ci_gpu
-        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON
+        echo "=== CMake Configuration ==="
+        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
+        echo ""
+        echo "=== CMake Configuration Summary ==="
+        grep -E "GPU offload|CXX compiler|OpenMP|NVIDIA" cmake_config.log || echo "No GPU-related config found"
+        echo ""
+        echo "=== Building ==="
         make -j8
         mkdir -p output
     
@@ -36,30 +81,64 @@ jobs:
         cd build_ci_gpu
         ../scripts/run_gpu_ci_test.sh "all_gpu_tests" \
           "bash -c '\
+            chmod +x ../.github/scripts/*.sh && \
+            mkdir -p output/gpu_validation && \
             echo \"======================================\" && \
             echo \"1. Unit Tests\" && \
             echo \"======================================\" && \
             ctest --output-on-failure && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"2. Channel Flow - Multiple Models\" && \
+            echo \"2. Algebraic Models\" && \
             echo \"======================================\" && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model baseline --dp_dx -0.0001 --num_snapshots 0 && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model gep --dp_dx -0.0001 --num_snapshots 0 && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model nn_mlp --nn_preset example_scalar_nut --dp_dx -0.0001 --num_snapshots 0 && \
-            ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 10 --model nn_tbnn --nn_preset example_anisotropic --dp_dx -0.0001 --num_snapshots 0 && \
+            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 256 512 500 output/gpu_validation/baseline && \
+            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 256 512 500 output/gpu_validation/gep && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"3. Periodic Hills - Complex Geometry\" && \
+            echo \"3. Neural Network Models\" && \
             echo \"======================================\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 20 --model baseline --num_snapshots 0 && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 20 --model nn_mlp --nn_preset example_scalar_nut --num_snapshots 0'" \
-          60
+            echo \"   3a. NN-MLP (skipping - requires model files)\" && \
+            echo \"   3b. NN-TBNN (skipping - requires model files)\" && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"4. Transport Equation Models\" && \
+            echo \"======================================\" && \
+            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 256 512 1000 output/gpu_validation/sst && \
+            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 256 512 1000 output/gpu_validation/komega && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"5. EARSM Models\" && \
+            echo \"======================================\" && \
+            ../.github/scripts/test_turbulence_model_gpu.sh earsm_wj \"Wallin-Johansson EARSM\" 256 512 1000 output/gpu_validation/earsm_wj && \
+            ../.github/scripts/test_turbulence_model_gpu.sh earsm_gs \"Gatski-Speziale EARSM\" 256 512 1000 output/gpu_validation/earsm_gs && \
+            ../.github/scripts/test_turbulence_model_gpu.sh earsm_pope \"Pope Quadratic EARSM\" 256 512 1000 output/gpu_validation/earsm_pope && \
+            echo \"\" && \
+            echo \"======================================\" && \
+            echo \"6. Periodic Hills - Complex Geometry\" && \
+            echo \"======================================\" && \
+            echo \"   6a. Baseline\" && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 500 --model baseline --num_snapshots 0 && \
+            echo \"   6b. SST k-omega\" && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model sst --num_snapshots 0 && \
+            echo \"   6c. EARSM (WJ)\" && \
+            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model earsm_wj --num_snapshots 0'" \
+          90
     
-    - name: Validate output files
+    - name: Debug info on failure
+      if: failure()
       run: |
-        cd build_ci_gpu
-        ../scripts/validate_output.sh output 1
+        echo "=== Debug Information ==="
+        echo "Commit: $(git rev-parse HEAD)"
+        echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
+        echo ""
+        echo "=== CMake Config Log ==="
+        cat build_ci_gpu/cmake_config.log 2>/dev/null || echo "No cmake log found"
+        echo ""
+        echo "=== Checking compiled binaries ==="
+        ls -lh build_ci_gpu/test_* 2>/dev/null || echo "No test binaries found"
+        echo ""
+        echo "=== Verifying source again ==="
+        grep -c "k_ptr_" include/solver.hpp src/solver.cpp || echo "k_ptr_ not found!"
     
     - name: Cleanup
       if: always()
