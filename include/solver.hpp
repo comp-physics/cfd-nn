@@ -136,6 +136,10 @@ private:
     
     // Boundary conditions
     VelocityBC velocity_bc_;
+    PoissonBC poisson_bc_x_lo_ = PoissonBC::Periodic;
+    PoissonBC poisson_bc_x_hi_ = PoissonBC::Periodic;
+    PoissonBC poisson_bc_y_lo_ = PoissonBC::Neumann;
+    PoissonBC poisson_bc_y_hi_ = PoissonBC::Neumann;
     double fx_ = 0.0, fy_ = 0.0;  // Body force
     
     // State

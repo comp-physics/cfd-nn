@@ -200,6 +200,121 @@ inline void correct_velocity_cell_kernel(
     p_ptr[cell_idx] += p_corr_ptr[cell_idx];
 }
 
+// Poisson boundary condition kernel for x-direction
+inline void apply_poisson_bc_x_cell(
+    int j, int g,
+    int Nx, int Ng, int stride,
+    int bc_x_lo, int bc_x_hi,  // 0=Dirichlet, 1=Neumann, 2=Periodic
+    double dirichlet_val,
+    double* p_ptr)
+{
+    // Left boundary
+    int i_ghost = g;
+    int i_interior = Ng;
+    int i_periodic = Nx + Ng - 1 - g;
+    
+    int idx_ghost = j * stride + i_ghost;
+    int idx_interior = j * stride + i_interior;
+    int idx_periodic = j * stride + i_periodic;
+    
+    if (bc_x_lo == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_x_lo == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+    
+    // Right boundary
+    i_ghost = Nx + Ng + g;
+    i_interior = Nx + Ng - 1;
+    i_periodic = Ng + g;
+    
+    idx_ghost = j * stride + i_ghost;
+    idx_interior = j * stride + i_interior;
+    idx_periodic = j * stride + i_periodic;
+    
+    if (bc_x_hi == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_x_hi == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+}
+
+// Poisson boundary condition kernel for y-direction
+inline void apply_poisson_bc_y_cell(
+    int i, int g,
+    int Ny, int Ng, int stride,
+    int bc_y_lo, int bc_y_hi,  // 0=Dirichlet, 1=Neumann, 2=Periodic
+    double dirichlet_val,
+    double* p_ptr)
+{
+    // Bottom boundary
+    int j_ghost = g;
+    int j_interior = Ng;
+    int j_periodic = Ny + Ng - 1 - g;
+    
+    int idx_ghost = j_ghost * stride + i;
+    int idx_interior = j_interior * stride + i;
+    int idx_periodic = j_periodic * stride + i;
+    
+    if (bc_y_lo == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_y_lo == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+    
+    // Top boundary
+    j_ghost = Ny + Ng + g;
+    j_interior = Ny + Ng - 1;
+    j_periodic = Ng + g;
+    
+    idx_ghost = j_ghost * stride + i;
+    idx_interior = j_interior * stride + i;
+    idx_periodic = j_periodic * stride + i;
+    
+    if (bc_y_hi == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_y_hi == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+}
+
+// Red-black SOR Poisson iteration kernel for a single cell
+inline void poisson_sor_cell_kernel(
+    int cell_idx, int stride,
+    double dx2, double dy2, double omega,
+    const double* rhs_ptr,
+    double* p_ptr)
+{
+    const double coeff = 2.0 / dx2 + 2.0 / dy2;
+    
+    double p_old = p_ptr[cell_idx];
+    double p_gs = ((p_ptr[cell_idx+1] + p_ptr[cell_idx-1]) / dx2 +
+                   (p_ptr[cell_idx+stride] + p_ptr[cell_idx-stride]) / dy2
+                   - rhs_ptr[cell_idx]) / coeff;
+    p_ptr[cell_idx] = (1.0 - omega) * p_old + omega * p_gs;
+}
+
+// Poisson residual kernel for a single cell
+inline double poisson_residual_cell_kernel(
+    int cell_idx, int stride,
+    double dx2, double dy2,
+    const double* rhs_ptr,
+    const double* p_ptr)
+{
+    double laplacian = (p_ptr[cell_idx+1] - 2.0*p_ptr[cell_idx] + p_ptr[cell_idx-1]) / dx2
+                     + (p_ptr[cell_idx+stride] - 2.0*p_ptr[cell_idx] + p_ptr[cell_idx-stride]) / dy2;
+    double res = laplacian - rhs_ptr[cell_idx];
+    return (res < 0.0) ? -res : res;  // abs
+}
+
 #ifdef USE_GPU_OFFLOAD
 #pragma omp end declare target
 #endif
@@ -265,7 +380,14 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     PoissonBC p_y_lo = PoissonBC::Neumann;  // Always Neumann for pressure at walls
     PoissonBC p_y_hi = PoissonBC::Neumann;
     
+    // Store for GPU Poisson solver
+    poisson_bc_x_lo_ = p_x_lo;
+    poisson_bc_x_hi_ = p_x_hi;
+    poisson_bc_y_lo_ = p_y_lo;
+    poisson_bc_y_hi_ = p_y_hi;
+    
     poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+    mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
 }
 
 void RANSSolver::set_body_force(double fx, double fy) {
@@ -832,29 +954,24 @@ double RANSSolver::step() {
         pressure_correction_.fill(0.0);
     }
     
-    // Poisson solver uses its own GPU arrays - sync data
-#ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
-        #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
-        #pragma omp target update from(pressure_corr_ptr_[0:field_total_size_])
-    }
-#endif
-    
+    // 4b. Solve Poisson equation for pressure correction
     {
         TIMED_SCOPE("poisson_solve");
         PoissonConfig pcfg;
         pcfg.tol = config_.poisson_tol;
         pcfg.max_iter = config_.poisson_max_iter;
         pcfg.omega = config_.poisson_omega;
-        poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        
+        // Use multigrid solver for both CPU and GPU
+        // The multigrid solver internally uses GPU-accelerated kernels when USE_GPU_OFFLOAD is enabled
+        // All V-cycle operations (smoothing, restriction, prolongation) run on persistent device arrays
+        if (use_multigrid_) {
+            // Use multigrid solver - it handles GPU offloading internally
+            mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        } else {
+            poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        }
     }
-    
-    // Sync result back to persistent GPU arrays
-#ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
-        #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
-    }
-#endif
     
     // 5. Correct velocity and pressure
     {

@@ -15,6 +15,9 @@ public:
     /// Constructor
     MultigridPoissonSolver(const Mesh& mesh);
     
+    /// Destructor
+    ~MultigridPoissonSolver();
+    
     /// Set boundary conditions
     void set_bc(PoissonBC x_lo, PoissonBC x_hi,
                 PoissonBC y_lo, PoissonBC y_hi);
@@ -25,6 +28,18 @@ public:
     
     /// Get final residual
     double residual() const { return residual_; }
+    
+#ifdef USE_GPU_OFFLOAD
+    /// Sync data to/from GPU for a specific multigrid level
+    /// These are public so RANSSolver can control when transfers happen
+    void sync_level_to_gpu(int level);
+    void sync_level_from_gpu(int level);
+    
+    /// Get device pointers for direct GPU-GPU copies
+    double* get_u_device_ptr(int level) { return gpu_ready_ ? u_ptrs_[level] : nullptr; }
+    double* get_f_device_ptr(int level) { return gpu_ready_ ? f_ptrs_[level] : nullptr; }
+    size_t get_level_size(int level) const { return gpu_ready_ ? level_sizes_[level] : 0; }
+#endif
     
 private:
     /// Grid level in multigrid hierarchy
@@ -73,6 +88,18 @@ private:
     // Utility
     double compute_max_residual(int level);
     void subtract_mean(int level);
+    
+#ifdef USE_GPU_OFFLOAD
+    // GPU buffer management for persistent device arrays
+    bool gpu_ready_ = false;
+    std::vector<double*> u_ptrs_;  // Device pointers for u at each level
+    std::vector<double*> f_ptrs_;  // Device pointers for f at each level
+    std::vector<double*> r_ptrs_;  // Device pointers for r at each level
+    std::vector<size_t> level_sizes_;  // Total size for each level
+    
+    void initialize_gpu_buffers();
+    void cleanup_gpu_buffers();
+#endif
 };
 
 } // namespace nncfd
