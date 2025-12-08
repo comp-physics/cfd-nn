@@ -94,6 +94,8 @@ void SSTClosure::compute_nu_t(
         const int Nx = mesh.Nx;
         const int Ny = mesh.Ny;
         const int n_cells = Nx * Ny;
+        const int stride = mesh.total_Nx();
+        const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
         
         // Get raw pointers
         const double* dudx_ptr = dudx_.data().data();
@@ -109,36 +111,43 @@ void SSTClosure::compute_nu_t(
         const double k_min = constants_.k_min;
         const double omega_min = constants_.omega_min;
         
-        // Precompute wall distances
+        // Precompute wall distances (flatten to match interior cells loop order)
         std::vector<double> wall_dist(n_cells);
-        int idx = 0;
+        int flat_idx = 0;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                wall_dist[idx++] = mesh.wall_distance(i, j);
+                wall_dist[flat_idx++] = mesh.wall_distance(i, j);
             }
         }
         const double* wall_dist_ptr = wall_dist.data();
         
-        // Use map(present:) for solver-mapped arrays (k, omega, nu_t)
-        // Use temporary map(to:) for local gradient and wall distance arrays
+        // CRITICAL FIX: Use stride-based indexing for arrays with ghost cells
+        // Arrays k, omega, nu_t have size (Nx+2)*(Ny+2), not Nx*Ny
+        // Use map(present:) with total_size for solver-mapped arrays
+        // Use map(to:) for local gradient arrays (no ghosts)
         #pragma omp target teams distribute parallel for \
-            map(to: dudx_ptr[0:n_cells], dudy_ptr[0:n_cells], \
-                    dvdx_ptr[0:n_cells], dvdy_ptr[0:n_cells], \
+            map(to: dudx_ptr[0:total_size], dudy_ptr[0:total_size], \
+                    dvdx_ptr[0:total_size], dvdy_ptr[0:total_size], \
                     wall_dist_ptr[0:n_cells]) \
-            map(present: k_ptr[0:n_cells], omega_ptr[0:n_cells], nu_t_ptr[0:n_cells])
+            map(present: k_ptr[0:total_size], omega_ptr[0:total_size], nu_t_ptr[0:total_size])
         for (int idx = 0; idx < n_cells; ++idx) {
-            double k_loc = k_ptr[idx];
-            double omega_loc = omega_ptr[idx];
-            double y_wall = wall_dist_ptr[idx];
+            // Convert flat index to (i,j) including ghost cells
+            const int i = idx % Nx + 1;  // +1 to skip ghost cells
+            const int j = idx / Nx + 1;
+            const int cell_idx = j * stride + i;  // Stride-based index for arrays with ghosts
+            
+            double k_loc = k_ptr[cell_idx];
+            double omega_loc = omega_ptr[cell_idx];
+            double y_wall = wall_dist_ptr[idx];  // Wall dist is flat (no ghosts)
             
             k_loc = (k_loc > k_min) ? k_loc : k_min;
             omega_loc = (omega_loc > omega_min) ? omega_loc : omega_min;
             double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
             
-            // Strain rate magnitude
-            double Sxx = dudx_ptr[idx];
-            double Syy = dvdy_ptr[idx];
-            double Sxy = 0.5 * (dudy_ptr[idx] + dvdx_ptr[idx]);
+            // Strain rate magnitude from gradient fields (also have ghosts, use cell_idx)
+            double Sxx = dudx_ptr[cell_idx];
+            double Syy = dvdy_ptr[cell_idx];
+            double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
             double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
             
             // F2 blending function
@@ -160,7 +169,7 @@ void SSTClosure::compute_nu_t(
             double max_nu_t = 1000.0 * nu;
             nu_t_loc = (nu_t_loc < max_nu_t) ? nu_t_loc : max_nu_t;
             
-            nu_t_ptr[idx] = nu_t_loc;
+            nu_t_ptr[cell_idx] = nu_t_loc;  // Write to correct cell with ghosts
         }
         
         return;

@@ -438,8 +438,13 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
     }
     
 #ifdef USE_GPU_OFFLOAD
-    // Data already on GPU from initialize_gpu_buffers() called in constructor
-    // which uses map(to:) to copy initial values
+    // CRITICAL: Sync k_ and omega_ to GPU after CPU-side initialization
+    // These were modified at lines 419-420 AFTER initialize_gpu_buffers() ran
+    // Without this sync, GPU kernels will use stale zero values instead of proper initial conditions
+    if (gpu_ready_ && turb_model_ && turb_model_->uses_transport_equations()) {
+        #pragma omp target update to(k_ptr_[0:field_total_size_])
+        #pragma omp target update to(omega_ptr_[0:field_total_size_])
+    }
 #endif
 }
 
@@ -783,6 +788,16 @@ double RANSSolver::step() {
             omega_,      // Updated in-place
             nu_t_        // Previous step's nu_t for diffusion coefficients
         );
+        
+#ifdef USE_GPU_OFFLOAD
+        // CRITICAL FIX: Sync k and omega to GPU after transport equation update
+        // advance_turbulence() may update k/omega on CPU, so we need to sync to GPU
+        // before the next turbulence update() call which expects GPU-resident data
+        if (gpu_ready_) {
+            #pragma omp target update to(k_ptr_[0:field_total_size_])
+            #pragma omp target update to(omega_ptr_[0:field_total_size_])
+        }
+#endif
     }
     
     // 1b. Update turbulence model (compute nu_t and optional tau_ij)
@@ -791,7 +806,7 @@ double RANSSolver::step() {
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
         
-        // No sync needed - turbulence models compute directly on GPU using map(present:)
+        // No additional sync needed - turbulence models compute directly on GPU using map(present:)
         // nu_t is already resident on device and has been updated by the GPU kernel
     }
     
@@ -892,8 +907,24 @@ double RANSSolver::step() {
     // Apply BCs to provisional velocity (needed for divergence calculation)
     // Temporarily swap velocity_ and velocity_star_ to use apply_velocity_bc
     std::swap(velocity_, velocity_star_);
+#ifdef USE_GPU_OFFLOAD
+    // CRITICAL: std::swap invalidates GPU pointers - they still point to old memory
+    // After swap, velocity_u_ptr_ points to what is now velocity_star_ data!
+    // Must swap the pointers too to keep them consistent
+    if (gpu_ready_) {
+        std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+        std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+    }
+#endif
     apply_velocity_bc();
     std::swap(velocity_, velocity_star_);
+#ifdef USE_GPU_OFFLOAD
+    // Swap pointers back to restore original mapping
+    if (gpu_ready_) {
+        std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+        std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+    }
+#endif
     
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*

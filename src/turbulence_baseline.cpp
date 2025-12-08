@@ -170,17 +170,20 @@ void MixingLengthModel::update(
     }
 #endif
 
-    // CPU path
+    // CPU path - MUST match GPU path exactly for consistency
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double y_wall = mesh.wall_distance(i, j);
             double y_plus = y_wall * u_tau / nu_;
             
-            double damping = std::exp(-y_plus / A_plus_);
-            damping = 1.0 - damping;
+            // Use same formulation as GPU (single expression)
+            double damping = 1.0 - std::exp(-y_plus / A_plus_);
             
             double l_mix = kappa_ * y_wall * damping;
-            l_mix = std::min(l_mix, 0.5 * delta_);
+            // Use same min operation as GPU
+            if (l_mix > 0.5 * delta_) {
+                l_mix = 0.5 * delta_;
+            }
             
             double Sxx = dudx_(i, j);
             double Syy = dvdy_(i, j);
