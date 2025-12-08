@@ -9,6 +9,19 @@
 #include <omp.h>
 #endif
 
+#ifdef GPU_PROFILE_TRANSFERS
+#include <chrono>
+#endif
+
+#ifdef GPU_PROFILE_KERNELS
+#include <nvtx3/nvToolsExt.h>
+#define NVTX_PUSH(name) nvtxRangePushA(name)
+#define NVTX_POP() nvtxRangePop()
+#else
+#define NVTX_PUSH(name)
+#define NVTX_POP()
+#endif
+
 namespace nncfd {
 
 // ============================================================================
@@ -780,6 +793,7 @@ double RANSSolver::step() {
     // 1a. Advance turbulence transport equations (if model uses them)
     if (turb_model_ && turb_model_->uses_transport_equations()) {
         TIMED_SCOPE("turbulence_transport");
+        NVTX_PUSH("turbulence_transport");
         turb_model_->advance_turbulence(
             *mesh_,
             velocity_,
@@ -788,6 +802,7 @@ double RANSSolver::step() {
             omega_,      // Updated in-place
             nu_t_        // Previous step's nu_t for diffusion coefficients
         );
+        NVTX_POP();
         
 #ifdef USE_GPU_OFFLOAD
         // CRITICAL FIX: Sync k and omega to GPU after transport equation update
@@ -803,8 +818,10 @@ double RANSSolver::step() {
     // 1b. Update turbulence model (compute nu_t and optional tau_ij)
     if (turb_model_) {
         TIMED_SCOPE("turbulence_update");
+        NVTX_PUSH("turbulence_update");
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
+        NVTX_POP();
         
         // No additional sync needed - turbulence models compute directly on GPU using map(present:)
         // nu_t is already resident on device and has been updated by the GPU kernel
@@ -846,12 +863,16 @@ double RANSSolver::step() {
     // 2. Compute convective and diffusive terms (use persistent fields)
     {
         TIMED_SCOPE("convective_term");
+        NVTX_PUSH("convection");
         compute_convective_term(velocity_, conv_);
+        NVTX_POP();
     }
     
     {
         TIMED_SCOPE("diffusive_term");
+        NVTX_PUSH("diffusion");
         compute_diffusive_term(velocity_, nu_eff_, diff_);
+        NVTX_POP();
     }
     
     // 3. Compute provisional velocity u* (without pressure gradient)
@@ -930,7 +951,9 @@ double RANSSolver::step() {
     // nabla^2p' = (1/dt) nabla*u*
     {
         TIMED_SCOPE("divergence");
+        NVTX_PUSH("divergence");
         compute_divergence(velocity_star_, div_velocity_);
+        NVTX_POP();
     }
     
 #ifdef USE_GPU_OFFLOAD
@@ -973,6 +996,7 @@ double RANSSolver::step() {
     // 4b. Solve Poisson equation for pressure correction
     {
         TIMED_SCOPE("poisson_solve");
+        NVTX_PUSH("poisson_solve");
         PoissonConfig pcfg;
         pcfg.tol = config_.poisson_tol;
         pcfg.max_iter = config_.poisson_max_iter;
@@ -987,12 +1011,15 @@ double RANSSolver::step() {
         } else {
             poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
         }
+        NVTX_POP();
     }
     
     // 5. Correct velocity and pressure
     {
         TIMED_SCOPE("velocity_correction");
+        NVTX_PUSH("velocity_correction");
         correct_velocity();
+        NVTX_POP();
     }
     
     // 6. Apply boundary conditions
@@ -1426,6 +1453,10 @@ void RANSSolver::initialize_gpu_buffers() {
                   << " MB to GPU for persistent solver arrays...\n";
     }
     
+#ifdef GPU_PROFILE_TRANSFERS
+    auto transfer_start = std::chrono::steady_clock::now();
+#endif
+    
     // Map all arrays to GPU device and copy initial values
     // Using map(to:) instead of map(alloc:) to transfer initialized data
     // Data will persist on GPU for entire solver lifetime
@@ -1447,6 +1478,15 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: omega_ptr_[0:field_total_size_])
     
     gpu_ready_ = true;
+    
+#ifdef GPU_PROFILE_TRANSFERS
+    auto transfer_end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> transfer_time = transfer_end - transfer_start;
+    double mb_transferred = 16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0;
+    double bandwidth = mb_transferred / transfer_time.count();
+    std::cout << "[GPU_PROFILE] Initial H→D transfer: " << mb_transferred << " MB in " 
+              << transfer_time.count() << " s (" << bandwidth << " MB/s)\n";
+#endif
     
     if (config_.verbose) {
         std::cout << "✓ GPU arrays mapped successfully (persistent, data resident on device)\n";

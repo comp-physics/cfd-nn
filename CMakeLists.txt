@@ -8,6 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # GPU offload option (must be set before finding OpenMP)
 option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
+# GPU profiling options
+option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
+option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
+
 # Find OpenMP (optional on macOS where AppleClang lacks OpenMP)
 find_package(OpenMP)
 if(NOT OpenMP_CXX_FOUND)
@@ -95,6 +99,22 @@ endif()
 
 if(USE_BLAS AND BLAS_FOUND)
     target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})
+endif()
+
+# GPU profiling compile definitions
+if(GPU_PROFILE_TRANSFERS)
+    target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_TRANSFERS)
+    message(STATUS "GPU transfer profiling ENABLED")
+endif()
+
+if(GPU_PROFILE_KERNELS)
+    target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_KERNELS)
+    message(STATUS "GPU kernel profiling with NVTX ENABLED")
+    # NVTX library is typically included with CUDA/NVHPC
+    if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
+        # NVHPC includes NVTX, just need to link it
+        target_link_libraries(nn_cfd_core nvtx3)
+    endif()
 endif()
 
 # Executables
