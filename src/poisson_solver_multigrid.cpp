@@ -622,8 +622,11 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg) {
 #ifdef USE_GPU_OFFLOAD
     // Lazy GPU initialization on first solve
-    if (!gpu_ready_ && u_ptrs_.empty()) {
+    // Only try once - if gpu_ready_ is false after init, it means no GPU available
+    static bool init_attempted = false;
+    if (!init_attempted) {
         initialize_gpu_buffers();
+        init_attempted = true;
     }
 #endif
     

@@ -791,14 +791,8 @@ double RANSSolver::step() {
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
         
-#ifdef USE_GPU_OFFLOAD
-        // CRITICAL: Sync nu_t from CPU to GPU after turbulence model update
-        // Turbulence models compute nu_t on CPU (turbulence GPU path disabled
-        // when solver uses GPU to avoid conflicting device allocations)
-        if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
-            #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-        }
-#endif
+        // No sync needed - turbulence models compute directly on GPU using map(present:)
+        // nu_t is already resident on device and has been updated by the GPU kernel
     }
     
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
@@ -1055,6 +1049,12 @@ std::pair<double, int> RANSSolver::solve_steady() {
         }
     }
     
+#ifdef USE_GPU_OFFLOAD
+    // Sync all fields from GPU after solve completes
+    // This ensures CPU-side data is up-to-date for tests/analysis
+    sync_from_gpu();
+#endif
+    
     return {residual, iter_ + 1};
 }
 
@@ -1173,6 +1173,14 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
                      << e.what() << "\n";
         }
     }
+    
+#ifdef USE_GPU_OFFLOAD
+    // Sync all fields from GPU after solve completes
+    // write_vtk() calls sync_from_gpu(), but if no output was written we still need to sync
+    if (output_prefix.empty()) {
+        sync_from_gpu();
+    }
+#endif
     
     return {residual, iter_ + 1};
 }
