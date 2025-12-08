@@ -524,10 +524,11 @@ void compute_wj_coefficients_gpu(
     const double A4 = constants.A4();
     const double C_mu = 0.09;
     
+    // k and omega are already on GPU from solver; gradients and G are local
     #pragma omp target teams distribute parallel for \
         map(to: dudx[0:n_cells], dudy[0:n_cells], \
-                dvdx[0:n_cells], dvdy[0:n_cells], \
-                k[0:n_cells], omega[0:n_cells]) \
+                dvdx[0:n_cells], dvdy[0:n_cells]) \
+        is_device_ptr(k, omega) \
         map(from: G[0:n_cells*4])
     for (int idx = 0; idx < n_cells; ++idx) {
         // Strain and rotation
@@ -596,10 +597,11 @@ void compute_gs_coefficients_gpu(
     const double eta_max = constants.eta_max;
     const double C_mu_eps = 0.09;
     
+    // k and omega are already on GPU from solver; gradients and G are local
     #pragma omp target teams distribute parallel for \
         map(to: dudx[0:n_cells], dudy[0:n_cells], \
-                dvdx[0:n_cells], dvdy[0:n_cells], \
-                k[0:n_cells], omega[0:n_cells]) \
+                dvdx[0:n_cells], dvdy[0:n_cells]) \
+        is_device_ptr(k, omega) \
         map(from: G[0:n_cells*4])
     for (int idx = 0; idx < n_cells; ++idx) {
         double Sxx = dudx[idx];

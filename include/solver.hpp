@@ -167,10 +167,12 @@ private:
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
     
 #ifdef USE_GPU_OFFLOAD
-    // Persistent GPU mappings for solver fields (move once, reuse across iterations)
+    // Simplified GPU strategy: Data mapped once at initialization, stays resident on GPU
+    // All kernels use is_device_ptr to access already-mapped data
+    // No temporary map(to:/from:) clauses in kernels - eliminates mapping conflicts
     bool gpu_ready_ = false;
     
-    // Track pointers and sizes for all GPU-resident arrays
+    // Persistent pointers to GPU-resident arrays (mapped for solver lifetime)
     double* velocity_u_ptr_ = nullptr;
     double* velocity_v_ptr_ = nullptr;
     double* velocity_star_u_ptr_ = nullptr;
@@ -189,10 +191,10 @@ private:
     double* omega_ptr_ = nullptr;
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
     
-    void initialize_gpu_buffers();
-    void cleanup_gpu_buffers();
-    void sync_to_gpu();      // Upload all fields to GPU
-    void sync_from_gpu();    // Download all fields from GPU (for I/O)
+    void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)
+    void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
+    void sync_to_gpu();              // Update GPU after CPU-side modifications (rarely used)
+    void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
 #endif
 };
 

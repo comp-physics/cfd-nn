@@ -348,13 +348,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
 #ifdef USE_GPU_OFFLOAD
     initialize_gpu_buffers();
-    
-    // CRITICAL: Force turbulence models to use CPU path when solver uses GPU
-    // Reason: turbulence model GPU kernels use temporary map(to:/from:) allocations
-    // which are incompatible with solver's persistent GPU arrays
-    if (gpu_ready_) {
-        setenv("NNCFD_FORCE_CPU_TURB", "1", 1);
-    }
+    // GPU buffers are now mapped and will persist for solver lifetime
+    // All kernels (solver and turbulence models) will use is_device_ptr
 #endif
 }
 
@@ -404,8 +399,8 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
     }
     
 #ifdef USE_GPU_OFFLOAD
-    // Upload initial data to GPU
-    sync_to_gpu();
+    // Data already on GPU from initialize_gpu_buffers() called in constructor
+    // which uses map(to:) to copy initial values
 #endif
 }
 
@@ -443,8 +438,8 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
     }
     
 #ifdef USE_GPU_OFFLOAD
-    // Upload initial data to GPU
-    sync_to_gpu();
+    // Data already on GPU from initialize_gpu_buffers() called in constructor
+    // which uses map(to:) to copy initial values
 #endif
 }
 
@@ -469,16 +464,13 @@ void RANSSolver::apply_velocity_bc() {
 
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
-        const size_t total_size = field_total_size_;
         double* u_ptr = velocity_u_ptr_;
         double* v_ptr = velocity_v_ptr_;
 
-        // x-direction BCs
+        // x-direction BCs - use is_device_ptr since data is already mapped
         const int n_x_bc = total_Ny * Ng;
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size], v_ptr[0:total_size]) \
-            firstprivate(Nx, Ny, Ng, stride, n_x_bc, \
-                         x_lo_periodic, x_lo_noslip, x_hi_periodic, x_hi_noslip)
+            is_device_ptr(u_ptr, v_ptr)
         for (int idx = 0; idx < n_x_bc; ++idx) {
             int j = idx / Ng;
             int g = idx % Ng;
@@ -488,12 +480,10 @@ void RANSSolver::apply_velocity_bc() {
                                      u_ptr, v_ptr);
         }
 
-        // y-direction BCs
+        // y-direction BCs - use is_device_ptr since data is already mapped
         const int n_y_bc = total_Nx * Ng;
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size], v_ptr[0:total_size]) \
-            firstprivate(Nx, Ny, Ng, stride, n_y_bc, \
-                         y_lo_periodic, y_lo_noslip, y_hi_periodic, y_hi_noslip)
+            is_device_ptr(u_ptr, v_ptr)
         for (int idx = 0; idx < n_y_bc; ++idx) {
             int i = idx / Ng;
             int g = idx % Ng;
@@ -1392,46 +1382,53 @@ void RANSSolver::initialize_gpu_buffers() {
     omega_ptr_ = omega_.data().data();
     
     if (config_.verbose) {
-        std::cout << "Allocating " << (16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
-                  << " MB on GPU for persistent solver arrays...\n";
+        std::cout << "Mapping " << (16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
+                  << " MB to GPU for persistent solver arrays...\n";
     }
     
-    // Allocate all arrays on GPU device (separate pragmas for nvhpc compatibility)
-    #pragma omp target enter data map(alloc: velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: velocity_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: velocity_star_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: pressure_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: pressure_corr_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: nu_t_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: nu_eff_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: conv_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: conv_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: diff_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: diff_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: rhs_poisson_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: div_velocity_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: k_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: omega_ptr_[0:field_total_size_])
+    // Map all arrays to GPU device and copy initial values
+    // Using map(to:) instead of map(alloc:) to transfer initialized data
+    // Data will persist on GPU for entire solver lifetime
+    #pragma omp target enter data map(to: velocity_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: velocity_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: velocity_star_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: velocity_star_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: pressure_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: pressure_corr_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: nu_eff_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: conv_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: conv_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: diff_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: diff_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: k_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: omega_ptr_[0:field_total_size_])
     
     gpu_ready_ = true;
     
     if (config_.verbose) {
-        std::cout << "✓ GPU arrays allocated successfully\n";
+        std::cout << "✓ GPU arrays mapped successfully (persistent, data resident on device)\n";
     }
 }
 
 void RANSSolver::cleanup_gpu_buffers() {
     if (!gpu_ready_) return;
     
-    // Free all GPU arrays (separate pragmas for nvhpc compatibility)
-    #pragma omp target exit data map(delete: velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: velocity_v_ptr_[0:field_total_size_])
+    // Copy final results back from GPU, then free device memory
+    // Using map(from:) to get final state back to host
+    #pragma omp target exit data map(from: velocity_u_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: velocity_v_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: pressure_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: nu_t_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: k_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: omega_ptr_[0:field_total_size_])
+    
+    // Delete temporary/work arrays without copying back
     #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: velocity_star_v_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: pressure_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: pressure_corr_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: nu_t_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: nu_eff_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: conv_u_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: conv_v_ptr_[0:field_total_size_])
@@ -1439,8 +1436,6 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: diff_v_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: div_velocity_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: k_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: omega_ptr_[0:field_total_size_])
     
     gpu_ready_ = false;
 }
@@ -1448,15 +1443,12 @@ void RANSSolver::cleanup_gpu_buffers() {
 void RANSSolver::sync_to_gpu() {
     if (!gpu_ready_) return;
     
-    // Upload all fields from CPU to GPU
+    // Update GPU with changed fields (typically after CPU-side modifications)
+    // In normal operation, this is rarely needed since all computation is on GPU
     #pragma omp target update to(velocity_u_ptr_[0:field_total_size_])
     #pragma omp target update to(velocity_v_ptr_[0:field_total_size_])
-    #pragma omp target update to(velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target update to(velocity_star_v_ptr_[0:field_total_size_])
     #pragma omp target update to(pressure_ptr_[0:field_total_size_])
-    #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-    #pragma omp target update to(nu_eff_ptr_[0:field_total_size_])
     #pragma omp target update to(k_ptr_[0:field_total_size_])
     #pragma omp target update to(omega_ptr_[0:field_total_size_])
 }
@@ -1464,13 +1456,11 @@ void RANSSolver::sync_to_gpu() {
 void RANSSolver::sync_from_gpu() {
     if (!gpu_ready_) return;
     
-    // Download all fields from GPU to CPU (for I/O)
+    // Download only solution fields needed for I/O (data stays on GPU)
+    // This is called before write_vtk, write_fields, or when accessing fields from CPU
     #pragma omp target update from(velocity_u_ptr_[0:field_total_size_])
     #pragma omp target update from(velocity_v_ptr_[0:field_total_size_])
-    #pragma omp target update from(velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target update from(velocity_star_v_ptr_[0:field_total_size_])
     #pragma omp target update from(pressure_ptr_[0:field_total_size_])
-    #pragma omp target update from(pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target update from(nu_t_ptr_[0:field_total_size_])
     #pragma omp target update from(k_ptr_[0:field_total_size_])
     #pragma omp target update from(omega_ptr_[0:field_total_size_])

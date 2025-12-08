@@ -100,9 +100,9 @@ void SSTClosure::compute_nu_t(
         const double* dudy_ptr = dudy_.data().data();
         const double* dvdx_ptr = dvdx_.data().data();
         const double* dvdy_ptr = dvdy_.data().data();
-        const double* k_ptr = k.data().data();
-        const double* omega_ptr = omega.data().data();
-        double* nu_t_ptr = nu_t.data().data();
+        const double* k_ptr = k.data().data();        // Already on GPU from solver
+        const double* omega_ptr = omega.data().data(); // Already on GPU from solver
+        double* nu_t_ptr = nu_t.data().data();         // Already on GPU from solver
         
         const double nu = nu_;
         const double beta_star = constants_.beta_star;
@@ -119,12 +119,13 @@ void SSTClosure::compute_nu_t(
         }
         const double* wall_dist_ptr = wall_dist.data();
         
+        // Use is_device_ptr for solver-mapped arrays (k, omega, nu_t)
+        // Use temporary map(to:) for local gradient and wall distance arrays
         #pragma omp target teams distribute parallel for \
             map(to: dudx_ptr[0:n_cells], dudy_ptr[0:n_cells], \
                     dvdx_ptr[0:n_cells], dvdy_ptr[0:n_cells], \
-                    k_ptr[0:n_cells], omega_ptr[0:n_cells], \
                     wall_dist_ptr[0:n_cells]) \
-            map(from: nu_t_ptr[0:n_cells])
+            is_device_ptr(k_ptr, omega_ptr, nu_t_ptr)
         for (int idx = 0; idx < n_cells; ++idx) {
             double k_loc = k_ptr[idx];
             double omega_loc = omega_ptr[idx];

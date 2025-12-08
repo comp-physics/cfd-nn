@@ -109,22 +109,8 @@ void MixingLengthModel::update(
     const int total_cells = mesh.total_cells();
 
 #ifdef USE_GPU_OFFLOAD
-    // Allow forcing CPU path at runtime for CPU/GPU comparison
-    bool force_cpu_path = false;
-    if (const char* env = std::getenv("NNCFD_FORCE_CPU_TURB")) {
-        force_cpu_path = (std::atoi(env) != 0);
-    }
-    
-    static bool first_update = true;
-    if (first_update) {
-        std::cout << "[MixingLengthModel] GPU offload: devices=" << omp_get_num_devices()
-                  << ", force_cpu=" << force_cpu_path
-                  << ", Nx=" << Nx << ", Ny=" << Ny << std::endl;
-        first_update = false;
-    }
-    
-    // GPU path: same kernel, different parallelization + data source
-    if (!force_cpu_path && omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+    // GPU path: use is_device_ptr for nu_t since it's already mapped by solver
+    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
         const int n_cells = Nx * Ny;
 
         // Copy member variables to local scope (NVHPC workaround)
@@ -147,15 +133,16 @@ void MixingLengthModel::update(
         double* dudy_ptr = dudy_.data().data();
         double* dvdx_ptr = dvdx_.data().data();
         double* dvdy_ptr = dvdy_.data().data();
-        double* nu_t_ptr = nu_t.data().data();
+        double* nu_t_ptr = nu_t.data().data();  // Already on GPU from solver
         double* y_wall_ptr = y_wall_vec.data();
 
-        // GPU kernel: compute mixing length eddy viscosity (matching CPU path exactly)
+        // GPU kernel: compute mixing length eddy viscosity
+        // Local gradient arrays use temporary map(to:), nu_t uses is_device_ptr
         #pragma omp target teams distribute parallel for \
             map(to: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells], \
                     dvdx_ptr[0:total_cells], dvdy_ptr[0:total_cells], \
                     y_wall_ptr[0:total_cells]) \
-            map(from: nu_t_ptr[0:total_cells])
+            is_device_ptr(nu_t_ptr)
         for (int idx = 0; idx < n_cells; ++idx) {
             const int i = idx % Nx + 1;  // interior i (skip ghost)
             const int j = idx / Nx + 1;  // interior j (skip ghost)

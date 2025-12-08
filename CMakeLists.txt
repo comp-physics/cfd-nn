@@ -108,8 +108,9 @@ add_executable(test_nn_simple app/test_nn_simple.cpp)
 target_link_libraries(test_nn_simple nn_cfd_core)
 
 # Verification tool for CPU/GPU unified kernels
-add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
-target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
+# (Commented out - file doesn't exist in current branch)
+#add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
+#target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
 
 # Lockstep CPU vs GPU comparison tool
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
