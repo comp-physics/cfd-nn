@@ -119,13 +119,13 @@ void SSTClosure::compute_nu_t(
         }
         const double* wall_dist_ptr = wall_dist.data();
         
-        // Use is_device_ptr for solver-mapped arrays (k, omega, nu_t)
+        // Use map(present:) for solver-mapped arrays (k, omega, nu_t)
         // Use temporary map(to:) for local gradient and wall distance arrays
         #pragma omp target teams distribute parallel for \
             map(to: dudx_ptr[0:n_cells], dudy_ptr[0:n_cells], \
                     dvdx_ptr[0:n_cells], dvdy_ptr[0:n_cells], \
                     wall_dist_ptr[0:n_cells]) \
-            is_device_ptr(k_ptr, omega_ptr, nu_t_ptr)
+            map(present: k_ptr[0:n_cells], omega_ptr[0:n_cells], nu_t_ptr[0:n_cells])
         for (int idx = 0; idx < n_cells; ++idx) {
             double k_loc = k_ptr[idx];
             double omega_loc = omega_ptr[idx];

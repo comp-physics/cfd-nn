@@ -176,11 +176,11 @@ void TurbulenceGEP::update(const Mesh& mesh,
             }
             const double* u_mag_ptr = u_mag_flat.data();
             
-            // GPU kernel - use is_device_ptr for nu_t (mapped by solver)
+            // GPU kernel - use map(present:) for nu_t (mapped by solver)
             #pragma omp target teams distribute parallel for \
                 map(to: S_mag_ptr[0:n_cells], Omega_mag_ptr[0:n_cells], \
                         wall_dist_ptr[0:n_cells], u_mag_ptr[0:n_cells]) \
-                is_device_ptr(nu_t_ptr)
+                map(present: nu_t_ptr[0:n_cells])
             for (int idx = 0; idx < n_cells; ++idx) {
                 // Get wall distance
                 double y_wall = wall_dist_ptr[idx];

@@ -528,7 +528,7 @@ void compute_wj_coefficients_gpu(
     #pragma omp target teams distribute parallel for \
         map(to: dudx[0:n_cells], dudy[0:n_cells], \
                 dvdx[0:n_cells], dvdy[0:n_cells]) \
-        is_device_ptr(k, omega) \
+        map(present: k[0:n_cells], omega[0:n_cells]) \
         map(from: G[0:n_cells*4])
     for (int idx = 0; idx < n_cells; ++idx) {
         // Strain and rotation
@@ -601,7 +601,7 @@ void compute_gs_coefficients_gpu(
     #pragma omp target teams distribute parallel for \
         map(to: dudx[0:n_cells], dudy[0:n_cells], \
                 dvdx[0:n_cells], dvdy[0:n_cells]) \
-        is_device_ptr(k, omega) \
+        map(present: k[0:n_cells], omega[0:n_cells]) \
         map(from: G[0:n_cells*4])
     for (int idx = 0; idx < n_cells; ++idx) {
         double Sxx = dudx[idx];

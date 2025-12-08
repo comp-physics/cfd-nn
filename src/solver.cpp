@@ -466,11 +466,12 @@ void RANSSolver::apply_velocity_bc() {
     if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
         double* u_ptr = velocity_u_ptr_;
         double* v_ptr = velocity_v_ptr_;
+        const size_t total_size = field_total_size_;
 
-        // x-direction BCs - use is_device_ptr since data is already mapped
+        // x-direction BCs - use map(present:) for already-mapped data
         const int n_x_bc = total_Ny * Ng;
         #pragma omp target teams distribute parallel for \
-            is_device_ptr(u_ptr, v_ptr)
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size])
         for (int idx = 0; idx < n_x_bc; ++idx) {
             int j = idx / Ng;
             int g = idx % Ng;
@@ -480,10 +481,10 @@ void RANSSolver::apply_velocity_bc() {
                                      u_ptr, v_ptr);
         }
 
-        // y-direction BCs - use is_device_ptr since data is already mapped
+        // y-direction BCs - use map(present:) for already-mapped data
         const int n_y_bc = total_Nx * Ng;
         #pragma omp target teams distribute parallel for \
-            is_device_ptr(u_ptr, v_ptr)
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size])
         for (int idx = 0; idx < n_y_bc; ++idx) {
             int i = idx / Ng;
             int g = idx % Ng;

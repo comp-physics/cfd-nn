@@ -137,12 +137,12 @@ void MixingLengthModel::update(
         double* y_wall_ptr = y_wall_vec.data();
 
         // GPU kernel: compute mixing length eddy viscosity
-        // Local gradient arrays use temporary map(to:), nu_t uses is_device_ptr
+        // Local gradient arrays use temporary map(to:), nu_t uses map(present:)
         #pragma omp target teams distribute parallel for \
             map(to: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells], \
                     dvdx_ptr[0:total_cells], dvdy_ptr[0:total_cells], \
                     y_wall_ptr[0:total_cells]) \
-            is_device_ptr(nu_t_ptr)
+            map(present: nu_t_ptr[0:total_cells])
         for (int idx = 0; idx < n_cells; ++idx) {
             const int i = idx % Nx + 1;  // interior i (skip ghost)
             const int j = idx / Nx + 1;  // interior j (skip ghost)
