@@ -41,6 +41,13 @@ jobs:
     
     - name: Configure CMake
       run: |
+        echo "========================================="
+        echo "Building CPU-only version (no GPU offload)"
+        echo "========================================="
+        echo ""
+        echo "Note: This CI workflow tests CPU-only builds."
+        echo "GPU offload is tested separately in gpu-ci.yml workflow."
+        echo ""
         mkdir -p build
         cd build
         cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}

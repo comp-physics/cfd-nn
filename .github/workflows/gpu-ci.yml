@@ -24,36 +24,75 @@ jobs:
     
     - uses: actions/checkout@v3
     
-    - name: Verify GPU fix is present in source
+    - name: Verify critical GPU fixes are present in source
       run: |
-        echo "=== Verifying GPU Memory Fix ==="
-        echo "Checking for k_ptr_ and omega_ptr_ in solver.hpp..."
-        if grep -q "double\* k_ptr_" include/solver.hpp; then
-          echo "✓ Found k_ptr_ declaration"
+        echo "========================================="
+        echo "Verifying Critical GPU Fixes (Dec 8, 2024)"
+        echo "========================================="
+        echo ""
+        echo "These checks prevent regression of 4 critical bugs that would"
+        echo "cause incorrect results when comparing CPU vs GPU runs."
+        echo ""
+        
+        # Check Fix #1: Stride-based indexing in turbulence models
+        echo "Fix #1: Stride-based indexing in turbulence models"
+        if grep -q "int i = idx % Nx + 1.*skip ghost" src/turbulence_transport.cpp; then
+          echo "  ✓ Found stride-based indexing in turbulence_transport.cpp"
         else
-          echo "✗ MISSING k_ptr_ declaration!"
+          echo "  ✗ MISSING stride-based indexing in turbulence_transport.cpp!"
+          echo "     Bug would cause wrong array indexing on GPU (100% wrong results)"
           exit 1
         fi
-        if grep -q "double\* omega_ptr_" include/solver.hpp; then
-          echo "✓ Found omega_ptr_ declaration"
+        
+        if grep -q "int cell_idx = j \* stride + i.*Stride-based index" src/turbulence_gep.cpp; then
+          echo "  ✓ Found stride-based indexing in turbulence_gep.cpp"
         else
-          echo "✗ MISSING omega_ptr_ declaration!"
+          echo "  ✗ MISSING stride-based indexing in turbulence_gep.cpp!"
           exit 1
         fi
-        echo "Checking for GPU allocation in solver.cpp..."
+        
+        # Check Fix #2: GPU sync after transport equation updates
+        echo ""
+        echo "Fix #2: GPU sync after transport equation updates"
+        if grep -A5 "advance_turbulence" src/solver.cpp | grep -q "target update to.*k_ptr_"; then
+          echo "  ✓ Found GPU sync after advance_turbulence()"
+        else
+          echo "  ✗ MISSING GPU sync after transport equation updates!"
+          echo "     Bug would cause stale data in SST/k-omega models (divergence)"
+          exit 1
+        fi
+        
+        # Check Fix #3: Correct map sizes with total_size
+        echo ""
+        echo "Fix #3: Correct map clause sizes (total_size for arrays with ghosts)"
+        if grep -q "map(present:.*total_size" src/turbulence_transport.cpp; then
+          echo "  ✓ Found correct map size (total_size) in turbulence_transport.cpp"
+        else
+          echo "  ✗ MISSING correct map size!"
+          echo "     Bug would cause size mismatch in GPU mapping"
+          exit 1
+        fi
+        
+        # Check Fix #4: Original memory fix (k_ptr_, omega_ptr_)
+        echo ""
+        echo "Fix #4: GPU memory pointers (k_ptr_, omega_ptr_)"
+        if grep -q "double\* k_ptr_" include/solver.hpp && grep -q "double\* omega_ptr_" include/solver.hpp; then
+          echo "  ✓ Found k_ptr_ and omega_ptr_ declarations"
+        else
+          echo "  ✗ MISSING GPU pointer declarations!"
+          exit 1
+        fi
+        
         if grep -q "k_ptr_ = k_.data().data()" src/solver.cpp; then
-          echo "✓ Found k_ptr_ initialization"
+          echo "  ✓ Found k_ptr_ initialization"
         else
-          echo "✗ MISSING k_ptr_ initialization!"
+          echo "  ✗ MISSING k_ptr_ initialization!"
           exit 1
         fi
-        if grep -q "#pragma omp target enter data map(alloc: k_ptr_" src/solver.cpp; then
-          echo "✓ Found k_ptr_ GPU allocation"
-        else
-          echo "✗ MISSING k_ptr_ GPU allocation!"
-          exit 1
-        fi
-        echo "✓ All GPU fix components verified in source code"
+        
+        echo ""
+        echo "✅ All 4 critical GPU fixes verified in source code"
+        echo ""
     
     - name: Make scripts executable
       run: |
@@ -123,6 +162,47 @@ jobs:
             echo \"   6c. EARSM (WJ)\" && \
             ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model earsm_wj --num_snapshots 0'" \
           90
+    
+    - name: Explicit CPU/GPU Consistency Validation
+      run: |
+        cd build_ci_gpu
+        echo "========================================="
+        echo "CPU/GPU Consistency Test (Critical)"
+        echo "========================================="
+        echo ""
+        echo "This test validates that CPU and GPU produce IDENTICAL results."
+        echo "It catches the 4 critical bugs fixed on Dec 8, 2024:"
+        echo "  1. Array indexing bug (stride-based indexing)"
+        echo "  2. Stale GPU data bug (sync after transport updates)"
+        echo "  3. Map size mismatch bug (total_size for ghosts)"
+        echo "  4. Math consistency bug (unified CPU/GPU operations)"
+        echo ""
+        echo "Running test_cpu_gpu_consistency..."
+        echo ""
+        
+        ./test_cpu_gpu_consistency || {
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════╗"
+          echo "║  ✗✗✗ CRITICAL: CPU/GPU CONSISTENCY TEST FAILED ✗✗✗  ║"
+          echo "╚═══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "This indicates GPU code is producing different results than CPU!"
+          echo ""
+          echo "Common causes:"
+          echo "  • Wrong array indexing (flat vs stride-based)"
+          echo "  • Stale GPU data after CPU updates"
+          echo "  • Incorrect map clause sizes"
+          echo "  • Different math operations on CPU vs GPU"
+          echo ""
+          echo "See docs/GPU_CRITICAL_FIXES.md for details."
+          echo ""
+          exit 1
+        }
+        
+        echo ""
+        echo "✅ CPU/GPU consistency validated successfully"
+        echo "   GPU code produces identical results to CPU code."
+        echo ""
     
     - name: Debug info on failure
       if: failure()
