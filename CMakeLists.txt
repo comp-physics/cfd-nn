@@ -8,6 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # GPU offload option (must be set before finding OpenMP)
 option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
+# GPU profiling options
+option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
+option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
+
 # Find OpenMP (optional on macOS where AppleClang lacks OpenMP)
 find_package(OpenMP)
 if(NOT OpenMP_CXX_FOUND)
@@ -82,6 +86,8 @@ set(LIB_SOURCES
     src/turbulence_gep.cpp
     src/turbulence_nn_mlp.cpp
     src/turbulence_nn_tbnn.cpp
+    src/turbulence_transport.cpp
+    src/turbulence_earsm.cpp
     src/gpu_kernels.cpp
 )
 
@@ -95,6 +101,25 @@ if(USE_BLAS AND BLAS_FOUND)
     target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})
 endif()
 
+# GPU profiling compile definitions
+if(GPU_PROFILE_TRANSFERS)
+    target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_TRANSFERS)
+    message(STATUS "GPU transfer profiling ENABLED")
+endif()
+
+if(GPU_PROFILE_KERNELS)
+    target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_KERNELS)
+    message(STATUS "GPU kernel profiling with NVTX ENABLED")
+    # Try to find NVTX library (optional)
+    find_library(NVTX_LIB NAMES nvtx3 nvToolsExt PATHS ENV LD_LIBRARY_PATH)
+    if(NVTX_LIB)
+        target_link_libraries(nn_cfd_core ${NVTX_LIB})
+        message(STATUS "  NVTX library found: ${NVTX_LIB}")
+    else()
+        message(STATUS "  NVTX library not found - will use lightweight markers only")
+    endif()
+endif()
+
 # Executables
 add_executable(channel app/main_channel.cpp)
 target_link_libraries(channel nn_cfd_core)
@@ -104,6 +129,15 @@ target_link_libraries(periodic_hills nn_cfd_core)
 
 add_executable(test_nn_simple app/test_nn_simple.cpp)
 target_link_libraries(test_nn_simple nn_cfd_core)
+
+# Verification tool for CPU/GPU unified kernels
+# (Commented out - file doesn't exist in current branch)
+#add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
+#target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
+
+# Lockstep CPU vs GPU comparison tool
+add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
+target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
@@ -145,6 +179,14 @@ if(BUILD_TESTS)
     add_executable(test_gpu_execution tests/test_gpu_execution.cpp)
     target_link_libraries(test_gpu_execution nn_cfd_core)
     add_test(NAME GPUExecutionTest COMMAND test_gpu_execution)
+    
+    add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
+    target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
+    add_test(NAME CPUGPUConsistencyTest COMMAND test_cpu_gpu_consistency)
+    
+    add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
+    target_link_libraries(test_time_history_consistency nn_cfd_core)
+    add_test(NAME TimeHistoryConsistencyTest COMMAND test_time_history_consistency)
 endif()
 
 # Installation

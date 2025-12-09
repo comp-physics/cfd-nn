@@ -123,6 +123,16 @@ void Config::load(const std::string& filename) {
         turb_model = TurbulenceModelType::NNMLP;
     } else if (model_str == "nn_tbnn") {
         turb_model = TurbulenceModelType::NNTBNN;
+    } else if (model_str == "sst" || model_str == "sst_komega") {
+        turb_model = TurbulenceModelType::SSTKOmega;
+    } else if (model_str == "komega" || model_str == "k-omega") {
+        turb_model = TurbulenceModelType::KOmega;
+    } else if (model_str == "earsm_wj" || model_str == "wallin_johansson") {
+        turb_model = TurbulenceModelType::EARSM_WJ;
+    } else if (model_str == "earsm_gs" || model_str == "gatski_speziale") {
+        turb_model = TurbulenceModelType::EARSM_GS;
+    } else if (model_str == "earsm_pope" || model_str == "pope") {
+        turb_model = TurbulenceModelType::EARSM_Pope;
     } else {
         turb_model = TurbulenceModelType::None;
     }
@@ -184,6 +194,16 @@ void Config::parse_args(int argc, char** argv) {
                 turb_model = TurbulenceModelType::NNMLP;
             } else if (model == "nn_tbnn") {
                 turb_model = TurbulenceModelType::NNTBNN;
+            } else if (model == "sst" || model == "sst_komega") {
+                turb_model = TurbulenceModelType::SSTKOmega;
+            } else if (model == "komega" || model == "k-omega") {
+                turb_model = TurbulenceModelType::KOmega;
+            } else if (model == "earsm_wj" || model == "wallin_johansson") {
+                turb_model = TurbulenceModelType::EARSM_WJ;
+            } else if (model == "earsm_gs" || model == "gatski_speziale") {
+                turb_model = TurbulenceModelType::EARSM_GS;
+            } else if (model == "earsm_pope" || model == "pope") {
+                turb_model = TurbulenceModelType::EARSM_Pope;
             }
         } else if (arg == "--weights" && i + 1 < argc) {
             nn_weights_path = argv[++i];
@@ -217,7 +237,10 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --dt T            Time step\n"
                       << "  --max_iter N      Maximum iterations\n"
                       << "  --tol T           Convergence tolerance\n"
-                      << "  --model M         Turbulence model (none, baseline, gep, nn_mlp, nn_tbnn)\n"
+                      << "  --model M         Turbulence model:\n"
+                      << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
+                      << "                      sst, komega (transport models)\n"
+                      << "                      earsm_wj, earsm_gs, earsm_pope (EARSM)\n"
                       << "  --nn_preset NAME  Use preset model from data/models/<NAME>\n"
                       << "  --weights DIR     NN weights directory (overrides preset)\n"
                       << "  --scaling DIR     NN scaling directory (overrides preset)\n"
@@ -359,6 +382,11 @@ void Config::print() const {
         case TurbulenceModelType::GEP: std::cout << "GEP (Weatheritt-Sandberg)"; break;
         case TurbulenceModelType::NNMLP: std::cout << "NN-MLP"; break;
         case TurbulenceModelType::NNTBNN: std::cout << "NN-TBNN"; break;
+        case TurbulenceModelType::SSTKOmega: std::cout << "SST k-omega"; break;
+        case TurbulenceModelType::KOmega: std::cout << "k-omega (Wilcox)"; break;
+        case TurbulenceModelType::EARSM_WJ: std::cout << "SST + Wallin-Johansson EARSM"; break;
+        case TurbulenceModelType::EARSM_GS: std::cout << "SST + Gatski-Speziale EARSM"; break;
+        case TurbulenceModelType::EARSM_Pope: std::cout << "SST + Pope Quadratic EARSM"; break;
     }
     std::cout << "\n";
     

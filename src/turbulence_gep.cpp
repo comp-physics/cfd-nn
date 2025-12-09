@@ -158,11 +158,16 @@ void TurbulenceGEP::update(const Mesh& mesh,
             const double* wall_dist_ptr = wall_dist_flat.data();
             const double* u_ptr = velocity.u_field().data().data();
             const double* v_ptr = velocity.v_field().data().data();
-            double* nu_t_ptr = nu_t.data().data();
+            double* nu_t_ptr = nu_t.data().data();  // Already on GPU from solver
             
+            const int Nx = mesh.Nx;
             const int variant_int = static_cast<int>(variant_);
             const double nu = nu_;
             const double nu_t_max = nu_t_max_;
+            const int stride = mesh.total_Nx();
+            const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+            const double kappa = 0.41;
+            const double A_plus = 26.0;
             
             // Flatten velocity magnitudes (avoid complex indexing on GPU)
             std::vector<double> u_mag_flat(n_cells);
@@ -176,13 +181,20 @@ void TurbulenceGEP::update(const Mesh& mesh,
             }
             const double* u_mag_ptr = u_mag_flat.data();
             
-            // GPU kernel
+            // CRITICAL FIX: Use stride-based indexing for nu_t (has ghost cells)
+            // GPU kernel - use map(present:) for nu_t with full size including ghosts
             #pragma omp target teams distribute parallel for \
                 map(to: S_mag_ptr[0:n_cells], Omega_mag_ptr[0:n_cells], \
                         wall_dist_ptr[0:n_cells], u_mag_ptr[0:n_cells]) \
-                map(from: nu_t_ptr[0:n_cells])
+                map(present: nu_t_ptr[0:total_size]) \
+                firstprivate(Nx, stride)
             for (int idx = 0; idx < n_cells; ++idx) {
-                // Get wall distance
+                // Convert flat index to (i,j) including ghost cells
+                const int i = idx % Nx + 1;  // +1 to skip ghost cells
+                const int j = idx / Nx + 1;
+                const int cell_idx = j * stride + i;  // Stride-based index
+                
+                // Get wall distance (flat array, no ghosts)
                 double y_wall = wall_dist_ptr[idx];
                 
                 // Estimate u_tau from local velocity magnitude
@@ -191,7 +203,7 @@ void TurbulenceGEP::update(const Mesh& mesh,
                 u_tau_est = fmax(u_tau_est, 1e-6);
                 double y_plus = y_wall * u_tau_est / nu;
                 
-                // Get strain/rotation from features
+                // Get strain/rotation from features (flat arrays, no ghosts)
                 double S_mag = S_mag_ptr[idx];
                 double Omega_mag = Omega_mag_ptr[idx];
                 
@@ -228,7 +240,7 @@ void TurbulenceGEP::update(const Mesh& mesh,
                 if (nu_t_val < 0.0) nu_t_val = 0.0;
                 if (nu_t_val > nu_t_max) nu_t_val = nu_t_max;
                 
-                nu_t_ptr[idx] = nu_t_val;
+                nu_t_ptr[cell_idx] = nu_t_val;  // Use stride-based index
             }
             
             return;

@@ -9,7 +9,337 @@
 #include <omp.h>
 #endif
 
+#ifdef GPU_PROFILE_TRANSFERS
+#include <chrono>
+#endif
+
+#ifdef GPU_PROFILE_KERNELS
+// Try to use NVTX if available, otherwise use lightweight markers
+#if __has_include(<nvtx3/nvToolsExt.h>)
+    #include <nvtx3/nvToolsExt.h>
+    #define NVTX_PUSH(name) nvtxRangePushA(name)
+    #define NVTX_POP() nvtxRangePop()
+    #define NVTX_AVAILABLE 1
+#else
+    // Lightweight markers when NVTX is not available
+    #define NVTX_PUSH(name) do { if (false) std::cout << "NVTX: " << name << std::endl; } while(0)
+    #define NVTX_POP() do { } while(0)
+    #define NVTX_AVAILABLE 0
+#endif
+#else
+#define NVTX_PUSH(name)
+#define NVTX_POP()
+#endif
+
 namespace nncfd {
+
+// ============================================================================
+// Unified CPU/GPU kernels - single source of truth for numerical algorithms
+// These kernels are compiled for both host and device when USE_GPU_OFFLOAD is on
+// ============================================================================
+
+#ifdef USE_GPU_OFFLOAD
+#pragma omp declare target
+#endif
+
+// Boundary condition kernel for x-direction
+inline void apply_velocity_bc_x_cell(
+    int j, int g,
+    int Nx, int Ng, int stride,
+    bool x_lo_periodic, bool x_lo_noslip,
+    bool x_hi_periodic, bool x_hi_noslip,
+    double* u_ptr, double* v_ptr)
+{
+    // Left boundary
+    int i_ghost_left     = g;
+    int i_interior_left  = Ng;
+    int i_periodic_left  = Nx + Ng - 1 - g;
+
+    int idx_ghost_left    = j * stride + i_ghost_left;
+    int idx_interior_left = j * stride + i_interior_left;
+    int idx_periodic_left = j * stride + i_periodic_left;
+
+    if (x_lo_periodic) {
+        u_ptr[idx_ghost_left] = u_ptr[idx_periodic_left];
+        v_ptr[idx_ghost_left] = v_ptr[idx_periodic_left];
+    } else if (x_lo_noslip) {
+        u_ptr[idx_ghost_left] = -u_ptr[idx_interior_left];
+        v_ptr[idx_ghost_left] = -v_ptr[idx_interior_left];
+    }
+
+    // Right boundary
+    int i_ghost_right     = Nx + Ng + g;
+    int i_interior_right  = Nx + Ng - 1;
+    int i_periodic_right  = Ng + g;
+
+    int idx_ghost_right    = j * stride + i_ghost_right;
+    int idx_interior_right = j * stride + i_interior_right;
+    int idx_periodic_right = j * stride + i_periodic_right;
+
+    if (x_hi_periodic) {
+        u_ptr[idx_ghost_right] = u_ptr[idx_periodic_right];
+        v_ptr[idx_ghost_right] = v_ptr[idx_periodic_right];
+    } else if (x_hi_noslip) {
+        u_ptr[idx_ghost_right] = -u_ptr[idx_interior_right];
+        v_ptr[idx_ghost_right] = -v_ptr[idx_interior_right];
+    }
+}
+
+// Boundary condition kernel for y-direction
+inline void apply_velocity_bc_y_cell(
+    int i, int g,
+    int Ny, int Ng, int stride,
+    bool y_lo_periodic, bool y_lo_noslip,
+    bool y_hi_periodic, bool y_hi_noslip,
+    double* u_ptr, double* v_ptr)
+{
+    // Bottom wall
+    int j_ghost_bot     = g;
+    int j_interior_bot  = Ng;
+    int j_periodic_bot  = Ny + Ng - 1 - g;
+
+    int idx_ghost_bot    = j_ghost_bot * stride + i;
+    int idx_interior_bot = j_interior_bot * stride + i;
+    int idx_periodic_bot = j_periodic_bot * stride + i;
+
+    if (y_lo_noslip) {
+        u_ptr[idx_ghost_bot] = -u_ptr[idx_interior_bot];
+        v_ptr[idx_ghost_bot] = -v_ptr[idx_interior_bot];
+    } else if (y_lo_periodic) {
+        u_ptr[idx_ghost_bot] = u_ptr[idx_periodic_bot];
+        v_ptr[idx_ghost_bot] = v_ptr[idx_periodic_bot];
+    }
+
+    // Top wall
+    int j_ghost_top     = Ny + Ng + g;
+    int j_interior_top  = Ny + Ng - 1;
+    int j_periodic_top  = Ng + g;
+
+    int idx_ghost_top    = j_ghost_top * stride + i;
+    int idx_interior_top = j_interior_top * stride + i;
+    int idx_periodic_top = j_periodic_top * stride + i;
+
+    if (y_hi_noslip) {
+        u_ptr[idx_ghost_top] = -u_ptr[idx_interior_top];
+        v_ptr[idx_ghost_top] = -v_ptr[idx_interior_top];
+    } else if (y_hi_periodic) {
+        u_ptr[idx_ghost_top] = u_ptr[idx_periodic_top];
+        v_ptr[idx_ghost_top] = v_ptr[idx_periodic_top];
+    }
+}
+
+// Convective term kernel for a single cell
+inline void convective_cell_kernel(
+    int cell_idx, int stride, double dx, double dy, bool use_central,
+    const double* u_ptr, const double* v_ptr,
+    double* conv_u_ptr, double* conv_v_ptr)
+{
+    double uu = u_ptr[cell_idx];
+    double vv = v_ptr[cell_idx];
+
+    double dudx, dudy, dvdx, dvdy;
+
+    if (use_central) {
+        // Central differences
+        dudx = (u_ptr[cell_idx+1] - u_ptr[cell_idx-1]) / (2.0 * dx);
+        dudy = (u_ptr[cell_idx+stride] - u_ptr[cell_idx-stride]) / (2.0 * dy);
+        dvdx = (v_ptr[cell_idx+1] - v_ptr[cell_idx-1]) / (2.0 * dx);
+        dvdy = (v_ptr[cell_idx+stride] - v_ptr[cell_idx-stride]) / (2.0 * dy);
+    } else {
+        // First-order upwind
+        if (uu >= 0) {
+            dudx = (u_ptr[cell_idx] - u_ptr[cell_idx-1]) / dx;
+            dvdx = (v_ptr[cell_idx] - v_ptr[cell_idx-1]) / dx;
+        } else {
+            dudx = (u_ptr[cell_idx+1] - u_ptr[cell_idx]) / dx;
+            dvdx = (v_ptr[cell_idx+1] - v_ptr[cell_idx]) / dx;
+        }
+
+        if (vv >= 0) {
+            dudy = (u_ptr[cell_idx] - u_ptr[cell_idx-stride]) / dy;
+            dvdy = (v_ptr[cell_idx] - v_ptr[cell_idx-stride]) / dy;
+        } else {
+            dudy = (u_ptr[cell_idx+stride] - u_ptr[cell_idx]) / dy;
+            dvdy = (v_ptr[cell_idx+stride] - v_ptr[cell_idx]) / dy;
+        }
+    }
+
+    conv_u_ptr[cell_idx] = uu * dudx + vv * dudy;
+    conv_v_ptr[cell_idx] = uu * dvdx + vv * dvdy;
+}
+
+// Diffusive term kernel for a single cell
+inline void diffusive_cell_kernel(
+    int cell_idx, int stride, double dx2, double dy2,
+    const double* u_ptr, const double* v_ptr, const double* nu_ptr,
+    double* diff_u_ptr, double* diff_v_ptr)
+{
+    // Face-averaged effective viscosity
+    double nu_e = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx+1]);
+    double nu_w = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx-1]);
+    double nu_n = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx+stride]);
+    double nu_s = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx-stride]);
+
+    // Diffusive flux for u
+    double diff_u_x = (nu_e * (u_ptr[cell_idx+1] - u_ptr[cell_idx]) 
+                    - nu_w * (u_ptr[cell_idx] - u_ptr[cell_idx-1])) / dx2;
+    double diff_u_y = (nu_n * (u_ptr[cell_idx+stride] - u_ptr[cell_idx]) 
+                    - nu_s * (u_ptr[cell_idx] - u_ptr[cell_idx-stride])) / dy2;
+
+    // Diffusive flux for v
+    double diff_v_x = (nu_e * (v_ptr[cell_idx+1] - v_ptr[cell_idx]) 
+                    - nu_w * (v_ptr[cell_idx] - v_ptr[cell_idx-1])) / dx2;
+    double diff_v_y = (nu_n * (v_ptr[cell_idx+stride] - v_ptr[cell_idx]) 
+                    - nu_s * (v_ptr[cell_idx] - v_ptr[cell_idx-stride])) / dy2;
+
+    diff_u_ptr[cell_idx] = diff_u_x + diff_u_y;
+    diff_v_ptr[cell_idx] = diff_v_x + diff_v_y;
+}
+
+// Divergence kernel for a single cell
+inline void divergence_cell_kernel(
+    int cell_idx, int stride, double dx, double dy,
+    const double* u_ptr, const double* v_ptr,
+    double* div_ptr)
+{
+    double dudx = (u_ptr[cell_idx + 1] - u_ptr[cell_idx - 1]) / (2.0 * dx);
+    double dvdy = (v_ptr[cell_idx + stride] - v_ptr[cell_idx - stride]) / (2.0 * dy);
+    div_ptr[cell_idx] = dudx + dvdy;
+}
+
+// Velocity correction kernel for a single cell
+inline void correct_velocity_cell_kernel(
+    int cell_idx, int stride, double dx, double dy, double dt,
+    const double* u_star_ptr, const double* v_star_ptr,
+    const double* p_corr_ptr,
+    double* u_ptr, double* v_ptr, double* p_ptr)
+{
+    double dp_dx = (p_corr_ptr[cell_idx + 1] - p_corr_ptr[cell_idx - 1]) / (2.0 * dx);
+    double dp_dy = (p_corr_ptr[cell_idx + stride] - p_corr_ptr[cell_idx - stride]) / (2.0 * dy);
+
+    u_ptr[cell_idx] = u_star_ptr[cell_idx] - dt * dp_dx;
+    v_ptr[cell_idx] = v_star_ptr[cell_idx] - dt * dp_dy;
+    p_ptr[cell_idx] += p_corr_ptr[cell_idx];
+}
+
+// Poisson boundary condition kernel for x-direction
+inline void apply_poisson_bc_x_cell(
+    int j, int g,
+    int Nx, int Ng, int stride,
+    int bc_x_lo, int bc_x_hi,  // 0=Dirichlet, 1=Neumann, 2=Periodic
+    double dirichlet_val,
+    double* p_ptr)
+{
+    // Left boundary
+    int i_ghost = g;
+    int i_interior = Ng;
+    int i_periodic = Nx + Ng - 1 - g;
+    
+    int idx_ghost = j * stride + i_ghost;
+    int idx_interior = j * stride + i_interior;
+    int idx_periodic = j * stride + i_periodic;
+    
+    if (bc_x_lo == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_x_lo == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+    
+    // Right boundary
+    i_ghost = Nx + Ng + g;
+    i_interior = Nx + Ng - 1;
+    i_periodic = Ng + g;
+    
+    idx_ghost = j * stride + i_ghost;
+    idx_interior = j * stride + i_interior;
+    idx_periodic = j * stride + i_periodic;
+    
+    if (bc_x_hi == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_x_hi == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+}
+
+// Poisson boundary condition kernel for y-direction
+inline void apply_poisson_bc_y_cell(
+    int i, int g,
+    int Ny, int Ng, int stride,
+    int bc_y_lo, int bc_y_hi,  // 0=Dirichlet, 1=Neumann, 2=Periodic
+    double dirichlet_val,
+    double* p_ptr)
+{
+    // Bottom boundary
+    int j_ghost = g;
+    int j_interior = Ng;
+    int j_periodic = Ny + Ng - 1 - g;
+    
+    int idx_ghost = j_ghost * stride + i;
+    int idx_interior = j_interior * stride + i;
+    int idx_periodic = j_periodic * stride + i;
+    
+    if (bc_y_lo == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_y_lo == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+    
+    // Top boundary
+    j_ghost = Ny + Ng + g;
+    j_interior = Ny + Ng - 1;
+    j_periodic = Ng + g;
+    
+    idx_ghost = j_ghost * stride + i;
+    idx_interior = j_interior * stride + i;
+    idx_periodic = j_periodic * stride + i;
+    
+    if (bc_y_hi == 2) {  // Periodic
+        p_ptr[idx_ghost] = p_ptr[idx_periodic];
+    } else if (bc_y_hi == 1) {  // Neumann
+        p_ptr[idx_ghost] = p_ptr[idx_interior];
+    } else {  // Dirichlet
+        p_ptr[idx_ghost] = 2.0 * dirichlet_val - p_ptr[idx_interior];
+    }
+}
+
+// Red-black SOR Poisson iteration kernel for a single cell
+inline void poisson_sor_cell_kernel(
+    int cell_idx, int stride,
+    double dx2, double dy2, double omega,
+    const double* rhs_ptr,
+    double* p_ptr)
+{
+    const double coeff = 2.0 / dx2 + 2.0 / dy2;
+    
+    double p_old = p_ptr[cell_idx];
+    double p_gs = ((p_ptr[cell_idx+1] + p_ptr[cell_idx-1]) / dx2 +
+                   (p_ptr[cell_idx+stride] + p_ptr[cell_idx-stride]) / dy2
+                   - rhs_ptr[cell_idx]) / coeff;
+    p_ptr[cell_idx] = (1.0 - omega) * p_old + omega * p_gs;
+}
+
+// Poisson residual kernel for a single cell
+inline double poisson_residual_cell_kernel(
+    int cell_idx, int stride,
+    double dx2, double dy2,
+    const double* rhs_ptr,
+    const double* p_ptr)
+{
+    double laplacian = (p_ptr[cell_idx+1] - 2.0*p_ptr[cell_idx] + p_ptr[cell_idx-1]) / dx2
+                     + (p_ptr[cell_idx+stride] - 2.0*p_ptr[cell_idx] + p_ptr[cell_idx-stride]) / dy2;
+    double res = laplacian - rhs_ptr[cell_idx];
+    return (res < 0.0) ? -res : res;  // abs
+}
+
+#ifdef USE_GPU_OFFLOAD
+#pragma omp end declare target
+#endif
 
 RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     : mesh_(&mesh)
@@ -40,6 +370,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
 #ifdef USE_GPU_OFFLOAD
     initialize_gpu_buffers();
+    // GPU buffers are now mapped and will persist for solver lifetime
+    // All kernels (solver and turbulence models) will use is_device_ptr
 #endif
 }
 
@@ -65,7 +397,14 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     PoissonBC p_y_lo = PoissonBC::Neumann;  // Always Neumann for pressure at walls
     PoissonBC p_y_hi = PoissonBC::Neumann;
     
+    // Store for GPU Poisson solver
+    poisson_bc_x_lo_ = p_x_lo;
+    poisson_bc_x_hi_ = p_x_hi;
+    poisson_bc_y_lo_ = p_y_lo;
+    poisson_bc_y_hi_ = p_y_hi;
+    
     poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+    mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
 }
 
 void RANSSolver::set_body_force(double fx, double fy) {
@@ -82,8 +421,8 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
     }
     
 #ifdef USE_GPU_OFFLOAD
-    // Upload initial data to GPU
-    sync_to_gpu();
+    // Data already on GPU from initialize_gpu_buffers() called in constructor
+    // which uses map(to:) to copy initial values
 #endif
 }
 
@@ -91,289 +430,274 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
     velocity_.fill(u0, v0);
     apply_velocity_bc();
     
+    // Initialize k, omega for transport models
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
+        // Estimate initial turbulence from velocity
+        double u_ref = std::max(std::abs(u0), 0.01);
+        double Ti = 0.05;  // 5% turbulence intensity
+        double k_init = 1.5 * (u_ref * Ti) * (u_ref * Ti);
+        double omega_init = k_init / (0.09 * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
+        
+        k_.fill(k_init);
+        omega_.fill(omega_init);
+        
+        // Set wall values for omega (higher near walls)
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            // Bottom wall
+            int j_bot = mesh_->j_begin();
+            double y_bot = mesh_->wall_distance(i, j_bot);
+            omega_(i, j_bot) = 10.0 * 6.0 * config_.nu / (0.075 * y_bot * y_bot);
+            
+            // Top wall
+            int j_top = mesh_->j_end() - 1;
+            double y_top = mesh_->wall_distance(i, j_top);
+            omega_(i, j_top) = 10.0 * 6.0 * config_.nu / (0.075 * y_top * y_top);
+        }
+    }
+    
     if (turb_model_) {
         turb_model_->initialize(*mesh_, velocity_);
     }
     
 #ifdef USE_GPU_OFFLOAD
-    // Upload initial data to GPU
-    sync_to_gpu();
+    // CRITICAL: Sync k_ and omega_ to GPU after CPU-side initialization
+    // These were modified at lines 419-420 AFTER initialize_gpu_buffers() ran
+    // Without this sync, GPU kernels will use stale zero values instead of proper initial conditions
+    if (gpu_ready_ && turb_model_ && turb_model_->uses_transport_equations()) {
+        #pragma omp target update to(k_ptr_[0:field_total_size_])
+        #pragma omp target update to(omega_ptr_[0:field_total_size_])
+    }
 #endif
 }
 
 void RANSSolver::apply_velocity_bc() {
-    int Nx = mesh_->Nx;
-    int Ny = mesh_->Ny;
-    int Ng = mesh_->Nghost;
-    
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+
+    const int total_Nx = mesh_->total_Nx();
+    const int total_Ny = mesh_->total_Ny();
+    const int stride   = total_Nx;
+
+    const bool x_lo_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic);
+    const bool x_lo_noslip   = (velocity_bc_.x_lo == VelocityBC::NoSlip);
+    const bool x_hi_periodic = (velocity_bc_.x_hi == VelocityBC::Periodic);
+    const bool x_hi_noslip   = (velocity_bc_.x_hi == VelocityBC::NoSlip);
+
+    const bool y_lo_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic);
+    const bool y_lo_noslip   = (velocity_bc_.y_lo == VelocityBC::NoSlip);
+    const bool y_hi_periodic = (velocity_bc_.y_hi == VelocityBC::Periodic);
+    const bool y_hi_noslip   = (velocity_bc_.y_hi == VelocityBC::NoSlip);
+
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+        double* u_ptr = velocity_u_ptr_;
+        double* v_ptr = velocity_v_ptr_;
+        const size_t total_size = field_total_size_;
+
+        // x-direction BCs - use map(present:) for already-mapped data
+        const int n_x_bc = total_Ny * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size])
+        for (int idx = 0; idx < n_x_bc; ++idx) {
+            int j = idx / Ng;
+            int g = idx % Ng;
+            apply_velocity_bc_x_cell(j, g, Nx, Ng, stride,
+                                     x_lo_periodic, x_lo_noslip,
+                                     x_hi_periodic, x_hi_noslip,
+                                     u_ptr, v_ptr);
+        }
+
+        // y-direction BCs - use map(present:) for already-mapped data
+        const int n_y_bc = total_Nx * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size])
+        for (int idx = 0; idx < n_y_bc; ++idx) {
+            int i = idx / Ng;
+            int g = idx % Ng;
+            apply_velocity_bc_y_cell(i, g, Ny, Ng, stride,
+                                     y_lo_periodic, y_lo_noslip,
+                                     y_hi_periodic, y_hi_noslip,
+                                     u_ptr, v_ptr);
+        }
+        return;
+    }
+#endif
+
+    // CPU path: same kernels, but on host pointers
+    double* u_ptr = velocity_.u_field().data().data();
+    double* v_ptr = velocity_.v_field().data().data();
+
     // x-direction (periodic or inflow/outflow)
-    for (int j = 0; j < mesh_->total_Ny(); ++j) {
+    for (int j = 0; j < total_Ny; ++j) {
         for (int g = 0; g < Ng; ++g) {
-            // Left boundary
-            int i_ghost = g;
-            int i_interior = Ng;
-            int i_periodic = Nx + Ng - 1 - g;
-            
-            if (velocity_bc_.x_lo == VelocityBC::Periodic) {
-                velocity_.u(i_ghost, j) = velocity_.u(i_periodic, j);
-                velocity_.v(i_ghost, j) = velocity_.v(i_periodic, j);
-            } else if (velocity_bc_.x_lo == VelocityBC::NoSlip) {
-                velocity_.u(i_ghost, j) = -velocity_.u(i_interior, j);
-                velocity_.v(i_ghost, j) = -velocity_.v(i_interior, j);
-            }
-            
-            // Right boundary
-            i_ghost = Nx + Ng + g;
-            i_interior = Nx + Ng - 1;
-            i_periodic = Ng + g;
-            
-            if (velocity_bc_.x_hi == VelocityBC::Periodic) {
-                velocity_.u(i_ghost, j) = velocity_.u(i_periodic, j);
-                velocity_.v(i_ghost, j) = velocity_.v(i_periodic, j);
-            } else if (velocity_bc_.x_hi == VelocityBC::NoSlip) {
-                velocity_.u(i_ghost, j) = -velocity_.u(i_interior, j);
-                velocity_.v(i_ghost, j) = -velocity_.v(i_interior, j);
-            }
+            apply_velocity_bc_x_cell(j, g, Nx, Ng, stride,
+                                     x_lo_periodic, x_lo_noslip,
+                                     x_hi_periodic, x_hi_noslip,
+                                     u_ptr, v_ptr);
         }
     }
-    
+
     // y-direction (typically no-slip walls for channel)
-    for (int i = 0; i < mesh_->total_Nx(); ++i) {
+    for (int i = 0; i < total_Nx; ++i) {
         for (int g = 0; g < Ng; ++g) {
-            // Bottom wall
-            int j_ghost = g;
-            int j_interior = Ng;
-            
-            if (velocity_bc_.y_lo == VelocityBC::NoSlip) {
-                // Linear extrapolation for no-slip: u_wall = 0
-                // ghost = -interior (simple first order)
-                velocity_.u(i, j_ghost) = -velocity_.u(i, j_interior);
-                velocity_.v(i, j_ghost) = -velocity_.v(i, j_interior);
-            } else if (velocity_bc_.y_lo == VelocityBC::Periodic) {
-                int j_periodic = Ny + Ng - 1 - g;
-                velocity_.u(i, j_ghost) = velocity_.u(i, j_periodic);
-                velocity_.v(i, j_ghost) = velocity_.v(i, j_periodic);
-            }
-            
-            // Top wall
-            j_ghost = Ny + Ng + g;
-            j_interior = Ny + Ng - 1;
-            
-            if (velocity_bc_.y_hi == VelocityBC::NoSlip) {
-                velocity_.u(i, j_ghost) = -velocity_.u(i, j_interior);
-                velocity_.v(i, j_ghost) = -velocity_.v(i, j_interior);
-            } else if (velocity_bc_.y_hi == VelocityBC::Periodic) {
-                int j_periodic = Ng + g;
-                velocity_.u(i, j_ghost) = velocity_.u(i, j_periodic);
-                velocity_.v(i, j_ghost) = velocity_.v(i, j_periodic);
-            }
+            apply_velocity_bc_y_cell(i, g, Ny, Ng, stride,
+                                     y_lo_periodic, y_lo_noslip,
+                                     y_hi_periodic, y_hi_noslip,
+                                     u_ptr, v_ptr);
         }
     }
 }
 
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
-    // Compute: (u*nabla)u using specified scheme
-    
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
-    const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
     [[maybe_unused]] const int Ny = mesh_->Ny;
-    [[maybe_unused]] const int stride = Nx + 2;
-    
+    const int stride = mesh_->total_Nx();
+    const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
+
 #ifdef USE_GPU_OFFLOAD
-    // GPU path - use persistent GPU arrays (no data movement!)
+    // GPU path: same kernel, different parallelization + data source
     if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
         const int n_cells = Nx * Ny;
-        const size_t total_size = field_total_size_;  // Local copy for firstprivate
-        const double* u_ptr = velocity_u_ptr_;
-        const double* v_ptr = velocity_v_ptr_;
-        double* conv_u_ptr = conv_u_ptr_;
-        double* conv_v_ptr = conv_v_ptr_;
-        const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
-        
+        const size_t total_size = field_total_size_;
+
+        const double* u_ptr      = velocity_u_ptr_;
+        const double* v_ptr      = velocity_v_ptr_;
+        double*       conv_u_ptr = conv_u_ptr_;
+        double*       conv_v_ptr = conv_v_ptr_;
+
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size]) \
-            map(present: v_ptr[0:total_size]) \
-            map(present: conv_u_ptr[0:total_size]) \
-            map(present: conv_v_ptr[0:total_size]) \
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size],       \
+                        conv_u_ptr[0:total_size], conv_v_ptr[0:total_size]) \
             firstprivate(dx, dy, stride, use_central, Nx)
         for (int idx = 0; idx < n_cells; ++idx) {
-            int i = idx % Nx + 1;  // +1 for ghost cells
-            int j = idx / Nx + 1;
+            int i = idx % Nx + 1;  // interior i
+            int j = idx / Nx + 1;  // interior j
             int cell_idx = j * stride + i;
-            
-            double uu = u_ptr[cell_idx];
-            double vv = v_ptr[cell_idx];
-            
-            double dudx, dudy, dvdx, dvdy;
-            
-            if (use_central) {
-                // Central differences
-                dudx = (u_ptr[cell_idx+1] - u_ptr[cell_idx-1]) / (2.0 * dx);
-                dudy = (u_ptr[cell_idx+stride] - u_ptr[cell_idx-stride]) / (2.0 * dy);
-                dvdx = (v_ptr[cell_idx+1] - v_ptr[cell_idx-1]) / (2.0 * dx);
-                dvdy = (v_ptr[cell_idx+stride] - v_ptr[cell_idx-stride]) / (2.0 * dy);
-            } else {
-                // First-order upwind
-                if (uu >= 0) {
-                    dudx = (u_ptr[cell_idx] - u_ptr[cell_idx-1]) / dx;
-                    dvdx = (v_ptr[cell_idx] - v_ptr[cell_idx-1]) / dx;
-                } else {
-                    dudx = (u_ptr[cell_idx+1] - u_ptr[cell_idx]) / dx;
-                    dvdx = (v_ptr[cell_idx+1] - v_ptr[cell_idx]) / dx;
-                }
-                
-                if (vv >= 0) {
-                    dudy = (u_ptr[cell_idx] - u_ptr[cell_idx-stride]) / dy;
-                    dvdy = (v_ptr[cell_idx] - v_ptr[cell_idx-stride]) / dy;
-                } else {
-                    dudy = (u_ptr[cell_idx+stride] - u_ptr[cell_idx]) / dy;
-                    dvdy = (v_ptr[cell_idx+stride] - v_ptr[cell_idx]) / dy;
-                }
-            }
-            
-            conv_u_ptr[cell_idx] = uu * dudx + vv * dudy;
-            conv_v_ptr[cell_idx] = uu * dvdx + vv * dvdy;
+
+            convective_cell_kernel(cell_idx, stride, dx, dy, use_central,
+                                   u_ptr, v_ptr, conv_u_ptr, conv_v_ptr);
         }
-        
         return;
     }
 #endif
-    
-    // CPU path
+
+    // CPU path: same kernel, different data source and parallelization
+    const double* u_ptr      = vel.u_field().data().data();
+    const double* v_ptr      = vel.v_field().data().data();
+    double*       conv_u_ptr = conv.u_field().data().data();
+    double*       conv_v_ptr = conv.v_field().data().data();
+
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            double uu = vel.u(i, j);
-            double vv = vel.v(i, j);
-            
-            double dudx, dudy, dvdx, dvdy;
-            
-            if (config_.convective_scheme == ConvectiveScheme::Central) {
-                dudx = (vel.u(i+1, j) - vel.u(i-1, j)) / (2.0 * dx);
-                dudy = (vel.u(i, j+1) - vel.u(i, j-1)) / (2.0 * dy);
-                dvdx = (vel.v(i+1, j) - vel.v(i-1, j)) / (2.0 * dx);
-                dvdy = (vel.v(i, j+1) - vel.v(i, j-1)) / (2.0 * dy);
-            } else {
-                if (uu >= 0) {
-                    dudx = (vel.u(i, j) - vel.u(i-1, j)) / dx;
-                    dvdx = (vel.v(i, j) - vel.v(i-1, j)) / dx;
-                } else {
-                    dudx = (vel.u(i+1, j) - vel.u(i, j)) / dx;
-                    dvdx = (vel.v(i+1, j) - vel.v(i, j)) / dx;
-                }
-                
-                if (vv >= 0) {
-                    dudy = (vel.u(i, j) - vel.u(i, j-1)) / dy;
-                    dvdy = (vel.v(i, j) - vel.v(i, j-1)) / dy;
-                } else {
-                    dudy = (vel.u(i, j+1) - vel.u(i, j)) / dy;
-                    dvdy = (vel.v(i, j+1) - vel.v(i, j)) / dy;
-                }
-            }
-            
-            conv.u(i, j) = uu * dudx + vv * dudy;
-            conv.v(i, j) = uu * dvdx + vv * dvdy;
+            int cell_idx = j * stride + i;
+            convective_cell_kernel(cell_idx, stride, dx, dy, use_central,
+                                   u_ptr, v_ptr, conv_u_ptr, conv_v_ptr);
         }
     }
 }
 
 void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, 
                                         VectorField& diff) {
-    // Compute: nabla*(nu_eff nabla u) with variable viscosity
-    
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
     const double dx2 = dx * dx;
     const double dy2 = dy * dy;
-    const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
     [[maybe_unused]] const int Ny = mesh_->Ny;
-    [[maybe_unused]] const int stride = Nx + 2;
-    
+    const int stride = mesh_->total_Nx();
+
 #ifdef USE_GPU_OFFLOAD
-    // GPU path - use persistent GPU arrays (no data movement!)
+    // GPU path: same kernel, different parallelization + data source
     if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
         const int n_cells = Nx * Ny;
-        const size_t total_size = field_total_size_;  // Local copy for map size
-        const double* u_ptr = velocity_u_ptr_;
-        const double* v_ptr = velocity_v_ptr_;
-        const double* nu_ptr = nu_eff_ptr_;
-        double* diff_u_ptr = diff_u_ptr_;
-        double* diff_v_ptr = diff_v_ptr_;
-        
+        const size_t total_size = field_total_size_;
+
+        const double* u_ptr      = velocity_u_ptr_;
+        const double* v_ptr      = velocity_v_ptr_;
+        const double* nu_ptr     = nu_eff_ptr_;
+        double*       diff_u_ptr = diff_u_ptr_;
+        double*       diff_v_ptr = diff_v_ptr_;
+
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size]) \
-            map(present: v_ptr[0:total_size]) \
-            map(present: nu_ptr[0:total_size]) \
-            map(present: diff_u_ptr[0:total_size]) \
-            map(present: diff_v_ptr[0:total_size]) \
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size], nu_ptr[0:total_size], \
+                        diff_u_ptr[0:total_size], diff_v_ptr[0:total_size]) \
             firstprivate(dx2, dy2, stride, Nx)
         for (int idx = 0; idx < n_cells; ++idx) {
             int i = idx % Nx + 1;
             int j = idx / Nx + 1;
             int cell_idx = j * stride + i;
-            
-            // Face-averaged effective viscosity
-            double nu_e = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx+1]);
-            double nu_w = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx-1]);
-            double nu_n = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx+stride]);
-            double nu_s = 0.5 * (nu_ptr[cell_idx] + nu_ptr[cell_idx-stride]);
-            
-            // Diffusive flux for u
-            double diff_u_x = (nu_e * (u_ptr[cell_idx+1] - u_ptr[cell_idx]) 
-                            - nu_w * (u_ptr[cell_idx] - u_ptr[cell_idx-1])) / dx2;
-            double diff_u_y = (nu_n * (u_ptr[cell_idx+stride] - u_ptr[cell_idx]) 
-                            - nu_s * (u_ptr[cell_idx] - u_ptr[cell_idx-stride])) / dy2;
-            
-            // Diffusive flux for v
-            double diff_v_x = (nu_e * (v_ptr[cell_idx+1] - v_ptr[cell_idx]) 
-                            - nu_w * (v_ptr[cell_idx] - v_ptr[cell_idx-1])) / dx2;
-            double diff_v_y = (nu_n * (v_ptr[cell_idx+stride] - v_ptr[cell_idx]) 
-                            - nu_s * (v_ptr[cell_idx] - v_ptr[cell_idx-stride])) / dy2;
-            
-            diff_u_ptr[cell_idx] = diff_u_x + diff_u_y;
-            diff_v_ptr[cell_idx] = diff_v_x + diff_v_y;
+
+            diffusive_cell_kernel(cell_idx, stride, dx2, dy2,
+                                  u_ptr, v_ptr, nu_ptr,
+                                  diff_u_ptr, diff_v_ptr);
         }
-        
         return;
     }
 #endif
-    
-    // CPU path
+
+    // CPU path: same kernel, different data source and parallelization
+    const double* u_ptr      = vel.u_field().data().data();
+    const double* v_ptr      = vel.v_field().data().data();
+    const double* nu_ptr     = nu_eff.data().data();
+    double*       diff_u_ptr = diff.u_field().data().data();
+    double*       diff_v_ptr = diff.v_field().data().data();
+
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            // Face-averaged effective viscosity
-            double nu_e = 0.5 * (nu_eff(i, j) + nu_eff(i+1, j));
-            double nu_w = 0.5 * (nu_eff(i, j) + nu_eff(i-1, j));
-            double nu_n = 0.5 * (nu_eff(i, j) + nu_eff(i, j+1));
-            double nu_s = 0.5 * (nu_eff(i, j) + nu_eff(i, j-1));
-            
-            // Diffusive flux for u
-            double diff_u_x = (nu_e * (vel.u(i+1, j) - vel.u(i, j)) 
-                            - nu_w * (vel.u(i, j) - vel.u(i-1, j))) / dx2;
-            double diff_u_y = (nu_n * (vel.u(i, j+1) - vel.u(i, j)) 
-                            - nu_s * (vel.u(i, j) - vel.u(i, j-1))) / dy2;
-            
-            // Diffusive flux for v
-            double diff_v_x = (nu_e * (vel.v(i+1, j) - vel.v(i, j)) 
-                            - nu_w * (vel.v(i, j) - vel.v(i-1, j))) / dx2;
-            double diff_v_y = (nu_n * (vel.v(i, j+1) - vel.v(i, j)) 
-                            - nu_s * (vel.v(i, j) - vel.v(i, j-1))) / dy2;
-            
-            diff.u(i, j) = diff_u_x + diff_u_y;
-            diff.v(i, j) = diff_v_x + diff_v_y;
+            int cell_idx = j * stride + i;
+            diffusive_cell_kernel(cell_idx, stride, dx2, dy2,
+                                  u_ptr, v_ptr, nu_ptr,
+                                  diff_u_ptr, diff_v_ptr);
         }
     }
 }
 
 void RANSSolver::compute_divergence(const VectorField& vel, ScalarField& div) {
-    double dx = mesh_->dx;
-    double dy = mesh_->dy;
-    
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            double dudx = (vel.u(i+1, j) - vel.u(i-1, j)) / (2.0 * dx);
-            double dvdy = (vel.v(i, j+1) - vel.v(i, j-1)) / (2.0 * dy);
-            div(i, j) = dudx + dvdy;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Ny = mesh_->Ny;
+    const int stride = mesh_->total_Nx();
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: same kernel, different parallelization + data source
+    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+        const int n_cells = Nx * Ny;
+        const size_t total_size = field_total_size_;
+
+        // Use velocity_star pointers (this is called with velocity_star_)
+        const double* u_ptr  = velocity_star_u_ptr_;
+        const double* v_ptr  = velocity_star_v_ptr_;
+        double*       div_ptr = div_velocity_ptr_;
+
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size], div_ptr[0:total_size]) \
+            firstprivate(dx, dy, stride, Nx)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + 1;
+            int j = idx / Nx + 1;
+            int cell_idx = j * stride + i;
+
+            divergence_cell_kernel(cell_idx, stride, dx, dy,
+                                   u_ptr, v_ptr, div_ptr);
+        }
+    } else
+#endif
+    {
+        // CPU path: same kernel, different data source and parallelization
+        const double* u_ptr  = vel.u_field().data().data();
+        const double* v_ptr  = vel.v_field().data().data();
+        double*       div_ptr = div.data().data();
+
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                int cell_idx = j * stride + i;
+                divergence_cell_kernel(cell_idx, stride, dx, dy,
+                                       u_ptr, v_ptr, div_ptr);
+            }
         }
     }
 }
@@ -391,25 +715,60 @@ void RANSSolver::compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_d
 }
 
 void RANSSolver::correct_velocity() {
-    double dx = mesh_->dx;
-    double dy = mesh_->dy;
-    
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            double dp_dx = (pressure_correction_(i+1, j) - pressure_correction_(i-1, j)) / (2.0 * dx);
-            double dp_dy = (pressure_correction_(i, j+1) - pressure_correction_(i, j-1)) / (2.0 * dy);
-            
-            velocity_.u(i, j) = velocity_star_.u(i, j) - current_dt_ * dp_dx;
-            velocity_.v(i, j) = velocity_star_.v(i, j) - current_dt_ * dp_dy;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dt = current_dt_;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Ny = mesh_->Ny;
+    const int stride = mesh_->total_Nx();
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: same kernel, different parallelization + data source
+    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+        const int n_cells = Nx * Ny;
+        const size_t total_size = field_total_size_;
+
+        const double* u_star_ptr = velocity_star_u_ptr_;
+        const double* v_star_ptr = velocity_star_v_ptr_;
+        const double* p_corr_ptr = pressure_corr_ptr_;
+        double*       u_ptr      = velocity_u_ptr_;
+        double*       v_ptr      = velocity_v_ptr_;
+        double*       p_ptr      = pressure_ptr_;
+
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size], v_ptr[0:total_size], p_ptr[0:total_size], \
+                        u_star_ptr[0:total_size], v_star_ptr[0:total_size], p_corr_ptr[0:total_size]) \
+            firstprivate(dx, dy, dt, stride, Nx)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + 1;  // +1 for ghost cells
+            int j = idx / Nx + 1;
+            int cell_idx = j * stride + i;
+
+            correct_velocity_cell_kernel(cell_idx, stride, dx, dy, dt,
+                                         u_star_ptr, v_star_ptr, p_corr_ptr,
+                                         u_ptr, v_ptr, p_ptr);
         }
-    }
-    
-    // Update pressure
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            pressure_(i, j) += pressure_correction_(i, j);
+    } else {
+#endif
+        // CPU path: same kernel, different data source and parallelization
+        const double* u_star_ptr = velocity_star_.u_field().data().data();
+        const double* v_star_ptr = velocity_star_.v_field().data().data();
+        const double* p_corr_ptr = pressure_correction_.data().data();
+        double*       u_ptr      = velocity_.u_field().data().data();
+        double*       v_ptr      = velocity_.v_field().data().data();
+        double*       p_ptr      = pressure_.data().data();
+
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                int cell_idx = j * stride + i;
+                correct_velocity_cell_kernel(cell_idx, stride, dx, dy, dt,
+                                             u_star_ptr, v_star_ptr, p_corr_ptr,
+                                             u_ptr, v_ptr, p_ptr);
+            }
         }
+#ifdef USE_GPU_OFFLOAD
     }
+#endif
 }
 
 double RANSSolver::compute_residual() {
@@ -440,16 +799,69 @@ double RANSSolver::step() {
         }
     }
     
-    // 1. Update turbulence model (if any)
+    // 1a. Advance turbulence transport equations (if model uses them)
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
+        TIMED_SCOPE("turbulence_transport");
+        NVTX_PUSH("turbulence_transport");
+        turb_model_->advance_turbulence(
+            *mesh_,
+            velocity_,
+            current_dt_,
+            k_,          // Updated in-place
+            omega_,      // Updated in-place
+            nu_t_        // Previous step's nu_t for diffusion coefficients
+        );
+        NVTX_POP();
+        
+#ifdef USE_GPU_OFFLOAD
+        // CRITICAL FIX: Sync k and omega to GPU after transport equation update
+        // advance_turbulence() may update k/omega on CPU, so we need to sync to GPU
+        // before the next turbulence update() call which expects GPU-resident data
+        if (gpu_ready_) {
+            #pragma omp target update to(k_ptr_[0:field_total_size_])
+            #pragma omp target update to(omega_ptr_[0:field_total_size_])
+        }
+#endif
+    }
+    
+    // 1b. Update turbulence model (compute nu_t and optional tau_ij)
     if (turb_model_) {
         TIMED_SCOPE("turbulence_update");
+        NVTX_PUSH("turbulence_update");
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
+        NVTX_POP();
+        
+        // No additional sync needed - turbulence models compute directly on GPU using map(present:)
+        // nu_t is already resident on device and has been updated by the GPU kernel
     }
     
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
     nu_eff_.fill(config_.nu);
     if (turb_model_) {
+#ifdef USE_GPU_OFFLOAD
+        if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+            const int Nx = mesh_->Nx;
+            const int Ny = mesh_->Ny;
+            const int n_cells = Nx * Ny;
+            const int stride = Nx + 2;
+            const size_t total_size = field_total_size_;
+            const double nu = config_.nu;
+            double* nu_eff_ptr = nu_eff_ptr_;
+            const double* nu_t_ptr = nu_t_ptr_;
+            
+            #pragma omp target teams distribute parallel for \
+                map(present: nu_eff_ptr[0:total_size]) \
+                map(present: nu_t_ptr[0:total_size]) \
+                firstprivate(nu, stride, Nx)
+            for (int idx = 0; idx < n_cells; ++idx) {
+                int i = idx % Nx + 1;  // +1 for ghost cells
+                int j = idx / Nx + 1;
+                int cell_idx = j * stride + i;
+                nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
+            }
+        } else
+#endif
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 nu_eff_(i, j) = config_.nu + nu_t_(i, j);
@@ -460,16 +872,59 @@ double RANSSolver::step() {
     // 2. Compute convective and diffusive terms (use persistent fields)
     {
         TIMED_SCOPE("convective_term");
+        NVTX_PUSH("convection");
         compute_convective_term(velocity_, conv_);
+        NVTX_POP();
     }
     
     {
         TIMED_SCOPE("diffusive_term");
+        NVTX_PUSH("diffusion");
         compute_diffusive_term(velocity_, nu_eff_, diff_);
+        NVTX_POP();
     }
     
     // 3. Compute provisional velocity u* (without pressure gradient)
     // u* = u^n + dt * (-conv + diff + body_force)
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int n_cells = Nx * Ny;
+        const int stride = Nx + 2;
+        const size_t total_size = field_total_size_;
+        const double dt = current_dt_;
+        const double fx = fx_;
+        const double fy = fy_;
+        const double* u_ptr = velocity_u_ptr_;
+        const double* v_ptr = velocity_v_ptr_;
+        double* u_star_ptr = velocity_star_u_ptr_;
+        double* v_star_ptr = velocity_star_v_ptr_;
+        const double* conv_u_ptr = conv_u_ptr_;
+        const double* conv_v_ptr = conv_v_ptr_;
+        const double* diff_u_ptr = diff_u_ptr_;
+        const double* diff_v_ptr = diff_v_ptr_;
+        
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size]) \
+            map(present: v_ptr[0:total_size]) \
+            map(present: u_star_ptr[0:total_size]) \
+            map(present: v_star_ptr[0:total_size]) \
+            map(present: conv_u_ptr[0:total_size]) \
+            map(present: conv_v_ptr[0:total_size]) \
+            map(present: diff_u_ptr[0:total_size]) \
+            map(present: diff_v_ptr[0:total_size]) \
+            firstprivate(dt, fx, fy, stride, Nx)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + 1;  // +1 for ghost cells
+            int j = idx / Nx + 1;
+            int cell_idx = j * stride + i;
+            
+            u_star_ptr[cell_idx] = u_ptr[cell_idx] + dt * (-conv_u_ptr[cell_idx] + diff_u_ptr[cell_idx] + fx);
+            v_star_ptr[cell_idx] = v_ptr[cell_idx] + dt * (-conv_v_ptr[cell_idx] + diff_v_ptr[cell_idx] + fy);
+        }
+    } else
+#endif
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             velocity_star_.u(i, j) = velocity_.u(i, j) + current_dt_ * 
@@ -482,37 +937,98 @@ double RANSSolver::step() {
     // Apply BCs to provisional velocity (needed for divergence calculation)
     // Temporarily swap velocity_ and velocity_star_ to use apply_velocity_bc
     std::swap(velocity_, velocity_star_);
+#ifdef USE_GPU_OFFLOAD
+    // CRITICAL: std::swap invalidates GPU pointers - they still point to old memory
+    // After swap, velocity_u_ptr_ points to what is now velocity_star_ data!
+    // Must swap the pointers too to keep them consistent
+    if (gpu_ready_) {
+        std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+        std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+    }
+#endif
     apply_velocity_bc();
     std::swap(velocity_, velocity_star_);
+#ifdef USE_GPU_OFFLOAD
+    // Swap pointers back to restore original mapping
+    if (gpu_ready_) {
+        std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+        std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+    }
+#endif
     
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*
     {
         TIMED_SCOPE("divergence");
+        NVTX_PUSH("divergence");
         compute_divergence(velocity_star_, div_velocity_);
+        NVTX_POP();
     }
     
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            rhs_poisson_(i, j) = div_velocity_(i, j) / current_dt_;
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int n_cells = Nx * Ny;
+        const int stride = Nx + 2;
+        const size_t total_size = field_total_size_;
+        const double dt_inv = 1.0 / current_dt_;
+        const double* div_ptr = div_velocity_ptr_;
+        double* rhs_ptr = rhs_poisson_ptr_;
+        double* p_corr_ptr = pressure_corr_ptr_;
+        
+        #pragma omp target teams distribute parallel for \
+            map(present: div_ptr[0:total_size]) \
+            map(present: rhs_ptr[0:total_size]) \
+            map(present: p_corr_ptr[0:total_size]) \
+            firstprivate(dt_inv, stride, Nx)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + 1;
+            int j = idx / Nx + 1;
+            int cell_idx = j * stride + i;
+            
+            rhs_ptr[cell_idx] = div_ptr[cell_idx] * dt_inv;
+            p_corr_ptr[cell_idx] = 0.0;  // Initialize pressure correction
         }
+    } else
+#endif
+    {
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                rhs_poisson_(i, j) = div_velocity_(i, j) / current_dt_;
+            }
+        }
+        
+        pressure_correction_.fill(0.0);
     }
     
-    pressure_correction_.fill(0.0);
-    
+    // 4b. Solve Poisson equation for pressure correction
     {
         TIMED_SCOPE("poisson_solve");
+        NVTX_PUSH("poisson_solve");
         PoissonConfig pcfg;
         pcfg.tol = config_.poisson_tol;
         pcfg.max_iter = config_.poisson_max_iter;
         pcfg.omega = config_.poisson_omega;
-        poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        
+        // Use multigrid solver for both CPU and GPU
+        // The multigrid solver internally uses GPU-accelerated kernels when USE_GPU_OFFLOAD is enabled
+        // All V-cycle operations (smoothing, restriction, prolongation) run on persistent device arrays
+        if (use_multigrid_) {
+            // Use multigrid solver - it handles GPU offloading internally
+            mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        } else {
+            poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        }
+        NVTX_POP();
     }
     
     // 5. Correct velocity and pressure
     {
         TIMED_SCOPE("velocity_correction");
+        NVTX_PUSH("velocity_correction");
         correct_velocity();
+        NVTX_POP();
     }
     
     // 6. Apply boundary conditions
@@ -522,6 +1038,15 @@ double RANSSolver::step() {
     
     // Return max velocity change as convergence criterion
     double max_change = 0.0;
+    
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+        // Sync current velocity from GPU to compute residual
+        #pragma omp target update from(velocity_u_ptr_[0:field_total_size_])
+        #pragma omp target update from(velocity_v_ptr_[0:field_total_size_])
+    }
+#endif
+    
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             double du = std::abs(velocity_.u(i, j) - velocity_old.u(i, j));
@@ -590,6 +1115,12 @@ std::pair<double, int> RANSSolver::solve_steady() {
             break;
         }
     }
+    
+#ifdef USE_GPU_OFFLOAD
+    // Sync all fields from GPU after solve completes
+    // This ensures CPU-side data is up-to-date for tests/analysis
+    sync_from_gpu();
+#endif
     
     return {residual, iter_ + 1};
 }
@@ -709,6 +1240,14 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
                      << e.what() << "\n";
         }
     }
+    
+#ifdef USE_GPU_OFFLOAD
+    // Sync all fields from GPU after solve completes
+    // write_vtk() calls sync_from_gpu(), but if no output was written we still need to sync
+    if (output_prefix.empty()) {
+        sync_from_gpu();
+    }
+#endif
     
     return {residual, iter_ + 1};
 }
@@ -914,51 +1453,78 @@ void RANSSolver::initialize_gpu_buffers() {
     diff_u_ptr_ = diff_.u_field().data().data();
     diff_v_ptr_ = diff_.v_field().data().data();
     rhs_poisson_ptr_ = rhs_poisson_.data().data();
+    div_velocity_ptr_ = div_velocity_.data().data();
+    k_ptr_ = k_.data().data();
+    omega_ptr_ = omega_.data().data();
     
     if (config_.verbose) {
-        std::cout << "Allocating " << (13 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
-                  << " MB on GPU for persistent solver arrays...\n";
+        std::cout << "Mapping " << (16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
+                  << " MB to GPU for persistent solver arrays...\n";
     }
     
-    // Allocate all arrays on GPU device (separate pragmas for nvhpc compatibility)
-    #pragma omp target enter data map(alloc: velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: velocity_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: velocity_star_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: pressure_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: pressure_corr_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: nu_t_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: nu_eff_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: conv_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: conv_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: diff_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: diff_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: rhs_poisson_ptr_[0:field_total_size_])
+#ifdef GPU_PROFILE_TRANSFERS
+    auto transfer_start = std::chrono::steady_clock::now();
+#endif
+    
+    // Map all arrays to GPU device and copy initial values
+    // Using map(to:) instead of map(alloc:) to transfer initialized data
+    // Data will persist on GPU for entire solver lifetime
+    #pragma omp target enter data map(to: velocity_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: velocity_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: velocity_star_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: velocity_star_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: pressure_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: pressure_corr_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: nu_eff_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: conv_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: conv_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: diff_u_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: diff_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: k_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: omega_ptr_[0:field_total_size_])
     
     gpu_ready_ = true;
     
+#ifdef GPU_PROFILE_TRANSFERS
+    auto transfer_end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> transfer_time = transfer_end - transfer_start;
+    double mb_transferred = 16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0;
+    double bandwidth = mb_transferred / transfer_time.count();
+    std::cout << "[GPU_PROFILE] Initial H→D transfer: " << mb_transferred << " MB in " 
+              << transfer_time.count() << " s (" << bandwidth << " MB/s)\n";
+#endif
+    
     if (config_.verbose) {
-        std::cout << "✓ GPU arrays allocated successfully\n";
+        std::cout << "✓ GPU arrays mapped successfully (persistent, data resident on device)\n";
     }
 }
 
 void RANSSolver::cleanup_gpu_buffers() {
     if (!gpu_ready_) return;
     
-    // Free all GPU arrays (separate pragmas for nvhpc compatibility)
-    #pragma omp target exit data map(delete: velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: velocity_v_ptr_[0:field_total_size_])
+    // Copy final results back from GPU, then free device memory
+    // Using map(from:) to get final state back to host
+    #pragma omp target exit data map(from: velocity_u_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: velocity_v_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: pressure_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: nu_t_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: k_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: omega_ptr_[0:field_total_size_])
+    
+    // Delete temporary/work arrays without copying back
     #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: velocity_star_v_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: pressure_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: pressure_corr_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: nu_t_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: nu_eff_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: conv_u_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: conv_v_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: diff_u_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: diff_v_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: rhs_poisson_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: div_velocity_ptr_[0:field_total_size_])
     
     gpu_ready_ = false;
 }
@@ -966,25 +1532,27 @@ void RANSSolver::cleanup_gpu_buffers() {
 void RANSSolver::sync_to_gpu() {
     if (!gpu_ready_) return;
     
-    // Upload all fields from CPU to GPU
+    // Update GPU with changed fields (typically after CPU-side modifications)
+    // In normal operation, this is rarely needed since all computation is on GPU
     #pragma omp target update to(velocity_u_ptr_[0:field_total_size_])
     #pragma omp target update to(velocity_v_ptr_[0:field_total_size_])
-    #pragma omp target update to(velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target update to(velocity_star_v_ptr_[0:field_total_size_])
     #pragma omp target update to(pressure_ptr_[0:field_total_size_])
-    #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-    #pragma omp target update to(nu_eff_ptr_[0:field_total_size_])
+    #pragma omp target update to(k_ptr_[0:field_total_size_])
+    #pragma omp target update to(omega_ptr_[0:field_total_size_])
 }
 
 void RANSSolver::sync_from_gpu() {
     if (!gpu_ready_) return;
     
-    // Download all fields from GPU to CPU (for I/O)
+    // Download only solution fields needed for I/O (data stays on GPU)
+    // This is called before write_vtk, write_fields, or when accessing fields from CPU
     #pragma omp target update from(velocity_u_ptr_[0:field_total_size_])
     #pragma omp target update from(velocity_v_ptr_[0:field_total_size_])
     #pragma omp target update from(pressure_ptr_[0:field_total_size_])
     #pragma omp target update from(nu_t_ptr_[0:field_total_size_])
+    #pragma omp target update from(k_ptr_[0:field_total_size_])
+    #pragma omp target update from(omega_ptr_[0:field_total_size_])
 }
 #endif
 
