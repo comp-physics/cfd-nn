@@ -13,8 +13,12 @@ JOB_NAME="ci_${TEST_NAME}_${TIMESTAMP}"
 LOG_FILE="${JOB_NAME}.log"
 ERR_FILE="${JOB_NAME}.err"
 
+# CRITICAL: Capture current working directory so SLURM job runs in correct location
+WORK_DIR="$(pwd)"
+
 echo "========================================"
 echo "GPU CI Test: ${TEST_NAME}"
+echo "Working Directory: ${WORK_DIR}"
 echo "Command: ${TEST_COMMAND}"
 echo "========================================"
 echo ""
@@ -41,6 +45,11 @@ nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
 echo ""
 echo "Host: \$(hostname)"
 echo "Date: \$(date)"
+echo ""
+
+# CRITICAL: Change to the working directory where the build/tests are located
+cd ${WORK_DIR}
+echo "Working directory: \$(pwd)"
 echo ""
 
 echo "=== Running: ${TEST_NAME} ==="
