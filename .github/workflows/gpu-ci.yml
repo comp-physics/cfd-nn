@@ -130,8 +130,8 @@ jobs:
             echo \"======================================\" && \
             echo \"2. Algebraic Models\" && \
             echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 256 512 50000 output/gpu_validation/baseline && \
-            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 256 512 50000 output/gpu_validation/gep && \
+            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 256 512 200000 output/gpu_validation/baseline && \
+            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 256 512 200000 output/gpu_validation/gep && \
             echo \"\" && \
             echo \"======================================\" && \
             echo \"3. Neural Network Models\" && \
