@@ -52,7 +52,7 @@ for grid_config in "${grids[@]}"; do
     echo "=========================================="
     
     ./channel --config "$EXAMPLE_DIR/$cfg" \
-              --output_dir "$OUTPUT_DIR/$grid"
+              --output "$OUTPUT_DIR/$grid/"
     
     echo "✓ $grid complete"
 done

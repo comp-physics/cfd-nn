@@ -19,21 +19,28 @@ def read_vtk_solution(vtk_file):
         lines = f.readlines()
     
     # Parse header
+    origin = None
+    spacing = None
+    dims = None
+    vector_start = None
+    
     for i, line in enumerate(lines):
         if 'DIMENSIONS' in line:
             dims = [int(x) for x in line.split()[1:4]]
-            Nx, Ny = dims[0], dims[1]
-        if 'POINTS' in line:
-            n_points = int(line.split()[1])
-            point_start = i + 1
-        if 'POINT_DATA' in line:
-            vector_start = i + 2
+        if 'ORIGIN' in line:
+            origin = [float(x) for x in line.split()[1:4]]
+        if 'SPACING' in line:
+            spacing = [float(x) for x in line.split()[1:4]]
+        if 'VECTORS' in line:
+            vector_start = i + 1
     
-    # Read coordinates
-    coords = []
-    for i in range(point_start, point_start + n_points):
-        coords.append([float(x) for x in lines[i].split()])
-    coords = np.array(coords)
+    Nx, Ny = dims[0], dims[1]
+    n_points = Nx * Ny
+    
+    # Generate coordinate grid from STRUCTURED_POINTS metadata
+    x = np.linspace(origin[0], origin[0] + (Nx-1)*spacing[0], Nx)
+    y = np.linspace(origin[1], origin[1] + (Ny-1)*spacing[1], Ny)
+    yy, xx = np.meshgrid(y, x, indexing='ij')
     
     # Read velocity
     velocity = []
@@ -41,14 +48,15 @@ def read_vtk_solution(vtk_file):
         velocity.append([float(x) for x in lines[i].split()])
     velocity = np.array(velocity)
     
-    y = coords[:, 1].reshape(Ny, Nx)
     u = velocity[:, 0].reshape(Ny, Nx)
     
-    return y, u, Nx, Ny
+    return yy, u, Nx, Ny
 
 def poiseuille_exact(y, dp_dx, nu, H):
-    """Analytical Poiseuille solution."""
-    return -(dp_dx) / (2 * nu) * (H**2 / 4 - y**2)
+    """Analytical Poiseuille solution for channel with half-height H.
+    u(y) = -(dp/dx)/(2*nu) * (H^2 - y^2) where y is measured from centerline.
+    """
+    return -(dp_dx) / (2 * nu) * (H**2 - y**2)
 
 def interpolate_to_coarsest(y_fine, u_fine, y_coarse):
     """Interpolate fine solution onto coarse grid for comparison."""
@@ -99,7 +107,7 @@ def main():
     # Configuration
     dp_dx = -0.001
     nu = 0.01
-    H = 2.0
+    H = 1.0  # Channel half-height (domain is y ∈ [-1, 1])
     
     # Grid levels
     grids = {
@@ -113,7 +121,7 @@ def main():
     solutions = {}
     print("Loading simulation results...")
     for name, (Nx_expected, Ny_expected) in grids.items():
-        vtk_file = output_dir / name / "velocity_final.vtk"
+        vtk_file = output_dir / name / "channel_final.vtk"
         if vtk_file.exists():
             try:
                 y, u, Nx, Ny = read_vtk_solution(vtk_file)
@@ -142,10 +150,10 @@ def main():
         u = solutions[name]['u']
         
         # Centerline profile
-        y_profile = y[:, 0] - H/2
+        y_profile = y[:, 0]  # Already in physical coordinates [-H, H]
         u_profile = np.mean(u, axis=1)
         
-        # Analytical solution
+        # Analytical solution (Poiseuille expects y relative to centerline)
         u_exact = poiseuille_exact(y_profile, dp_dx, nu, H)
         
         # Error metrics

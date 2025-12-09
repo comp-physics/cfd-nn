@@ -105,8 +105,8 @@ void MixingLengthModel::update(
 
     [[maybe_unused]] const int Nx = mesh.Nx;
     [[maybe_unused]] const int Ny = mesh.Ny;
-    const int stride = mesh.total_Nx();
-    const int total_cells = mesh.total_cells();
+    [[maybe_unused]] const int stride = mesh.total_Nx();
+    [[maybe_unused]] const int total_cells = mesh.total_cells();
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: use is_device_ptr for nu_t since it's already mapped by solver
