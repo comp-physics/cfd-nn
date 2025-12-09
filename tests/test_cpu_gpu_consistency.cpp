@@ -90,12 +90,12 @@ void test_harness_sanity() {
     assert(f1.data().data() != f2.data().data());
     
     // Should report zero difference
-    auto cmp1 = compare_fields(mesh, f1, f2);
+    [[maybe_unused]] auto cmp1 = compare_fields(mesh, f1, f2);
     assert(cmp1.max_abs_diff == 0.0);
     
     // Perturb one cell
     f2(mesh.i_begin() + 1, mesh.j_begin() + 1) = 2.0;
-    auto cmp2 = compare_fields(mesh, f1, f2);
+    [[maybe_unused]] auto cmp2 = compare_fields(mesh, f1, f2);
     assert(cmp2.max_abs_diff > 0.0);
     assert(cmp2.max_abs_diff == 1.0);
     

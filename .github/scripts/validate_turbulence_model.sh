@@ -4,7 +4,7 @@
 # Checks:
 # 1. No NaN/Inf values in output
 # 2. Non-zero velocity field (flow must develop)
-# 3. Reasonable velocity magnitudes (0.1 < u_max < 10.0 for typical channel)
+# 3. Reasonable velocity magnitudes (configurable tolerance for slow models)
 # 4. Positive eddy viscosity (nu_t >= 0)
 # 5. Bounded eddy viscosity (nu_t < 1000*nu)
 # 6. Conservation of mass (divergence near zero)
@@ -14,9 +14,10 @@ set -e
 
 MODEL_NAME="$1"
 OUTPUT_DIR="$2"
+MIN_VEL_TOLERANCE="${3:-0.01}"  # Optional: minimum velocity tolerance (default 0.01)
 
 if [ -z "$MODEL_NAME" ] || [ -z "$OUTPUT_DIR" ]; then
-    echo "Usage: $0 <model_name> <output_dir>"
+    echo "Usage: $0 <model_name> <output_dir> [min_vel_tolerance]"
     exit 1
 fi
 
@@ -63,11 +64,11 @@ else
     echo "  Max velocity magnitude: $MAX_VEL"
     
     # Check reasonable bounds (for driven channel flow)
-    IS_REASONABLE=$(echo "$MAX_VEL" | awk '{if ($1 > 0.01 && $1 < 100.0) print "1"; else print "0"}')
+    IS_REASONABLE=$(echo "$MAX_VEL $MIN_VEL_TOLERANCE" | awk '{if ($1 > $2 && $1 < 100.0) print "1"; else print "0"}')
     if [ "$IS_REASONABLE" = "1" ]; then
-        echo "  ✓ Velocity magnitude in reasonable range (0.01 - 100.0)"
+        echo "  ✓ Velocity magnitude in reasonable range (${MIN_VEL_TOLERANCE} - 100.0)"
     else
-        echo "  ✗ WARNING: Velocity magnitude outside typical range!"
+        echo "  ✗ WARNING: Velocity magnitude outside typical range (expected > ${MIN_VEL_TOLERANCE})!"
         VALIDATION_FAILED=1
     fi
 fi
