@@ -14,9 +14,18 @@
 #endif
 
 #ifdef GPU_PROFILE_KERNELS
-#include <nvtx3/nvToolsExt.h>
-#define NVTX_PUSH(name) nvtxRangePushA(name)
-#define NVTX_POP() nvtxRangePop()
+// Try to use NVTX if available, otherwise use lightweight markers
+#if __has_include(<nvtx3/nvToolsExt.h>)
+    #include <nvtx3/nvToolsExt.h>
+    #define NVTX_PUSH(name) nvtxRangePushA(name)
+    #define NVTX_POP() nvtxRangePop()
+    #define NVTX_AVAILABLE 1
+#else
+    // Lightweight markers when NVTX is not available
+    #define NVTX_PUSH(name) do { if (false) std::cout << "NVTX: " << name << std::endl; } while(0)
+    #define NVTX_POP() do { } while(0)
+    #define NVTX_AVAILABLE 0
+#endif
 #else
 #define NVTX_PUSH(name)
 #define NVTX_POP()

@@ -110,10 +110,13 @@ endif()
 if(GPU_PROFILE_KERNELS)
     target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_KERNELS)
     message(STATUS "GPU kernel profiling with NVTX ENABLED")
-    # NVTX library is typically included with CUDA/NVHPC
-    if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
-        # NVHPC includes NVTX, just need to link it
-        target_link_libraries(nn_cfd_core nvtx3)
+    # Try to find NVTX library (optional)
+    find_library(NVTX_LIB NAMES nvtx3 nvToolsExt PATHS ENV LD_LIBRARY_PATH)
+    if(NVTX_LIB)
+        target_link_libraries(nn_cfd_core ${NVTX_LIB})
+        message(STATUS "  NVTX library found: ${NVTX_LIB}")
+    else()
+        message(STATUS "  NVTX library not found - will use lightweight markers only")
     endif()
 endif()
 

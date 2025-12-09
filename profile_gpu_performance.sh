@@ -163,3 +163,4 @@ if [ -f "build_refactor/gpu_profile.sqlite" ]; then
     nsys stats --report cuda_gpu_kern_sum build_refactor/gpu_profile.nsys-rep 2>/dev/null || echo "  (nsys stats failed)"
 fi
 
+

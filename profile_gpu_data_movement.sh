@@ -94,3 +94,4 @@ echo "To view detailed transfers:"
 echo "  grep 'Copying data' gpu_data_movement.log"
 echo "  grep 'target update' gpu_data_movement.log"
 
+
