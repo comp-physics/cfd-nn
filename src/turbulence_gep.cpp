@@ -13,9 +13,111 @@ TurbulenceGEP::TurbulenceGEP()
     : feature_computer_(Mesh()) {
 }
 
+TurbulenceGEP::~TurbulenceGEP() {
+    cleanup_gpu_buffers();
+}
+
 void TurbulenceGEP::initialize(const Mesh& mesh, const VectorField& velocity) {
     (void)velocity;  // Reserved for future use
     ensure_initialized(mesh);
+}
+
+void TurbulenceGEP::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_available()) {
+        gpu_ready_ = false;
+        return;
+    }
+    
+    const int n_cells = mesh.Nx * mesh.Ny;
+    
+    // Check if already allocated for this mesh size
+    if (buffers_on_gpu_ && cached_n_cells_ == n_cells) {
+        gpu_ready_ = true;
+        return;
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_arrays();
+    
+    // Allocate GPU buffers
+    allocate_gpu_arrays(mesh);
+    
+    cached_n_cells_ = n_cells;
+    buffers_on_gpu_ = true;
+    gpu_ready_ = true;
+#else
+    (void)mesh;
+    gpu_ready_ = false;
+#endif
+}
+
+#ifdef USE_GPU_OFFLOAD
+void TurbulenceGEP::allocate_gpu_arrays(const Mesh& mesh) {
+    const int n_cells = mesh.Nx * mesh.Ny;
+    const int total_size = mesh.total_cells();
+    const int stride = mesh.total_Nx();
+    
+    // Allocate flat arrays
+    S_mag_flat_.resize(n_cells, 0.0);
+    Omega_mag_flat_.resize(n_cells, 0.0);
+    wall_dist_flat_.resize(n_cells, 0.0);
+    u_mag_flat_.resize(n_cells, 0.0);
+    nu_t_gpu_flat_.resize(total_size, 0.0);
+    
+    // Precompute wall distances
+    int idx = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            wall_dist_flat_[idx++] = mesh.wall_distance(i, j);
+        }
+    }
+    
+    // Get pointers
+    double* S_mag_ptr = S_mag_flat_.data();
+    double* Omega_mag_ptr = Omega_mag_flat_.data();
+    double* wall_dist_ptr = wall_dist_flat_.data();
+    double* u_mag_ptr = u_mag_flat_.data();
+    double* nu_t_ptr = nu_t_gpu_flat_.data();
+    
+    // Map to GPU persistently
+    #pragma omp target enter data map(alloc: S_mag_ptr[0:n_cells])
+    #pragma omp target enter data map(alloc: Omega_mag_ptr[0:n_cells])
+    #pragma omp target enter data map(to: wall_dist_ptr[0:n_cells])
+    #pragma omp target enter data map(alloc: u_mag_ptr[0:n_cells])
+    #pragma omp target enter data map(alloc: nu_t_ptr[0:total_size])
+}
+
+void TurbulenceGEP::free_gpu_arrays() {
+    if (!buffers_on_gpu_) return;
+    
+    const int n_cells = cached_n_cells_;
+    if (n_cells == 0) return;
+    
+    // Need to compute total_size for nu_t (which has ghost cells)
+    const int total_size = nu_t_gpu_flat_.size();
+    
+    double* S_mag_ptr = S_mag_flat_.data();
+    double* Omega_mag_ptr = Omega_mag_flat_.data();
+    double* wall_dist_ptr = wall_dist_flat_.data();
+    double* u_mag_ptr = u_mag_flat_.data();
+    double* nu_t_ptr = nu_t_gpu_flat_.data();
+    
+    #pragma omp target exit data map(delete: S_mag_ptr[0:n_cells])
+    #pragma omp target exit data map(delete: Omega_mag_ptr[0:n_cells])
+    #pragma omp target exit data map(delete: wall_dist_ptr[0:n_cells])
+    #pragma omp target exit data map(delete: u_mag_ptr[0:n_cells])
+    #pragma omp target exit data map(delete: nu_t_ptr[0:total_size])
+    
+    buffers_on_gpu_ = false;
+}
+#endif
+
+void TurbulenceGEP::cleanup_gpu_buffers() {
+#ifdef USE_GPU_OFFLOAD
+    free_gpu_arrays();
+#endif
+    gpu_ready_ = false;
 }
 
 void TurbulenceGEP::ensure_initialized(const Mesh& mesh) {
@@ -126,68 +228,54 @@ void TurbulenceGEP::update(const Mesh& mesh,
         TIMED_SCOPE("gep_compute");
         
 #ifdef USE_GPU_OFFLOAD
-        // GPU path if available
-        if (omp_get_num_devices() > 0) {
+        // GPU path using persistent mapping
+        if (gpu_ready_) {
             const int n_cells = mesh.Nx * mesh.Ny;
             
-            // Flatten features for GPU
-            std::vector<double> S_mag_flat(n_cells);
-            std::vector<double> Omega_mag_flat(n_cells);
+            // Flatten features for GPU into our persistent arrays
             for (int idx = 0; idx < n_cells; ++idx) {
                 if (idx < static_cast<int>(features.size()) && features[idx].size() > 0) {
-                    S_mag_flat[idx] = features[idx][0];
-                    Omega_mag_flat[idx] = (features[idx].size() > 1) ? features[idx][1] : 0.0;
+                    S_mag_flat_[idx] = features[idx][0];
+                    Omega_mag_flat_[idx] = (features[idx].size() > 1) ? features[idx][1] : 0.0;
                 } else {
-                    S_mag_flat[idx] = 0.0;
-                    Omega_mag_flat[idx] = 0.0;
+                    S_mag_flat_[idx] = 0.0;
+                    Omega_mag_flat_[idx] = 0.0;
                 }
             }
             
-            // Precompute wall distances
-            std::vector<double> wall_dist_flat(n_cells);
+            // Flatten velocity magnitudes into our persistent array
             int idx = 0;
             for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
                 for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    wall_dist_flat[idx++] = mesh.wall_distance(i, j);
+                    double u_val = velocity.u(i, j);
+                    double v_val = velocity.v(i, j);
+                    u_mag_flat_[idx++] = std::sqrt(u_val * u_val + v_val * v_val);
                 }
             }
             
-            // Get pointers
-            const double* S_mag_ptr = S_mag_flat.data();
-            const double* Omega_mag_ptr = Omega_mag_flat.data();
-            const double* wall_dist_ptr = wall_dist_flat.data();
-            const double* u_ptr = velocity.u_data().data();
-            const double* v_ptr = velocity.v_data().data();
-            double* nu_t_ptr = nu_t.data().data();  // Already on GPU from solver
+            // Get pointers to persistent GPU buffers
+            const double* S_mag_ptr = S_mag_flat_.data();
+            const double* Omega_mag_ptr = Omega_mag_flat_.data();
+            const double* wall_dist_ptr = wall_dist_flat_.data();
+            const double* u_mag_ptr = u_mag_flat_.data();
+            double* nu_t_gpu_ptr = nu_t_gpu_flat_.data();
             
             const int Nx = mesh.Nx;
             const int variant_int = static_cast<int>(variant_);
             const double nu = nu_;
             const double nu_t_max = nu_t_max_;
             const int stride = mesh.total_Nx();
-            const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+            const size_t total_size = nu_t_gpu_flat_.size();
             const double kappa = 0.41;
             const double A_plus = 26.0;
             
-            // Flatten velocity magnitudes (avoid complex indexing on GPU)
-            std::vector<double> u_mag_flat(n_cells);
-            idx = 0;
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double u_val = velocity.u(i, j);
-                    double v_val = velocity.v(i, j);
-                    u_mag_flat[idx++] = std::sqrt(u_val * u_val + v_val * v_val);
-                }
-            }
-            const double* u_mag_ptr = u_mag_flat.data();
+            // Upload data to GPU
+            #pragma omp target update to(S_mag_ptr[0:n_cells])
+            #pragma omp target update to(Omega_mag_ptr[0:n_cells])
+            #pragma omp target update to(u_mag_ptr[0:n_cells])
             
-            // CRITICAL FIX: Use stride-based indexing for nu_t (has ghost cells)
-            // GPU kernel - use map(present:) for nu_t with full size including ghosts
-            #pragma omp target teams distribute parallel for \
-                map(to: S_mag_ptr[0:n_cells], Omega_mag_ptr[0:n_cells], \
-                        wall_dist_ptr[0:n_cells], u_mag_ptr[0:n_cells]) \
-                map(present: nu_t_ptr[0:total_size]) \
-                firstprivate(Nx, stride)
+            // GPU kernel - NO map() clauses (all arrays already persistent!)
+            #pragma omp target teams distribute parallel for firstprivate(Nx, stride)
             for (int idx = 0; idx < n_cells; ++idx) {
                 // Convert flat index to (i,j) including ghost cells
                 const int i = idx % Nx + 1;  // +1 to skip ghost cells
@@ -240,8 +328,14 @@ void TurbulenceGEP::update(const Mesh& mesh,
                 if (nu_t_val < 0.0) nu_t_val = 0.0;
                 if (nu_t_val > nu_t_max) nu_t_val = nu_t_max;
                 
-                nu_t_ptr[cell_idx] = nu_t_val;  // Use stride-based index
+                nu_t_gpu_ptr[cell_idx] = nu_t_val;  // Use stride-based index
             }
+            
+            // Download result from GPU
+            #pragma omp target update from(nu_t_gpu_ptr[0:total_size])
+            
+            // Copy back to provided nu_t field
+            std::copy(nu_t_gpu_flat_.begin(), nu_t_gpu_flat_.end(), nu_t.data().begin());
             
             return;
         }

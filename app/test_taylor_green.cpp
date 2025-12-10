@@ -42,6 +42,7 @@ struct TaylorGreenExact {
 void compute_errors(const Mesh& mesh, const VectorField& velocity, 
                     const ScalarField& pressure, const TaylorGreenExact& exact,
                     double& L2_u, double& L2_v, double& Linf_u, double& Linf_v) {
+    (void)pressure;  // Unused in error computation
     
     double sum_error_u = 0.0;
     double sum_error_v = 0.0;

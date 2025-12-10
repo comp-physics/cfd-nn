@@ -217,7 +217,39 @@ SSTKOmegaTransport::SSTKOmegaTransport(const SSTConstants& constants)
 }
 
 SSTKOmegaTransport::~SSTKOmegaTransport() {
-    free_gpu_buffers();  // Safe to call unconditionally (no-op when GPU disabled)
+    cleanup_gpu_buffers();
+}
+
+void SSTKOmegaTransport::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_available()) {
+        buffers_on_gpu_ = false;
+        return;
+    }
+    
+    int n_interior = mesh.Nx * mesh.Ny;
+    
+    // Check if already allocated for this mesh size
+    if (buffers_on_gpu_ && cached_n_cells_ == n_interior) {
+        return;
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_buffers();
+    
+    // Allocate GPU buffers
+    allocate_gpu_buffers(mesh);
+#else
+    (void)mesh;
+    buffers_on_gpu_ = false;
+#endif
+}
+
+void SSTKOmegaTransport::cleanup_gpu_buffers() {
+#ifdef USE_GPU_OFFLOAD
+    free_gpu_buffers();
+#endif
+    buffers_on_gpu_ = false;
 }
 
 void SSTKOmegaTransport::set_closure(std::unique_ptr<TurbulenceClosure> closure) {
@@ -341,15 +373,15 @@ void SSTKOmegaTransport::free_gpu_buffers() {
             size_t wall_size = wall_dist_flat_.size();
             size_t work_size = work_flat_.size();
             
-            // Unmap buffers from GPU - use single pragma with multiple arrays (like NN models)
+            // Unmap buffers from GPU - use release instead of delete for robustness
             #pragma omp target exit data \
-                map(delete: k_ptr[0:k_size]) \
-                map(delete: omega_ptr[0:omega_size]) \
-                map(delete: nu_t_ptr[0:nu_t_size]) \
-                map(delete: u_ptr[0:u_size]) \
-                map(delete: v_ptr[0:v_size]) \
-                map(delete: wall_ptr[0:wall_size]) \
-                map(delete: work_ptr[0:work_size])
+                map(release: k_ptr[0:k_size]) \
+                map(release: omega_ptr[0:omega_size]) \
+                map(release: nu_t_ptr[0:nu_t_size]) \
+                map(release: u_ptr[0:u_size]) \
+                map(release: v_ptr[0:v_size]) \
+                map(release: wall_ptr[0:wall_size]) \
+                map(release: work_ptr[0:work_size])
         } else {
             buffers_on_gpu_ = false;
         }
@@ -370,6 +402,11 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
     (void)mesh;
     buffers_on_gpu_ = false;
 }
+
+void SSTKOmegaTransport::free_gpu_buffers() {
+    // No-op for CPU-only builds
+    buffers_on_gpu_ = false;
+}
 #endif
 
 void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocity) {
@@ -379,6 +416,9 @@ void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocit
         closure_->set_nu(nu_);
         closure_->set_delta(delta_);
     }
+    
+    // Initialize GPU buffers if available
+    initialize_gpu_buffers(mesh);
     
     // Estimate initial friction velocity from velocity gradient at wall
     double u_tau = 0.0;
@@ -537,7 +577,10 @@ void SSTKOmegaTransport::advance_turbulence(
     
     ensure_initialized(mesh);
     
-#ifdef USE_GPU_OFFLOAD
+#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_SST_TRANSPORT
+    // TEMPORARILY DISABLED: GPU path for SST has memory management issues during cleanup
+    // The issue appears to be timing-dependent - works with NVCOMPILER_ACC_NOTIFY but crashes otherwise
+    // TODO: Debug and re-enable GPU path for SST transport model
     // Ensure GPU buffers are allocated (lazy initialization)
     if (!buffers_on_gpu_ && omp_get_num_devices() > 0) {
         allocate_gpu_buffers(mesh);

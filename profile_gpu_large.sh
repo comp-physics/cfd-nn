@@ -219,3 +219,5 @@ echo "To view Nsight GUI:"
 echo "  nsys-ui build_refactor/gpu_profile_large.nsys-rep"
 echo ""
 
+
+

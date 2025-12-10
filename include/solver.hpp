@@ -105,6 +105,10 @@ public:
     /// Write VTK output for ParaView visualization
     void write_vtk(const std::string& filename) const;
     
+    /// GPU buffer management (public for testing and initialization)
+    void sync_to_gpu();              // Update GPU after CPU-side modifications (e.g., after initialization)
+    void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
+    
 private:
     const Mesh* mesh_;
     Config config_;
@@ -193,8 +197,6 @@ private:
     
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)
     void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
-    void sync_to_gpu();              // Update GPU after CPU-side modifications (rarely used)
-    void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
 };
 
 } // namespace nncfd

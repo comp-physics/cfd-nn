@@ -100,3 +100,5 @@ echo "  - Full profiling: sbatch profile_gpu_performance.sh"
 echo "  - Nsight trace:  nsys profile ./channel ..."
 
 
+
+

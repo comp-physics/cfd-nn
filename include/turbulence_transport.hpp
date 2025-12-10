@@ -208,6 +208,9 @@ public:
     
     // TurbulenceModel interface
     void initialize(const Mesh& mesh, const VectorField& velocity) override;
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return buffers_on_gpu_; }
     
     bool uses_transport_equations() const override { return true; }
     

@@ -37,6 +37,27 @@ void TurbulenceNNMLP::upload_to_gpu() {
 #endif
 }
 
+void TurbulenceNNMLP::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_available()) {
+        gpu_ready_ = false;
+        return;
+    }
+    
+    const int n_cells = mesh.Nx * mesh.Ny;
+    upload_to_gpu();  // Upload MLP weights if not already done
+    allocate_gpu_buffers(n_cells);
+#else
+    (void)mesh;
+    gpu_ready_ = false;
+#endif
+}
+
+void TurbulenceNNMLP::cleanup_gpu_buffers() {
+    free_gpu_buffers();
+    gpu_ready_ = false;
+}
+
 void TurbulenceNNMLP::allocate_gpu_buffers(int n_cells) {
 #ifdef USE_GPU_OFFLOAD
     if (n_cells == cached_n_cells_ && !features_flat_.empty() && buffers_on_gpu_) {

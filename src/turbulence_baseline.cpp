@@ -60,6 +60,113 @@ inline void mixing_length_cell_kernel(
 
 MixingLengthModel::MixingLengthModel() = default;
 
+MixingLengthModel::~MixingLengthModel() {
+    cleanup_gpu_buffers();
+}
+
+void MixingLengthModel::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_available()) {
+        gpu_ready_ = false;
+        return;
+    }
+    
+    const int total_cells = mesh.total_cells();
+    
+    // Check if already allocated for this mesh size
+    if (buffers_on_gpu_ && cached_total_cells_ == total_cells) {
+        gpu_ready_ = true;
+        return;
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_arrays();
+    
+    // Allocate CPU storage for gradients if needed
+    if (dudx_.data().empty()) {
+        dudx_ = ScalarField(mesh);
+        dudy_ = ScalarField(mesh);
+        dvdx_ = ScalarField(mesh);
+        dvdy_ = ScalarField(mesh);
+    }
+    
+    // Allocate GPU buffers
+    allocate_gpu_arrays(mesh);
+    
+    cached_total_cells_ = total_cells;
+    buffers_on_gpu_ = true;
+    gpu_ready_ = true;
+#else
+    (void)mesh;
+    gpu_ready_ = false;
+#endif
+}
+
+#ifdef USE_GPU_OFFLOAD
+void MixingLengthModel::allocate_gpu_arrays(const Mesh& mesh) {
+    const int total_cells = mesh.total_cells();
+    const int stride = mesh.total_Nx();
+    
+    // Allocate flat arrays
+    nu_t_gpu_flat_.resize(total_cells, 0.0);
+    y_wall_flat_.resize(total_cells, 0.0);
+    
+    // Precompute wall distances
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            int cell_idx = j * stride + i;
+            y_wall_flat_[cell_idx] = mesh.wall_distance(i, j);
+        }
+    }
+    
+    // Get pointers
+    double* dudx_ptr = dudx_.data().data();
+    double* dudy_ptr = dudy_.data().data();
+    double* dvdx_ptr = dvdx_.data().data();
+    double* dvdy_ptr = dvdy_.data().data();
+    double* nu_t_ptr = nu_t_gpu_flat_.data();
+    double* y_wall_ptr = y_wall_flat_.data();
+    
+    // Map to GPU persistently
+    #pragma omp target enter data map(alloc: dudx_ptr[0:total_cells])
+    #pragma omp target enter data map(alloc: dudy_ptr[0:total_cells])
+    #pragma omp target enter data map(alloc: dvdx_ptr[0:total_cells])
+    #pragma omp target enter data map(alloc: dvdy_ptr[0:total_cells])
+    #pragma omp target enter data map(to: y_wall_ptr[0:total_cells])
+    #pragma omp target enter data map(alloc: nu_t_ptr[0:total_cells])
+}
+
+void MixingLengthModel::free_gpu_arrays() {
+    if (!buffers_on_gpu_) return;
+    
+    const int size = cached_total_cells_;
+    if (size == 0) return;
+    
+    double* dudx_ptr = dudx_.data().data();
+    double* dudy_ptr = dudy_.data().data();
+    double* dvdx_ptr = dvdx_.data().data();
+    double* dvdy_ptr = dvdy_.data().data();
+    double* nu_t_ptr = nu_t_gpu_flat_.data();
+    double* y_wall_ptr = y_wall_flat_.data();
+    
+    #pragma omp target exit data map(delete: dudx_ptr[0:size])
+    #pragma omp target exit data map(delete: dudy_ptr[0:size])
+    #pragma omp target exit data map(delete: dvdx_ptr[0:size])
+    #pragma omp target exit data map(delete: dvdy_ptr[0:size])
+    #pragma omp target exit data map(delete: y_wall_ptr[0:size])
+    #pragma omp target exit data map(delete: nu_t_ptr[0:size])
+    
+    buffers_on_gpu_ = false;
+}
+#endif
+
+void MixingLengthModel::cleanup_gpu_buffers() {
+#ifdef USE_GPU_OFFLOAD
+    free_gpu_arrays();
+#endif
+    gpu_ready_ = false;
+}
+
 void MixingLengthModel::update(
     const Mesh& mesh,
     const VectorField& velocity,
@@ -109,8 +216,8 @@ void MixingLengthModel::update(
     [[maybe_unused]] const int total_cells = mesh.total_cells();
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: use is_device_ptr for nu_t since it's already mapped by solver
-    if (omp_get_num_devices() > 0 && Nx >= 32 && Ny >= 32) {
+    // GPU path: use persistent mapping (NO map(present:) or map(to:))
+    if (gpu_ready_) {
         const int n_cells = Nx * Ny;
 
         // Copy member variables to local scope (NVHPC workaround)
@@ -119,39 +226,32 @@ void MixingLengthModel::update(
         const double A_plus_local = A_plus_;
         const double delta_local = delta_;
 
-        // Precompute wall distances (using mesh.yc to match CPU exactly)
-        std::vector<double> y_wall_vec(total_cells, 0.0);
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                int cell_idx = j * stride + i;
-                y_wall_vec[cell_idx] = mesh.wall_distance(i, j);
-            }
-        }
-
-        // Get raw pointers
+        // Get raw pointers to persistent GPU buffers
         double* dudx_ptr = dudx_.data().data();
         double* dudy_ptr = dudy_.data().data();
         double* dvdx_ptr = dvdx_.data().data();
         double* dvdy_ptr = dvdy_.data().data();
-        double* nu_t_ptr = nu_t.data().data();  // Already on GPU from solver
-        double* y_wall_ptr = y_wall_vec.data();
+        double* nu_t_gpu_ptr = nu_t_gpu_flat_.data();
+        double* y_wall_ptr = y_wall_flat_.data();
+
+        // Upload gradient data to GPU
+        #pragma omp target update to(dudx_ptr[0:total_cells])
+        #pragma omp target update to(dudy_ptr[0:total_cells])
+        #pragma omp target update to(dvdx_ptr[0:total_cells])
+        #pragma omp target update to(dvdy_ptr[0:total_cells])
 
         // GPU kernel: compute mixing length eddy viscosity
-        // Local gradient arrays use temporary map(to:), nu_t uses map(present:)
-        #pragma omp target teams distribute parallel for \
-            map(to: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells], \
-                    dvdx_ptr[0:total_cells], dvdy_ptr[0:total_cells], \
-                    y_wall_ptr[0:total_cells]) \
-            map(present: nu_t_ptr[0:total_cells])
+        // All arrays already persistently mapped - NO map() clauses!
+        #pragma omp target teams distribute parallel for
         for (int idx = 0; idx < n_cells; ++idx) {
             const int i = idx % Nx + 1;  // interior i (skip ghost)
             const int j = idx / Nx + 1;  // interior j (skip ghost)
             const int cell_idx = j * stride + i;
 
-            // Use precomputed wall distance (same as CPU mesh.wall_distance)
+            // Use precomputed wall distance
             const double y_wall = y_wall_ptr[cell_idx];
 
-            // Inline kernel computation (same as CPU path, for guaranteed matching results)
+            // Inline kernel computation
             const double Sxx = dudx_ptr[cell_idx];
             const double Syy = dvdy_ptr[cell_idx];
             const double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
@@ -163,8 +263,15 @@ void MixingLengthModel::update(
             if (l_mix > 0.5 * delta_local) {
                 l_mix = 0.5 * delta_local;
             }
-            nu_t_ptr[cell_idx] = l_mix * l_mix * S_mag;
+            
+            nu_t_gpu_ptr[cell_idx] = l_mix * l_mix * S_mag;
         }
+
+        // Download result
+        #pragma omp target update from(nu_t_gpu_ptr[0:total_cells])
+
+        // Copy back to provided nu_t field
+        std::copy(nu_t_gpu_flat_.begin(), nu_t_gpu_flat_.end(), nu_t.data().begin());
 
         return;
     }

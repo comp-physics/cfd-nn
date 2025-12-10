@@ -96,6 +96,10 @@ public:
     
     bool provides_reynolds_stresses() const override { return true; }
     
+    void initialize_gpu_buffers(const Mesh& mesh);
+    void cleanup_gpu_buffers();
+    bool is_gpu_ready() const { return buffers_on_gpu_; }
+    
     void compute_nu_t(
         const Mesh& mesh,
         const VectorField& velocity,

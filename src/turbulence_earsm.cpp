@@ -17,6 +17,36 @@ namespace nncfd {
 
 EARSMClosure::EARSMClosure() = default;
 
+void EARSMClosure::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    if (omp_get_num_devices() == 0) {
+        buffers_on_gpu_ = false;
+        return;
+    }
+    
+    // Check if already allocated
+    if (buffers_on_gpu_ && !k_flat_.empty()) {
+        return;
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_buffers();
+    
+    // Allocate GPU buffers
+    allocate_gpu_buffers(mesh);
+#else
+    (void)mesh;
+    buffers_on_gpu_ = false;
+#endif
+}
+
+void EARSMClosure::cleanup_gpu_buffers() {
+#ifdef USE_GPU_OFFLOAD
+    free_gpu_buffers();
+#endif
+    buffers_on_gpu_ = false;
+}
+
 void EARSMClosure::ensure_initialized(const Mesh& mesh) {
     if (!initialized_) {
         feature_computer_ = std::make_unique<FeatureComputer>(mesh);
@@ -26,9 +56,7 @@ void EARSMClosure::ensure_initialized(const Mesh& mesh) {
         features_.resize(n_cells);
         basis_.resize(n_cells);
         
-#ifdef USE_GPU_OFFLOAD
-        allocate_gpu_buffers(mesh);
-#endif
+        // GPU buffers are initialized explicitly through initialize_gpu_buffers()
         
         initialized_ = true;
     }
@@ -172,7 +200,10 @@ void EARSMClosure::compute_nu_t(
     
     ensure_initialized(mesh);
     
-#ifdef USE_GPU_OFFLOAD
+#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_EARSM
+    // TEMPORARILY DISABLED: GPU path for EARSM has "partially present" memory issues
+    // Pointer aliasing causes conflicts with already-mapped GPU buffers
+    // TODO: Debug and re-enable GPU path for EARSM models
     if (gpu_ready_ && omp_get_num_devices() > 0) {
         compute_nu_t_gpu(mesh, velocity, k, omega, nu_t, tau_ij);
         return;

@@ -58,6 +58,12 @@ void test_laminar_poiseuille() {
     // Initialize close to solution for fast convergence (Strategy 1)
     initialize_poiseuille_profile(solver, mesh, config.dp_dx, config.nu, 0.9);
     
+    // CRITICAL: Sync initial conditions to GPU before solving
+    // This ensures GPU starts with the same initial state as CPU
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+    
     auto [residual, iters] = solver.solve_steady();
     
     // Analytical solution: u(y) = -(dp/dx)/(2*nu) * (H^2/4 - y^2)
@@ -108,6 +114,10 @@ void test_convergence() {
     // Use analytical initialization for fast convergence (Strategy 1)
     initialize_poiseuille_profile(solver, mesh, config.dp_dx, config.nu, 0.85);
     
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+    
     auto [residual, iters] = solver.solve_steady();
     
     // Test: Residual should drop by at least 2 orders of magnitude
@@ -146,6 +156,10 @@ void test_divergence_free() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(-config.dp_dx, 0.0);
     solver.initialize_uniform(0.01, 0.0);
+    
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
     
     // Run a few steps (don't need full convergence to test projection)
     for (int step = 0; step < 100; ++step) {
@@ -206,6 +220,10 @@ void test_mass_conservation() {
     solver.initialize_uniform(0.1, 0.0);
     solver.set_body_force(-config.dp_dx, 0.0);
     
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+    
     // Run several time steps and check mass conservation
     double max_flux_error = 0.0;
     for (int step = 0; step < 100; ++step) {  // Fewer steps for CI speed
@@ -259,6 +277,10 @@ void test_momentum_balance() {
     // Initialize with analytical profile at 90% of target
     // This reduces iterations from 10k+ to ~100-500
     initialize_poiseuille_profile(solver, mesh, config.dp_dx, config.nu, 0.9);
+    
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
     
     auto [residual, iters] = solver.solve_steady();
     assert(residual < 5e-4 && "Solver did not converge to reasonable residual!");  // Physics test, not convergence test
@@ -392,6 +414,10 @@ void test_single_timestep_accuracy() {
     
     // Initialize with EXACT analytical solution
     initialize_poiseuille_profile(solver, mesh, config.dp_dx, config.nu, 1.0);
+    
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
     
     // Store exact solution before stepping
     double H = 1.0;

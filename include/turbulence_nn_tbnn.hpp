@@ -58,8 +58,10 @@ public:
     /// Upload NN weights to GPU (call after load())
     void upload_to_gpu();
     
-    /// Check if GPU is ready
-    bool is_gpu_ready() const { return gpu_ready_; }
+    /// GPU buffer management (override from base)
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return gpu_ready_; }
     
 private:
     MLP mlp_;

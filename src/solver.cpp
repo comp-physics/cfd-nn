@@ -628,7 +628,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 #ifdef USE_GPU_OFFLOAD
     initialize_gpu_buffers();
     // GPU buffers are now mapped and will persist for solver lifetime
-    // All kernels (solver and turbulence models) will use is_device_ptr
+    // NOTE: Turbulence models manage their own GPU buffers independently
 #endif
 }
 
@@ -640,6 +640,11 @@ void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
     turb_model_ = std::move(model);
     if (turb_model_) {
         turb_model_->set_nu(config_.nu);
+        
+        // Initialize turbulence model GPU buffers if GPU is available and mesh is initialized
+        if (mesh_ && gpu_ready_) {
+            turb_model_->initialize_gpu_buffers(*mesh_);
+        }
     }
 }
 
@@ -1339,24 +1344,30 @@ double RANSSolver::step() {
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
         NVTX_POP();
         
-        // No additional sync needed - turbulence models compute directly on GPU using map(present:)
-        // nu_t is already resident on device and has been updated by the GPU kernel
+        // Turbulence models now manage their own GPU buffers and copy results back to CPU nu_t
+        // Sync nu_t to GPU for use in nu_eff computation
+#ifdef USE_GPU_OFFLOAD
+        if (gpu_ready_) {
+            #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
+        }
+#endif
     }
     
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
-    nu_eff_.fill(config_.nu);
-    if (turb_model_) {
+    // GPU path: compute directly on GPU without CPU fill
 #ifdef USE_GPU_OFFLOAD
-        if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
-            const int Nx = mesh_->Nx;
-            const int Ny = mesh_->Ny;
-            const int n_cells = Nx * Ny;
-            const int stride = Nx + 2;
-            const size_t total_size = field_total_size_;
-            const double nu = config_.nu;
-            double* nu_eff_ptr = nu_eff_ptr_;
-            const double* nu_t_ptr = nu_t_ptr_;
-            
+    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int n_cells = Nx * Ny;
+        const int stride = Nx + 2;
+        const size_t total_size = field_total_size_;
+        const double nu = config_.nu;
+        double* nu_eff_ptr = nu_eff_ptr_;
+        const double* nu_t_ptr = nu_t_ptr_;
+        
+        if (turb_model_) {
+            // With turbulence: nu_eff = nu + nu_t
             #pragma omp target teams distribute parallel for \
                 map(present: nu_eff_ptr[0:total_size]) \
                 map(present: nu_t_ptr[0:total_size]) \
@@ -1367,11 +1378,28 @@ double RANSSolver::step() {
                 int cell_idx = j * stride + i;
                 nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
             }
-        } else
+        } else {
+            // No turbulence: nu_eff = nu (constant)
+            #pragma omp target teams distribute parallel for \
+                map(present: nu_eff_ptr[0:total_size]) \
+                firstprivate(nu, stride, Nx)
+            for (int idx = 0; idx < n_cells; ++idx) {
+                int i = idx % Nx + 1;  // +1 for ghost cells
+                int j = idx / Nx + 1;
+                int cell_idx = j * stride + i;
+                nu_eff_ptr[cell_idx] = nu;
+            }
+        }
+    } else
 #endif
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                nu_eff_(i, j) = config_.nu + nu_t_(i, j);
+    {
+        // CPU path
+        nu_eff_.fill(config_.nu);
+        if (turb_model_) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    nu_eff_(i, j) = config_.nu + nu_t_(i, j);
+                }
             }
         }
     }
@@ -2066,7 +2094,7 @@ void RANSSolver::initialize_gpu_buffers() {
     velocity_star_v_ptr_ = velocity_star_.v_data().data();
     pressure_ptr_ = pressure_.data().data();
     pressure_corr_ptr_ = pressure_correction_.data().data();
-    nu_t_ptr_ = nu_t_.data().data();
+    nu_t_ptr_ = nu_t_.data().data();  // Keep for nu_eff calculation
     nu_eff_ptr_ = nu_eff_.data().data();
     conv_u_ptr_ = conv_.u_data().data();
     conv_v_ptr_ = conv_.v_data().data();
@@ -2074,6 +2102,7 @@ void RANSSolver::initialize_gpu_buffers() {
     diff_v_ptr_ = diff_.v_data().data();
     rhs_poisson_ptr_ = rhs_poisson_.data().data();
     div_velocity_ptr_ = div_velocity_.data().data();
+    // NOTE: k and omega are NOT mapped - turbulence models manage their own GPU copies
     k_ptr_ = k_.data().data();
     omega_ptr_ = omega_.data().data();
     
@@ -2099,7 +2128,7 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: velocity_star_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: pressure_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: pressure_corr_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])  // Keep for nu_eff = nu + nu_t
     #pragma omp target enter data map(to: nu_eff_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: conv_u_ptr_[0:u_total_size])
     #pragma omp target enter data map(to: conv_v_ptr_[0:v_total_size])
@@ -2107,8 +2136,7 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: diff_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: k_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: omega_ptr_[0:field_total_size_])
+    // k and omega are NOT mapped here - turbulence models manage their own GPU copies
     
     gpu_ready_ = true;
     
@@ -2139,8 +2167,7 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(from: velocity_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(from: pressure_ptr_[0:field_total_size_])
     #pragma omp target exit data map(from: nu_t_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(from: k_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(from: omega_ptr_[0:field_total_size_])
+    // k and omega are managed by turbulence model, not unmapped here
     
     // Delete temporary/work arrays without copying back
     #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:u_total_size])
@@ -2169,8 +2196,7 @@ void RANSSolver::sync_to_gpu() {
     #pragma omp target update to(velocity_v_ptr_[0:v_total_size])
     #pragma omp target update to(pressure_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-    #pragma omp target update to(k_ptr_[0:field_total_size_])
-    #pragma omp target update to(omega_ptr_[0:field_total_size_])
+    // k and omega are managed by turbulence model independently
 }
 
 void RANSSolver::sync_from_gpu() {

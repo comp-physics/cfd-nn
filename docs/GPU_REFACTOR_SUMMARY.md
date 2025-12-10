@@ -223,3 +223,4 @@ double* grad_ptr = local_gradients.data();
 3. Profile and optimize transfer patterns for snapshot output
 4. Add GPU memory usage reporting in verbose mode
 
+

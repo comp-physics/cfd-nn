@@ -170,6 +170,7 @@ if(BUILD_TESTS)
     add_executable(test_turbulence tests/test_turbulence.cpp)
     target_link_libraries(test_turbulence nn_cfd_core)
     add_test(NAME TurbulenceTest COMMAND test_turbulence)
+    # Turbulence models now use unified persistent mapping - GPU enabled
     
     add_executable(test_stability tests/test_stability.cpp)
     target_link_libraries(test_stability nn_cfd_core)
