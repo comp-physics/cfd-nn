@@ -166,7 +166,7 @@ private:
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
     
-#ifdef USE_GPU_OFFLOAD
+    // GPU buffers (always present for ABI stability)
     // Simplified GPU strategy: Data mapped once at initialization, stays resident on GPU
     // All kernels use is_device_ptr to access already-mapped data
     // No temporary map(to:/from:) clauses in kernels - eliminates mapping conflicts
@@ -195,7 +195,6 @@ private:
     void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
     void sync_to_gpu();              // Update GPU after CPU-side modifications (rarely used)
     void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
-#endif
 };
 
 } // namespace nncfd

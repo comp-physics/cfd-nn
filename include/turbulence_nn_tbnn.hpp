@@ -25,6 +25,12 @@ public:
     TurbulenceNNTBNN();
     ~TurbulenceNNTBNN();
     
+    // Delete copy and move to prevent double-free of GPU buffers
+    TurbulenceNNTBNN(const TurbulenceNNTBNN&) = delete;
+    TurbulenceNNTBNN& operator=(const TurbulenceNNTBNN&) = delete;
+    TurbulenceNNTBNN(TurbulenceNNTBNN&&) = delete;
+    TurbulenceNNTBNN& operator=(TurbulenceNNTBNN&&) = delete;
+    
     /// Load network weights and scaling from directory
     void load(const std::string& weights_dir, const std::string& scaling_dir);
     
@@ -86,9 +92,11 @@ private:
     
     // GPU state
     bool gpu_ready_ = false;
-    [[maybe_unused]] bool full_gpu_ready_ = false;
+    bool full_gpu_ready_ = false;  // Reserved for future GPU optimization
+    bool buffers_on_gpu_ = false;  // Track if feature buffers are mapped to GPU
+    bool full_buffers_on_gpu_ = false;  // Track if full pipeline buffers are mapped to GPU
     bool initialized_ = false;
-    [[maybe_unused]] int cached_n_cells_ = 0;
+    int cached_n_cells_ = 0;  // Reserved for future GPU optimization
     int cached_total_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);

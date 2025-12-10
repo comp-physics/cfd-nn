@@ -47,8 +47,8 @@ void TurbulenceNNTBNN::upload_to_gpu() {
 
 void TurbulenceNNTBNN::allocate_gpu_buffers(int n_cells) {
 #ifdef USE_GPU_OFFLOAD
-    if (n_cells == cached_n_cells_ && !features_flat_.empty()) {
-        return;  // Already allocated
+    if (n_cells == cached_n_cells_ && !features_flat_.empty() && buffers_on_gpu_) {
+        return;  // Already allocated and mapped
     }
     
     free_gpu_buffers();
@@ -62,18 +62,22 @@ void TurbulenceNNTBNN::allocate_gpu_buffers(int n_cells) {
     outputs_flat_.resize(n_cells * output_dim);
     workspace_.resize(workspace_size);
     
-    // Map to GPU
-    double* feat_ptr = features_flat_.data();
-    double* out_ptr = outputs_flat_.data();
-    double* work_ptr = workspace_.data();
-    size_t feat_size = features_flat_.size();
-    size_t out_size = outputs_flat_.size();
-    size_t work_size = workspace_.size();
-    
-    #pragma omp target enter data \
-        map(alloc: feat_ptr[0:feat_size]) \
-        map(alloc: out_ptr[0:out_size]) \
-        map(alloc: work_ptr[0:work_size])
+    // Map to GPU only if we have valid data
+    if (!features_flat_.empty() && !outputs_flat_.empty() && !workspace_.empty()) {
+        double* feat_ptr = features_flat_.data();
+        double* out_ptr = outputs_flat_.data();
+        double* work_ptr = workspace_.data();
+        size_t feat_size = features_flat_.size();
+        size_t out_size = outputs_flat_.size();
+        size_t work_size = workspace_.size();
+        
+        #pragma omp target enter data \
+            map(alloc: feat_ptr[0:feat_size]) \
+            map(alloc: out_ptr[0:out_size]) \
+            map(alloc: work_ptr[0:work_size])
+        
+        buffers_on_gpu_ = true;
+    }
     
     cached_n_cells_ = n_cells;
 #else
@@ -142,6 +146,7 @@ void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
         map(alloc: tau_yy_ptr[0:n_interior]) \
         map(alloc: work_ptr[0:workspace_size])
     
+    full_buffers_on_gpu_ = true;  // Mark buffers as mapped to GPU
     cached_n_cells_ = n_interior;
     cached_total_cells_ = n_total;
 #else
@@ -151,18 +156,27 @@ void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
 
 void TurbulenceNNTBNN::free_gpu_buffers() {
 #ifdef USE_GPU_OFFLOAD
-    if (!features_flat_.empty()) {
-        double* feat_ptr = features_flat_.data();
-        double* out_ptr = outputs_flat_.data();
-        double* work_ptr = workspace_.data();
-        size_t feat_size = features_flat_.size();
-        size_t out_size = outputs_flat_.size();
-        size_t work_size = workspace_.size();
-        
-        #pragma omp target exit data \
-            map(delete: feat_ptr[0:feat_size]) \
-            map(delete: out_ptr[0:out_size]) \
-            map(delete: work_ptr[0:work_size])
+    // Only free GPU buffers if they were actually mapped to GPU
+    if (buffers_on_gpu_) {
+        // Check vectors are non-empty before unmapping
+        if (!features_flat_.empty() && !outputs_flat_.empty() && !workspace_.empty()) {
+            // Set flag FIRST to prevent re-entry
+            buffers_on_gpu_ = false;
+            
+            double* feat_ptr = features_flat_.data();
+            double* out_ptr = outputs_flat_.data();
+            double* work_ptr = workspace_.data();
+            size_t feat_size = features_flat_.size();
+            size_t out_size = outputs_flat_.size();
+            size_t work_size = workspace_.size();
+            
+            #pragma omp target exit data \
+                map(delete: feat_ptr[0:feat_size]) \
+                map(delete: out_ptr[0:out_size]) \
+                map(delete: work_ptr[0:work_size])
+        } else {
+            buffers_on_gpu_ = false;  // Clear flag even if vectors are empty
+        }
     }
 #endif
     features_flat_.clear();
@@ -172,33 +186,42 @@ void TurbulenceNNTBNN::free_gpu_buffers() {
 
 void TurbulenceNNTBNN::free_full_gpu_buffers() {
 #ifdef USE_GPU_OFFLOAD
-    if (!u_flat_.empty()) {
-        double* u_ptr = u_flat_.data();
-        double* v_ptr = v_flat_.data();
-        double* k_ptr = k_flat_.data();
-        double* omega_ptr = omega_flat_.data();
-        double* wall_ptr = wall_dist_flat_.data();
-        double* nu_t_ptr = nu_t_flat_.data();
-        double* tau_xx_ptr = tau_xx_flat_.data();
-        double* tau_xy_ptr = tau_xy_flat_.data();
-        double* tau_yy_ptr = tau_yy_flat_.data();
-        double* work_ptr = full_workspace_.data();
-        
-        size_t n_total = u_flat_.size();
-        size_t n_interior = k_flat_.size();
-        size_t work_size = full_workspace_.size();
-        
-        #pragma omp target exit data \
-            map(delete: u_ptr[0:n_total]) \
-            map(delete: v_ptr[0:n_total]) \
-            map(delete: k_ptr[0:n_interior]) \
-            map(delete: omega_ptr[0:n_interior]) \
-            map(delete: wall_ptr[0:n_interior]) \
-            map(delete: nu_t_ptr[0:n_interior]) \
-            map(delete: tau_xx_ptr[0:n_interior]) \
-            map(delete: tau_xy_ptr[0:n_interior]) \
-            map(delete: tau_yy_ptr[0:n_interior]) \
-            map(delete: work_ptr[0:work_size])
+    // Only free GPU buffers if they were actually mapped to GPU
+    if (full_buffers_on_gpu_) {
+        // Check vectors are non-empty before unmapping
+        if (!u_flat_.empty() && !k_flat_.empty() && !full_workspace_.empty()) {
+            // Set flag FIRST to prevent re-entry
+            full_buffers_on_gpu_ = false;
+            
+            double* u_ptr = u_flat_.data();
+            double* v_ptr = v_flat_.data();
+            double* k_ptr = k_flat_.data();
+            double* omega_ptr = omega_flat_.data();
+            double* wall_ptr = wall_dist_flat_.data();
+            double* nu_t_ptr = nu_t_flat_.data();
+            double* tau_xx_ptr = tau_xx_flat_.data();
+            double* tau_xy_ptr = tau_xy_flat_.data();
+            double* tau_yy_ptr = tau_yy_flat_.data();
+            double* work_ptr = full_workspace_.data();
+            
+            size_t n_total = u_flat_.size();
+            size_t n_interior = k_flat_.size();
+            size_t work_size = full_workspace_.size();
+            
+            #pragma omp target exit data \
+                map(delete: u_ptr[0:n_total]) \
+                map(delete: v_ptr[0:n_total]) \
+                map(delete: k_ptr[0:n_interior]) \
+                map(delete: omega_ptr[0:n_interior]) \
+                map(delete: wall_ptr[0:n_interior]) \
+                map(delete: nu_t_ptr[0:n_interior]) \
+                map(delete: tau_xx_ptr[0:n_interior]) \
+                map(delete: tau_xy_ptr[0:n_interior]) \
+                map(delete: tau_yy_ptr[0:n_interior]) \
+                map(delete: work_ptr[0:work_size])
+        } else {
+            full_buffers_on_gpu_ = false;  // Clear flag even if vectors are empty
+        }
     }
 #endif
     u_flat_.clear();
@@ -311,8 +334,8 @@ void TurbulenceNNTBNN::update_full_gpu(
         TIMED_SCOPE("nn_tbnn_flatten_inputs");
         
         // Flatten velocity (with ghost cells)
-        const auto& u_data = velocity.u_field().data();
-        const auto& v_data = velocity.v_field().data();
+        const auto& u_data = velocity.u_data();
+        const auto& v_data = velocity.v_data();
         std::copy(u_data.begin(), u_data.end(), u_flat_.begin());
         std::copy(v_data.begin(), v_data.end(), v_flat_.begin());
         

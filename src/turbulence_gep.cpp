@@ -156,8 +156,8 @@ void TurbulenceGEP::update(const Mesh& mesh,
             const double* S_mag_ptr = S_mag_flat.data();
             const double* Omega_mag_ptr = Omega_mag_flat.data();
             const double* wall_dist_ptr = wall_dist_flat.data();
-            const double* u_ptr = velocity.u_field().data().data();
-            const double* v_ptr = velocity.v_field().data().data();
+            const double* u_ptr = velocity.u_data().data();
+            const double* v_ptr = velocity.v_data().data();
             double* nu_t_ptr = nu_t.data().data();  // Already on GPU from solver
             
             const int Nx = mesh.Nx;

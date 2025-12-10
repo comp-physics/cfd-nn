@@ -633,9 +633,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 }
 
 RANSSolver::~RANSSolver() {
-#ifdef USE_GPU_OFFLOAD
-    cleanup_gpu_buffers();
-#endif
+    cleanup_gpu_buffers();  // Safe to call unconditionally (no-op when GPU disabled)
 }
 
 void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
@@ -1636,18 +1634,29 @@ double RANSSolver::step() {
     double max_change = 0.0;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && Nx >= 32 && mesh_->Ny >= 32) {
+    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
         // Sync current velocity from GPU to compute residual
-        #pragma omp target update from(velocity_u_ptr_[0:field_total_size_])
-        #pragma omp target update from(velocity_v_ptr_[0:field_total_size_])
+        // Staggered grid: u and v have different sizes
+        const size_t u_total_size = velocity_.u_total_size();
+        const size_t v_total_size = velocity_.v_total_size();
+        #pragma omp target update from(velocity_u_ptr_[0:u_total_size])
+        #pragma omp target update from(velocity_v_ptr_[0:v_total_size])
     }
 #endif
     
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+    // Check u-velocity change at x-faces
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i <= Ng + Nx; ++i) {
             double du = std::abs(velocity_.u(i, j) - velocity_old.u(i, j));
+            max_change = std::max(max_change, du);
+        }
+    }
+    
+    // Check v-velocity change at y-faces
+    for (int j = Ng; j <= Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
             double dv = std::abs(velocity_.v(i, j) - velocity_old.v(i, j));
-            max_change = std::max(max_change, std::max(du, dv));
+            max_change = std::max(max_change, dv);
         }
     }
 
@@ -1945,8 +1954,9 @@ double RANSSolver::compute_adaptive_dt() const {
     double u_max = 1e-10;  // Small value to avoid division by zero
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            double u_mag = std::sqrt(velocity_.u(i, j) * velocity_.u(i, j) + 
-                                    velocity_.v(i, j) * velocity_.v(i, j));
+            // CRITICAL: Use correct magnitude for staggered grid (interpolates to cell center)
+            // DO NOT mix u(i,j) and v(i,j) - they're at different physical locations!
+            double u_mag = velocity_.magnitude(i, j);
             u_max = std::max(u_max, u_mag);
         }
     }
@@ -1993,11 +2003,14 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     file << "SPACING " << mesh_->dx << " " << mesh_->dy << " 1\n";
     file << "POINT_DATA " << Nx * Ny << "\n";
     
-    // Velocity vector field
+    // Velocity vector field (interpolated from staggered grid to cell centers)
     file << "VECTORS velocity double\n";
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            file << velocity_.u(i, j) << " " << velocity_.v(i, j) << " 0\n";
+            // Staggered grid: interpolate u and v to cell centers
+            double u_center = velocity_.u_center(i, j);
+            double v_center = velocity_.v_center(i, j);
+            file << u_center << " " << v_center << " 0\n";
         }
     }
     
@@ -2010,14 +2023,13 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         }
     }
     
-    // Velocity magnitude
+    // Velocity magnitude (computed from cell-centered interpolated values)
     file << "SCALARS velocity_magnitude double 1\n";
     file << "LOOKUP_TABLE default\n";
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            double mag = std::sqrt(velocity_.u(i, j) * velocity_.u(i, j) + 
-                                  velocity_.v(i, j) * velocity_.v(i, j));
-            file << mag << "\n";
+            // Staggered grid: use proper magnitude calculation
+            file << velocity_.magnitude(i, j) << "\n";
         }
     }
     
@@ -2045,20 +2057,21 @@ void RANSSolver::initialize_gpu_buffers() {
     }
     
     // Get raw pointers to all field data
-    field_total_size_ = (mesh_->Nx + 2) * (mesh_->Ny + 2);
+    field_total_size_ = (mesh_->Nx + 2) * (mesh_->Ny + 2);  // For cell-centered fields
     
-    velocity_u_ptr_ = velocity_.u_field().data().data();
-    velocity_v_ptr_ = velocity_.v_field().data().data();
-    velocity_star_u_ptr_ = velocity_star_.u_field().data().data();
-    velocity_star_v_ptr_ = velocity_star_.v_field().data().data();
+    // Staggered grid: u and v have different sizes
+    velocity_u_ptr_ = velocity_.u_data().data();
+    velocity_v_ptr_ = velocity_.v_data().data();
+    velocity_star_u_ptr_ = velocity_star_.u_data().data();
+    velocity_star_v_ptr_ = velocity_star_.v_data().data();
     pressure_ptr_ = pressure_.data().data();
     pressure_corr_ptr_ = pressure_correction_.data().data();
     nu_t_ptr_ = nu_t_.data().data();
     nu_eff_ptr_ = nu_eff_.data().data();
-    conv_u_ptr_ = conv_.u_field().data().data();
-    conv_v_ptr_ = conv_.v_field().data().data();
-    diff_u_ptr_ = diff_.u_field().data().data();
-    diff_v_ptr_ = diff_.v_field().data().data();
+    conv_u_ptr_ = conv_.u_data().data();
+    conv_v_ptr_ = conv_.v_data().data();
+    diff_u_ptr_ = diff_.u_data().data();
+    diff_v_ptr_ = diff_.v_data().data();
     rhs_poisson_ptr_ = rhs_poisson_.data().data();
     div_velocity_ptr_ = div_velocity_.data().data();
     k_ptr_ = k_.data().data();
@@ -2076,18 +2089,22 @@ void RANSSolver::initialize_gpu_buffers() {
     // Map all arrays to GPU device and copy initial values
     // Using map(to:) instead of map(alloc:) to transfer initialized data
     // Data will persist on GPU for entire solver lifetime
-    #pragma omp target enter data map(to: velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: velocity_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: velocity_star_v_ptr_[0:field_total_size_])
+    // Staggered grid: u and v have different sizes
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    
+    #pragma omp target enter data map(to: velocity_u_ptr_[0:u_total_size])
+    #pragma omp target enter data map(to: velocity_v_ptr_[0:v_total_size])
+    #pragma omp target enter data map(to: velocity_star_u_ptr_[0:u_total_size])
+    #pragma omp target enter data map(to: velocity_star_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: pressure_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: nu_eff_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: conv_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: conv_v_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: diff_u_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: diff_v_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: conv_u_ptr_[0:u_total_size])
+    #pragma omp target enter data map(to: conv_v_ptr_[0:v_total_size])
+    #pragma omp target enter data map(to: diff_u_ptr_[0:u_total_size])
+    #pragma omp target enter data map(to: diff_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: k_ptr_[0:field_total_size_])
@@ -2112,24 +2129,28 @@ void RANSSolver::initialize_gpu_buffers() {
 void RANSSolver::cleanup_gpu_buffers() {
     if (!gpu_ready_) return;
     
+    // Staggered grid sizes
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    
     // Copy final results back from GPU, then free device memory
     // Using map(from:) to get final state back to host
-    #pragma omp target exit data map(from: velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(from: velocity_v_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(from: velocity_u_ptr_[0:u_total_size])
+    #pragma omp target exit data map(from: velocity_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(from: pressure_ptr_[0:field_total_size_])
     #pragma omp target exit data map(from: nu_t_ptr_[0:field_total_size_])
     #pragma omp target exit data map(from: k_ptr_[0:field_total_size_])
     #pragma omp target exit data map(from: omega_ptr_[0:field_total_size_])
     
     // Delete temporary/work arrays without copying back
-    #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: velocity_star_v_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:u_total_size])
+    #pragma omp target exit data map(delete: velocity_star_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(delete: pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: nu_eff_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: conv_u_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: conv_v_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: diff_u_ptr_[0:field_total_size_])
-    #pragma omp target exit data map(delete: diff_v_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: conv_u_ptr_[0:u_total_size])
+    #pragma omp target exit data map(delete: conv_v_ptr_[0:v_total_size])
+    #pragma omp target exit data map(delete: diff_u_ptr_[0:u_total_size])
+    #pragma omp target exit data map(delete: diff_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(delete: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: div_velocity_ptr_[0:field_total_size_])
     
@@ -2140,9 +2161,12 @@ void RANSSolver::sync_to_gpu() {
     if (!gpu_ready_) return;
     
     // Update GPU with changed fields (typically after CPU-side modifications)
-    // In normal operation, this is rarely needed since all computation is on GPU
-    #pragma omp target update to(velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target update to(velocity_v_ptr_[0:field_total_size_])
+    // Staggered grid: u and v have different sizes
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    
+    #pragma omp target update to(velocity_u_ptr_[0:u_total_size])
+    #pragma omp target update to(velocity_v_ptr_[0:v_total_size])
     #pragma omp target update to(pressure_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
     #pragma omp target update to(k_ptr_[0:field_total_size_])
@@ -2153,13 +2177,33 @@ void RANSSolver::sync_from_gpu() {
     if (!gpu_ready_) return;
     
     // Download only solution fields needed for I/O (data stays on GPU)
-    // This is called before write_vtk, write_fields, or when accessing fields from CPU
-    #pragma omp target update from(velocity_u_ptr_[0:field_total_size_])
-    #pragma omp target update from(velocity_v_ptr_[0:field_total_size_])
+    // Staggered grid: u and v have different sizes
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    
+    #pragma omp target update from(velocity_u_ptr_[0:u_total_size])
+    #pragma omp target update from(velocity_v_ptr_[0:v_total_size])
     #pragma omp target update from(pressure_ptr_[0:field_total_size_])
     #pragma omp target update from(nu_t_ptr_[0:field_total_size_])
     #pragma omp target update from(k_ptr_[0:field_total_size_])
     #pragma omp target update from(omega_ptr_[0:field_total_size_])
+}
+#else
+// No-op implementations when GPU offloading is disabled
+void RANSSolver::initialize_gpu_buffers() {
+    gpu_ready_ = false;
+}
+
+void RANSSolver::cleanup_gpu_buffers() {
+    // No-op
+}
+
+void RANSSolver::sync_to_gpu() {
+    // No-op
+}
+
+void RANSSolver::sync_from_gpu() {
+    // No-op
 }
 #endif
 

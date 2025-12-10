@@ -17,9 +17,7 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
-#ifdef USE_GPU_OFFLOAD
-    cleanup_gpu_buffers();
-#endif
+    cleanup_gpu_buffers();  // Safe to call unconditionally (no-op when GPU disabled)
 }
 
 void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
@@ -773,6 +771,25 @@ void MultigridPoissonSolver::sync_level_from_gpu(int level) {
     #pragma omp target update from(u_ptrs_[level][0:total_size])
     #pragma omp target update from(f_ptrs_[level][0:total_size])
     #pragma omp target update from(r_ptrs_[level][0:total_size])
+}
+#else
+// No-op implementations when GPU offloading is disabled
+void MultigridPoissonSolver::initialize_gpu_buffers() {
+    gpu_ready_ = false;
+}
+
+void MultigridPoissonSolver::cleanup_gpu_buffers() {
+    // No-op
+}
+
+void MultigridPoissonSolver::sync_level_to_gpu(int level) {
+    (void)level;
+    // No-op
+}
+
+void MultigridPoissonSolver::sync_level_from_gpu(int level) {
+    (void)level;
+    // No-op
 }
 #endif
 

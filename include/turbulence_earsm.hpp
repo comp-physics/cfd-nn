@@ -88,6 +88,12 @@ public:
     EARSMClosure();
     virtual ~EARSMClosure() = default;
     
+    // Delete copy and move to prevent double-free of GPU buffers
+    EARSMClosure(const EARSMClosure&) = delete;
+    EARSMClosure& operator=(const EARSMClosure&) = delete;
+    EARSMClosure(EARSMClosure&&) = delete;
+    EARSMClosure& operator=(EARSMClosure&&) = delete;
+    
     bool provides_reynolds_stresses() const override { return true; }
     
     void compute_nu_t(
@@ -120,8 +126,7 @@ protected:
     
     void ensure_initialized(const Mesh& mesh);
     
-#ifdef USE_GPU_OFFLOAD
-    // GPU buffers
+    // GPU buffers (always present for ABI stability)
     std::vector<double> k_flat_, omega_flat_;
     std::vector<double> u_flat_, v_flat_;
     std::vector<double> wall_dist_flat_;
@@ -129,6 +134,7 @@ protected:
     std::vector<double> tau_flat_;
     std::vector<double> work_flat_;
     bool gpu_ready_ = false;
+    bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
     
     void allocate_gpu_buffers(const Mesh& mesh);
     void free_gpu_buffers();
@@ -140,7 +146,6 @@ protected:
         ScalarField& nu_t,
         TensorField* tau_ij
     );
-#endif
 };
 
 // ============================================================================

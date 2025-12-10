@@ -39,6 +39,15 @@ void EARSMClosure::allocate_gpu_buffers(const Mesh& mesh) {
     int n_interior = mesh.Nx * mesh.Ny;
     int n_total = (mesh.Nx + 2) * (mesh.Ny + 2);
     
+    // Check if already allocated
+    if (buffers_on_gpu_ && !k_flat_.empty()) {
+        return;  // Already allocated and mapped
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_buffers();
+    
+    // Allocate CPU buffers
     k_flat_.resize(n_interior);
     omega_flat_.resize(n_interior);
     u_flat_.resize(n_total);
@@ -58,10 +67,82 @@ void EARSMClosure::allocate_gpu_buffers(const Mesh& mesh) {
         }
     }
     
-    gpu_ready_ = true;
+    // Map buffers to GPU persistently - individual pragmas like RANSSolver
+    if (!k_flat_.empty() && !work_flat_.empty()) {
+        double* k_ptr = k_flat_.data();
+        double* omega_ptr = omega_flat_.data();
+        double* u_ptr = u_flat_.data();
+        double* v_ptr = v_flat_.data();
+        double* wall_ptr = wall_dist_flat_.data();
+        double* nu_t_ptr = nu_t_flat_.data();
+        double* tau_ptr = tau_flat_.data();
+        double* work_ptr = work_flat_.data();
+        
+        size_t k_size = k_flat_.size();
+        size_t omega_size = omega_flat_.size();
+        size_t u_size = u_flat_.size();
+        size_t v_size = v_flat_.size();
+        size_t wall_size = wall_dist_flat_.size();
+        size_t nu_t_size = nu_t_flat_.size();
+        size_t tau_size = tau_flat_.size();
+        size_t work_size = work_flat_.size();
+        
+        // Map buffers to GPU - use single pragma with multiple arrays (like NN models)
+        #pragma omp target enter data \
+            map(alloc: k_ptr[0:k_size]) \
+            map(alloc: omega_ptr[0:omega_size]) \
+            map(alloc: u_ptr[0:u_size]) \
+            map(alloc: v_ptr[0:v_size]) \
+            map(alloc: wall_ptr[0:wall_size]) \
+            map(alloc: nu_t_ptr[0:nu_t_size]) \
+            map(alloc: tau_ptr[0:tau_size]) \
+            map(alloc: work_ptr[0:work_size])
+        
+        buffers_on_gpu_ = true;  // Mark as mapped
+    }
 }
 
 void EARSMClosure::free_gpu_buffers() {
+    // Unmap GPU buffers if they were mapped
+    if (buffers_on_gpu_) {
+        // Check vectors are non-empty before unmapping
+        if (!k_flat_.empty() && !work_flat_.empty()) {
+            buffers_on_gpu_ = false;  // Set flag FIRST to prevent re-entry
+            
+            double* k_ptr = k_flat_.data();
+            double* omega_ptr = omega_flat_.data();
+            double* u_ptr = u_flat_.data();
+            double* v_ptr = v_flat_.data();
+            double* wall_ptr = wall_dist_flat_.data();
+            double* nu_t_ptr = nu_t_flat_.data();
+            double* tau_ptr = tau_flat_.data();
+            double* work_ptr = work_flat_.data();
+            
+            size_t k_size = k_flat_.size();
+            size_t omega_size = omega_flat_.size();
+            size_t u_size = u_flat_.size();
+            size_t v_size = v_flat_.size();
+            size_t wall_size = wall_dist_flat_.size();
+            size_t nu_t_size = nu_t_flat_.size();
+            size_t tau_size = tau_flat_.size();
+            size_t work_size = work_flat_.size();
+            
+            // Unmap buffers from GPU - use single pragma with multiple arrays (like NN models)
+            #pragma omp target exit data \
+                map(delete: k_ptr[0:k_size]) \
+                map(delete: omega_ptr[0:omega_size]) \
+                map(delete: u_ptr[0:u_size]) \
+                map(delete: v_ptr[0:v_size]) \
+                map(delete: wall_ptr[0:wall_size]) \
+                map(delete: nu_t_ptr[0:nu_t_size]) \
+                map(delete: tau_ptr[0:tau_size]) \
+                map(delete: work_ptr[0:work_size])
+        } else {
+            buffers_on_gpu_ = false;
+        }
+    }
+    
+    // Clear CPU buffers (always, regardless of GPU offloading)
     k_flat_.clear();
     omega_flat_.clear();
     u_flat_.clear();
@@ -70,7 +151,12 @@ void EARSMClosure::free_gpu_buffers() {
     nu_t_flat_.clear();
     tau_flat_.clear();
     work_flat_.clear();
-    gpu_ready_ = false;
+}
+#else
+// No-op implementations when GPU offloading is disabled
+void EARSMClosure::allocate_gpu_buffers(const Mesh& mesh) {
+    (void)mesh;
+    buffers_on_gpu_ = false;
 }
 #endif
 
@@ -229,6 +315,19 @@ void EARSMClosure::compute_nu_t_gpu(
             nu_t(i, j) = nu_t_loc;
         }
     }
+}
+#else
+// No-op implementation when GPU offloading is disabled
+void EARSMClosure::compute_nu_t_gpu(
+    const Mesh& mesh,
+    const VectorField& velocity,
+    const ScalarField& k,
+    const ScalarField& omega,
+    ScalarField& nu_t,
+    TensorField* tau_ij)
+{
+    (void)mesh; (void)velocity; (void)k; (void)omega; (void)nu_t; (void)tau_ij;
+    // CPU path used instead
 }
 #endif
 
