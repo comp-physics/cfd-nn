@@ -676,10 +676,15 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Final residual
     residual_ = compute_max_residual(0);
     
-    // Subtract mean for pure Neumann/periodic problems
-    if ((bc_x_lo_ == PoissonBC::Periodic && bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann) ||
-        (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-         bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann)) {
+    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
+    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
+    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
+                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    
+    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
         subtract_mean(0);
     }
     

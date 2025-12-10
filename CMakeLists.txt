@@ -130,6 +130,9 @@ target_link_libraries(periodic_hills nn_cfd_core)
 add_executable(test_nn_simple app/test_nn_simple.cpp)
 target_link_libraries(test_nn_simple nn_cfd_core)
 
+add_executable(test_taylor_green app/test_taylor_green.cpp)
+target_link_libraries(test_taylor_green nn_cfd_core)
+
 # Verification tool for CPU/GPU unified kernels
 # (Commented out - file doesn't exist in current branch)
 #add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
@@ -183,6 +186,14 @@ if(BUILD_TESTS)
     add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
     target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
     add_test(NAME CPUGPUConsistencyTest COMMAND test_cpu_gpu_consistency)
+    
+    add_executable(test_solver_cpu_gpu tests/test_solver_cpu_gpu.cpp)
+    target_link_libraries(test_solver_cpu_gpu nn_cfd_core)
+    add_test(NAME SolverCPUGPUTest COMMAND test_solver_cpu_gpu)
+    
+    add_executable(test_divergence_all_bcs tests/test_divergence_all_bcs.cpp)
+    target_link_libraries(test_divergence_all_bcs nn_cfd_core)
+    add_test(NAME DivergenceAllBCsTest COMMAND test_divergence_all_bcs)
     
     add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
     target_link_libraries(test_time_history_consistency nn_cfd_core)

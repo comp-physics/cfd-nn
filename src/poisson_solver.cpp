@@ -202,15 +202,15 @@ int PoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonCo
     // Final residual check
     residual_ = compute_residual(rhs, p);
     
-    // For pure Neumann problem, subtract mean to ensure unique solution
-    if (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-        bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann) {
-        // Or if periodic everywhere
-    }
-    if ((bc_x_lo_ == PoissonBC::Periodic && bc_y_lo_ == PoissonBC::Neumann &&
-         bc_y_hi_ == PoissonBC::Neumann) ||
-        (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-         bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann)) {
+    // For pure Neumann or fully periodic problems, subtract mean to ensure unique solution
+    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
+    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
+                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    
+    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
         // Subtract mean
         double sum = 0.0;
         int count = 0;
