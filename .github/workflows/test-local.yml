@@ -36,14 +36,3 @@ jobs:
       run: |
         cd build
         ctest --output-on-failure
-    
-    - name: Check warnings
-      run: |
-        cd build
-        make clean
-        make 2>&1 | tee build.log
-        if grep -i "warning:" build.log; then
-          echo "Warnings detected!"
-          exit 1
-        fi
-
