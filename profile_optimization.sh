@@ -26,6 +26,7 @@ echo "========================================"
 echo ""
 
 # Load required modules
+module load nvhpc/24.5
 module load cuda/11.8.0 2>/dev/null || echo "CUDA module not available"
 
 # Create output directory
