@@ -23,6 +23,12 @@ public:
     TurbulenceNNMLP();
     ~TurbulenceNNMLP();
     
+    // Delete copy and move to prevent double-free of GPU buffers
+    TurbulenceNNMLP(const TurbulenceNNMLP&) = delete;
+    TurbulenceNNMLP& operator=(const TurbulenceNNMLP&) = delete;
+    TurbulenceNNMLP(TurbulenceNNMLP&&) = delete;
+    TurbulenceNNMLP& operator=(TurbulenceNNMLP&&) = delete;
+    
     /// Load network weights and scaling from directory
     void load(const std::string& weights_dir, const std::string& scaling_dir);
     
@@ -52,8 +58,10 @@ public:
     /// Upload NN weights to GPU (call after load())
     void upload_to_gpu();
     
-    /// Check if GPU is ready
-    bool is_gpu_ready() const { return gpu_ready_; }
+    /// GPU buffer management (override from base)
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return gpu_ready_; }
     
 private:
     MLP mlp_;
@@ -81,7 +89,8 @@ private:
     // GPU state
     bool gpu_ready_ = false;
     bool initialized_ = false;
-    int cached_n_cells_ = 0;
+    [[maybe_unused]] bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
+    [[maybe_unused]] int cached_n_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);
     void allocate_gpu_buffers(int n_cells);

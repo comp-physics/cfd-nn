@@ -25,6 +25,12 @@ public:
     TurbulenceNNTBNN();
     ~TurbulenceNNTBNN();
     
+    // Delete copy and move to prevent double-free of GPU buffers
+    TurbulenceNNTBNN(const TurbulenceNNTBNN&) = delete;
+    TurbulenceNNTBNN& operator=(const TurbulenceNNTBNN&) = delete;
+    TurbulenceNNTBNN(TurbulenceNNTBNN&&) = delete;
+    TurbulenceNNTBNN& operator=(TurbulenceNNTBNN&&) = delete;
+    
     /// Load network weights and scaling from directory
     void load(const std::string& weights_dir, const std::string& scaling_dir);
     
@@ -52,8 +58,10 @@ public:
     /// Upload NN weights to GPU (call after load())
     void upload_to_gpu();
     
-    /// Check if GPU is ready
-    bool is_gpu_ready() const { return gpu_ready_; }
+    /// GPU buffer management (override from base)
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return gpu_ready_; }
     
 private:
     MLP mlp_;
@@ -86,10 +94,12 @@ private:
     
     // GPU state
     bool gpu_ready_ = false;
-    [[maybe_unused]] bool full_gpu_ready_ = false;
+    bool full_gpu_ready_ = false;  // Reserved for future GPU optimization
+    [[maybe_unused]] bool buffers_on_gpu_ = false;  // Track if feature buffers are mapped to GPU
+    [[maybe_unused]] bool full_buffers_on_gpu_ = false;  // Track if full pipeline buffers are mapped to GPU
     bool initialized_ = false;
-    [[maybe_unused]] int cached_n_cells_ = 0;
-    int cached_total_cells_ = 0;
+    [[maybe_unused]] int cached_n_cells_ = 0;  // Reserved for future GPU optimization
+    [[maybe_unused]] int cached_total_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);
     void allocate_gpu_buffers(int n_cells);

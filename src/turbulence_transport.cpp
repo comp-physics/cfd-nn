@@ -89,8 +89,10 @@ void SSTClosure::compute_nu_t(
     
     const double a1 = constants_.a1;
     
-#ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() > 0) {
+    // IMPORTANT: SSTClosure GPU path disabled - causes pointer aliasing with RANSSolver's GPU buffers
+    // The caller (RANSSolver or SSTKOmegaTransport) will handle GPU sync if needed
+#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_CLOSURE
+    if (false && omp_get_num_devices() > 0) {
         const int Nx = mesh.Nx;
         const int Ny = mesh.Ny;
         const int n_cells = Nx * Ny;
@@ -123,13 +125,11 @@ void SSTClosure::compute_nu_t(
         
         // CRITICAL FIX: Use stride-based indexing for arrays with ghost cells
         // Arrays k, omega, nu_t have size (Nx+2)*(Ny+2), not Nx*Ny
-        // Use map(present:) with total_size for solver-mapped arrays
-        // Use map(to:) for local gradient arrays (no ghosts)
+        // Don't use map() clause - let runtime handle mapping automatically
         #pragma omp target teams distribute parallel for \
             map(to: dudx_ptr[0:total_size], dudy_ptr[0:total_size], \
                     dvdx_ptr[0:total_size], dvdy_ptr[0:total_size], \
-                    wall_dist_ptr[0:n_cells]) \
-            map(present: k_ptr[0:total_size], omega_ptr[0:total_size], nu_t_ptr[0:total_size])
+                    wall_dist_ptr[0:n_cells])
         for (int idx = 0; idx < n_cells; ++idx) {
             // Convert flat index to (i,j) including ghost cells
             const int i = idx % Nx + 1;  // +1 to skip ghost cells
@@ -217,9 +217,39 @@ SSTKOmegaTransport::SSTKOmegaTransport(const SSTConstants& constants)
 }
 
 SSTKOmegaTransport::~SSTKOmegaTransport() {
+    cleanup_gpu_buffers();
+}
+
+void SSTKOmegaTransport::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_available()) {
+        buffers_on_gpu_ = false;
+        return;
+    }
+    
+    int n_interior = mesh.Nx * mesh.Ny;
+    
+    // Check if already allocated for this mesh size
+    if (buffers_on_gpu_ && cached_n_cells_ == n_interior) {
+        return;
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_buffers();
+    
+    // Allocate GPU buffers
+    allocate_gpu_buffers(mesh);
+#else
+    (void)mesh;
+    buffers_on_gpu_ = false;
+#endif
+}
+
+void SSTKOmegaTransport::cleanup_gpu_buffers() {
 #ifdef USE_GPU_OFFLOAD
     free_gpu_buffers();
 #endif
+    buffers_on_gpu_ = false;
 }
 
 void SSTKOmegaTransport::set_closure(std::unique_ptr<TurbulenceClosure> closure) {
@@ -259,6 +289,15 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
     int n_interior = mesh.Nx * mesh.Ny;
     int n_total = (mesh.Nx + 2) * (mesh.Ny + 2);
     
+    // Check if already allocated
+    if (n_interior == cached_n_cells_ && buffers_on_gpu_) {
+        return;  // Already allocated and mapped
+    }
+    
+    // Free old buffers if they exist
+    free_gpu_buffers();
+    
+    // Allocate CPU buffers
     k_flat_.resize(n_total);
     omega_flat_.resize(n_total);
     nu_t_flat_.resize(n_interior);
@@ -277,11 +316,78 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
         }
     }
     
+    // Map buffers to GPU persistently - use individual pragmas like RANSSolver
+    if (!k_flat_.empty() && !work_flat_.empty()) {
+        double* k_ptr = k_flat_.data();
+        double* omega_ptr = omega_flat_.data();
+        double* nu_t_ptr = nu_t_flat_.data();
+        double* u_ptr = u_flat_.data();
+        double* v_ptr = v_flat_.data();
+        double* wall_ptr = wall_dist_flat_.data();
+        double* work_ptr = work_flat_.data();
+        
+        size_t k_size = k_flat_.size();
+        size_t omega_size = omega_flat_.size();
+        size_t nu_t_size = nu_t_flat_.size();
+        size_t u_size = u_flat_.size();
+        size_t v_size = v_flat_.size();
+        size_t wall_size = wall_dist_flat_.size();
+        size_t work_size = work_flat_.size();
+        
+        // Map buffers to GPU - use single pragma with multiple arrays (like NN models)
+        #pragma omp target enter data \
+            map(alloc: k_ptr[0:k_size]) \
+            map(alloc: omega_ptr[0:omega_size]) \
+            map(alloc: nu_t_ptr[0:nu_t_size]) \
+            map(alloc: u_ptr[0:u_size]) \
+            map(alloc: v_ptr[0:v_size]) \
+            map(alloc: wall_ptr[0:wall_size]) \
+            map(alloc: work_ptr[0:work_size])
+        
+        buffers_on_gpu_ = true;  // Mark as mapped (separate from gpu_ready_)
+    }
+    
     cached_n_cells_ = n_interior;
-    gpu_ready_ = true;
 }
 
 void SSTKOmegaTransport::free_gpu_buffers() {
+    // Unmap GPU buffers if they were mapped (check buffers_on_gpu_ flag)
+    if (buffers_on_gpu_) {
+        // Check vectors are non-empty before unmapping
+        if (!k_flat_.empty() && !work_flat_.empty()) {
+            buffers_on_gpu_ = false;  // Set flag FIRST to prevent re-entry
+            
+            double* k_ptr = k_flat_.data();
+            double* omega_ptr = omega_flat_.data();
+            double* nu_t_ptr = nu_t_flat_.data();
+            double* u_ptr = u_flat_.data();
+            double* v_ptr = v_flat_.data();
+            double* wall_ptr = wall_dist_flat_.data();
+            double* work_ptr = work_flat_.data();
+            
+            size_t k_size = k_flat_.size();
+            size_t omega_size = omega_flat_.size();
+            size_t nu_t_size = nu_t_flat_.size();
+            size_t u_size = u_flat_.size();
+            size_t v_size = v_flat_.size();
+            size_t wall_size = wall_dist_flat_.size();
+            size_t work_size = work_flat_.size();
+            
+            // Unmap buffers from GPU - use release instead of delete for robustness
+            #pragma omp target exit data \
+                map(release: k_ptr[0:k_size]) \
+                map(release: omega_ptr[0:omega_size]) \
+                map(release: nu_t_ptr[0:nu_t_size]) \
+                map(release: u_ptr[0:u_size]) \
+                map(release: v_ptr[0:v_size]) \
+                map(release: wall_ptr[0:wall_size]) \
+                map(release: work_ptr[0:work_size])
+        } else {
+            buffers_on_gpu_ = false;
+        }
+    }
+    
+    // Clear CPU buffers (always, regardless of GPU offloading)
     k_flat_.clear();
     omega_flat_.clear();
     nu_t_flat_.clear();
@@ -289,7 +395,17 @@ void SSTKOmegaTransport::free_gpu_buffers() {
     v_flat_.clear();
     wall_dist_flat_.clear();
     work_flat_.clear();
-    gpu_ready_ = false;
+}
+#else
+// No-op implementations when GPU offloading is disabled
+void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
+    (void)mesh;
+    buffers_on_gpu_ = false;
+}
+
+void SSTKOmegaTransport::free_gpu_buffers() {
+    // No-op for CPU-only builds
+    buffers_on_gpu_ = false;
 }
 #endif
 
@@ -300,6 +416,9 @@ void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocit
         closure_->set_nu(nu_);
         closure_->set_delta(delta_);
     }
+    
+    // Initialize GPU buffers if available
+    initialize_gpu_buffers(mesh);
     
     // Estimate initial friction velocity from velocity gradient at wall
     double u_tau = 0.0;
@@ -458,8 +577,16 @@ void SSTKOmegaTransport::advance_turbulence(
     
     ensure_initialized(mesh);
     
-#ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && omp_get_num_devices() > 0) {
+#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_SST_TRANSPORT
+    // TEMPORARILY DISABLED: GPU path for SST has memory management issues during cleanup
+    // The issue appears to be timing-dependent - works with NVCOMPILER_ACC_NOTIFY but crashes otherwise
+    // TODO: Debug and re-enable GPU path for SST transport model
+    // Ensure GPU buffers are allocated (lazy initialization)
+    if (!buffers_on_gpu_ && omp_get_num_devices() > 0) {
+        allocate_gpu_buffers(mesh);
+    }
+    
+    if (buffers_on_gpu_ && omp_get_num_devices() > 0) {
         advance_turbulence_gpu(mesh, velocity, dt, k, omega, nu_t_prev);
         return;
     }
@@ -602,8 +729,8 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
     const double inv_2dy = 1.0 / (2.0 * dy);
     
     // Copy data to flat arrays
-    std::copy(velocity.u_field().data().begin(), velocity.u_field().data().end(), u_flat_.begin());
-    std::copy(velocity.v_field().data().begin(), velocity.v_field().data().end(), v_flat_.begin());
+    std::copy(velocity.u_data().begin(), velocity.u_data().end(), u_flat_.begin());
+    std::copy(velocity.v_data().begin(), velocity.v_data().end(), v_flat_.begin());
     std::copy(k.data().begin(), k.data().end(), k_flat_.begin());
     std::copy(omega.data().begin(), omega.data().end(), omega_flat_.begin());
     
@@ -615,7 +742,7 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
         }
     }
     
-    // Get pointers
+    // Get pointers (buffers are already persistently mapped to GPU)
     double* u_ptr = u_flat_.data();
     double* v_ptr = v_flat_.data();
     double* k_ptr = k_flat_.data();
@@ -623,6 +750,11 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
     const double* nu_t_ptr = nu_t_flat_.data();
     const double* wall_dist_ptr = wall_dist_flat_.data();
     double* work_ptr = work_flat_.data();
+    
+    // Update GPU with input data (buffers are persistent, just update contents)
+    #pragma omp target update to(u_ptr[0:n_total], v_ptr[0:n_total], \
+                                 k_ptr[0:n_total], omega_ptr[0:n_total], \
+                                 nu_t_ptr[0:n_cells])
     
     // Model constants (copy to local for GPU capture)
     const double nu = nu_;
@@ -641,12 +773,9 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
     const double omega_max = constants_.omega_max;
     const double CD_min = constants_.CD_omega_min;
     
-    // GPU kernel
-    #pragma omp target teams distribute parallel for \
-        map(to: u_ptr[0:n_total], v_ptr[0:n_total], \
-                nu_t_ptr[0:n_cells], wall_dist_ptr[0:n_cells]) \
-        map(tofrom: k_ptr[0:n_total], omega_ptr[0:n_total]) \
-        map(alloc: work_ptr[0:n_cells*13])
+    // GPU kernel - let OpenMP runtime figure out device mapping automatically
+    // Data was mapped with target enter data, so runtime will find it in the mapping table
+    #pragma omp target teams distribute parallel for
     for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
         int i = cell_idx % Nx;
         int j = cell_idx / Nx;
@@ -764,6 +893,9 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
         k_ptr[idx_c] = k_new;
         omega_ptr[idx_c] = omega_new;
     }
+    
+    // Update CPU with results from GPU
+    #pragma omp target update from(k_ptr[0:n_total], omega_ptr[0:n_total])
     
     // Copy back to fields
     std::copy(k_flat_.begin(), k_flat_.end(), k.data().begin());

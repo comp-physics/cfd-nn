@@ -6,6 +6,10 @@
 #include <memory>
 #include <string>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 /// Abstract base class for turbulence closures
@@ -66,6 +70,12 @@ public:
     /// Initialize any model-specific fields (e.g., k, omega for transport models)
     virtual void initialize(const Mesh& /*mesh*/, const VectorField& /*velocity*/) {}
     
+    /// GPU buffer management interface (optional - base implementation does nothing)
+    /// Derived classes should override these if they support GPU offloading
+    virtual void initialize_gpu_buffers(const Mesh& mesh) { (void)mesh; }
+    virtual void cleanup_gpu_buffers() {}
+    virtual bool is_gpu_ready() const { return false; }
+    
     /// Set laminar viscosity (needed for some models)
     void set_nu(double nu) { nu_ = nu; }
     double nu() const { return nu_; }
@@ -77,6 +87,15 @@ public:
 protected:
     double nu_ = 0.001;    ///< Laminar viscosity
     double delta_ = 1.0;   ///< Reference length scale
+    
+    /// Helper to check GPU availability (safe to call from any derived class)
+    static bool gpu_available() {
+#ifdef USE_GPU_OFFLOAD
+        return omp_get_num_devices() > 0;
+#else
+        return false;
+#endif
+    }
 };
 
 /// Factory function to create turbulence model from config

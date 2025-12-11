@@ -29,12 +29,12 @@ public:
     /// Get final residual
     double residual() const { return residual_; }
     
-#ifdef USE_GPU_OFFLOAD
-    /// Sync data to/from GPU for a specific multigrid level
+    /// Sync data to/from GPU for a specific multigrid level (always declared for ABI)
     /// These are public so RANSSolver can control when transfers happen
     void sync_level_to_gpu(int level);
     void sync_level_from_gpu(int level);
     
+#ifdef USE_GPU_OFFLOAD
     /// Get device pointers for direct GPU-GPU copies
     double* get_u_device_ptr(int level) { return gpu_ready_ ? u_ptrs_[level] : nullptr; }
     double* get_f_device_ptr(int level) { return gpu_ready_ ? f_ptrs_[level] : nullptr; }
@@ -89,8 +89,7 @@ private:
     double compute_max_residual(int level);
     void subtract_mean(int level);
     
-#ifdef USE_GPU_OFFLOAD
-    // GPU buffer management for persistent device arrays
+    // GPU buffer management (always present for ABI stability)
     bool gpu_ready_ = false;
     std::vector<double*> u_ptrs_;  // Device pointers for u at each level
     std::vector<double*> f_ptrs_;  // Device pointers for f at each level
@@ -99,7 +98,6 @@ private:
     
     void initialize_gpu_buffers();
     void cleanup_gpu_buffers();
-#endif
 };
 
 } // namespace nncfd

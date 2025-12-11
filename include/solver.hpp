@@ -105,6 +105,10 @@ public:
     /// Write VTK output for ParaView visualization
     void write_vtk(const std::string& filename) const;
     
+    /// GPU buffer management (public for testing and initialization)
+    void sync_to_gpu();              // Update GPU after CPU-side modifications (e.g., after initialization)
+    void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
+    
 private:
     const Mesh* mesh_;
     Config config_;
@@ -166,7 +170,7 @@ private:
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
     
-#ifdef USE_GPU_OFFLOAD
+    // GPU buffers (always present for ABI stability)
     // Simplified GPU strategy: Data mapped once at initialization, stays resident on GPU
     // All kernels use is_device_ptr to access already-mapped data
     // No temporary map(to:/from:) clauses in kernels - eliminates mapping conflicts
@@ -193,9 +197,6 @@ private:
     
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)
     void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
-    void sync_to_gpu();              // Update GPU after CPU-side modifications (rarely used)
-    void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
-#endif
 };
 
 } // namespace nncfd

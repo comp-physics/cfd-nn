@@ -73,21 +73,53 @@ void ScalarField::write(const std::string& filename) const {
     }
 }
 
-// VectorField implementation
+// VectorField implementation (staggered MAC grid)
 
 VectorField::VectorField(const Mesh& mesh, double init_u, double init_v)
-    : u_(mesh, init_u), v_(mesh, init_v) {}
+    : mesh_(&mesh)
+{
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Ng = mesh.Nghost;
+    
+    // u at x-faces: (Nx+1+2*Ng) × (Ny+2*Ng)
+    u_stride_ = Nx + 1 + 2 * Ng;
+    const int u_total = u_stride_ * (Ny + 2 * Ng);
+    u_data_.resize(u_total, init_u);
+    
+    // v at y-faces: (Nx+2*Ng) × (Ny+1+2*Ng)
+    v_stride_ = Nx + 2 * Ng;
+    const int v_total = v_stride_ * (Ny + 1 + 2 * Ng);
+    v_data_.resize(v_total, init_v);
+}
 
 void VectorField::fill(double u_val, double v_val) {
-    u_.fill(u_val);
-    v_.fill(v_val);
+    std::fill(u_data_.begin(), u_data_.end(), u_val);
+    std::fill(v_data_.begin(), v_data_.end(), v_val);
+}
+
+double VectorField::u_center(int i, int j) const {
+    // Interpolate from x-faces to cell center
+    // u(i,j) at center ≈ 0.5 * (u_face(i,j) + u_face(i+1,j))
+    return 0.5 * (u(i, j) + u(i + 1, j));
+}
+
+double VectorField::v_center(int i, int j) const {
+    // Interpolate from y-faces to cell center
+    // v(i,j) at center ≈ 0.5 * (v_face(i,j) + v_face(i,j+1))
+    return 0.5 * (v(i, j) + v(i, j + 1));
+}
+
+double VectorField::magnitude(int i, int j) const {
+    double uu = u_center(i, j);
+    double vv = v_center(i, j);
+    return std::sqrt(uu * uu + vv * vv);
 }
 
 double VectorField::max_magnitude() const {
     double max_mag = 0.0;
-    const Mesh* mesh = u_.mesh();
-    for (int j = mesh->j_begin(); j < mesh->j_end(); ++j) {
-        for (int i = mesh->i_begin(); i < mesh->i_end(); ++i) {
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             max_mag = std::max(max_mag, magnitude(i, j));
         }
     }
@@ -97,11 +129,11 @@ double VectorField::max_magnitude() const {
 double VectorField::norm_L2() const {
     double sum = 0.0;
     int count = 0;
-    const Mesh* mesh = u_.mesh();
-    for (int j = mesh->j_begin(); j < mesh->j_end(); ++j) {
-        for (int i = mesh->i_begin(); i < mesh->i_end(); ++i) {
-            double uu = u_(i, j);
-            double vv = v_(i, j);
+    // Compute at cell centers for consistency
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            double uu = u_center(i, j);
+            double vv = v_center(i, j);
             sum += uu * uu + vv * vv;
             ++count;
         }
@@ -115,14 +147,13 @@ void VectorField::write(const std::string& filename) const {
         throw std::runtime_error("Cannot open file: " + filename);
     }
     
-    const Mesh* mesh = u_.mesh();
-    file << "# Nx=" << mesh->Nx << " Ny=" << mesh->Ny << "\n";
-    file << "# x y u v\n";
+    file << "# Nx=" << mesh_->Nx << " Ny=" << mesh_->Ny << "\n";
+    file << "# x y u v (interpolated to cell centers)\n";
     
-    for (int j = mesh->j_begin(); j < mesh->j_end(); ++j) {
-        for (int i = mesh->i_begin(); i < mesh->i_end(); ++i) {
-            file << mesh->x(i) << " " << mesh->y(j) << " " 
-                 << u_(i, j) << " " << v_(i, j) << "\n";
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            file << mesh_->x(i) << " " << mesh_->y(j) << " " 
+                 << u_center(i, j) << " " << v_center(i, j) << "\n";
         }
         file << "\n";
     }

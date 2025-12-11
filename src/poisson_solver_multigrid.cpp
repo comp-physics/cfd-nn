@@ -17,9 +17,7 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
-#ifdef USE_GPU_OFFLOAD
-    cleanup_gpu_buffers();
-#endif
+    cleanup_gpu_buffers();  // Safe to call unconditionally (no-op when GPU disabled)
 }
 
 void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
@@ -676,10 +674,15 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Final residual
     residual_ = compute_max_residual(0);
     
-    // Subtract mean for pure Neumann/periodic problems
-    if ((bc_x_lo_ == PoissonBC::Periodic && bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann) ||
-        (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-         bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann)) {
+    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
+    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
+    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
+                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    
+    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
         subtract_mean(0);
     }
     
@@ -768,6 +771,25 @@ void MultigridPoissonSolver::sync_level_from_gpu(int level) {
     #pragma omp target update from(u_ptrs_[level][0:total_size])
     #pragma omp target update from(f_ptrs_[level][0:total_size])
     #pragma omp target update from(r_ptrs_[level][0:total_size])
+}
+#else
+// No-op implementations when GPU offloading is disabled
+void MultigridPoissonSolver::initialize_gpu_buffers() {
+    gpu_ready_ = false;
+}
+
+void MultigridPoissonSolver::cleanup_gpu_buffers() {
+    // No-op
+}
+
+void MultigridPoissonSolver::sync_level_to_gpu(int level) {
+    (void)level;
+    // No-op
+}
+
+void MultigridPoissonSolver::sync_level_from_gpu(int level) {
+    (void)level;
+    // No-op
 }
 #endif
 

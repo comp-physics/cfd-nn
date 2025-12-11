@@ -117,3 +117,6 @@ build_*
 *.sqlite3
 nsys*
 **.sbatch
+
+**/.supercode/**
+**/isolation_rules/

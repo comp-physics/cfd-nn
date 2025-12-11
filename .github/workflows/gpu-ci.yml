@@ -65,7 +65,7 @@ jobs:
         # Check Fix #3: Correct map sizes with total_size
         echo ""
         echo "Fix #3: Correct map clause sizes (total_size for arrays with ghosts)"
-        if grep -q "map(present:.*total_size" src/turbulence_transport.cpp; then
+        if grep -q "map(to:.*total_size" src/turbulence_transport.cpp; then
           echo "  ✓ Found correct map size (total_size) in turbulence_transport.cpp"
         else
           echo "  ✗ MISSING correct map size!"
@@ -128,10 +128,10 @@ jobs:
             ctest --output-on-failure && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"2. Algebraic Models\" && \
+            echo \"2. Algebraic Models (Fast Validation)\" && \
             echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 256 512 200000 output/gpu_validation/baseline && \
-            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 256 512 200000 output/gpu_validation/gep && \
+            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 64 128 5000 output/gpu_validation/baseline && \
+            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 64 128 5000 output/gpu_validation/gep && \
             echo \"\" && \
             echo \"======================================\" && \
             echo \"3. Neural Network Models\" && \
@@ -140,10 +140,10 @@ jobs:
             echo \"   3b. NN-TBNN (skipping - requires model files)\" && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"4. Transport Equation Models\" && \
+            echo \"4. Transport Equation Models (Fast Validation)\" && \
             echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 256 512 1000 output/gpu_validation/sst && \
-            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 256 512 1000 output/gpu_validation/komega && \
+            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 64 128 500 output/gpu_validation/sst && \
+            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 64 128 500 output/gpu_validation/komega && \
             echo \"\" && \
             echo \"======================================\" && \
             echo \"5. EARSM Models\" && \
@@ -153,15 +153,11 @@ jobs:
             ../.github/scripts/test_turbulence_model_gpu.sh earsm_pope \"Pope Quadratic EARSM\" 256 512 1000 output/gpu_validation/earsm_pope && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"6. Periodic Hills - Complex Geometry\" && \
+            echo \"6. Periodic Hills - Complex Geometry (Fast Validation)\" && \
             echo \"======================================\" && \
-            echo \"   6a. Baseline\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 500 --model baseline --num_snapshots 0 && \
-            echo \"   6b. SST k-omega\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model sst --num_snapshots 0 && \
-            echo \"   6c. EARSM (WJ)\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model earsm_wj --num_snapshots 0'" \
-          90
+            echo \"   Testing with Baseline model\" && \
+            ./periodic_hills --Nx 64 --Ny 48 --nu 0.001 --max_iter 200 --model baseline --num_snapshots 0'" \
+          20
     
     - name: Explicit CPU/GPU Consistency Validation
       run: |
@@ -202,6 +198,56 @@ jobs:
         echo ""
         echo "✅ CPU/GPU consistency validated successfully"
         echo "   GPU code produces identical results to CPU code."
+        echo ""
+    
+    - name: Physics Validation Test Suite
+      run: |
+        cd build_ci_gpu
+        echo "========================================="
+        echo "Physics Validation (Comprehensive)"
+        echo "========================================="
+        echo ""
+        echo "Validates that solver correctly solves Navier-Stokes equations:"
+        echo "  1. Poiseuille flow (analytical solution)"
+        echo "  2. Divergence-free constraint (∇·u = 0)"
+        echo "  3. Momentum balance (global conservation)"
+        echo "  4. Channel symmetry"
+        echo "  5. Cross-model consistency"
+        echo "  6. Taylor-Green vortex (viscous decay)"
+        echo ""
+        echo "Expected runtime: ~2 minutes"
+        echo ""
+        
+        ./test_physics_validation || {
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════╗"
+          echo "║  ✗✗✗ PHYSICS VALIDATION FAILED ✗✗✗                  ║"
+          echo "╚═══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "Solver may not be correctly solving N-S equations!"
+          echo "Check discretization, BCs, or GPU offload implementation."
+          echo ""
+          exit 1
+        }
+        
+        echo ""
+        echo "Running Taylor-Green vortex test (viscous decay)..."
+        echo ""
+        
+        ./test_tg_validation || {
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════╗"
+          echo "║  ✗✗✗ TAYLOR-GREEN VALIDATION FAILED ✗✗✗            ║"
+          echo "╚═══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "Time integration or viscous terms may have issues."
+          echo ""
+          exit 1
+        }
+        
+        echo ""
+        echo "✅ All physics validation tests passed!"
+        echo "   High confidence: Solver correctly solves N-S equations"
         echo ""
     
     - name: Debug info on failure

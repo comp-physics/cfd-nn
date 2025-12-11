@@ -200,8 +200,17 @@ public:
     explicit SSTKOmegaTransport(const SSTConstants& constants = SSTConstants());
     ~SSTKOmegaTransport();
     
+    // Delete copy and move to prevent double-free of GPU buffers
+    SSTKOmegaTransport(const SSTKOmegaTransport&) = delete;
+    SSTKOmegaTransport& operator=(const SSTKOmegaTransport&) = delete;
+    SSTKOmegaTransport(SSTKOmegaTransport&&) = delete;
+    SSTKOmegaTransport& operator=(SSTKOmegaTransport&&) = delete;
+    
     // TurbulenceModel interface
     void initialize(const Mesh& mesh, const VectorField& velocity) override;
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return buffers_on_gpu_; }
     
     bool uses_transport_equations() const override { return true; }
     
@@ -256,18 +265,17 @@ private:
     
     bool initialized_ = false;
     
-    // GPU buffers
-#ifdef USE_GPU_OFFLOAD
+    // GPU buffers (always present for ABI stability)
     std::vector<double> k_flat_, omega_flat_, nu_t_flat_;
     std::vector<double> u_flat_, v_flat_;
     std::vector<double> work_flat_;
     std::vector<double> wall_dist_flat_;
     bool gpu_ready_ = false;
-    int cached_n_cells_ = 0;
+    [[maybe_unused]] bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
+    [[maybe_unused]] int cached_n_cells_ = 0;
     
     void allocate_gpu_buffers(const Mesh& mesh);
     void free_gpu_buffers();
-#endif
     
     void ensure_initialized(const Mesh& mesh);
     void compute_velocity_gradients(const Mesh& mesh, const VectorField& velocity);

@@ -293,16 +293,26 @@ void MLP::free_gpu() {
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_ready_) return;
     
+    // Check sizes BEFORE getting pointers (handles moved-from objects)
+    size_t w_size = all_weights_.size();
+    size_t b_size = all_biases_.size();
+    size_t n_layers = layers_.size();
+    
+    // If vectors are empty (e.g., after move), nothing to unmap
+    if (w_size == 0 || b_size == 0 || n_layers == 0) {
+        gpu_ready_ = false;
+        return;
+    }
+    
+    // Set gpu_ready_ = false FIRST to prevent re-entry if destructor is called again
+    gpu_ready_ = false;
+    
     double* weights_ptr = all_weights_.data();
     double* biases_ptr = all_biases_.data();
     int* w_offsets_ptr = weight_offsets_.data();
     int* b_offsets_ptr = bias_offsets_.data();
     int* dims_ptr = layer_dims_.data();
     int* act_ptr = activation_types_.data();
-    
-    size_t w_size = all_weights_.size();
-    size_t b_size = all_biases_.size();
-    size_t n_layers = layers_.size();
     
     #pragma omp target exit data \
         map(delete: weights_ptr[0:w_size]) \
@@ -312,7 +322,7 @@ void MLP::free_gpu() {
         map(delete: dims_ptr[0:n_layers*2]) \
         map(delete: act_ptr[0:n_layers])
     
-    if (has_scaling_) {
+    if (has_scaling_ && !input_means_.empty() && !input_stds_.empty()) {
         double* means_ptr = input_means_.data();
         double* stds_ptr = input_stds_.data();
         size_t scale_size = input_means_.size();
@@ -321,8 +331,6 @@ void MLP::free_gpu() {
             map(delete: means_ptr[0:scale_size]) \
             map(delete: stds_ptr[0:scale_size])
     }
-    
-    gpu_ready_ = false;
 #endif
 }
 

@@ -252,3 +252,4 @@ turb_model_->update(...)  // Updates nu_t on GPU using map(present:)
 - Always sync in correct direction (FROM GPU for results, TO GPU for inputs)
 - Use `map(present:)` in kernels to access already-resident data
 
+
