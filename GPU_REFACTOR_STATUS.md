@@ -187,3 +187,4 @@ For questions or to contribute to debugging:
 **Note:** This is a work-in-progress refactor. The simplified architecture is solid, but there's a runtime issue that needs debugging on actual GPU hardware. The CPU path works perfectly, demonstrating the correctness of the numerical implementation.
 
 
+

@@ -33,20 +33,33 @@ These tests verify the solver obeys fundamental physics, not just numerical conv
 **BEFORE EVERY PUSH TO REPOSITORY:**
 
 1. **Run the pre-CI test script:**
-   ```bash
-   ./test_before_ci.sh
-   ```
-   This script MUST pass before pushing. It tests:
-   - Debug build (like CI does)
-   - Release build (like CI does)
-   - All unit tests in both configurations
-   - Checks for compiler warnings
+ ```bash
+ ./test_before_ci.sh
+ ```
+ This script MUST pass before pushing. It tests:
+ - Debug build (like CI does)
+ - Release build (like CI does)
+ - All unit tests in both configurations
+ - Checks for compiler warnings
 
-2. **Why this matters:**
-   - CI runs 4 configurations: (Ubuntu + macOS) × (Debug + Release)
-   - Local development often only tests one configuration
-   - Debug builds have different behavior than Release
-   - Tests that pass locally in Release may fail in CI's Debug build
+2. **For GPU-related changes, ALSO run:**
+ ```bash
+ ./test_before_ci_gpu.sh
+ ```
+ This runs the COMPLETE GPU CI test suite locally:
+ - All unit tests on GPU (including physics validation tests)
+ - Fast turbulence model validation (Baseline, GEP, SST, k-omega, EARSM)
+ - Periodic Hills complex geometry tests
+ - CPU/GPU consistency validation
+ - Takes 10-15 minutes and ensures GPU CI will pass
+
+3. **Why this matters:**
+ - CPU CI runs 4 configurations: (Ubuntu + macOS) × (Debug + Release)
+ - GPU CI runs comprehensive physics validation on actual GPU hardware
+ - Local development often only tests one configuration
+ - Debug builds have different behavior than Release
+ - Tests that pass locally in Release may fail in CI's Debug build
+ - GPU tests that work on small problems may fail on large-scale runs
 
 ### Test Development Guidelines
 

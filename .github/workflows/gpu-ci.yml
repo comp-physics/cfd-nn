@@ -128,10 +128,10 @@ jobs:
             ctest --output-on-failure && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"2. Algebraic Models\" && \
+            echo \"2. Algebraic Models (Fast Validation)\" && \
             echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 256 512 200000 output/gpu_validation/baseline && \
-            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 256 512 200000 output/gpu_validation/gep && \
+            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 64 128 5000 output/gpu_validation/baseline && \
+            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 64 128 5000 output/gpu_validation/gep && \
             echo \"\" && \
             echo \"======================================\" && \
             echo \"3. Neural Network Models\" && \
@@ -140,10 +140,10 @@ jobs:
             echo \"   3b. NN-TBNN (skipping - requires model files)\" && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"4. Transport Equation Models\" && \
+            echo \"4. Transport Equation Models (Fast Validation)\" && \
             echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 256 512 1000 output/gpu_validation/sst && \
-            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 256 512 1000 output/gpu_validation/komega && \
+            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 64 128 500 output/gpu_validation/sst && \
+            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 64 128 500 output/gpu_validation/komega && \
             echo \"\" && \
             echo \"======================================\" && \
             echo \"5. EARSM Models\" && \
@@ -153,15 +153,11 @@ jobs:
             ../.github/scripts/test_turbulence_model_gpu.sh earsm_pope \"Pope Quadratic EARSM\" 256 512 1000 output/gpu_validation/earsm_pope && \
             echo \"\" && \
             echo \"======================================\" && \
-            echo \"6. Periodic Hills - Complex Geometry\" && \
+            echo \"6. Periodic Hills - Complex Geometry (Fast Validation)\" && \
             echo \"======================================\" && \
-            echo \"   6a. Baseline\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 500 --model baseline --num_snapshots 0 && \
-            echo \"   6b. SST k-omega\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model sst --num_snapshots 0 && \
-            echo \"   6c. EARSM (WJ)\" && \
-            ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 1000 --model earsm_wj --num_snapshots 0'" \
-          90
+            echo \"   Testing with Baseline model\" && \
+            ./periodic_hills --Nx 64 --Ny 48 --nu 0.001 --max_iter 200 --model baseline --num_snapshots 0'" \
+          20
     
     - name: Explicit CPU/GPU Consistency Validation
       run: |

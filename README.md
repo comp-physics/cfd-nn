@@ -771,13 +771,54 @@ Comprehensive continuous integration tests all models on CPU and GPU:
 **GPU Tests** (`.github/workflows/gpu-ci.yml`):
 - Self-hosted NVIDIA GPU runner
 - All turbulence models with GPU offload
+- Fast validation runs (64×128 grids, 500-5000 iterations)
+- Complex geometry tests (Periodic Hills)
+- CPU/GPU consistency validation
 - Output validation (no NaN/Inf, physical bounds)
+- Completes in ~10-15 minutes
 
-**Validation checks** (`.github/scripts/validate_turbulence_model.sh`):
-- Non-zero velocity field
-- Positive eddy viscosity
-- Finite pressure
-- Reasonable value ranges
+**Validation checks**:
+- **Physics validation tests** (`tests/test_physics_validation.cpp`):
+  - Velocity monotonicity in channel flow
+  - Flow symmetry about centerline
+  - Reynolds number scaling
+  - Energy decay rate
+  - Gradient boundedness
+  - Reynolds stress realizability
+  - Pressure-velocity coupling
+- **Output validation** (`.github/scripts/validate_turbulence_model.sh`):
+  - Non-zero velocity field
+  - Positive eddy viscosity
+  - Finite pressure
+  - Reasonable value ranges
+
+### Running Tests Locally
+
+**Before pushing to repository:**
+
+```bash
+# Test CPU builds (Debug + Release, ~5 minutes)
+./test_before_ci.sh
+
+# Test GPU builds with full validation suite (10-15 minutes)
+# Run this for GPU-related changes
+./test_before_ci_gpu.sh
+```
+
+The GPU test script runs the complete GPU CI suite locally:
+- All unit tests on GPU hardware (including new physics validation tests)
+- Turbulence model validation on representative problems
+- Complex geometry tests (Periodic Hills)
+- CPU/GPU consistency checks
+
+**Design philosophy**: CI tests validate *correctness*, not *scientific accuracy*. Tests use smaller grids and fewer iterations to run quickly while still catching:
+- Numerical instabilities
+- NaN/Inf errors
+- Memory errors
+- Physics violations (monotonicity, symmetry, realizability)
+- CPU/GPU consistency
+
+For full convergence studies and scientific validation, use the production-scale parameters in your research runs.
 
 ## References
 

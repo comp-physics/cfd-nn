@@ -224,3 +224,4 @@ double* grad_ptr = local_gradients.data();
 4. Add GPU memory usage reporting in verbose mode
 
 
+
