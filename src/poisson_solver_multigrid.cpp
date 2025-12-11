@@ -230,8 +230,6 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                 }
             }
             
-            apply_bc(level);
-            
             // Black sweep (i + j odd)
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
@@ -248,9 +246,10 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                     }
                 }
             }
-            
-            apply_bc(level);
         }
+        
+        // Apply boundary conditions once after all smoothing iterations
+        apply_bc(level);
         
         return;
     }
@@ -270,8 +269,6 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
             }
         }
         
-        apply_bc(level);
-        
         // Black sweep (i + j odd)
         for (int j = Ng; j < Ny + Ng; ++j) {
             int start = Ng + ((Ng + j + 1) % 2);
@@ -283,9 +280,10 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                 grid.u(i, j) = (1.0 - omega) * u_old + omega * u_gs;
             }
         }
-        
-        apply_bc(level);
     }
+    
+    // Apply boundary conditions once after all smoothing iterations
+    apply_bc(level);
 }
 
 void MultigridPoissonSolver::compute_residual(int level) {
