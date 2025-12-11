@@ -3,12 +3,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:h200:1
 #SBATCH --mem=64G
 #SBATCH --time=01:30:00
 #SBATCH --output=scaling_bench_%j.out
 #SBATCH --error=scaling_bench_%j.err
-#SBATCH --partition=gpu-l40s
+#SBATCH --partition=gpu-h200
 #SBATCH --qos=inferno
 #SBATCH --account=gts-sbryngelson3
 
@@ -46,7 +46,6 @@ cat > ${WORKSPACE}/test_scaling.cpp << 'TESTEOF'
 #include "mesh.hpp"
 #include "solver.hpp"
 #include "config.hpp"
-#include "turbulence_baseline.hpp"
 #include <iostream>
 #include <chrono>
 #include <iomanip>
@@ -64,29 +63,40 @@ int main(int argc, char* argv[]) {
     
     // Create mesh
     Mesh mesh;
-    mesh.init_uniform(Nx, Ny, 0.0, 10.0, 0.0, 1.0);
+    mesh.init_uniform(Nx, Ny, 0.0, 10.0, -1.0, 1.0);
     
     // Setup configuration
-    SolverConfig config;
+    Config config;
+    config.nu = 0.01;
     config.dt = 0.001;
-    config.Re = 5600.0;
     config.dp_dx = -0.001;
-    config.poisson.tol = 1e-6;
-    config.poisson.max_iter = 10000;
-    config.poisson.verbose = false;
+    config.adaptive_dt = false;
+    config.max_iter = 10000;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
     
     // Create solver
     RANSSolver solver(mesh, config);
     
-    // Set turbulence model
-    auto turb_model = std::make_unique<MixingLengthModel>(mesh, 0.09);
-    solver.set_turbulence_model(std::move(turb_model));
-    
     // Set body force
-    solver.set_body_force(config.dp_dx, 0.0);
+    solver.set_body_force(-config.dp_dx, 0.0);
     
-    // Initialize velocity field
-    solver.initialize_uniform(0.1, 0.0);
+    // Initialize velocity field (laminar)
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = 0.1;
+        }
+    }
+    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            solver.velocity().v(i, j) = 0.0;
+        }
+    }
+    
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
     
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Mesh: " << Nx << "×" << Ny << " (" << (Nx*Ny) << " cells)\n";
