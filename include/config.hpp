@@ -27,7 +27,8 @@ enum class TurbulenceModelType {
 /// Convective scheme selection
 enum class ConvectiveScheme {
     Central,
-    Upwind
+    Upwind,
+    SkewSymmetric  ///< Skew-symmetric form for better energy conservation
 };
 
 /// Simulation configuration
@@ -61,7 +62,7 @@ struct Config {
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
     
     // Numerical schemes
-    ConvectiveScheme convective_scheme = ConvectiveScheme::Central;
+    ConvectiveScheme convective_scheme = ConvectiveScheme::SkewSymmetric;
     
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
