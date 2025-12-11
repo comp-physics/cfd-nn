@@ -203,6 +203,11 @@ if(BUILD_TESTS)
     add_executable(test_physics_validation tests/test_physics_validation.cpp)
     target_link_libraries(test_physics_validation nn_cfd_core)
     add_test(NAME PhysicsValidationTest COMMAND test_physics_validation)
+    
+    # Taylor-Green vortex validation - verifies viscous decay and time integration
+    add_executable(test_tg_validation tests/test_taylor_green.cpp)
+    target_link_libraries(test_tg_validation nn_cfd_core)
+    add_test(NAME TaylorGreenValidationTest COMMAND test_tg_validation)
 endif()
 
 # Installation

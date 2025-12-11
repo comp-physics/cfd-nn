@@ -64,6 +64,40 @@ jobs:
         cd build
         ctest --output-on-failure
     
+    - name: Physics Validation Tests
+      run: |
+        cd build
+        echo "========================================="
+        echo "Physics Validation (CPU)"
+        echo "========================================="
+        echo ""
+        echo "Running comprehensive N-S equation validation:"
+        echo "  • Poiseuille analytical solution"
+        echo "  • Divergence-free constraint"
+        echo "  • Momentum balance"
+        echo "  • Channel symmetry"
+        echo "  • Cross-model consistency"
+        echo "  • Taylor-Green vortex decay"
+        echo ""
+        
+        ./test_physics_validation || {
+          echo ""
+          echo "❌ Physics validation failed!"
+          echo "Solver may not correctly solve Navier-Stokes equations."
+          exit 1
+        }
+        
+        echo ""
+        echo "Running Taylor-Green vortex validation..."
+        ./test_tg_validation || {
+          echo ""
+          echo "❌ Taylor-Green validation failed!"
+          exit 1
+        }
+        
+        echo ""
+        echo "✅ All physics validation tests passed on CPU!"
+    
     - name: Test turbulence models (CPU)
       run: |
         cd build

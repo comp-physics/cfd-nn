@@ -200,6 +200,56 @@ jobs:
         echo "   GPU code produces identical results to CPU code."
         echo ""
     
+    - name: Physics Validation Test Suite
+      run: |
+        cd build_ci_gpu
+        echo "========================================="
+        echo "Physics Validation (Comprehensive)"
+        echo "========================================="
+        echo ""
+        echo "Validates that solver correctly solves Navier-Stokes equations:"
+        echo "  1. Poiseuille flow (analytical solution)"
+        echo "  2. Divergence-free constraint (∇·u = 0)"
+        echo "  3. Momentum balance (global conservation)"
+        echo "  4. Channel symmetry"
+        echo "  5. Cross-model consistency"
+        echo "  6. Taylor-Green vortex (viscous decay)"
+        echo ""
+        echo "Expected runtime: ~2 minutes"
+        echo ""
+        
+        ./test_physics_validation || {
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════╗"
+          echo "║  ✗✗✗ PHYSICS VALIDATION FAILED ✗✗✗                  ║"
+          echo "╚═══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "Solver may not be correctly solving N-S equations!"
+          echo "Check discretization, BCs, or GPU offload implementation."
+          echo ""
+          exit 1
+        }
+        
+        echo ""
+        echo "Running Taylor-Green vortex test (viscous decay)..."
+        echo ""
+        
+        ./test_tg_validation || {
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════╗"
+          echo "║  ✗✗✗ TAYLOR-GREEN VALIDATION FAILED ✗✗✗            ║"
+          echo "╚═══════════════════════════════════════════════════════╝"
+          echo ""
+          echo "Time integration or viscous terms may have issues."
+          echo ""
+          exit 1
+        }
+        
+        echo ""
+        echo "✅ All physics validation tests passed!"
+        echo "   High confidence: Solver correctly solves N-S equations"
+        echo ""
+    
     - name: Debug info on failure
       if: failure()
       run: |
