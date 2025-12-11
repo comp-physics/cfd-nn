@@ -153,7 +153,6 @@ private:
     // Internal methods
     void apply_velocity_bc();
     void compute_convective_term(const VectorField& vel, VectorField& conv);
-    void compute_convective_term_skew(const VectorField& vel, VectorField& conv);
     void compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, VectorField& diff);
     void compute_divergence(const VectorField& vel, ScalarField& div);
     void correct_velocity();
