@@ -95,11 +95,11 @@ private:
     // GPU state
     bool gpu_ready_ = false;
     bool full_gpu_ready_ = false;  // Reserved for future GPU optimization
-    bool buffers_on_gpu_ = false;  // Track if feature buffers are mapped to GPU
-    bool full_buffers_on_gpu_ = false;  // Track if full pipeline buffers are mapped to GPU
+    [[maybe_unused]] bool buffers_on_gpu_ = false;  // Track if feature buffers are mapped to GPU
+    [[maybe_unused]] bool full_buffers_on_gpu_ = false;  // Track if full pipeline buffers are mapped to GPU
     bool initialized_ = false;
-    int cached_n_cells_ = 0;  // Reserved for future GPU optimization
-    int cached_total_cells_ = 0;
+    [[maybe_unused]] int cached_n_cells_ = 0;  // Reserved for future GPU optimization
+    [[maybe_unused]] int cached_total_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);
     void allocate_gpu_buffers(int n_cells);

@@ -89,8 +89,8 @@ private:
     // GPU state
     bool gpu_ready_ = false;
     bool initialized_ = false;
-    bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
-    int cached_n_cells_ = 0;
+    [[maybe_unused]] bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
+    [[maybe_unused]] int cached_n_cells_ = 0;
     
     void ensure_initialized(const Mesh& mesh);
     void allocate_gpu_buffers(int n_cells);

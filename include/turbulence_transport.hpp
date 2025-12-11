@@ -271,8 +271,8 @@ private:
     std::vector<double> work_flat_;
     std::vector<double> wall_dist_flat_;
     bool gpu_ready_ = false;
-    bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
-    int cached_n_cells_ = 0;
+    [[maybe_unused]] bool buffers_on_gpu_ = false;  // Track if buffers are actually mapped to GPU
+    [[maybe_unused]] int cached_n_cells_ = 0;
     
     void allocate_gpu_buffers(const Mesh& mesh);
     void free_gpu_buffers();

@@ -282,8 +282,8 @@ private:
     Config config_;
     RANSSolver solver_;
     ScalarField mask_;
-    double L_hill_;  // Stored for potential debugging/output
-    double h_max_;   // Stored for potential debugging/output
+    [[maybe_unused]] double L_hill_;  // Stored for potential debugging/output
+    [[maybe_unused]] double h_max_;   // Stored for potential debugging/output
 };
 
 /// Write velocity profile at specified x locations

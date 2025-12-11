@@ -47,8 +47,8 @@ private:
     
     // GPU management (members ALWAYS present for ABI stability)
     bool gpu_ready_ = false;
-    bool buffers_on_gpu_ = false;
-    int cached_total_cells_ = 0;
+    [[maybe_unused]] bool buffers_on_gpu_ = false;
+    [[maybe_unused]] int cached_total_cells_ = 0;
     
     // Flat arrays for GPU
     std::vector<double> nu_t_gpu_flat_;

@@ -65,7 +65,7 @@ jobs:
         # Check Fix #3: Correct map sizes with total_size
         echo ""
         echo "Fix #3: Correct map clause sizes (total_size for arrays with ghosts)"
-        if grep -q "map(present:.*total_size" src/turbulence_transport.cpp; then
+        if grep -q "map(to:.*total_size" src/turbulence_transport.cpp; then
           echo "  ✓ Found correct map size (total_size) in turbulence_transport.cpp"
         else
           echo "  ✗ MISSING correct map size!"
