@@ -66,7 +66,11 @@ finest.u(i, j) = p(i, j);  // Initial guess is used!
 
 ---
 
-## 🎯 Optimization #2: Skew-Symmetric Convection
+## 🎯 Optimization #2: Skew-Symmetric Convection (Experimental)
+
+### Status
+
+**Note:** Skew-symmetric convection is implemented but currently **experimental** due to instabilities on macOS CI. It is disabled by default. Use `--use-skew` to enable for testing.
 
 ### What Changed
 
@@ -116,20 +120,20 @@ if (config_.convective_scheme == ConvectiveScheme::SkewSymmetric) {
 
 ### Configuration
 
-**Default:** Skew-symmetric (now default in `include/config.hpp:65`)
+**Default:** Central difference (stable, passes all tests)
 
 **Command-line options:**
 ```bash
-# Use skew-symmetric (default)
+# Use central difference (default)
 ./channel --Nx 64 --Ny 128
 
 # Explicitly specify scheme
-./channel --scheme skew        # Skew-symmetric
-./channel --scheme central     # Central difference
+./channel --scheme central     # Central difference (default)
+./channel --scheme skew        # Skew-symmetric (experimental)
 ./channel --scheme upwind      # Upwind (more dissipative)
 
-# Disable skew-symmetric (use central)
-./channel --no-skew
+# Enable skew-symmetric (experimental)
+./channel --use-skew
 ```
 
 **Config file:**

@@ -106,7 +106,7 @@ void Config::load(const std::string& filename) {
     tol = get_double("tol", tol);
     
     // Numerical scheme
-    auto scheme_str = get_string("convective_scheme", "skew");
+    auto scheme_str = get_string("convective_scheme", "central");
     if (scheme_str == "upwind") {
         convective_scheme = ConvectiveScheme::Upwind;
     } else if (scheme_str == "skew" || scheme_str == "skew_symmetric") {
@@ -236,8 +236,8 @@ void Config::parse_args(int argc, char** argv) {
             } else {
                 convective_scheme = ConvectiveScheme::Central;
             }
-        } else if (arg == "--no-skew") {
-            convective_scheme = ConvectiveScheme::Central;
+        } else if (arg == "--use-skew") {
+            convective_scheme = ConvectiveScheme::SkewSymmetric;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -262,8 +262,8 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
-                      << "  --scheme SCHEME   Convective scheme: skew (default), central, upwind\n"
-                      << "  --no-skew         Use central difference (same as --scheme central)\n"
+                      << "  --scheme SCHEME   Convective scheme: central (default), skew, upwind\n"
+                      << "  --use-skew        Use skew-symmetric convection (experimental)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"

@@ -62,7 +62,7 @@ struct Config {
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
     
     // Numerical schemes
-    ConvectiveScheme convective_scheme = ConvectiveScheme::SkewSymmetric;
+    ConvectiveScheme convective_scheme = ConvectiveScheme::Central;
     
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
