@@ -262,7 +262,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
-                      << "  --scheme SCHEME   Convective scheme: central (default), skew, upwind\n"
+                      << "  --scheme SCHEME   Convective scheme: skew (default), central, upwind\n"
                       << "  --no-skew        Use central difference instead of skew-symmetric\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
