@@ -152,7 +152,15 @@ echo "==================================================================="
 echo ""
 
 echo "--- Testing Wallin-Johansson EARSM ---"
-../.github/scripts/test_turbulence_model_gpu.sh earsm_wj "Wallin-Johansson EARSM" 64 128 500 output/gpu_validation/earsm_wj
+../.github/scripts/test_turbulence_model_gpu.sh earsm_wj "Wallin-Johansson EARSM" 256 512 1000 output/gpu_validation/earsm_wj
+
+echo ""
+echo "--- Testing Gatski-Speziale EARSM ---"
+../.github/scripts/test_turbulence_model_gpu.sh earsm_gs "Gatski-Speziale EARSM" 256 512 1000 output/gpu_validation/earsm_gs
+
+echo ""
+echo "--- Testing Pope Quadratic EARSM ---"
+../.github/scripts/test_turbulence_model_gpu.sh earsm_pope "Pope Quadratic EARSM" 256 512 1000 output/gpu_validation/earsm_pope
 
 echo ""
 echo "==================================================================="

@@ -225,6 +225,13 @@ void Config::parse_args(int argc, char** argv) {
             adaptive_dt = true;
         } else if (arg == "--CFL" && i + 1 < argc) {
             CFL_max = std::stod(argv[++i]);
+        } else if (arg == "--scheme" && i + 1 < argc) {
+            std::string scheme = argv[++i];
+            if (scheme == "upwind") {
+                convective_scheme = ConvectiveScheme::Upwind;
+            } else {
+                convective_scheme = ConvectiveScheme::Central;
+            }
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -249,7 +256,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
-                      << "  --no-skew         Use standard convection\n"
+                      << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"
@@ -372,7 +379,9 @@ void Config::print() const {
               << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
               << "Time stepping: Explicit Euler + Projection\n"
-              << "Poisson solver: Multigrid\n"
+              << "Poisson solver: Multigrid (warm-start enabled)\n"
+              << "Convective scheme: " 
+              << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
               << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     
