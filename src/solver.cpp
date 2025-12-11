@@ -412,8 +412,8 @@ inline void convective_v_face_kernel_staggered(
 }
 
 // Skew-symmetric convection for u-momentum at x-face (i,j) - staggered grid
-// Uses: 0.5 * [div(uu) + u·grad(u) + u*div(u)]
-// Better energy conservation and stability for turbulent flows
+// Uses Morinishi's energy-conserving scheme: 0.5 * [∇·(uu) + u·∇u]
+// Properly handles staggered grid interpolations for stability
 inline void convective_u_face_kernel_skew(
     int i, int j,
     int u_stride, int v_stride, int conv_stride,
@@ -424,30 +424,36 @@ inline void convective_u_face_kernel_skew(
     const int u_idx = j * u_stride + i;
     const double uu = u_ptr[u_idx];
 
-    // Interpolate v to x-face (average 4 surrounding v-faces)
+    // Form 1: Advective form u·∇u (standard central differences)
+    const double dudx_adv = (u_ptr[j * u_stride + (i+1)] - u_ptr[j * u_stride + (i-1)]) / (2.0 * dx);
+    const double dudy_adv = (u_ptr[(j+1) * u_stride + i] - u_ptr[(j-1) * u_stride + i]) / (2.0 * dy);
+    
+    // Interpolate v to x-face for advection term
     const double v_bl = v_ptr[j * v_stride + (i-1)];
     const double v_br = v_ptr[j * v_stride + i];
     const double v_tl = v_ptr[(j+1) * v_stride + (i-1)];
     const double v_tr = v_ptr[(j+1) * v_stride + i];
     const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
-
-    // Form 1: Advective form u·∇u
-    const double dudx_adv = (u_ptr[j * u_stride + (i+1)] - u_ptr[j * u_stride + (i-1)]) / (2.0 * dx);
-    const double dudy_adv = (u_ptr[(j+1) * u_stride + i] - u_ptr[(j-1) * u_stride + i]) / (2.0 * dy);
+    
     const double advective = uu * dudx_adv + vv * dudy_adv;
 
-    // Form 2: Conservative (divergence) form ∇·(uu)
-    // d(uu)/dx at x-face
-    const double uu_right = 0.5 * (u_ptr[u_idx] + u_ptr[j * u_stride + (i+1)]);
-    const double uu_left = 0.5 * (u_ptr[j * u_stride + (i-1)] + u_ptr[u_idx]);
-    const double d_uu_dx = (uu_right * uu_right - uu_left * uu_left) / dx;
+    // Form 2: Conservative (divergence) form ∇·(uu, uv)
+    // ∂(uu)/∂x: u² flux through x-faces
+    const double u_east = 0.5 * (u_ptr[u_idx] + u_ptr[j * u_stride + (i+1)]);
+    const double u_west = 0.5 * (u_ptr[j * u_stride + (i-1)] + u_ptr[u_idx]);
+    const double d_uu_dx = (u_east * u_east - u_west * u_west) / dx;
     
-    // d(uv)/dy at x-face (need v interpolated to neighboring x-faces)
-    const double v_bottom = 0.25 * (v_bl + v_br + v_ptr[(j-1) * v_stride + (i-1)] + v_ptr[(j-1) * v_stride + i]);
-    const double v_top = 0.25 * (v_tl + v_tr + v_ptr[(j+1) * v_stride + (i-1)] + v_ptr[(j+1) * v_stride + i]);
-    const double u_bottom = u_ptr[(j-1) * u_stride + i];
-    const double u_top = u_ptr[(j+1) * u_stride + i];
-    const double d_uv_dy = (u_top * v_top - u_bottom * v_bottom) / dy;
+    // ∂(uv)/∂y: uv flux through y-faces (cell-centered values)
+    // For u at x-face (i,j), need uv at (i,j±1/2)
+    // u at y-faces: average neighboring x-faces
+    const double u_north = 0.5 * (u_ptr[u_idx] + u_ptr[(j+1) * u_stride + i]);
+    const double u_south = 0.5 * (u_ptr[(j-1) * u_stride + i] + u_ptr[u_idx]);
+    
+    // v at y-faces: average neighboring v-faces to cell center
+    const double v_north = 0.5 * (v_br + v_tr);  // Average v at (i-1/2,j+1/2) and (i+1/2,j+1/2)
+    const double v_south = 0.5 * (v_bl + v_br);  // Average v at (i-1/2,j-1/2) and (i+1/2,j-1/2)
+    
+    const double d_uv_dy = (u_north * v_north - u_south * v_south) / dy;
     
     const double conservative = d_uu_dx + d_uv_dy;
 
@@ -457,6 +463,8 @@ inline void convective_u_face_kernel_skew(
 }
 
 // Skew-symmetric convection for v-momentum at y-face (i,j) - staggered grid
+// Uses Morinishi's energy-conserving scheme: 0.5 * [∇·(uv, vv) + u·∇v]
+// Properly handles staggered grid interpolations for stability
 inline void convective_v_face_kernel_skew(
     int i, int j,
     int u_stride, int v_stride, int conv_stride,
@@ -467,30 +475,36 @@ inline void convective_v_face_kernel_skew(
     const int v_idx = j * v_stride + i;
     const double vv = v_ptr[v_idx];
     
-    // Interpolate u to y-face (average 4 surrounding u-faces)
+    // Form 1: Advective form u·∇v (standard central differences)
+    const double dvdx_adv = (v_ptr[j * v_stride + (i+1)] - v_ptr[j * v_stride + (i-1)]) / (2.0 * dx);
+    const double dvdy_adv = (v_ptr[(j+1) * v_stride + i] - v_ptr[(j-1) * v_stride + i]) / (2.0 * dy);
+    
+    // Interpolate u to y-face for advection term
     const double u_bl = u_ptr[(j-1) * u_stride + i];
     const double u_br = u_ptr[(j-1) * u_stride + (i+1)];
     const double u_tl = u_ptr[j * u_stride + i];
     const double u_tr = u_ptr[j * u_stride + (i+1)];
     const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
     
-    // Form 1: Advective form u·∇v
-    const double dvdx_adv = (v_ptr[j * v_stride + (i+1)] - v_ptr[j * v_stride + (i-1)]) / (2.0 * dx);
-    const double dvdy_adv = (v_ptr[(j+1) * v_stride + i] - v_ptr[(j-1) * v_stride + i]) / (2.0 * dy);
     const double advective = uu * dvdx_adv + vv * dvdy_adv;
     
     // Form 2: Conservative (divergence) form ∇·(uv, vv)
-    // d(uv)/dx at y-face
-    const double u_left = 0.25 * (u_bl + u_tl + u_ptr[(j-1) * u_stride + (i-1)] + u_ptr[j * u_stride + (i-1)]);
-    const double u_right = 0.25 * (u_br + u_tr + u_ptr[(j-1) * u_stride + (i+1)] + u_ptr[j * u_stride + (i+1)]);
-    const double v_left = v_ptr[j * v_stride + (i-1)];
-    const double v_right = v_ptr[j * v_stride + (i+1)];
-    const double d_uv_dx = (v_right * u_right - v_left * u_left) / dx;
+    // ∂(uv)/∂x: uv flux through x-faces (cell-centered values)
+    // For v at y-face (i,j), need uv at (i±1/2,j)
+    // v at x-faces: average neighboring y-faces
+    const double v_east = 0.5 * (v_ptr[v_idx] + v_ptr[j * v_stride + (i+1)]);
+    const double v_west = 0.5 * (v_ptr[j * v_stride + (i-1)] + v_ptr[v_idx]);
     
-    // d(vv)/dy at y-face
-    const double vv_top = 0.5 * (v_ptr[v_idx] + v_ptr[(j+1) * v_stride + i]);
-    const double vv_bottom = 0.5 * (v_ptr[(j-1) * v_stride + i] + v_ptr[v_idx]);
-    const double d_vv_dy = (vv_top * vv_top - vv_bottom * vv_bottom) / dy;
+    // u at x-faces: average neighboring u-faces to cell center
+    const double u_east = 0.5 * (u_br + u_tr);  // Average u at (i+1/2,j-1/2) and (i+1/2,j+1/2)
+    const double u_west = 0.5 * (u_bl + u_tl);  // Average u at (i-1/2,j-1/2) and (i-1/2,j+1/2)
+    
+    const double d_uv_dx = (v_east * u_east - v_west * u_west) / dx;
+    
+    // ∂(vv)/∂y: v² flux through y-faces
+    const double v_north = 0.5 * (v_ptr[v_idx] + v_ptr[(j+1) * v_stride + i]);
+    const double v_south = 0.5 * (v_ptr[(j-1) * v_stride + i] + v_ptr[v_idx]);
+    const double d_vv_dy = (v_north * v_north - v_south * v_south) / dy;
     
     const double conservative = d_uv_dx + d_vv_dy;
     
