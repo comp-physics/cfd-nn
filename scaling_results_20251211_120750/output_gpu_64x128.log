@@ -1,0 +1,7 @@
+Mesh: 64×128 (8192 cells)
+Running 10 time steps...
+[MultigridPoisson] Initializing GPU buffers for 4 levels, finest grid: 64x128
+[MultigridPoisson] GPU buffers allocated successfully
+Total time:    0.011 s
+Time per step: 0.001 s
+Steps/sec:     891.997
