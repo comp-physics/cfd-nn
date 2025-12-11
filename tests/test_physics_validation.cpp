@@ -188,7 +188,7 @@ void test_divergence_free() {
     std::cout << "  RMS divergence: " << rms_div << "\n";
     
     // Tolerance based on grid resolution
-    double h = std::max(mesh.dx, mesh.dy);
+    [[maybe_unused]] double h = std::max(mesh.dx, mesh.dy);
     double div_tolerance = 1e-3;  // Reasonable for projection method
     
     if (max_div > div_tolerance) {
