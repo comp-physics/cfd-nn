@@ -98,3 +98,4 @@ echo "Analysis plot saved to: output_spatial/spatial_convergence.png"
 
 
 
+

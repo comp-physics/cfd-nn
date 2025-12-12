@@ -155,3 +155,4 @@ Compare these quantities with DNS:
 - Increase time limit: `#SBATCH --time=04:00:00`
 - Or reduce max_iter to checkpoint intermediate results
 
+
