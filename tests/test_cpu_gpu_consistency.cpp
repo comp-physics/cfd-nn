@@ -164,10 +164,18 @@ void test_mixing_length_consistency() {
         // Verify field addresses are different
         assert(nu_t_gpu.data().data() != nu_t_cpu.data().data());
         
-        // GPU path
+        // GPU path - CRITICAL: initialize GPU buffers so update() uses GPU
         MixingLengthModel model_gpu;
         model_gpu.set_nu(1.0 / 10000.0);
         model_gpu.set_delta(0.5);
+        model_gpu.initialize_gpu_buffers(mesh);
+        
+        // Hard check: GPU must be ready (otherwise this is CPU-vs-CPU!)
+        if (!model_gpu.is_gpu_ready()) {
+            std::cout << "    FAILED: GPU buffers not ready (would be CPU-vs-CPU test!)\n";
+            assert(false);
+        }
+        
         model_gpu.update(mesh, velocity, k, omega, nu_t_gpu);
         
         // CPU reference (explicit reimplementation)
@@ -401,9 +409,20 @@ void test_randomized_regression() {
     const int num_trials = 20;  // Test 20 different random fields
     double worst_abs = 0.0;
     double worst_rel = 0.0;
-    int worst_seed = -1;
+    int worst_seed = 0;  // Initialize to valid seed (not -1)
     
     std::cout << "  Testing " << num_trials << " random velocity fields...\n";
+    
+    // Initialize GPU model once (reuse across trials for efficiency)
+    MixingLengthModel model_gpu;
+    model_gpu.set_nu(1.0 / 10000.0);
+    model_gpu.set_delta(0.5);
+    model_gpu.initialize_gpu_buffers(mesh);
+    
+    if (!model_gpu.is_gpu_ready()) {
+        std::cout << "  FAILED: GPU buffers not ready (would be CPU-vs-CPU test!)\n";
+        assert(false);
+    }
     
     for (int trial = 0; trial < num_trials; ++trial) {
         VectorField vel(mesh);
@@ -413,10 +432,7 @@ void test_randomized_regression() {
         // Random velocity field
         create_test_velocity_field(mesh, vel, trial * 42);
         
-        // GPU path
-        MixingLengthModel model_gpu;
-        model_gpu.set_nu(1.0 / 10000.0);
-        model_gpu.set_delta(0.5);
+        // GPU path (model already initialized)
         model_gpu.update(mesh, vel, k, omega, nu_t_gpu);
         
         // CPU reference
