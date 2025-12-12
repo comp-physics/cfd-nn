@@ -97,7 +97,44 @@ int main(int argc, char** argv) {
     std::cout << "Converged: " << (residual < config.tol ? "YES" : "NO") << "\n";
     std::cout << "Bulk velocity: " << std::fixed << std::setprecision(6) << solver.bulk_velocity() << "\n";
     
+    // Quantitative validation: Check divergence-free constraint
+    std::cout << "\n=== Divergence-Free Validation ===\n";
+    const VectorField& vel = solver.velocity();
+    
+    double max_div = 0.0;
+    double rms_div = 0.0;
+    int count = 0;
+    
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double dudx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
+            double dvdy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
+            double div = dudx + dvdy;
+            
+            max_div = std::max(max_div, std::abs(div));
+            rms_div += div * div;
+            count++;
+        }
+    }
+    
+    rms_div = std::sqrt(rms_div / count);
+    
+    std::cout << "Max divergence: " << std::scientific << max_div << "\n";
+    std::cout << "RMS divergence: " << rms_div << "\n";
+    
+    const double div_tolerance = 1e-3;  // Same as physics validation tests
+    
+    if (max_div > div_tolerance) {
+        std::cout << "\n❌ FAILED: Max divergence = " << max_div << " > " << div_tolerance << "\n";
+        std::cout << "   Incompressibility constraint not satisfied!\n";
+        std::cout << "   Poisson solver may be broken.\n";
+        return 1;
+    }
+    
+    std::cout << "✓ PASSED: Incompressibility satisfied (max_div < " << div_tolerance << ")\n";
+    
     // Print timing summary
+    std::cout << "\n";
     TimingStats::instance().print_summary();
     
     return 0;
