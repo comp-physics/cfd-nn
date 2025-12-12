@@ -124,6 +124,9 @@ endif()
 add_executable(channel app/main_channel.cpp)
 target_link_libraries(channel nn_cfd_core)
 
+add_executable(test_poisson_perturbed app/test_poisson_perturbed.cpp)
+target_link_libraries(test_poisson_perturbed nn_cfd_core)
+
 add_executable(periodic_hills app/main_periodic_hills.cpp)
 target_link_libraries(periodic_hills nn_cfd_core)
 

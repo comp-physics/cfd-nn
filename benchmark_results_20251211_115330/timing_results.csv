@@ -1,3 +1,0 @@
-Test,Device,AvgTime(s),StdDev(s)
-test_solver,CPU,4.115,0
-test_solver,GPU,64.478,.114
