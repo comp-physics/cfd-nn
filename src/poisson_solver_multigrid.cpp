@@ -2,6 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <cstring>  // for memcpy in debug
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -291,11 +292,11 @@ void MultigridPoissonSolver::compute_residual(int level) {
     auto& grid = *levels_[level];
     const double dx2 = grid.dx * grid.dx;
     const double dy2 = grid.dy * grid.dy;
-    
+
     const int Ng = 1;
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
-    
+
 #ifdef USE_GPU_OFFLOAD
     // GPU path with persistent device arrays
     if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
@@ -304,7 +305,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
         const double* u_ptr = u_ptrs_[level];
         const double* f_ptr = f_ptrs_[level];
         double* r_ptr = r_ptrs_[level];
-        
+
         #pragma omp target teams distribute parallel for collapse(2) \
             map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
         for (int j = Ng; j < Ny + Ng; ++j) {
@@ -315,7 +316,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
                 r_ptr[idx] = f_ptr[idx] - laplacian;
             }
         }
-        
+
         return;
     }
 #endif
@@ -532,28 +533,31 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_ && grid.Nx >= 32 && grid.Ny >= 32) {
-        const size_t total_size = level_sizes_[level];
-        const double* r_ptr = r_ptrs_[level];
+        // Compute max residual on GPU and return scalar to host
         const int Nx = grid.Nx;
         const int Ny = grid.Ny;
-        
+        const int stride = Nx + 2;
+        const size_t total_size = level_sizes_[level];
+        const double* r_ptr = r_ptrs_[level];
+
+        // Reduction over interior cells only
         #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+            map(present: r_ptr[0:total_size]) \
+            map(tofrom: max_res) \
+            firstprivate(Nx, Ny, stride, Ng)
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
             int j = idx / Nx + Ng;
-            int stride = Nx + 2;
-            int cell_idx = j * stride + i;
-            double abs_r = r_ptr[cell_idx];
-            if (abs_r < 0.0) abs_r = -abs_r;
-            if (abs_r > max_res) max_res = abs_r;
+            int ridx = j * stride + i;
+            double v = std::abs(r_ptr[ridx]);
+            if (v > max_res) max_res = v;
         }
     } else
 #endif
     {
-    for (int j = Ng; j < grid.Ny + Ng; ++j) {
-        for (int i = Ng; i < grid.Nx + Ng; ++i) {
-            max_res = std::max(max_res, std::abs(grid.r(i, j)));
+        for (int j = Ng; j < grid.Ny + Ng; ++j) {
+            for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                max_res = std::max(max_res, std::abs(grid.r(i, j)));
             }
         }
     }
@@ -617,12 +621,9 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 
 int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg) {
 #ifdef USE_GPU_OFFLOAD
-    // Lazy GPU initialization on first solve
-    // Only try once - if gpu_ready_ is false after init, it means no GPU available
-    static bool init_attempted = false;
-    if (!init_attempted) {
+    // Lazy GPU initialization on first solve for THIS instance
+    if (!gpu_ready_) {
         initialize_gpu_buffers();
-        init_attempted = true;
     }
 #endif
     
@@ -702,8 +703,102 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 }
 
 #ifdef USE_GPU_OFFLOAD
+int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, const PoissonConfig& cfg) {
+    // Lazy GPU initialization on first solve_device() call for THIS instance
+    if (!gpu_ready_) {
+        initialize_gpu_buffers();
+        
+        if (!gpu_ready_) {
+            throw std::runtime_error("solve_device() called but GPU not available");
+        }
+    }
+    
+    // Device-resident solve: work directly on GPU pointers without host staging
+    // This eliminates the DtoH/HtoD transfers that happen in regular solve()
+    
+    auto& finest = *levels_[0];
+    const int Nx = finest.Nx;
+    const int Ny = finest.Ny;
+    const size_t total_size = (Nx + 2) * (Ny + 2);
+    
+    // Get device pointers for finest level
+    double* u_dev = u_ptrs_[0];
+    double* f_dev = f_ptrs_[0];
+    
+    // Copy RHS and initial guess from caller's device-mapped arrays to multigrid level-0 device buffers
+    // This is device-to-device copy via present mappings (no host staging)
+    #pragma omp target teams distribute parallel for \
+        map(present: rhs_device[0:total_size], p_device[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
+    for (size_t idx = 0; idx < total_size; ++idx) {
+        f_dev[idx] = rhs_device[idx];
+        u_dev[idx] = p_device[idx];
+    }
+    
+    apply_bc(0);
+    
+    // Perform V-cycles until converged (all operations already on device)
+    const int max_cycles = std::max(10, cfg.max_iter / 100);
+    
+    // Configurable residual monitoring interval (check every N cycles)
+    // Only copy residual back to CPU when checking (reduces DtoH transfers)
+    static const char* env_check_interval = std::getenv("NNCFD_POISSON_RESIDUAL_CHECK_INTERVAL");
+    const int check_interval = env_check_interval ? std::atoi(env_check_interval) : 1;
+    
+    int cycle = 0;
+    for (; cycle < max_cycles; ++cycle) {
+        vcycle(0, 3, 3);
+        
+        // Only check convergence every 'check_interval' cycles (or on last cycle)
+        bool should_check = (cycle % check_interval == 0) || (cycle == max_cycles - 1);
+        
+        if (should_check) {
+            // Compute residual on GPU, then copy result to CPU for convergence check
+            residual_ = compute_max_residual(0);
+            
+            if (cfg.verbose && (cycle + 1) % 2 == 0) {
+                std::cout << "MG cycle " << cycle + 1 
+                          << ", residual = " << residual_ << "\n";
+            }
+            
+            if (residual_ < cfg.tol) {
+                break;
+            }
+        }
+    }
+    
+    // Final residual (always compute at end for diagnostics)
+    residual_ = compute_max_residual(0);
+    
+    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
+    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
+    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
+                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
+                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    
+    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
+        subtract_mean(0);
+    }
+    
+    // Copy result from multigrid level-0 device buffer back to caller's device pointer
+    // This is device-to-device copy via present mappings (no host staging)
+    #pragma omp target teams distribute parallel for \
+        map(present: p_device[0:total_size], u_dev[0:total_size])
+    for (size_t idx = 0; idx < total_size; ++idx) {
+        p_device[idx] = u_dev[idx];
+    }
+    
+    return cycle + 1;
+}
+
 void MultigridPoissonSolver::initialize_gpu_buffers() {
+    // Force OpenMP runtime initialization before checking devices
+    omp_set_default_device(0);
+    
     int num_devices = omp_get_num_devices();
+    std::cout << "[MultigridPoisson] Detected " << num_devices << " GPU device(s)\n";
+    
     if (num_devices == 0) {
         gpu_ready_ = false;
         std::cout << "[MultigridPoisson] No GPU devices found, using CPU path\n";

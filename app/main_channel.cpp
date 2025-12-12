@@ -213,11 +213,11 @@ int main(int argc, char** argv) {
     
     // Solve to steady state with automatic VTK snapshots
     ScopedTimer total_timer("Total simulation", true);
-    
-    auto [residual, iterations] = solver.solve_steady_with_snapshots(
-        config.output_dir + "channel",
-        config.num_snapshots
-    );
+
+    // Benchmark-friendly: allow skipping all file output (snapshots + final fields)
+    const std::string output_prefix = config.write_fields ? (config.output_dir + "channel") : "";
+    const int num_snapshots = config.write_fields ? config.num_snapshots : 0;
+    auto [residual, iterations] = solver.solve_steady_with_snapshots(output_prefix, num_snapshots);
     
     total_timer.stop();
     
@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     std::cout << "Re_tau: " << solver.Re_tau() << "\n";
     
     // Compare with analytical solution (for laminar case)
-    if (config.turb_model == TurbulenceModelType::None) {
+    if (config.postprocess && config.turb_model == TurbulenceModelType::None) {
         compare_with_analytical(mesh, solver.velocity(), config.dp_dx, config.nu);
         
         double L2_error = compute_poiseuille_error(mesh, solver.velocity(), 
@@ -247,9 +247,13 @@ int main(int argc, char** argv) {
     
     // Write additional output files
     try {
-        write_profile(config.output_dir + "velocity_profile.dat", mesh, 
-                      solver.velocity(), config.dp_dx, config.nu);
-        solver.write_fields(config.output_dir + "channel");
+        if (config.postprocess) {
+            write_profile(config.output_dir + "velocity_profile.dat", mesh,
+                          solver.velocity(), config.dp_dx, config.nu);
+        }
+        if (config.write_fields) {
+            solver.write_fields(config.output_dir + "channel");
+        }
     } catch (const std::exception& e) {
         std::cerr << "Warning: Could not write output files: " << e.what() << "\n";
     }

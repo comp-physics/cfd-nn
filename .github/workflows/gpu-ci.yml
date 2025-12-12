@@ -1,7 +1,7 @@
 name: GPU CI
 
 on:
-  push:
+  pull_request:
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -94,17 +94,55 @@ jobs:
         echo "✅ All 4 critical GPU fixes verified in source code"
         echo ""
     
-    - name: Make scripts executable
+    - name: Submit GPU CI to Slurm (Embers QoS, 1 GPU)
       run: |
+        set -euo pipefail
+        
+        SBATCH_SCRIPT="${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.sbatch"
+        SLURM_OUT="${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.out"
+        SLURM_ERR="${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.err"
+        
+        cat > "${SBATCH_SCRIPT}" <<'EOF'
+        #!/bin/bash
+        #SBATCH -J gpu-ci
+        #SBATCH -A gts-sbryngelson3
+        #SBATCH -N 1
+        #SBATCH --ntasks-per-node=4
+        #SBATCH -p gpu-v100,gpu-a100,gpu-h100,gpu-l40s,gpu-h200
+        #SBATCH -G 1
+        #SBATCH --qos=embers
+        #SBATCH -t 01:25:00
+        #SBATCH -o __SLURM_OUT__
+        #SBATCH -e __SLURM_ERR__
+        
+        set -euo pipefail
+        
+        module reset
+        module load nvhpc/25.5
+        
+        echo "==================================================================="
+        echo "  GPU CI Slurm Job Environment"
+        echo "==================================================================="
+        echo ""
+        echo "Host: $(hostname)"
+        echo "Date: $(date)"
+        echo ""
+        echo "GPU(s):"
+        nvidia-smi
+        echo ""
+        
+        # Hard-require OpenMP target offload (fail if it falls back to CPU)
+        export OMP_TARGET_OFFLOAD=MANDATORY
+        
+        cd "__WORKDIR__"
+        
         chmod +x scripts/run_gpu_ci_test.sh
         chmod +x .github/scripts/*.sh
-    
-    - name: Build GPU version
-      run: |
-        module load nvhpc/25.5
+        
         rm -rf build_ci_gpu
         mkdir -p build_ci_gpu
         cd build_ci_gpu
+        
         echo "=== CMake Configuration ==="
         CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
         echo ""
@@ -114,10 +152,13 @@ jobs:
         echo "=== Building ==="
         make -j8
         mkdir -p output
-    
-    - name: Comprehensive GPU tests
-      run: |
-        cd build_ci_gpu
+        
+        echo ""
+        echo "==================================================================="
+        echo "  Comprehensive GPU tests"
+        echo "==================================================================="
+        echo ""
+        
         ../scripts/run_gpu_ci_test.sh "all_gpu_tests" \
           "bash -c '\
             chmod +x ../.github/scripts/*.sh && \
@@ -158,97 +199,54 @@ jobs:
             echo \"   Testing with Baseline model\" && \
             ./periodic_hills --Nx 64 --Ny 48 --nu 0.001 --max_iter 200 --model baseline --num_snapshots 0'" \
           20
-    
-    - name: Explicit CPU/GPU Consistency Validation
-      run: |
-        cd build_ci_gpu
-        echo "========================================="
-        echo "CPU/GPU Consistency Test (Critical)"
-        echo "========================================="
-        echo ""
-        echo "This test validates that CPU and GPU produce IDENTICAL results."
-        echo "It catches the 4 critical bugs fixed on Dec 8, 2024:"
-        echo "  1. Array indexing bug (stride-based indexing)"
-        echo "  2. Stale GPU data bug (sync after transport updates)"
-        echo "  3. Map size mismatch bug (total_size for ghosts)"
-        echo "  4. Math consistency bug (unified CPU/GPU operations)"
-        echo ""
-        echo "Running test_cpu_gpu_consistency..."
-        echo ""
         
-        ./test_cpu_gpu_consistency || {
+        echo ""
+        echo "==================================================================="
+        echo "  CPU/GPU Consistency Validation (Critical)"
+        echo "==================================================================="
+        echo ""
+        ./test_cpu_gpu_consistency
+        
+        echo ""
+        echo "==================================================================="
+        echo "  Physics Validation (Comprehensive)"
+        echo "==================================================================="
+        echo ""
+        ./test_physics_validation
+        ./test_tg_validation
+        
+        echo ""
+        echo "==================================================================="
+        echo "  Perturbed Channel Flow Test"
+        echo "==================================================================="
+        echo ""
+        echo "Testing 2D perturbed channel (validates Poisson solver with non-trivial flow)"
+        ./test_poisson_perturbed --Nx 64 --Ny 64 --nu 0.01 --dp_dx -0.01 --max_iter 2000 --tol 1e-6 --verbose false || {
           echo ""
           echo "╔═══════════════════════════════════════════════════════╗"
-          echo "║  ✗✗✗ CRITICAL: CPU/GPU CONSISTENCY TEST FAILED ✗✗✗  ║"
+          echo "║  ✗✗✗ PERTURBED CHANNEL TEST FAILED ✗✗✗              ║"
           echo "╚═══════════════════════════════════════════════════════╝"
-          echo ""
-          echo "This indicates GPU code is producing different results than CPU!"
-          echo ""
-          echo "Common causes:"
-          echo "  • Wrong array indexing (flat vs stride-based)"
-          echo "  • Stale GPU data after CPU updates"
-          echo "  • Incorrect map clause sizes"
-          echo "  • Different math operations on CPU vs GPU"
-          echo ""
-          echo "See docs/GPU_CRITICAL_FIXES.md for details."
           echo ""
           exit 1
         }
         
         echo ""
-        echo "✅ CPU/GPU consistency validated successfully"
-        echo "   GPU code produces identical results to CPU code."
-        echo ""
-    
-    - name: Physics Validation Test Suite
-      run: |
-        cd build_ci_gpu
-        echo "========================================="
-        echo "Physics Validation (Comprehensive)"
-        echo "========================================="
-        echo ""
-        echo "Validates that solver correctly solves Navier-Stokes equations:"
-        echo "  1. Poiseuille flow (analytical solution)"
-        echo "  2. Divergence-free constraint (∇·u = 0)"
-        echo "  3. Momentum balance (global conservation)"
-        echo "  4. Channel symmetry"
-        echo "  5. Cross-model consistency"
-        echo "  6. Taylor-Green vortex (viscous decay)"
-        echo ""
-        echo "Expected runtime: ~2 minutes"
-        echo ""
+        echo "✅ Slurm GPU CI completed successfully"
+        EOF
         
-        ./test_physics_validation || {
-          echo ""
-          echo "╔═══════════════════════════════════════════════════════╗"
-          echo "║  ✗✗✗ PHYSICS VALIDATION FAILED ✗✗✗                  ║"
-          echo "╚═══════════════════════════════════════════════════════╝"
-          echo ""
-          echo "Solver may not be correctly solving N-S equations!"
-          echo "Check discretization, BCs, or GPU offload implementation."
-          echo ""
-          exit 1
-        }
+        sed -i "s|__WORKDIR__|${GITHUB_WORKSPACE}|g" "${SBATCH_SCRIPT}"
+        sed -i "s|__SLURM_OUT__|${SLURM_OUT}|g" "${SBATCH_SCRIPT}"
+        sed -i "s|__SLURM_ERR__|${SLURM_ERR}|g" "${SBATCH_SCRIPT}"
+        
+        echo "Submitting Slurm job..."
+        sbatch -W "${SBATCH_SCRIPT}"
         
         echo ""
-        echo "Running Taylor-Green vortex test (viscous decay)..."
+        echo "=== Slurm STDOUT ==="
+        cat "${SLURM_OUT}" || true
         echo ""
-        
-        ./test_tg_validation || {
-          echo ""
-          echo "╔═══════════════════════════════════════════════════════╗"
-          echo "║  ✗✗✗ TAYLOR-GREEN VALIDATION FAILED ✗✗✗            ║"
-          echo "╚═══════════════════════════════════════════════════════╝"
-          echo ""
-          echo "Time integration or viscous terms may have issues."
-          echo ""
-          exit 1
-        }
-        
-        echo ""
-        echo "✅ All physics validation tests passed!"
-        echo "   High confidence: Solver correctly solves N-S equations"
-        echo ""
+        echo "=== Slurm STDERR ==="
+        cat "${SLURM_ERR}" || true
     
     - name: Debug info on failure
       if: failure()
@@ -268,5 +266,9 @@ jobs:
     
     - name: Cleanup
       if: always()
-      run: rm -rf build_ci_gpu
+      run: |
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.sbatch || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.out || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.err || true
+        rm -rf build_ci_gpu || true
 

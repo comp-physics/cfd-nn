@@ -148,6 +148,8 @@ void Config::load(const std::string& filename) {
     output_freq = get_int("output_freq", output_freq);
     num_snapshots = get_int("num_snapshots", num_snapshots);
     verbose = get_bool("verbose", verbose);
+    postprocess = get_bool("postprocess", postprocess);
+    write_fields = get_bool("write_fields", write_fields);
     
     // Poisson
     poisson_tol = get_double("poisson_tol", poisson_tol);
@@ -219,6 +221,10 @@ void Config::parse_args(int argc, char** argv) {
             verbose = true;
         } else if (arg == "--quiet") {
             verbose = false;
+        } else if (arg == "--no_postprocess") {
+            postprocess = false;
+        } else if (arg == "--no_write_fields") {
+            write_fields = false;
         } else if (arg == "--stretch") {
             stretch_y = true;
         } else if (arg == "--adaptive_dt") {
@@ -253,6 +259,8 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --scaling DIR     NN scaling directory (overrides preset)\n"
                       << "  --output DIR      Output directory\n"
                       << "  --num_snapshots N Number of VTK snapshots (default 10)\n"
+                      << "  --no_postprocess  Skip Poiseuille table + profile output\n"
+                      << "  --no_write_fields Skip VTK/field output (snapshots + final)\n"
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"

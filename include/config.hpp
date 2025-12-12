@@ -79,6 +79,12 @@ struct Config {
     int num_snapshots = 10;     ///< Number of VTK snapshots during simulation
     bool verbose = true;
     
+    // Benchmark / postprocessing controls
+    // - postprocess: Poiseuille table + L2 error + velocity_profile.dat
+    // - write_fields: VTK/field output via solver.write_fields(...) and snapshots
+    bool postprocess = true;
+    bool write_fields = true;
+    
     // Poisson solver
     double poisson_tol = 1e-6;
     int poisson_max_iter = 10000;

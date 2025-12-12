@@ -106,8 +106,10 @@ public:
     void write_vtk(const std::string& filename) const;
     
     /// GPU buffer management (public for testing and initialization)
-    void sync_to_gpu();              // Update GPU after CPU-side modifications (e.g., after initialization)
-    void sync_from_gpu();            // Update CPU copy for I/O (data stays on GPU)
+    void sync_to_gpu();                 // Update GPU after CPU-side modifications (e.g., after initialization)
+    void sync_from_gpu();               // Update CPU copy for I/O (data stays on GPU) - downloads all fields
+    void sync_solution_from_gpu();      // Sync only solution fields (u,v,p,nu_t) - use for diagnostics/I/O
+    void sync_transport_from_gpu();     // Sync transport fields (k,omega) only if needed - guards laminar runs
     
 private:
     const Mesh* mesh_;
@@ -131,6 +133,7 @@ private:
     ScalarField nu_eff_;         // Effective viscosity nu + nu_t
     VectorField conv_;           // Convective term
     VectorField diff_;           // Diffusive term
+    VectorField velocity_old_;   // Previous velocity for residual (GPU-resident when offload enabled)
     
     // Solvers
     PoissonSolver poisson_solver_;
@@ -180,6 +183,8 @@ private:
     double* velocity_v_ptr_ = nullptr;
     double* velocity_star_u_ptr_ = nullptr;
     double* velocity_star_v_ptr_ = nullptr;
+    double* velocity_old_u_ptr_ = nullptr;  // Device-resident old velocity for residual
+    double* velocity_old_v_ptr_ = nullptr;  // Device-resident old velocity for residual
     double* pressure_ptr_ = nullptr;
     double* pressure_corr_ptr_ = nullptr;
     double* nu_t_ptr_ = nullptr;

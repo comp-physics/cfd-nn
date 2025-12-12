@@ -26,6 +26,16 @@ public:
     /// Returns number of V-cycles performed
     int solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg);
     
+#ifdef USE_GPU_OFFLOAD
+    /// Device-resident solve: work directly on GPU pointers (no host staging)
+    /// @param rhs_device Device pointer to RHS array (size = Nx+2 * Ny+2)
+    /// @param p_device Device pointer to solution array (size = Nx+2 * Ny+2)
+    /// @param cfg Solver configuration
+    /// @return Number of V-cycles performed
+    /// @note Both arrays must already be on device with map(present:)
+    int solve_device(double* rhs_device, double* p_device, const PoissonConfig& cfg);
+#endif
+    
     /// Get final residual
     double residual() const { return residual_; }
     
