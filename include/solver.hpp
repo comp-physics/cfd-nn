@@ -135,6 +135,10 @@ private:
     VectorField diff_;           // Diffusive term
     VectorField velocity_old_;   // Previous velocity for residual (GPU-resident when offload enabled)
     
+    // Gradient scratch buffers for turbulence models (GPU-resident)
+    ScalarField dudx_, dudy_, dvdx_, dvdy_;
+    ScalarField wall_distance_;  // Precomputed wall distance field
+    
     // Solvers
     PoissonSolver poisson_solver_;
     MultigridPoissonSolver mg_poisson_solver_;
@@ -197,10 +201,24 @@ private:
     double* div_velocity_ptr_ = nullptr;
     double* k_ptr_ = nullptr;
     double* omega_ptr_ = nullptr;
+    
+    // Gradient scratch buffers (cell-centered, for turbulence models)
+    double* dudx_ptr_ = nullptr;
+    double* dudy_ptr_ = nullptr;
+    double* dvdx_ptr_ = nullptr;
+    double* dvdy_ptr_ = nullptr;
+    double* wall_distance_ptr_ = nullptr;
+    
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
     
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)
     void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
+    
+public:
+    /// Get device view for turbulence models (GPU-resident pointers)
+    /// Returns a view with pointers to solver-owned GPU data.
+    /// Only valid if gpu_ready_ == true.
+    TurbulenceDeviceView get_device_view() const;
 };
 
 } // namespace nncfd

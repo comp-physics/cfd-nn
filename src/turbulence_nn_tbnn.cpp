@@ -648,7 +648,9 @@ void TurbulenceNNTBNN::update(
     const ScalarField& k_in,
     const ScalarField& omega_in,
     ScalarField& nu_t,
-    TensorField* tau_ij) {
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view) {
+    (void)device_view;  // Not yet implemented for NN-TBNN
     
     TIMED_SCOPE("nn_tbnn_update");
     

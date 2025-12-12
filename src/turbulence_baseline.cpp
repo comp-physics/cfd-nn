@@ -4,6 +4,8 @@
 #include "turbulence_nn_tbnn.hpp"
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
+#include "gpu_kernels.hpp"
+#include "features.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -173,20 +175,134 @@ void MixingLengthModel::update(
     const ScalarField& k,
     const ScalarField& omega,
     ScalarField& nu_t,
-    TensorField* tau_ij) {
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view) {
     
     (void)k;
     (void)omega;
     (void)tau_ij;
     
-    // Compute velocity gradients
-    if (dudx_.data().empty()) {
-        dudx_ = ScalarField(mesh);
-        dudy_ = ScalarField(mesh);
-        dvdx_ = ScalarField(mesh);
-        dvdy_ = ScalarField(mesh);
-    }
+    // PHASE 1 GPU OPTIMIZATION:
+    // If device_view is provided and valid, use GPU path with MAC gradient kernel
+    // Otherwise fall back to CPU path
     
+#ifdef USE_GPU_OFFLOAD
+    if (device_view && device_view->is_valid()) {
+        // ==================================================================
+        // GPU PATH: Use solver-owned device buffers and MAC gradient kernel
+        // ==================================================================
+        
+        // First, estimate u_tau from wall gradient (CPU side, once per step)
+        double u_tau = 0.0;
+        {
+            int j = mesh.j_begin();
+            // Compute wall shear from velocity at first interior point
+            // For staggered grid: u is at x-faces, so u(i,j) is at y=0 boundary
+            double dudy_wall = 0.0;
+            int count = 0;
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u_wall = velocity.u(i, j);
+                double u_next = velocity.u(i, j+1);
+                dudy_wall += std::abs((u_next - u_wall) / mesh.dy);
+                ++count;
+            }
+            dudy_wall /= count;
+            double tau_w = nu_ * dudy_wall;
+            u_tau = std::sqrt(tau_w);
+        }
+        u_tau = std::max(u_tau, 1e-10);
+        
+        // Compute mixing length eddy viscosity on GPU
+        const int Nx = device_view->Nx;
+        const int Ny = device_view->Ny;
+        const int Ng = device_view->Ng;
+        
+        // Calculate array sizes for map(present:...) clauses
+        const int u_total_size = device_view->u_stride * (Ny + 2*Ng);
+        const int v_total_size = device_view->v_stride * (Ny + 2*Ng + 1);
+        const int cell_total_size = device_view->cell_stride * (Ny + 2*Ng);
+        
+        // Compute gradients on GPU using MAC-aware kernel
+        gpu_kernels::compute_gradients_from_mac_gpu(
+            device_view->u_face,
+            device_view->v_face,
+            device_view->dudx,
+            device_view->dudy,
+            device_view->dvdx,
+            device_view->dvdy,
+            Nx, Ny, Ng,
+            device_view->dx,
+            device_view->dy,
+            device_view->u_stride,
+            device_view->v_stride,
+            device_view->cell_stride,
+            u_total_size,
+            v_total_size,
+            cell_total_size
+        );
+        const int stride = device_view->cell_stride;
+        const int n_cells = Nx * Ny;
+        
+        // Copy member variables to local scope (NVHPC workaround)
+        const double nu_local = nu_;
+        const double kappa_local = kappa_;
+        const double A_plus_local = A_plus_;
+        const double delta_local = delta_;
+        
+        // Get device pointers (already on GPU via device_view)
+        double* dudx_ptr = device_view->dudx;
+        double* dudy_ptr = device_view->dudy;
+        double* dvdx_ptr = device_view->dvdx;
+        double* dvdy_ptr = device_view->dvdy;
+        double* nu_t_ptr = device_view->nu_t;
+        double* wall_dist_ptr = device_view->wall_distance;
+        
+        // GPU kernel: compute mixing length eddy viscosity
+        // Use map(present:...) since these are solver-mapped host pointers
+        #pragma omp target teams distribute parallel for \
+            map(present: dudx_ptr[0:cell_total_size], dudy_ptr[0:cell_total_size], \
+                         dvdx_ptr[0:cell_total_size], dvdy_ptr[0:cell_total_size], \
+                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int i = idx % Nx + Ng;  // interior i (add ghost offset)
+            const int j = idx / Nx + Ng;  // interior j (add ghost offset)
+            const int cell_idx = j * stride + i;
+            
+            // Get wall distance
+            const double y_wall = wall_dist_ptr[cell_idx];
+            
+            // Compute strain rate magnitude
+            const double Sxx = dudx_ptr[cell_idx];
+            const double Syy = dvdy_ptr[cell_idx];
+            const double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
+            const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            
+            // y+ and van Driest damping
+            const double y_plus = y_wall * u_tau / nu_local;
+            const double damping = 1.0 - exp(-y_plus / A_plus_local);
+            
+            // Mixing length (capped at delta/2)
+            double l_mix = kappa_local * y_wall * damping;
+            if (l_mix > 0.5 * delta_local) {
+                l_mix = 0.5 * delta_local;
+            }
+            
+            // Eddy viscosity
+            nu_t_ptr[cell_idx] = l_mix * l_mix * S_mag;
+        }
+        
+        // Done! nu_t is now on GPU, will be synced by solver when needed
+        return;
+    }
+#else
+    (void)device_view;  // Unused in CPU-only build
+#endif
+    
+    // ==================================================================
+    // CPU PATH: Traditional gradient computation and loop
+    // ==================================================================
+    
+    // Compute velocity gradients on CPU
     compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Mixing length model with van Driest damping:
@@ -210,74 +326,7 @@ void MixingLengthModel::update(
     
     u_tau = std::max(u_tau, 1e-10);  // Avoid division by zero
 
-    [[maybe_unused]] const int Nx = mesh.Nx;
-    [[maybe_unused]] const int Ny = mesh.Ny;
-    [[maybe_unused]] const int stride = mesh.total_Nx();
-    [[maybe_unused]] const int total_cells = mesh.total_cells();
-
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: use persistent mapping (NO map(present:) or map(to:))
-    if (gpu_ready_) {
-        const int n_cells = Nx * Ny;
-
-        // Copy member variables to local scope (NVHPC workaround)
-        const double nu_local = nu_;
-        const double kappa_local = kappa_;
-        const double A_plus_local = A_plus_;
-        const double delta_local = delta_;
-
-        // Get raw pointers to persistent GPU buffers
-        double* dudx_ptr = dudx_.data().data();
-        double* dudy_ptr = dudy_.data().data();
-        double* dvdx_ptr = dvdx_.data().data();
-        double* dvdy_ptr = dvdy_.data().data();
-        double* nu_t_gpu_ptr = nu_t_gpu_flat_.data();
-        double* y_wall_ptr = y_wall_flat_.data();
-
-        // Upload gradient data to GPU
-        #pragma omp target update to(dudx_ptr[0:total_cells])
-        #pragma omp target update to(dudy_ptr[0:total_cells])
-        #pragma omp target update to(dvdx_ptr[0:total_cells])
-        #pragma omp target update to(dvdy_ptr[0:total_cells])
-
-        // GPU kernel: compute mixing length eddy viscosity
-        // All arrays already persistently mapped - NO map() clauses!
-        #pragma omp target teams distribute parallel for
-        for (int idx = 0; idx < n_cells; ++idx) {
-            const int i = idx % Nx + 1;  // interior i (skip ghost)
-            const int j = idx / Nx + 1;  // interior j (skip ghost)
-            const int cell_idx = j * stride + i;
-
-            // Use precomputed wall distance
-            const double y_wall = y_wall_ptr[cell_idx];
-
-            // Inline kernel computation
-            const double Sxx = dudx_ptr[cell_idx];
-            const double Syy = dvdy_ptr[cell_idx];
-            const double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
-            const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
-            const double y_plus = y_wall * u_tau / nu_local;
-            const double damping = 1.0 - exp(-y_plus / A_plus_local);
-            double l_mix = kappa_local * y_wall * damping;
-            if (l_mix > 0.5 * delta_local) {
-                l_mix = 0.5 * delta_local;
-            }
-            
-            nu_t_gpu_ptr[cell_idx] = l_mix * l_mix * S_mag;
-        }
-
-        // Download result
-        #pragma omp target update from(nu_t_gpu_ptr[0:total_cells])
-
-        // Copy back to provided nu_t field
-        std::copy(nu_t_gpu_flat_.begin(), nu_t_gpu_flat_.end(), nu_t.data().begin());
-
-        return;
-    }
-#endif
-
-    // CPU path - MUST match GPU path exactly for consistency
+    // CPU path
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double y_wall = mesh.wall_distance(i, j);
@@ -310,11 +359,13 @@ void AlgebraicKOmegaModel::update(
     const ScalarField& k,
     const ScalarField& omega,
     ScalarField& nu_t,
-    TensorField* tau_ij) {
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view) {
     
     (void)k;
     (void)omega;
     (void)tau_ij;
+    (void)device_view;  // Not yet implemented for this model
     
     // Algebraic model that estimates k and omega from mean flow
     // Based on equilibrium assumptions

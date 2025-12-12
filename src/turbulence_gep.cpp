@@ -206,8 +206,10 @@ void TurbulenceGEP::update(const Mesh& mesh,
                            const ScalarField& k,
                            const ScalarField& omega,
                            ScalarField& nu_t,
-                           TensorField* tau_ij) {
+                           TensorField* tau_ij,
+                           const TurbulenceDeviceView* device_view) {
     (void)tau_ij;  // GEP provides eddy viscosity only, not explicit Reynolds stresses
+    (void)device_view;  // Not yet implemented for GEP
     TIMED_SCOPE("gep_update");
     
     ensure_initialized(mesh);

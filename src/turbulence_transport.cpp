@@ -1,4 +1,5 @@
 #include "turbulence_transport.hpp"
+#include "gpu_kernels.hpp"
 #include "timing.hpp"
 #include <cmath>
 #include <algorithm>
@@ -913,15 +914,76 @@ void SSTKOmegaTransport::update(
     const ScalarField& k,
     const ScalarField& omega,
     ScalarField& nu_t,
-    TensorField* tau_ij)
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view)
 {
     ensure_initialized(mesh);
     
-    // Use the closure to compute nu_t
+#ifdef USE_GPU_OFFLOAD
+    // GPU path using device_view (Phase 2 for closure, Phase 4 for full transport)
+    if (device_view && device_view->is_valid()) {
+        // Check if we have an SST-type closure or default SST closure
+        bool use_sst_closure = (closure_ && 
+                                (closure_->name() == "SST" || 
+                                 dynamic_cast<SSTClosure*>(closure_.get()) != nullptr));
+        
+        if (use_sst_closure || !closure_) {
+            // Direct SST closure on GPU
+            const int Nx = mesh.Nx;
+            const int Ny = mesh.Ny;
+            const int Ng = mesh.Nghost;
+            const int stride = mesh.total_Nx();
+            const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+            
+            // CRITICAL: Compute gradients first (SST closure needs them)
+            gpu_kernels::compute_gradients_from_mac_gpu(
+                device_view->u_face,
+                device_view->v_face,
+                device_view->dudx,
+                device_view->dudy,
+                device_view->dvdx,
+                device_view->dvdy,
+                Nx, Ny, Ng,
+                device_view->dx, device_view->dy,
+                device_view->u_stride,
+                device_view->v_stride,
+                stride,
+                velocity.u_total_size(),
+                velocity.v_total_size(),
+                total_size
+            );
+            
+            // Now compute SST closure using gradients
+            gpu_kernels::compute_sst_closure_gpu(
+                device_view->k,              // Already on device
+                device_view->omega,          // Already on device
+                device_view->dudx,           // Gradients just computed
+                device_view->dudy,
+                device_view->dvdx,
+                device_view->dvdy,
+                device_view->wall_distance,  // Wall distance on device (full field with ghosts)
+                device_view->nu_t,           // Output on device
+                Nx, Ny, Ng, stride, total_size, total_size,  // Last arg: wall_dist_size = total_size (not interior!)
+                nu_,                         // Laminar viscosity
+                constants_.a1,               // SST constant (0.31)
+                constants_.beta_star,        // SST constant (0.09)
+                constants_.k_min, constants_.omega_min,
+                1000.0                       // nu_t_max multiplier
+            );
+            
+            // No CPU sync needed - nu_t stays on device for solver
+            return;
+        }
+    }
+#else
+    (void)device_view;
+#endif
+    
+    // CPU path or custom closure
     if (closure_) {
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
-        // Fallback: simple k/omega
+        // Fallback: simple k/omega on CPU
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double k_loc = std::max(constants_.k_min, k(i, j));
@@ -1047,11 +1109,46 @@ void KOmegaTransport::update(
     const ScalarField& k,
     const ScalarField& omega,
     ScalarField& nu_t,
-    TensorField* tau_ij)
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view)
 {
+#ifdef USE_GPU_OFFLOAD
+    // GPU path using device_view (Phase 2)
+    // Run GPU closure for default Boussinesq or when no custom closure is set
+    bool use_gpu_boussinesq = (!closure_ || 
+                               (closure_ && closure_->name() == "Boussinesq") ||
+                               dynamic_cast<BoussinesqClosure*>(closure_.get()) != nullptr);
+    
+    if (device_view && device_view->is_valid() && use_gpu_boussinesq) {
+        // Direct Boussinesq closure on GPU
+        const int Nx = mesh.Nx;
+        const int Ny = mesh.Ny;
+        const int Ng = mesh.Nghost;
+        const int stride = mesh.total_Nx();
+        const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+        
+        gpu_kernels::compute_boussinesq_closure_gpu(
+            device_view->k,           // Already on device
+            device_view->omega,       // Already on device
+            device_view->nu_t,        // Output on device
+            Nx, Ny, Ng, stride, total_size,
+            nu_,                      // Laminar viscosity
+            constants_.k_min, constants_.omega_min,
+            1000.0                    // nu_t_max multiplier
+        );
+        
+        // No CPU sync needed - nu_t stays on device for solver
+        return;
+    }
+#else
+    (void)device_view;
+#endif
+    
+    // CPU path or custom closure
     if (closure_) {
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
+        // Fallback: CPU Boussinesq closure
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double k_loc = std::max(constants_.k_min, k(i, j));

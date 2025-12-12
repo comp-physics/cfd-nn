@@ -40,7 +40,8 @@ public:
                 const ScalarField& k,
                 const ScalarField& omega,
                 ScalarField& nu_t,
-                TensorField* tau_ij = nullptr) override;
+                TensorField* tau_ij = nullptr,
+                const TurbulenceDeviceView* device_view = nullptr) override;
     
     bool provides_reynolds_stresses() const override { return false; }
     

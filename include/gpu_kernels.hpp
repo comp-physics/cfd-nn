@@ -25,6 +25,37 @@ void compute_velocity_gradients_gpu(
 );
 
 // ============================================================================
+// GPU Kernel: Compute cell-centered gradients from staggered MAC grid
+// ============================================================================
+// This kernel matches VectorField's staggered layout:
+//   - u stored at x-faces: size (Ny+2Ng) × (Nx+2Ng+1)
+//   - v stored at y-faces: size (Ny+2Ng+1) × (Nx+2Ng)
+//   - Outputs are cell-centered: size (Ny+2Ng) × (Nx+2Ng)
+//
+// Uses central differences matching CPU compute_velocity_gradient():
+//   dudx(i,j) = (u(i+1,j) - u(i-1,j)) / (2*dx)
+//   dudy(i,j) = (u(i,j+1) - u(i,j-1)) / (2*dy)
+//   etc.
+// ============================================================================
+void compute_gradients_from_mac_gpu(
+    const double* u_face,        // u at x-faces: (Ny+2Ng) × (Nx+2Ng+1)
+    const double* v_face,        // v at y-faces: (Ny+2Ng+1) × (Nx+2Ng)
+    double* dudx_cell,           // Output: cell-centered (Ny+2Ng) × (Nx+2Ng)
+    double* dudy_cell,
+    double* dvdx_cell,
+    double* dvdy_cell,
+    int Nx, int Ny,              // Interior dimensions
+    int Ng,                      // Ghost cells
+    double dx, double dy,        // Grid spacing
+    int u_stride,                // u row stride = Nx+2Ng+1
+    int v_stride,                // v row stride = Nx+2Ng
+    int cell_stride,             // cell row stride = Nx+2Ng
+    int u_total_size,            // Total u array size
+    int v_total_size,            // Total v array size
+    int cell_total_size          // Total cell array size
+);
+
+// ============================================================================
 // GPU Kernel: Compute TBNN features and tensor basis for all cells
 // ============================================================================
 // Input: gradients (dudx, dudy, dvdx, dvdy), k, omega, wall_distance
@@ -86,6 +117,78 @@ void tbnn_full_pipeline_gpu(
     // Mesh parameters
     int Nx, int Ny, double dx, double dy,
     double nu, double delta
+);
+
+// ============================================================================
+// GPU Kernel: Boussinesq k-omega closure (ν_t = k/ω with limiters)
+// ============================================================================
+// Computes eddy viscosity from k and omega fields with realizability constraints.
+// This is the simplest closure for k-ω models.
+// ============================================================================
+void compute_boussinesq_closure_gpu(
+    const double* k,                    // TKE field (cell-centered, with ghost cells)
+    const double* omega,                // Specific dissipation rate (cell-centered, with ghost cells)
+    double* nu_t,                       // Output: eddy viscosity (cell-centered, with ghost cells)
+    int Nx, int Ny,                     // Interior dimensions
+    int Ng,                             // Ghost cells
+    int stride,                         // Row stride = Nx+2Ng
+    int total_size,                     // Total array size
+    double nu,                          // Laminar viscosity
+    double k_min, double omega_min,     // Minimum values for clipping
+    double nu_t_max                     // Maximum eddy viscosity (relative to nu)
+);
+
+// ============================================================================
+// GPU Kernel: SST k-omega closure (ν_t = a₁k / max(a₁ω, SF₂))
+// ============================================================================
+// Computes SST eddy viscosity with strain-rate limiter and F2 blending function.
+// More sophisticated than Boussinesq for separated flows.
+// ============================================================================
+void compute_sst_closure_gpu(
+    const double* k,                    // TKE field (cell-centered, with ghost cells)
+    const double* omega,                // Specific dissipation rate (cell-centered, with ghost cells)
+    const double* dudx,                 // Velocity gradients (cell-centered, with ghost cells)
+    const double* dudy,
+    const double* dvdx,
+    const double* dvdy,
+    const double* wall_distance,        // Wall distance (cell-centered, NO ghost cells)
+    double* nu_t,                       // Output: eddy viscosity (cell-centered, with ghost cells)
+    int Nx, int Ny,                     // Interior dimensions
+    int Ng,                             // Ghost cells
+    int stride,                         // Row stride = Nx+2Ng
+    int total_size,                     // Total array size for k/omega/nu_t/gradients
+    int wall_dist_size,                 // Size of wall_distance array (interior only)
+    double nu,                          // Laminar viscosity
+    double a1,                          // SST constant (0.31)
+    double beta_star,                   // SST constant (0.09)
+    double k_min, double omega_min,     // Minimum values for clipping
+    double nu_t_max                     // Maximum eddy viscosity (relative to nu)
+);
+
+// ============================================================================
+// GPU Kernel: k-omega transport step (single timestep advance)
+// ============================================================================
+// Advances k and omega fields by one timestep using explicit Euler.
+// Computes production, advection, diffusion, and source/sink terms.
+// ============================================================================
+void komega_transport_step_gpu(
+    // Current fields (with ghost cells)
+    const double* u, const double* v,   // Velocity
+    double* k, double* omega,           // k and omega (modified in-place)
+    const double* nu_t_prev,            // Previous eddy viscosity (interior only)
+    // Mesh parameters
+    int Nx, int Ny, int Ng,             // Interior dims and ghost cells
+    int stride,                         // Row stride = Nx+2Ng
+    int u_stride, int v_stride,         // Strides for staggered velocity
+    int total_size,                     // Total size for k/omega (with ghosts)
+    int vel_u_size, int vel_v_size,     // Total sizes for u/v
+    int interior_size,                  // Interior size for nu_t_prev
+    double dx, double dy, double dt,    // Grid spacing and timestep
+    // Model constants
+    double nu, double sigma_k, double sigma_omega,
+    double beta, double beta_star, double alpha,
+    double k_min, double k_max,
+    double omega_min, double omega_max
 );
 
 } // namespace gpu_kernels
