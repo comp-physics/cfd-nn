@@ -58,6 +58,15 @@ void compute_all_velocity_gradients(
     ScalarField& dvdx, ScalarField& dvdy
 );
 
+/// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
+/// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
+void compute_gradients_from_mac_cpu(
+    const Mesh& mesh,
+    const VectorField& velocity,
+    ScalarField& dudx, ScalarField& dudy,
+    ScalarField& dvdx, ScalarField& dvdy
+);
+
 /// Feature computation for scalar eddy viscosity NN
 /// Standard features include:
 ///   0: normalized strain rate magnitude (S * delta / u_ref)

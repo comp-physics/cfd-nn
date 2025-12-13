@@ -40,6 +40,38 @@ void compute_all_velocity_gradients(
     }
 }
 
+/// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
+/// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
+void compute_gradients_from_mac_cpu(
+    const Mesh& mesh,
+    const VectorField& velocity,
+    ScalarField& dudx, ScalarField& dudy,
+    ScalarField& dvdx, ScalarField& dvdy) {
+    
+    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+    
+    // Loop over interior cells
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // For gradients at cell (i,j), sample neighboring face values
+            // This matches the GPU kernel's indexing exactly
+            
+            // dudx: central difference of u at x-faces
+            dudx(i, j) = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+            
+            // dudy: central difference of u at x-faces in y-direction
+            dudy(i, j) = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+            
+            // dvdx: central difference of v at y-faces in x-direction
+            dvdx(i, j) = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+            
+            // dvdy: central difference of v at y-faces
+            dvdy(i, j) = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
+        }
+    }
+}
+
 Features compute_features_scalar_nut(
     const Mesh& mesh,
     const VectorField& velocity,

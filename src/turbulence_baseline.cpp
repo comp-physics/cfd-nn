@@ -299,11 +299,20 @@ void MixingLengthModel::update(
 #endif
     
     // ==================================================================
-    // CPU PATH: Traditional gradient computation and loop
+    // CPU PATH: MAC-aware gradient computation (matches GPU)
     // ==================================================================
     
-    // Compute velocity gradients on CPU
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    // Initialize gradient fields if needed (lazy initialization)
+    if (dudx_.data().empty()) {
+        dudx_ = ScalarField(mesh);
+        dudy_ = ScalarField(mesh);
+        dvdx_ = ScalarField(mesh);
+        dvdy_ = ScalarField(mesh);
+    }
+    
+    // Compute velocity gradients on CPU using MAC-aware function
+    // This matches the GPU kernel's indexing for consistent results
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Mixing length model with van Driest damping:
     // l_m = kappa * y * (1 - exp(-y+/A+))
