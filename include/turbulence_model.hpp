@@ -94,13 +94,15 @@ public:
     /// @param k          [in/out] Turbulent kinetic energy
     /// @param omega      [in/out] Specific dissipation rate
     /// @param nu_t_prev  Eddy viscosity from previous step (for diffusion coefficients)
+    /// @param device_view [optional] Device view for GPU-resident data (nullptr = use CPU path)
     virtual void advance_turbulence(
         const Mesh& mesh,
         const VectorField& velocity,
         double dt,
         ScalarField& k,
         ScalarField& omega,
-        const ScalarField& nu_t_prev
+        const ScalarField& nu_t_prev,
+        const TurbulenceDeviceView* device_view = nullptr
     ) {
         (void)mesh;
         (void)velocity;
@@ -108,6 +110,7 @@ public:
         (void)k;
         (void)omega;
         (void)nu_t_prev;
+        (void)device_view;
     }
     
     /// Initialize any model-specific fields (e.g., k, omega for transport models)

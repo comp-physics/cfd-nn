@@ -308,7 +308,8 @@ public:
         double dt,
         ScalarField& k,
         ScalarField& omega,
-        const ScalarField& nu_t_prev
+        const ScalarField& nu_t_prev,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     void update(

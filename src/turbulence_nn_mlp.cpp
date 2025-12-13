@@ -39,7 +39,7 @@ void TurbulenceNNMLP::upload_to_gpu() {
 
 void TurbulenceNNMLP::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu_available()) {
+    if (omp_get_num_devices() == 0) {
         gpu_ready_ = false;
         return;
     }

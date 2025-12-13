@@ -175,14 +175,13 @@ void komega_transport_step_gpu(
     // Current fields (with ghost cells)
     const double* u, const double* v,   // Velocity
     double* k, double* omega,           // k and omega (modified in-place)
-    const double* nu_t_prev,            // Previous eddy viscosity (interior only)
+    const double* nu_t_prev,            // Previous eddy viscosity (cell-centered, with ghost cells)
     // Mesh parameters
     int Nx, int Ny, int Ng,             // Interior dims and ghost cells
     int stride,                         // Row stride = Nx+2Ng
     int u_stride, int v_stride,         // Strides for staggered velocity
-    int total_size,                     // Total size for k/omega (with ghosts)
+    int total_size,                     // Total size for k/omega/nu_t (with ghosts)
     int vel_u_size, int vel_v_size,     // Total sizes for u/v
-    int interior_size,                  // Interior size for nu_t_prev
     double dx, double dy, double dt,    // Grid spacing and timestep
     // Model constants
     double nu, double sigma_k, double sigma_omega,

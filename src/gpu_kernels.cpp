@@ -740,7 +740,6 @@ void komega_transport_step_gpu(
     int u_stride, int v_stride,
     int total_size,
     int vel_u_size, int vel_v_size,
-    int interior_size,
     double dx, double dy, double dt,
     double nu, double sigma_k, double sigma_omega,
     double beta, double beta_star, double alpha,
@@ -758,17 +757,17 @@ void komega_transport_step_gpu(
     #pragma omp target teams distribute parallel for \
         map(present: u[0:vel_u_size], v[0:vel_v_size], \
                      k[0:total_size], omega[0:total_size], \
-                     nu_t_prev[0:interior_size])
+                     nu_t_prev[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {
         // Convert flat index to (i,j) including ghost cells
         const int i = idx % Nx + Ng;
         const int j = idx / Nx + Ng;
         const int cell_idx = j * stride + i;
         
-        // Read current values
+        // Read current values (nu_t_prev now uses same ghost+stride layout as k/omega)
         double k_val = k[cell_idx];
         double omega_val = omega[cell_idx];
-        double nu_t_val = nu_t_prev[idx];  // Interior only, no ghosts
+        double nu_t_val = nu_t_prev[cell_idx];  // Now uses ghost+stride indexing
         
         // Clamp to valid range
         k_val = (k_val > k_min) ? k_val : k_min;
@@ -864,7 +863,7 @@ void komega_transport_step_gpu(
     (void)u; (void)v; (void)k; (void)omega; (void)nu_t_prev;
     (void)Nx; (void)Ny; (void)Ng; (void)stride;
     (void)u_stride; (void)v_stride;
-    (void)total_size; (void)vel_u_size; (void)vel_v_size; (void)interior_size;
+    (void)total_size; (void)vel_u_size; (void)vel_v_size;
     (void)dx; (void)dy; (void)dt;
     (void)nu; (void)sigma_k; (void)sigma_omega;
     (void)beta; (void)beta_star; (void)alpha;

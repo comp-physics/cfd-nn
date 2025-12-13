@@ -1404,21 +1404,34 @@ double RANSSolver::step() {
     if (turb_model_ && turb_model_->uses_transport_equations()) {
         TIMED_SCOPE("turbulence_transport");
         NVTX_PUSH("turbulence_transport");
+        
+        // Get device view for GPU-accelerated transport
+        const TurbulenceDeviceView* device_view_ptr = nullptr;
+#ifdef USE_GPU_OFFLOAD
+        TurbulenceDeviceView device_view;
+        if (gpu_ready_) {
+            device_view = get_device_view();
+            if (device_view.is_valid()) {
+                device_view_ptr = &device_view;
+            }
+        }
+#endif
+        
         turb_model_->advance_turbulence(
             *mesh_,
             velocity_,
             current_dt_,
             k_,          // Updated in-place
             omega_,      // Updated in-place
-            nu_t_        // Previous step's nu_t for diffusion coefficients
+            nu_t_,       // Previous step's nu_t for diffusion coefficients
+            device_view_ptr
         );
         NVTX_POP();
         
 #ifdef USE_GPU_OFFLOAD
         // CRITICAL FIX: Sync k and omega to GPU after transport equation update
-        // advance_turbulence() may update k/omega on CPU, so we need to sync to GPU
-        // before the next turbulence update() call which expects GPU-resident data
-        if (gpu_ready_) {
+        // ONLY if model didn't use GPU path (models operating on device_view don't need this)
+        if (gpu_ready_ && !turb_model_->is_gpu_ready()) {
             #pragma omp target update to(k_ptr_[0:field_total_size_])
             #pragma omp target update to(omega_ptr_[0:field_total_size_])
         }

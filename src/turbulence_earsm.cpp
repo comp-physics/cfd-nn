@@ -569,11 +569,12 @@ void SSTWithEARSM::advance_turbulence(
     double dt,
     ScalarField& k,
     ScalarField& omega,
-    const ScalarField& nu_t_prev)
+    const ScalarField& nu_t_prev,
+    const TurbulenceDeviceView* device_view)
 {
     // Use SST transport for k, ω evolution
     transport_.set_nu(nu_);
-    transport_.advance_turbulence(mesh, velocity, dt, k, omega, nu_t_prev);
+    transport_.advance_turbulence(mesh, velocity, dt, k, omega, nu_t_prev, device_view);
 }
 
 void SSTWithEARSM::update(
