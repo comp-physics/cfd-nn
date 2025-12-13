@@ -138,7 +138,7 @@ jobs:
         
         chmod +x scripts/run_gpu_ci_test.sh
         chmod +x .github/scripts/*.sh
-        
+    
         rm -rf build_ci_gpu
         mkdir -p build_ci_gpu
         cd build_ci_gpu
@@ -152,7 +152,7 @@ jobs:
         echo "=== Building ==="
         make -j8
         mkdir -p output
-        
+    
         echo ""
         echo "==================================================================="
         echo "  Comprehensive GPU tests"
@@ -199,7 +199,7 @@ jobs:
             echo \"   Testing with Baseline model\" && \
             ./periodic_hills --Nx 64 --Ny 48 --nu 0.001 --max_iter 200 --model baseline --num_snapshots 0'" \
           20
-        
+    
         echo ""
         echo "==================================================================="
         echo "  CPU/GPU Consistency Validation (Critical)"

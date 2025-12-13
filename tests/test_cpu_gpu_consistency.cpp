@@ -132,6 +132,13 @@ void test_mixing_length_consistency() {
         std::cout << "SKIPPED (no GPU devices)\n";
         return;
     }
+    
+    // Force offload to fail if no GPU available
+    omp_set_default_device(0);
+    if (omp_get_num_devices() == 0) {
+        std::cout << "SKIPPED (no GPU devices after setting default)\n";
+        return;
+    }
 #else
     std::cout << "SKIPPED (GPU offload not enabled)\n";
     return;
@@ -164,19 +171,103 @@ void test_mixing_length_consistency() {
         // Verify field addresses are different
         assert(nu_t_gpu.data().data() != nu_t_cpu.data().data());
         
-        // GPU path - CRITICAL: initialize GPU buffers so update() uses GPU
-        MixingLengthModel model_gpu;
-        model_gpu.set_nu(1.0 / 10000.0);
-        model_gpu.set_delta(0.5);
-        model_gpu.initialize_gpu_buffers(mesh);
+        // GPU path - Use a simple stub solver to provide device view
+        // This ensures we're testing the ACTUAL refactored GPU path (device_view != nullptr)
         
-        // Hard check: GPU must be ready (otherwise this is CPU-vs-CPU!)
-        if (!model_gpu.is_gpu_ready()) {
-            std::cout << "    FAILED: GPU buffers not ready (would be CPU-vs-CPU test!)\n";
+#ifdef USE_GPU_OFFLOAD
+        // Manually create device view for this test
+        // Allocate and map arrays to GPU
+        const int total_cells = mesh.total_cells();
+        const int u_total = velocity.u_total_size();
+        const int v_total = velocity.v_total_size();
+        
+        double* u_ptr = velocity.u_data().data();
+        double* v_ptr = velocity.v_data().data();
+        double* nu_t_ptr = nu_t_gpu.data().data();
+        
+        // Gradient scratch buffers
+        std::vector<double> dudx_data(total_cells, 0.0);
+        std::vector<double> dudy_data(total_cells, 0.0);
+        std::vector<double> dvdx_data(total_cells, 0.0);
+        std::vector<double> dvdy_data(total_cells, 0.0);
+        std::vector<double> wall_dist_data(total_cells, 0.0);
+        
+        // Precompute wall distance
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                int idx = mesh.index(i, j);
+                wall_dist_data[idx] = mesh.wall_distance(i, j);
+            }
+        }
+        
+        double* dudx_ptr = dudx_data.data();
+        double* dudy_ptr = dudy_data.data();
+        double* dvdx_ptr = dvdx_data.data();
+        double* dvdy_ptr = dvdy_data.data();
+        double* wall_dist_ptr = wall_dist_data.data();
+        
+        // Map to GPU
+        #pragma omp target enter data map(to: u_ptr[0:u_total])
+        #pragma omp target enter data map(to: v_ptr[0:v_total])
+        #pragma omp target enter data map(alloc: nu_t_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dudx_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dudy_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dvdx_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dvdy_ptr[0:total_cells])
+        #pragma omp target enter data map(to: wall_dist_ptr[0:total_cells])
+        
+        // Create device view
+        TurbulenceDeviceView device_view;
+        device_view.u_face = u_ptr;
+        device_view.v_face = v_ptr;
+        device_view.u_stride = velocity.u_stride();
+        device_view.v_stride = velocity.v_stride();
+        device_view.nu_t = nu_t_ptr;
+        device_view.cell_stride = mesh.total_Nx();
+        device_view.dudx = dudx_ptr;
+        device_view.dudy = dudy_ptr;
+        device_view.dvdx = dvdx_ptr;
+        device_view.dvdy = dvdy_ptr;
+        device_view.wall_distance = wall_dist_ptr;
+        device_view.Nx = mesh.Nx;
+        device_view.Ny = mesh.Ny;
+        device_view.Ng = mesh.Nghost;
+        device_view.dx = mesh.dx;
+        device_view.dy = mesh.dy;
+        device_view.delta = 0.5;
+        
+        // Verify device view is valid
+        if (!device_view.is_valid()) {
+            std::cout << "    FAILED: Device view is not valid!\n";
             assert(false);
         }
         
+        // GPU path - Pass device view to force GPU execution
+        MixingLengthModel model_gpu;
+        model_gpu.set_nu(1.0 / 10000.0);
+        model_gpu.set_delta(0.5);
+        
+        model_gpu.update(mesh, velocity, k, omega, nu_t_gpu, nullptr, &device_view);
+        
+        // Download result from GPU
+        #pragma omp target update from(nu_t_ptr[0:total_cells])
+        
+        // Cleanup GPU buffers
+        #pragma omp target exit data map(delete: u_ptr[0:u_total])
+        #pragma omp target exit data map(delete: v_ptr[0:v_total])
+        #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dudx_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dudy_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dvdx_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dvdy_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: wall_dist_ptr[0:total_cells])
+#else
+        // CPU fallback (shouldn't reach here due to earlier guards)
+        MixingLengthModel model_gpu;
+        model_gpu.set_nu(1.0 / 10000.0);
+        model_gpu.set_delta(0.5);
         model_gpu.update(mesh, velocity, k, omega, nu_t_gpu);
+#endif
         
         // CPU reference (explicit reimplementation)
         ScalarField dudx(mesh), dudy(mesh), dvdx(mesh), dvdy(mesh);

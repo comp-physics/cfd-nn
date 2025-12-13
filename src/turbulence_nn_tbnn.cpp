@@ -47,7 +47,7 @@ void TurbulenceNNTBNN::upload_to_gpu() {
 
 void TurbulenceNNTBNN::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu_available()) {
+    if (omp_get_num_devices() == 0) {
         gpu_ready_ = false;
         full_gpu_ready_ = false;
         return;
@@ -648,7 +648,9 @@ void TurbulenceNNTBNN::update(
     const ScalarField& k_in,
     const ScalarField& omega_in,
     ScalarField& nu_t,
-    TensorField* tau_ij) {
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view) {
+    (void)device_view;  // Not yet implemented for NN-TBNN
     
     TIMED_SCOPE("nn_tbnn_update");
     

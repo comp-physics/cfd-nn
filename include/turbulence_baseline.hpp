@@ -24,7 +24,8 @@ public:
         const ScalarField& k,
         const ScalarField& omega,
         ScalarField& nu_t,
-        TensorField* tau_ij = nullptr
+        TensorField* tau_ij = nullptr,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     void initialize_gpu_buffers(const Mesh& mesh) override;
@@ -75,7 +76,8 @@ public:
         const ScalarField& k,
         const ScalarField& omega,
         ScalarField& nu_t,
-        TensorField* tau_ij = nullptr
+        TensorField* tau_ij = nullptr,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     std::string name() const override { return "AlgebraicKOmega"; }
