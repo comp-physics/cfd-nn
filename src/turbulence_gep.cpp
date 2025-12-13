@@ -243,7 +243,6 @@ void TurbulenceGEP::update(const Mesh& mesh,
         const double kappa = 0.41;
         const double A_plus = 26.0;
         const double nu_val = nu_;
-        const double delta_val = delta_;
         const int variant_val = static_cast<int>(variant_);
         
         const double* dudx_ptr = device_view->dudx;

@@ -1,5 +1,6 @@
 #include "turbulence_earsm.hpp"
 #include "timing.hpp"
+#include "gpu_kernels.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -200,17 +201,7 @@ void EARSMClosure::compute_nu_t(
     
     ensure_initialized(mesh);
     
-#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_EARSM
-    // TEMPORARILY DISABLED: GPU path for EARSM has "partially present" memory issues
-    // Pointer aliasing causes conflicts with already-mapped GPU buffers
-    // TODO: Debug and re-enable GPU path for EARSM models
-    if (gpu_ready_ && omp_get_num_devices() > 0) {
-        compute_nu_t_gpu(mesh, velocity, k, omega, nu_t, tau_ij);
-        return;
-    }
-#endif
-    
-    // CPU implementation
+    // CPU implementation (reads from host-side arrays)
     feature_computer_->set_reference(nu_, delta_, 1.0);
     feature_computer_->compute_tbnn_features(velocity, k, omega, features_, basis_);
     
@@ -276,91 +267,6 @@ void EARSMClosure::compute_nu_t(
         }
     }
 }
-
-#ifdef USE_GPU_OFFLOAD
-void EARSMClosure::compute_nu_t_gpu(
-    const Mesh& mesh,
-    const VectorField& velocity,
-    const ScalarField& k,
-    const ScalarField& omega,
-    ScalarField& nu_t,
-    TensorField* tau_ij)
-{
-    // For now, fall back to CPU for EARSM
-    // GPU implementation would need to encode compute_G as a GPU kernel
-    // This is model-specific, so we'd need virtual dispatch on GPU (complex)
-    
-    // Instead, compute on CPU
-    feature_computer_->set_reference(nu_, delta_, 1.0);
-    feature_computer_->compute_tbnn_features(velocity, k, omega, features_, basis_);
-    
-    const double C_mu = 0.09;
-    
-    int idx = 0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i, ++idx) {
-            double k_loc = std::max(1e-10, k(i, j));
-            double omega_loc = std::max(1e-10, omega(i, j));
-            double eps = C_mu * k_loc * omega_loc;
-            double tau = k_loc / std::max(eps, 1e-20);
-            
-            VelocityGradient grad = compute_velocity_gradient(mesh, velocity, i, j);
-            double S_mag = grad.S_mag();
-            double Omega_mag = grad.Omega_mag();
-            
-            double eta = tau * S_mag;
-            double zeta = tau * Omega_mag;
-            
-            std::array<double, TensorBasis::NUM_BASIS> G;
-            compute_G(eta, zeta, G);
-            
-            double b_xx, b_xy, b_yy;
-            TensorBasis::construct_anisotropy(G, basis_[idx], b_xx, b_xy, b_yy);
-            
-            if (tau_ij) {
-                double tau_xx, tau_xy, tau_yy;
-                TensorBasis::anisotropy_to_reynolds_stress(
-                    b_xx, b_xy, b_yy, k_loc, tau_xx, tau_xy, tau_yy);
-                tau_ij->xx(i, j) = tau_xx;
-                tau_ij->xy(i, j) = tau_xy;
-                tau_ij->yy(i, j) = tau_yy;
-            }
-            
-            double Sxy = grad.Sxy();
-            double nu_t_loc = 0.0;
-            
-            if (std::abs(Sxy) > 1e-10) {
-                nu_t_loc = std::abs(-b_xy * k_loc / Sxy);
-            } else if (S_mag > 1e-10) {
-                double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                nu_t_loc = k_loc * b_mag / S_mag;
-            }
-            
-            nu_t_loc = std::max(0.0, nu_t_loc);
-            nu_t_loc = std::min(nu_t_loc, 100.0 * nu_);
-            
-            if (!std::isfinite(nu_t_loc)) {
-                nu_t_loc = 0.0;
-            }
-            
-            nu_t(i, j) = nu_t_loc;
-        }
-    }
-}
-#else
-// No-op implementation when GPU offloading is disabled
-void EARSMClosure::compute_nu_t_gpu(
-    const Mesh& mesh,
-    const VectorField& velocity,
-    const ScalarField& k,
-    const ScalarField& omega,
-    ScalarField& nu_t,
-    TensorField* tau_ij)
-{
-    (void)mesh; (void)velocity; (void)k; (void)omega; (void)nu_t; (void)tau_ij;
-    // CPU path used instead
-}
-#endif
 
 // ============================================================================
 // Wallin-Johansson EARSM Implementation
@@ -563,6 +469,23 @@ void SSTWithEARSM::initialize(const Mesh& mesh, const VectorField& velocity) {
     }
 }
 
+void SSTWithEARSM::initialize_gpu_buffers(const Mesh& mesh) {
+    // Forward to transport model (which handles GPU-accelerated k/ω evolution)
+    transport_.initialize_gpu_buffers(mesh);
+}
+
+void SSTWithEARSM::cleanup_gpu_buffers() {
+    // Forward to transport model
+    transport_.cleanup_gpu_buffers();
+}
+
+bool SSTWithEARSM::is_gpu_ready() const {
+    // We're GPU-ready if our transport model is GPU-ready
+    // (The EARSM closure still runs on CPU, but that's fine - 
+    //  the critical part is that k/ω transport is on GPU)
+    return transport_.is_gpu_ready();
+}
+
 void SSTWithEARSM::advance_turbulence(
     const Mesh& mesh,
     const VectorField& velocity,
@@ -586,8 +509,77 @@ void SSTWithEARSM::update(
     TensorField* tau_ij,
     const TurbulenceDeviceView* device_view)
 {
-    (void)device_view;  // Not yet implemented for EARSM
-    // Use EARSM closure for ν_t computation
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: compute EARSM directly on device without touching host arrays
+    if (device_view && device_view->is_valid() && closure_ && omp_get_num_devices() > 0) {
+        const int Nx = device_view->Nx;
+        const int Ny = device_view->Ny;
+        const int Ng = device_view->Ng;
+        const int stride = device_view->cell_stride;
+        
+        // First compute gradients on GPU
+        gpu_kernels::compute_gradients_from_mac_gpu(
+            device_view->u_face,
+            device_view->v_face,
+            device_view->dudx,
+            device_view->dudy,
+            device_view->dvdx,
+            device_view->dvdy,
+            Nx, Ny, Ng,
+            device_view->dx, device_view->dy,
+            device_view->u_stride,
+            device_view->v_stride,
+            stride,
+            velocity.u_total_size(),
+            velocity.v_total_size(),
+            stride * (Ny + 2*Ng)
+        );
+        
+        // Determine which EARSM model
+        auto* wj_model = dynamic_cast<WallinJohanssonEARSM*>(closure_.get());
+        auto* gs_model = dynamic_cast<GatskiSpezialeEARSM*>(closure_.get());
+        auto* pope_model = dynamic_cast<PopeQuadraticEARSM*>(closure_.get());
+        
+        if (wj_model) {
+            earsm_kernels::compute_earsm_wj_full_gpu(
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                device_view->k, device_view->omega,
+                device_view->nu_t,
+                device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
+                Nx, Ny, Ng, stride,
+                nu_, wj_model->constants()
+            );
+        } else if (gs_model) {
+            earsm_kernels::compute_earsm_gs_full_gpu(
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                device_view->k, device_view->omega,
+                device_view->nu_t,
+                device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
+                Nx, Ny, Ng, stride,
+                nu_, gs_model->constants()
+            );
+        } else if (pope_model) {
+            earsm_kernels::compute_earsm_pope_full_gpu(
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                device_view->k, device_view->omega,
+                device_view->nu_t,
+                device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
+                Nx, Ny, Ng, stride,
+                nu_, 0.1, 0.1  // Pope C1, C2 constants - TODO: expose via pope_model
+            );
+        }
+        
+        // Done - nu_t and tau_ij are now computed on GPU, no CPU sync needed
+        return;
+    }
+#else
+    (void)device_view;
+#endif
+    
+    // CPU fallback: use EARSM closure for ν_t computation
     if (closure_) {
         closure_->set_nu(nu_);
         closure_->set_delta(delta_);
@@ -642,13 +634,16 @@ std::unique_ptr<EARSMClosure> create_earsm_closure(const std::string& name) {
 
 namespace earsm_kernels {
 
-void compute_wj_coefficients_gpu(
+// Full EARSM pipeline kernels (gradients → invariants → G → anisotropy → nu_t + tau_ij)
+
+void compute_earsm_wj_full_gpu(
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
-    double* G,
-    int n_cells,
-    const WJConstants& constants)
+    double* nu_t,
+    double* tau_xx, double* tau_xy, double* tau_yy,
+    int Nx, int Ny, int Ng, int stride,
+    double nu, const WJConstants& constants)
 {
 #ifdef USE_GPU_OFFLOAD
     const double A1 = constants.A1();
@@ -656,72 +651,136 @@ void compute_wj_coefficients_gpu(
     const double A3 = constants.A3();
     const double A4 = constants.A4();
     const double C_mu = 0.09;
+    const double nu_max = 100.0 * nu;
+    const size_t total_size = stride * (Ny + 2*Ng);
     
-    // k and omega are already on GPU from solver; gradients and G are local
-    #pragma omp target teams distribute parallel for \
-        map(to: dudx[0:n_cells], dudy[0:n_cells], \
-                dvdx[0:n_cells], dvdy[0:n_cells]) \
-        map(present: k[0:n_cells], omega[0:n_cells]) \
-        map(from: G[0:n_cells*4])
-    for (int idx = 0; idx < n_cells; ++idx) {
-        // Strain and rotation
-        double Sxx = dudx[idx];
-        double Syy = dvdy[idx];
-        double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
-        double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
-        
-        double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-        double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-        
-        double k_loc = k[idx];
-        double omega_loc = omega[idx];
-        k_loc = (k_loc > 1e-10) ? k_loc : 1e-10;
-        omega_loc = (omega_loc > 1e-10) ? omega_loc : 1e-10;
-        
-        double eps = C_mu * k_loc * omega_loc;
-        double tau = k_loc / eps;
-        
-        double eta = tau * S_mag;
-        double zeta = tau * Omega_mag;
-        
-        double II_S = eta * eta;
-        double II_Omega = zeta * zeta;
-        
-        // Solve for N
-        double denom = 1.0 + A3 * II_S + A4 * II_Omega;
-        denom = (fabs(denom) > 0.1) ? denom : 0.1 * (denom >= 0 ? 1.0 : -1.0);
-        double N = -A1 / denom;
-        N = (N > -10.0) ? N : -10.0;
-        N = (N < 10.0) ? N : 10.0;
-        
-        // Compute β coefficients
-        double denom2 = A1 + N;
-        denom2 = (fabs(denom2) > 0.01) ? denom2 : 0.01 * (denom2 >= 0 ? 1.0 : -1.0);
-        
-        double beta1 = -N / denom2;
-        double beta2 = (II_Omega > 1e-10) ? A2 * N * N / (denom2 * denom2) : 0.0;
-        double beta3 = (II_S > 1e-10) ? A3 * N / denom2 : 0.0;
-        
-        // Store G coefficients
-        int base = idx * 4;
-        G[base + 0] = beta1;
-        G[base + 1] = beta2;
-        G[base + 2] = beta3;
-        G[base + 3] = 0.0;
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: dudx[0:total_size], dudy[0:total_size], \
+                     dvdx[0:total_size], dvdy[0:total_size], \
+                     k[0:total_size], omega[0:total_size], \
+                     nu_t[0:total_size], \
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * stride + i;
+            
+            // Strain and rotation tensors
+            double Sxx = dudx[idx];
+            double Syy = dvdy[idx];
+            double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
+            double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
+            
+            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
+            
+            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
+            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
+            
+            double eps = C_mu * k_loc * omega_loc;
+            double tau = k_loc / eps;
+            
+            double eta = tau * S_mag;
+            double zeta = tau * Omega_mag;
+            
+            double II_S = eta * eta;
+            double II_Omega = zeta * zeta;
+            
+            // Solve for N (WJ cubic)
+            double denom = 1.0 + A3 * II_S + A4 * II_Omega;
+            denom = (fabs(denom) > 0.1) ? denom : 0.1 * (denom >= 0 ? 1.0 : -1.0);
+            double N = -A1 / denom;
+            N = (N > -10.0) ? N : -10.0;
+            N = (N < 10.0) ? N : 10.0;
+            
+            // Compute β coefficients
+            double denom2 = A1 + N;
+            denom2 = (fabs(denom2) > 0.01) ? denom2 : 0.01 * (denom2 >= 0 ? 1.0 : -1.0);
+            
+            double beta1 = -N / denom2;
+            double beta2 = (II_Omega > 1e-10) ? A2 * N * N / (denom2 * denom2) : 0.0;
+            double beta3 = (II_S > 1e-10) ? A3 * N / denom2 : 0.0;
+            
+            // Clamp coefficients
+            beta1 = (beta1 > -10.0) ? beta1 : -10.0;
+            beta1 = (beta1 < 10.0) ? beta1 : 10.0;
+            beta2 = (beta2 > -10.0) ? beta2 : -10.0;
+            beta2 = (beta2 < 10.0) ? beta2 : 10.0;
+            beta3 = (beta3 > -10.0) ? beta3 : -10.0;
+            beta3 = (beta3 < 10.0) ? beta3 : 10.0;
+            
+            // Normalized tensors for tensor basis
+            double S_star_xx = tau * Sxx;
+            double S_star_xy = tau * Sxy;
+            double S_star_yy = tau * Syy;
+            double Omega_star_xy = tau * Oxy;
+            
+            // Tensor basis terms (2D):
+            // T^(1) = S*
+            // T^(2) = [S*, Ω*] = S*Ω* - Ω*S*
+            // T^(3) = S*² - (1/3)tr(S*²)I
+            
+            // Commutator [S*, Ω*]
+            double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
+            double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
+            double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
+            
+            // S*² - (1/3)tr(S*²)I
+            double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
+            double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
+            double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
+            double trace_S2 = S2_xx + S2_yy;
+            S2_xx -= trace_S2 / 3.0;
+            S2_yy -= trace_S2 / 3.0;
+            
+            // Anisotropy tensor b = Σ β_i T^(i)
+            double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
+            double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
+            double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
+            
+            // Reynolds stresses: τ_ij = -2k b_ij
+            double tau_xx_val = -2.0 * k_loc * b_xx;
+            double tau_xy_val = -2.0 * k_loc * b_xy;
+            double tau_yy_val = -2.0 * k_loc * b_yy;
+            
+            // Store Reynolds stresses
+            tau_xx[idx] = tau_xx_val;
+            tau_xy[idx] = tau_xy_val;
+            tau_yy[idx] = tau_yy_val;
+            
+            // Equivalent eddy viscosity from τ_xy = -2ν_t S_xy
+            double nu_t_loc = 0.0;
+            if (fabs(Sxy) > 1e-10) {
+                nu_t_loc = fabs(-b_xy * k_loc / Sxy);
+            } else if (S_mag > 1e-10) {
+                double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                nu_t_loc = k_loc * b_mag / S_mag;
+            }
+            
+            // Clipping
+            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
+            nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
+            nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // Check for NaN
+            
+            nu_t[idx] = nu_t_loc;
+        }
     }
 #else
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)k; (void)omega; (void)G; (void)n_cells; (void)constants;
+    (void)k; (void)omega; (void)nu_t;
+    (void)tau_xx; (void)tau_xy; (void)tau_yy;
+    (void)Nx; (void)Ny; (void)Ng; (void)stride;
+    (void)nu; (void)constants;
 #endif
 }
 
-void compute_gs_coefficients_gpu(
+void compute_earsm_gs_full_gpu(
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
-    double* G,
-    int n_cells,
-    const GSConstants& constants)
+    double* nu_t,
+    double* tau_xx, double* tau_xy, double* tau_yy,
+    int Nx, int Ny, int Ng, int stride,
+    double nu, const GSConstants& constants)
 {
 #ifdef USE_GPU_OFFLOAD
     const double C_mu0 = constants.C_mu;
@@ -729,52 +788,206 @@ void compute_gs_coefficients_gpu(
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
     const double C_mu_eps = 0.09;
+    const double nu_max = 100.0 * nu;
+    const size_t total_size = stride * (Ny + 2*Ng);
     
-    // k and omega are already on GPU from solver; gradients and G are local
-    #pragma omp target teams distribute parallel for \
-        map(to: dudx[0:n_cells], dudy[0:n_cells], \
-                dvdx[0:n_cells], dvdy[0:n_cells]) \
-        map(present: k[0:n_cells], omega[0:n_cells]) \
-        map(from: G[0:n_cells*4])
-    for (int idx = 0; idx < n_cells; ++idx) {
-        double Sxx = dudx[idx];
-        double Syy = dvdy[idx];
-        double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
-        double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
-        
-        double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-        double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-        
-        double k_loc = k[idx];
-        double omega_loc = omega[idx];
-        k_loc = (k_loc > 1e-10) ? k_loc : 1e-10;
-        omega_loc = (omega_loc > 1e-10) ? omega_loc : 1e-10;
-        
-        double eps = C_mu_eps * k_loc * omega_loc;
-        double tau = k_loc / eps;
-        
-        double eta = tau * S_mag;
-        double zeta = tau * Omega_mag;
-        
-        // Regularization
-        double reg = 1.0 + (eta * eta) / (eta_max * eta_max);
-        double C_mu_eff = C_mu0 / reg;
-        
-        double rot_factor = 1.0;
-        if (eta > 1e-10) {
-            double ratio = zeta / eta;
-            rot_factor = 1.0 / (1.0 + 0.1 * ratio * ratio);
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: dudx[0:total_size], dudy[0:total_size], \
+                     dvdx[0:total_size], dvdy[0:total_size], \
+                     k[0:total_size], omega[0:total_size], \
+                     nu_t[0:total_size], \
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * stride + i;
+            
+            // Strain and rotation
+            double Sxx = dudx[idx];
+            double Syy = dvdy[idx];
+            double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
+            double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
+            
+            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
+            
+            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
+            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
+            
+            double eps = C_mu_eps * k_loc * omega_loc;
+            double tau = k_loc / eps;
+            
+            double eta = tau * S_mag;
+            double zeta = tau * Omega_mag;
+            
+            // Regularization
+            double reg = 1.0 + (eta * eta) / (eta_max * eta_max);
+            double C_mu_eff = C_mu0 / reg;
+            
+            // Rotation correction
+            double rot_factor = 1.0;
+            if (eta > 1e-10) {
+                double ratio = zeta / eta;
+                rot_factor = 1.0 / (1.0 + 0.1 * ratio * ratio);
+            }
+            
+            // Coefficients
+            double beta1 = -C_mu_eff * rot_factor;
+            double beta2 = C1 * C_mu_eff * C_mu_eff;
+            double beta3 = C2 * C_mu_eff;
+            
+            // Clamp
+            beta1 = (beta1 > -5.0) ? beta1 : -5.0;
+            beta1 = (beta1 < 5.0) ? beta1 : 5.0;
+            beta2 = (beta2 > -5.0) ? beta2 : -5.0;
+            beta2 = (beta2 < 5.0) ? beta2 : 5.0;
+            beta3 = (beta3 > -5.0) ? beta3 : -5.0;
+            beta3 = (beta3 < 5.0) ? beta3 : 5.0;
+            
+            // Build anisotropy (same as WJ)
+            double S_star_xx = tau * Sxx;
+            double S_star_xy = tau * Sxy;
+            double S_star_yy = tau * Syy;
+            double Omega_star_xy = tau * Oxy;
+            
+            double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
+            double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
+            double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
+            
+            double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
+            double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
+            double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
+            double trace_S2 = S2_xx + S2_yy;
+            S2_xx -= trace_S2 / 3.0;
+            S2_yy -= trace_S2 / 3.0;
+            
+            double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
+            double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
+            double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
+            
+            double tau_xx_val = -2.0 * k_loc * b_xx;
+            double tau_xy_val = -2.0 * k_loc * b_xy;
+            double tau_yy_val = -2.0 * k_loc * b_yy;
+            
+            tau_xx[idx] = tau_xx_val;
+            tau_xy[idx] = tau_xy_val;
+            tau_yy[idx] = tau_yy_val;
+            
+            double nu_t_loc = 0.0;
+            if (fabs(Sxy) > 1e-10) {
+                nu_t_loc = fabs(-b_xy * k_loc / Sxy);
+            } else if (S_mag > 1e-10) {
+                double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                nu_t_loc = k_loc * b_mag / S_mag;
+            }
+            
+            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
+            nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
+            nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // Check for NaN
+            
+            nu_t[idx] = nu_t_loc;
         }
-        
-        int base = idx * 4;
-        G[base + 0] = -C_mu_eff * rot_factor;
-        G[base + 1] = C1 * C_mu_eff * C_mu_eff;
-        G[base + 2] = C2 * C_mu_eff;
-        G[base + 3] = 0.0;
     }
 #else
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)k; (void)omega; (void)G; (void)n_cells; (void)constants;
+    (void)k; (void)omega; (void)nu_t;
+    (void)tau_xx; (void)tau_xy; (void)tau_yy;
+    (void)Nx; (void)Ny; (void)Ng; (void)stride;
+    (void)nu; (void)constants;
+#endif
+}
+
+void compute_earsm_pope_full_gpu(
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    double* nu_t,
+    double* tau_xx, double* tau_xy, double* tau_yy,
+    int Nx, int Ny, int Ng, int stride,
+    double nu, double C1, double C2)
+{
+#ifdef USE_GPU_OFFLOAD
+    const double C_mu = 0.09;
+    const double nu_max = 100.0 * nu;
+    const size_t total_size = stride * (Ny + 2*Ng);
+    
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: dudx[0:total_size], dudy[0:total_size], \
+                     dvdx[0:total_size], dvdy[0:total_size], \
+                     k[0:total_size], omega[0:total_size], \
+                     nu_t[0:total_size], \
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * stride + i;
+            
+            double Sxx = dudx[idx];
+            double Syy = dvdy[idx];
+            double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
+            double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
+            
+            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            
+            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
+            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
+            
+            double eps = C_mu * k_loc * omega_loc;
+            double tau = k_loc / eps;
+            double eta = tau * S_mag;
+            
+            // Regularization
+            double reg = 1.0 + 0.01 * eta * eta;
+            double C_mu_eff = C_mu / reg;
+            
+            double beta1 = -C_mu_eff;
+            double beta2 = C2 * eta;
+            double beta3 = C1 * eta;
+            
+            // Build anisotropy
+            double S_star_xx = tau * Sxx;
+            double S_star_xy = tau * Sxy;
+            double S_star_yy = tau * Syy;
+            double Omega_star_xy = tau * Oxy;
+            
+            double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
+            double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
+            double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
+            
+            double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
+            double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
+            double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
+            double trace_S2 = S2_xx + S2_yy;
+            S2_xx -= trace_S2 / 3.0;
+            S2_yy -= trace_S2 / 3.0;
+            
+            double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
+            double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
+            double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
+            
+            tau_xx[idx] = -2.0 * k_loc * b_xx;
+            tau_xy[idx] = -2.0 * k_loc * b_xy;
+            tau_yy[idx] = -2.0 * k_loc * b_yy;
+            
+            double nu_t_loc = 0.0;
+            if (fabs(Sxy) > 1e-10) {
+                nu_t_loc = fabs(-b_xy * k_loc / Sxy);
+            } else if (S_mag > 1e-10) {
+                double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                nu_t_loc = k_loc * b_mag / S_mag;
+            }
+            
+            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
+            nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
+            nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // Check for NaN
+            
+            nu_t[idx] = nu_t_loc;
+        }
+    }
+#else
+    (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
+    (void)k; (void)omega; (void)nu_t;
+    (void)tau_xx; (void)tau_xy; (void)tau_yy;
+    (void)Nx; (void)Ny; (void)Ng; (void)stride;
+    (void)nu; (void)C1; (void)C2;
 #endif
 }
 

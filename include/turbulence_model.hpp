@@ -28,6 +28,11 @@ struct TurbulenceDeviceView {
     double* nu_t = nullptr;             // Eddy viscosity output
     int cell_stride = 0;                // Cell-centered row stride
     
+    // Reynolds stress tensor components (cell-centered, for EARSM/TBNN)
+    double* tau_xx = nullptr;
+    double* tau_xy = nullptr;
+    double* tau_yy = nullptr;
+    
     // Scratch buffers for gradients (solver-owned, persistent on GPU)
     double* dudx = nullptr;             // Cell-centered gradients
     double* dudy = nullptr;

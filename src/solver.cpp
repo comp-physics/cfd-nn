@@ -2369,6 +2369,11 @@ void RANSSolver::initialize_gpu_buffers() {
     k_ptr_ = k_.data().data();
     omega_ptr_ = omega_.data().data();
     
+    // Reynolds stress tensor components (for EARSM/TBNN)
+    tau_xx_ptr_ = tau_ij_.xx_data().data();
+    tau_xy_ptr_ = tau_ij_.xy_data().data();
+    tau_yy_ptr_ = tau_ij_.yy_data().data();
+    
     // Gradient scratch buffers for turbulence models
     dudx_ptr_ = dudx_.data().data();
     dudy_ptr_ = dudy_.data().data();
@@ -2407,6 +2412,11 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
     // k and omega are NOT mapped here - turbulence models manage their own GPU copies
+    
+    // Reynolds stress tensor components (alloc - will be computed by EARSM/TBNN on GPU)
+    #pragma omp target enter data map(alloc: tau_xx_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: tau_xy_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: tau_yy_ptr_[0:field_total_size_])
     
     // Gradient scratch buffers for turbulence models (alloc, not to - computed on GPU)
     #pragma omp target enter data map(alloc: dudx_ptr_[0:field_total_size_])
@@ -2476,6 +2486,11 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: dvdy_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: wall_distance_ptr_[0:field_total_size_])
     
+    // Delete Reynolds stress tensor buffers
+    #pragma omp target exit data map(delete: tau_xx_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_xy_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_yy_ptr_[0:field_total_size_])
+    
     gpu_ready_ = false;
 }
 
@@ -2544,6 +2559,11 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     view.omega = omega_ptr_;
     view.nu_t = nu_t_ptr_;
     view.cell_stride = mesh_->total_Nx();  // Stride for cell-centered fields
+    
+    // Reynolds stress tensor
+    view.tau_xx = tau_xx_ptr_;
+    view.tau_xy = tau_xy_ptr_;
+    view.tau_yy = tau_yy_ptr_;
     
     // Gradient scratch buffers
     view.dudx = dudx_ptr_;

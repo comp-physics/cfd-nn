@@ -142,14 +142,6 @@ protected:
     
     void allocate_gpu_buffers(const Mesh& mesh);
     void free_gpu_buffers();
-    void compute_nu_t_gpu(
-        const Mesh& mesh,
-        const VectorField& velocity,
-        const ScalarField& k,
-        const ScalarField& omega,
-        ScalarField& nu_t,
-        TensorField* tau_ij
-    );
 };
 
 // ============================================================================
@@ -302,6 +294,11 @@ public:
     bool uses_transport_equations() const override { return true; }
     bool provides_reynolds_stresses() const override { return true; }
     
+    // GPU buffer management - forward to transport model
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override;
+    
     void advance_turbulence(
         const Mesh& mesh,
         const VectorField& velocity,
@@ -339,42 +336,37 @@ private:
 
 namespace earsm_kernels {
 
-/// Compute EARSM G coefficients for all cells (Wallin-Johansson)
-void compute_wj_coefficients_gpu(
+/// Complete EARSM Wallin-Johansson computation (gradients → nu_t + tau_ij)
+void compute_earsm_wj_full_gpu(
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
-    double* G,                              // Output: n_cells * 4
-    int n_cells,
-    const WJConstants& constants
-);
-
-/// Compute EARSM G coefficients for all cells (Gatski-Speziale)
-void compute_gs_coefficients_gpu(
-    const double* dudx, const double* dudy,
-    const double* dvdx, const double* dvdy,
-    const double* k, const double* omega,
-    double* G,                              // Output: n_cells * 4
-    int n_cells,
-    const GSConstants& constants
-);
-
-/// Full EARSM pipeline: gradients → invariants → G → b_ij → ν_t
-void earsm_full_pipeline_gpu(
-    // Velocity (with ghost cells)
-    const double* u, const double* v,
-    // Turbulence quantities (interior only)
-    const double* k, const double* omega,
-    // Workspace (pre-allocated)
-    double* workspace,
-    // Output
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,  // Can be nullptr
-    // Mesh parameters
-    int Nx, int Ny, double dx, double dy,
-    // Model parameters
-    double nu, double delta,
-    EARSMType type
+    double* tau_xx, double* tau_xy, double* tau_yy,
+    int Nx, int Ny, int Ng, int stride,
+    double nu, const WJConstants& constants
+);
+
+/// Complete EARSM Gatski-Speziale computation (gradients → nu_t + tau_ij)
+void compute_earsm_gs_full_gpu(
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    double* nu_t,
+    double* tau_xx, double* tau_xy, double* tau_yy,
+    int Nx, int Ny, int Ng, int stride,
+    double nu, const GSConstants& constants
+);
+
+/// Complete EARSM Pope quadratic computation (gradients → nu_t + tau_ij)
+void compute_earsm_pope_full_gpu(
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    double* nu_t,
+    double* tau_xx, double* tau_xy, double* tau_yy,
+    int Nx, int Ny, int Ng, int stride,
+    double nu, double C1, double C2
 );
 
 } // namespace earsm_kernels

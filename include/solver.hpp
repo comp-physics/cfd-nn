@@ -202,6 +202,11 @@ private:
     double* k_ptr_ = nullptr;
     double* omega_ptr_ = nullptr;
     
+    // Reynolds stress tensor pointers (for EARSM/TBNN models)
+    double* tau_xx_ptr_ = nullptr;
+    double* tau_xy_ptr_ = nullptr;
+    double* tau_yy_ptr_ = nullptr;
+    
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;
     double* dudy_ptr_ = nullptr;
