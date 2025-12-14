@@ -26,104 +26,21 @@ jobs:
     
     - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |
-        set -euo pipefail
-        
-        SBATCH_SCRIPT="${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch"
-        SLURM_OUT="${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out"
-        SLURM_ERR="${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err"
-        
-        cat > "${SBATCH_SCRIPT}" <<'EOF'
-        #!/bin/bash
-        #SBATCH -J gpu-ci-correctness
-        #SBATCH -A gts-sbryngelson3
-        #SBATCH -N 1
-        #SBATCH --ntasks-per-node=4
-        #SBATCH -p gpu-h200
-        #SBATCH -G 1
-        #SBATCH --qos=embers
-        #SBATCH -t 01:55:00
-        #SBATCH -o __SLURM_OUT__
-        #SBATCH -e __SLURM_ERR__
-        
-        set -euo pipefail
-        
-        module reset
-        module load nvhpc
-        
-        cd "__WORKDIR__"
-        
-        # Run GPU correctness suite (Option 1 + all validation tests)
-        ./.github/scripts/gpu_correctness_suite.sh "__WORKDIR__"
-        
-        # Run CPU-only vs GPU-offload build comparison (Option 2)
-        ./.github/scripts/compare_cpu_gpu_builds.sh "__WORKDIR__"
-        
-        echo ""
-        echo "✅ GPU Correctness Suite completed successfully"
-        EOF
-        
-        sed -i "s|__WORKDIR__|${GITHUB_WORKSPACE}|g" "${SBATCH_SCRIPT}"
-        sed -i "s|__SLURM_OUT__|${SLURM_OUT}|g" "${SBATCH_SCRIPT}"
-        sed -i "s|__SLURM_ERR__|${SLURM_ERR}|g" "${SBATCH_SCRIPT}"
-        
-        echo "Submitting Slurm job..."
-        sbatch -W "${SBATCH_SCRIPT}"
-        
-        echo ""
-        echo "=== Slurm STDOUT ==="
-        cat "${SLURM_OUT}" || true
-        echo ""
-        echo "=== Slurm STDERR ==="
-        cat "${SLURM_ERR}" || true
+        ./.github/scripts/submit_and_monitor_slurm.sh \
+          ./.github/scripts/gpu_ci_correctness.sbatch.template \
+          "${GITHUB_WORKSPACE}" \
+          "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" \
+          "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" \
+          "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch"
 
     - name: Submit GPU performance suite to Slurm (H200, 1 GPU)
       run: |
-        set -euo pipefail
-        
-        SBATCH_SCRIPT="${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch"
-        SLURM_OUT="${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out"
-        SLURM_ERR="${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err"
-        
-        cat > "${SBATCH_SCRIPT}" <<'EOF'
-        #!/bin/bash
-        #SBATCH -J gpu-ci-perf
-        #SBATCH -A gts-sbryngelson3
-        #SBATCH -N 1
-        #SBATCH --ntasks-per-node=4
-        #SBATCH -p gpu-h200
-        #SBATCH -G 1
-        #SBATCH --qos=embers
-        #SBATCH -t 00:25:00
-        #SBATCH -o __SLURM_OUT__
-        #SBATCH -e __SLURM_ERR__
-        
-        set -euo pipefail
-        
-        module reset
-        module load nvhpc
-        
-        cd "__WORKDIR__"
-        
-        # Run GPU performance suite
-        ./.github/scripts/gpu_perf_suite.sh "__WORKDIR__"
-        
-        echo ""
-        echo "✅ GPU Performance Suite completed successfully"
-        EOF
-        
-        sed -i "s|__WORKDIR__|${GITHUB_WORKSPACE}|g" "${SBATCH_SCRIPT}"
-        sed -i "s|__SLURM_OUT__|${SLURM_OUT}|g" "${SBATCH_SCRIPT}"
-        sed -i "s|__SLURM_ERR__|${SLURM_ERR}|g" "${SBATCH_SCRIPT}"
-        
-        echo "Submitting Slurm perf job..."
-        sbatch -W "${SBATCH_SCRIPT}"
-        
-        echo ""
-        echo "=== Slurm PERF STDOUT ==="
-        cat "${SLURM_OUT}" || true
-        echo ""
-        echo "=== Slurm PERF STDERR ==="
-        cat "${SLURM_ERR}" || true
+        ./.github/scripts/submit_and_monitor_slurm.sh \
+          ./.github/scripts/gpu_ci_perf.sbatch.template \
+          "${GITHUB_WORKSPACE}" \
+          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" \
+          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" \
+          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch"
     
     - name: Debug info on failure
       if: failure()

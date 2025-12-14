@@ -1,0 +1,24 @@
+#!/bin/bash
+#SBATCH -J gpu-ci-perf
+#SBATCH -A gts-sbryngelson3
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=4
+#SBATCH -p gpu-h200
+#SBATCH -G 1
+#SBATCH --qos=embers
+#SBATCH -t 00:25:00
+#SBATCH -o __SLURM_OUT__
+#SBATCH -e __SLURM_ERR__
+
+set -euo pipefail
+
+module reset
+module load nvhpc
+
+cd "__WORKDIR__"
+
+# Run GPU performance suite
+./.github/scripts/gpu_perf_suite.sh "__WORKDIR__"
+
+echo ""
+echo "✅ GPU Performance Suite completed successfully"

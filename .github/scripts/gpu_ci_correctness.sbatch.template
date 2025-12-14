@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH -J gpu-ci-correctness
+#SBATCH -A gts-sbryngelson3
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=4
+#SBATCH -p gpu-h200
+#SBATCH -G 1
+#SBATCH --qos=embers
+#SBATCH -t 01:55:00
+#SBATCH -o __SLURM_OUT__
+#SBATCH -e __SLURM_ERR__
+
+set -euo pipefail
+
+module reset
+module load nvhpc
+
+cd "__WORKDIR__"
+
+# Run GPU correctness suite (Option 1 + all validation tests)
+./.github/scripts/gpu_correctness_suite.sh "__WORKDIR__"
+
+# Run CPU-only vs GPU-offload build comparison (Option 2)
+./.github/scripts/compare_cpu_gpu_builds.sh "__WORKDIR__"
+
+echo ""
+echo "✅ GPU Correctness Suite completed successfully"
