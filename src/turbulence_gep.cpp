@@ -26,10 +26,8 @@ void TurbulenceGEP::initialize(const Mesh& mesh, const VectorField& velocity) {
 
 void TurbulenceGEP::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        gpu_ready_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     const int n_cells = mesh.Nx * mesh.Ny;
     

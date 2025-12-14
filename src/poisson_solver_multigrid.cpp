@@ -6,10 +6,6 @@
 #include <cstring>  // for memcpy in debug
 #include <cassert>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 namespace nncfd {
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
@@ -211,7 +207,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: red-black Gauss-Seidel on persistent device arrays
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
@@ -303,7 +299,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path with persistent device arrays
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         const double* u_ptr = u_ptrs_[level];
@@ -496,24 +492,22 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_) {
-        const size_t size_c = level_sizes_[level + 1];
-        double* u_coarse = u_ptrs_[level + 1];
-        
-        #pragma omp target teams distribute parallel for \
-            map(present: u_coarse[0:size_c])
-        for (int idx = 0; idx < (int)size_c; ++idx) {
-            u_coarse[idx] = 0.0;
-        }
-    } else
-#endif
-    {
+    assert(gpu_ready_ && "GPU must be initialized");
+    const size_t size_c = level_sizes_[level + 1];
+    double* u_coarse = u_ptrs_[level + 1];
+    
+    #pragma omp target teams distribute parallel for \
+        map(present: u_coarse[0:size_c])
+    for (int idx = 0; idx < (int)size_c; ++idx) {
+        u_coarse[idx] = 0.0;
+    }
+#else
     for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
         for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
             coarse.u(i, j) = 0.0;
-            }
         }
     }
+#endif
     
     // Recursive call to coarser level
     vcycle(level + 1, nu1, nu2);
@@ -638,9 +632,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     
 #ifdef USE_GPU_OFFLOAD
     // Upload to GPU once before all V-cycles
-    if (gpu_ready_) {
-        sync_level_to_gpu(0);
-    }
+    assert(gpu_ready_ && "GPU must be initialized");
+    sync_level_to_gpu(0);
 #endif
     
     apply_bc(0);
@@ -680,9 +673,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     
 #ifdef USE_GPU_OFFLOAD
     // Download from GPU once after all V-cycles
-    if (gpu_ready_) {
-        sync_level_from_gpu(0);
-    }
+    assert(gpu_ready_ && "GPU must be initialized");
+    sync_level_from_gpu(0);
 #endif
     
     // Copy result back to output field (CPU side)

@@ -12,10 +12,13 @@ option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
 
-# Find OpenMP (optional on macOS where AppleClang lacks OpenMP)
-find_package(OpenMP)
-if(NOT OpenMP_CXX_FOUND)
-    message(WARNING "OpenMP not found - building without OpenMP parallelization")
+# Find OpenMP ONLY if GPU offload is enabled
+# CPU builds (USE_GPU_OFFLOAD=OFF) are OpenMP-free to enforce compile-time separation
+if(USE_GPU_OFFLOAD)
+    find_package(OpenMP REQUIRED)
+    if(NOT OpenMP_CXX_FOUND)
+        message(FATAL_ERROR "GPU offload requires OpenMP support")
+    endif()
 endif()
 
 # Compiler flags
@@ -25,11 +28,8 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
 
 # GPU offloading configuration
 if(USE_GPU_OFFLOAD)
-    if(NOT OpenMP_CXX_FOUND)
-        message(FATAL_ERROR "GPU offloading requires OpenMP support")
-    endif()
     add_definitions(-DUSE_GPU_OFFLOAD)
-    message(STATUS "GPU offloading ENABLED")
+    message(STATUS "GPU offloading ENABLED (GPU required at runtime)")
     
     # Detect compiler and set appropriate flags
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
@@ -48,10 +48,8 @@ if(USE_GPU_OFFLOAD)
     else()
         message(WARNING "Unknown compiler for GPU offloading: ${CMAKE_CXX_COMPILER_ID}")
     endif()
-elseif(OpenMP_CXX_FOUND)
-    message(STATUS "GPU offloading DISABLED (CPU-only OpenMP)")
 else()
-    message(STATUS "OpenMP not available - single-threaded build")
+    message(STATUS "CPU build (OpenMP disabled, single-threaded)")
 endif()
 
 # Default to Release build
@@ -94,12 +92,9 @@ set(LIB_SOURCES
 # Core library
 add_library(nn_cfd_core ${LIB_SOURCES})
 
-# Add GPU-only sources when GPU offload is enabled
+# Add GPU-only sources and link OpenMP when GPU offload is enabled
 if(USE_GPU_OFFLOAD)
     target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
-endif()
-
-if(OpenMP_CXX_FOUND)
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
 endif()
 

@@ -20,10 +20,8 @@ EARSMClosure::EARSMClosure() = default;
 
 void EARSMClosure::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        buffers_on_gpu_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     // Check if already allocated
     if (buffers_on_gpu_ && !k_flat_.empty()) {
@@ -518,7 +516,7 @@ void SSTWithEARSM::update(
 {
 #ifdef USE_GPU_OFFLOAD
     // GPU path: compute EARSM directly on device without touching host arrays
-    if (device_view && device_view->is_valid() && closure_ && omp_get_num_devices() > 0) {
+    if (device_view && device_view->is_valid() && closure_) {
         const int Nx = device_view->Nx;
         const int Ny = device_view->Ny;
         const int Ng = device_view->Ng;

@@ -5,10 +5,6 @@
 #include <cmath>
 #include <iostream>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 namespace nncfd {
 
 TurbulenceNNTBNN::TurbulenceNNTBNN()
@@ -41,11 +37,8 @@ void TurbulenceNNTBNN::upload_to_gpu() {
 
 void TurbulenceNNTBNN::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        gpu_ready_ = false;
-        full_gpu_ready_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     const int n_cells = mesh.Nx * mesh.Ny;
     upload_to_gpu();  // Upload MLP weights if not already done

@@ -8,10 +8,6 @@
 #include <iostream>
 #include <cassert>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 namespace nncfd {
 
 // ============================================================================

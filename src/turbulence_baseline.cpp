@@ -10,10 +10,6 @@
 #include <algorithm>
 #include <iostream>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 namespace nncfd {
 
 // ============================================================================
@@ -68,10 +64,8 @@ MixingLengthModel::~MixingLengthModel() {
 
 void MixingLengthModel::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        gpu_ready_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     const int total_cells = mesh.total_cells();
     

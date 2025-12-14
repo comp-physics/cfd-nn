@@ -8,10 +8,6 @@
 #include <cstdlib>
 #include <cassert>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 #ifdef GPU_PROFILE_TRANSFERS
 #include <chrono>
 #endif
@@ -785,7 +781,7 @@ void RANSSolver::apply_velocity_bc() {
     const bool y_hi_noslip   = (velocity_bc_.y_hi == VelocityBC::NoSlip);
 
 #ifdef USE_GPU_OFFLOAD
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         double* u_ptr = velocity_u_ptr_;
         double* v_ptr = velocity_v_ptr_;
         const size_t u_total_size = velocity_.u_total_size();
@@ -916,7 +912,7 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered convection on GPU
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const size_t u_total_size = vel.u_total_size();
         const size_t v_total_size = vel.v_total_size();
 
@@ -994,7 +990,7 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered diffusion on GPU
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const size_t u_total_size = vel.u_total_size();
         const size_t v_total_size = vel.v_total_size();
         const size_t nu_total_size = field_total_size_;
@@ -1073,7 +1069,7 @@ void RANSSolver::compute_divergence(const VectorField& vel, ScalarField& div) {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered divergence on GPU
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const int n_cells = Nx * Ny;
         const size_t u_total_size = vel.u_total_size();
         const size_t v_total_size = vel.v_total_size();
@@ -1188,7 +1184,7 @@ void RANSSolver::correct_velocity() {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered velocity correction on GPU
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const int n_cells = Nx * Ny;
         const size_t u_total_size = velocity_.u_total_size();
         const size_t v_total_size = velocity_.v_total_size();
@@ -1537,7 +1533,7 @@ double RANSSolver::step() {
                             (velocity_bc_.y_hi == VelocityBC::Periodic);
     
 #ifdef USE_GPU_OFFLOAD
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const size_t u_total_size = velocity_.u_total_size();
         const size_t v_total_size = velocity_.v_total_size();
         const double dt = current_dt_;
@@ -1832,7 +1828,7 @@ double RANSSolver::step() {
     double max_change = 0.0;
     
 #ifdef USE_GPU_OFFLOAD
-    if (Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         // GPU-resident residual: compute max change on GPU via reduction
         // velocity_old is now device-resident - NO H→D upload needed!
         const size_t u_total_size = velocity_.u_total_size();
@@ -2333,6 +2329,9 @@ void RANSSolver::initialize_gpu_buffers() {
 #ifdef GPU_PROFILE_TRANSFERS
     auto transfer_start = std::chrono::steady_clock::now();
 #endif
+    
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     // Map all arrays to GPU device and copy initial values
     // Using map(to:) instead of map(alloc:) to transfer initialized data

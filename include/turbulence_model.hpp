@@ -3,6 +3,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "config.hpp"
+#include "gpu_utils.hpp"
 #include <memory>
 #include <string>
 
@@ -178,11 +179,7 @@ protected:
     
     /// Helper to check GPU availability (safe to call from any derived class)
     static bool gpu_available() {
-#ifdef USE_GPU_OFFLOAD
-        return omp_get_num_devices() > 0;
-#else
-        return false;
-#endif
+        return gpu::is_gpu_available();
     }
 };
 

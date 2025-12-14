@@ -31,6 +31,12 @@ inline int num_devices() {
 #endif
 }
 
+/// Check if GPU execution path should be used
+/// If GPU offloading is enabled and a device is available, always use it
+inline bool should_use_gpu_path() {
+    return is_gpu_available();
+}
+
 /// RAII wrapper for GPU-resident array
 /// Uploads data on construction, keeps on device, downloads on request
 template<typename T>
