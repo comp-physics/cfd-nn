@@ -269,48 +269,11 @@ void test_mixing_length_consistency() {
         model_gpu.update(mesh, velocity, k, omega, nu_t_gpu);
 #endif
         
-        // CPU reference (explicit reimplementation)
-        ScalarField dudx(mesh), dudy(mesh), dvdx(mesh), dvdy(mesh);
-        compute_all_velocity_gradients(mesh, velocity, dudx, dudy, dvdx, dvdy);
-        
-        const double nu = 1.0 / 10000.0;
-        const double kappa = 0.41;
-        const double A_plus = 26.0;
-        const double delta = 0.5;
-        
-        // Estimate u_tau
-        double u_tau = 0.0;
-        {
-            int j = mesh.j_begin();
-            double dudy_wall = 0.0;
-            int count = 0;
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                dudy_wall += std::abs(dudy(i, j));
-                ++count;
-            }
-            dudy_wall /= count;
-            double tau_w = nu * dudy_wall;
-            u_tau = std::sqrt(tau_w);
-        }
-        u_tau = std::max(u_tau, 1e-10);
-        
-        // CPU computation
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double y_wall = mesh.wall_distance(i, j);
-                double y_plus = y_wall * u_tau / nu;
-                double damping = 1.0 - std::exp(-y_plus / A_plus);
-                double l_mix = kappa * y_wall * damping;
-                l_mix = std::min(l_mix, 0.5 * delta);
-                
-                double Sxx = dudx(i, j);
-                double Syy = dvdy(i, j);
-                double Sxy = 0.5 * (dudy(i, j) + dvdx(i, j));
-                double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-                
-                nu_t_cpu(i, j) = l_mix * l_mix * S_mag;
-            }
-        }
+        // CPU reference (use actual model implementation)
+        MixingLengthModel model_cpu;
+        model_cpu.set_nu(1.0 / 10000.0);
+        model_cpu.set_delta(0.5);
+        model_cpu.update(mesh, velocity, k, omega, nu_t_cpu);
         
         // Compare
         auto cmp = compare_fields(mesh, nu_t_cpu, nu_t_gpu, "nu_t");
@@ -318,9 +281,9 @@ void test_mixing_length_consistency() {
         worst_abs = std::max(worst_abs, cmp.max_abs_diff);
         worst_rel = std::max(worst_rel, cmp.max_rel_diff);
         
-        // Tolerances (algorithm-based, not platform-based)
-        const double tol_abs = 1e-10;
-        const double tol_rel = 1e-8;
+        // Tolerances (tight for MAC-consistent CPU/GPU paths)
+        const double tol_abs = 1e-12;
+        const double tol_rel = 1e-10;
         
         if (cmp.max_abs_diff > tol_abs && cmp.max_rel_diff > tol_rel) {
             std::cout << "    FAILED: Differences exceed tolerance\n";
@@ -526,46 +489,11 @@ void test_randomized_regression() {
         // GPU path (model already initialized)
         model_gpu.update(mesh, vel, k, omega, nu_t_gpu);
         
-        // CPU reference
-        ScalarField dudx(mesh), dudy(mesh), dvdx(mesh), dvdy(mesh);
-        compute_all_velocity_gradients(mesh, vel, dudx, dudy, dvdx, dvdy);
-        
-        const double nu = 1.0 / 10000.0;
-        const double kappa = 0.41;
-        const double A_plus = 26.0;
-        const double delta = 0.5;
-        
-        double u_tau = 0.0;
-        {
-            int j = mesh.j_begin();
-            double dudy_wall = 0.0;
-            int count = 0;
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                dudy_wall += std::abs(dudy(i, j));
-                ++count;
-            }
-            dudy_wall /= count;
-            double tau_w = nu * dudy_wall;
-            u_tau = std::sqrt(tau_w);
-        }
-        u_tau = std::max(u_tau, 1e-10);
-        
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double y_wall = mesh.wall_distance(i, j);
-                double y_plus = y_wall * u_tau / nu;
-                double damping = 1.0 - std::exp(-y_plus / A_plus);
-                double l_mix = kappa * y_wall * damping;
-                l_mix = std::min(l_mix, 0.5 * delta);
-                
-                double Sxx = dudx(i, j);
-                double Syy = dvdy(i, j);
-                double Sxy = 0.5 * (dudy(i, j) + dvdx(i, j));
-                double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-                
-                nu_t_cpu(i, j) = l_mix * l_mix * S_mag;
-            }
-        }
+        // CPU reference (use actual model implementation)
+        MixingLengthModel model_cpu;
+        model_cpu.set_nu(1.0 / 10000.0);
+        model_cpu.set_delta(0.5);
+        model_cpu.update(mesh, vel, k, omega, nu_t_cpu);
         
         // Compare
         double max_abs = 0.0, max_rel = 0.0;
@@ -594,8 +522,8 @@ void test_randomized_regression() {
     std::cout << "    Max abs diff: " << std::scientific << worst_abs << "\n";
     std::cout << "    Max rel diff: " << worst_rel << "\n";
     
-    const double tol_abs = 1e-10;
-    const double tol_rel = 1e-8;
+    const double tol_abs = 1e-12;
+    const double tol_rel = 1e-10;
     
     if (worst_abs > tol_abs && worst_rel > tol_rel) {
         std::cout << "  FAILED: Worst case exceeds tolerance\n";

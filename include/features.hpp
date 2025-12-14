@@ -43,21 +43,6 @@ struct VelocityGradient {
     }
 };
 
-/// Compute velocity gradients at cell (i, j)
-VelocityGradient compute_velocity_gradient(
-    const Mesh& mesh,
-    const VectorField& velocity,
-    int i, int j
-);
-
-/// Compute all velocity gradients for the mesh
-void compute_all_velocity_gradients(
-    const Mesh& mesh,
-    const VectorField& velocity,
-    ScalarField& dudx, ScalarField& dudy,
-    ScalarField& dvdx, ScalarField& dvdy
-);
-
 /// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
 /// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
 void compute_gradients_from_mac_cpu(

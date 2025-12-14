@@ -319,13 +319,16 @@ void MixingLengthModel::update(
     // nu_t = l_m^2 * |S|
     
     // First, estimate u_tau from wall gradient
+    // Use same formula as GPU path for bit-for-bit consistency
     double u_tau = 0.0;
     {
         int j = mesh.j_begin();
         double dudy_wall = 0.0;
         int count = 0;
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            dudy_wall += std::abs(dudy_(i, j));
+            double u_wall = velocity.u(i, j);
+            double u_next = velocity.u(i, j+1);
+            dudy_wall += std::abs((u_next - u_wall) / mesh.dy);
             ++count;
         }
         dudy_wall /= count;
@@ -386,7 +389,7 @@ void AlgebraicKOmegaModel::update(
         dvdy_ = ScalarField(mesh);
     }
     
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Estimate friction velocity
     double u_tau = 0.0;

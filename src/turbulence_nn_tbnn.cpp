@@ -776,8 +776,15 @@ void TurbulenceNNTBNN::update(
                         tau_ij->yy(i, j) = tau_yy;
                     }
                     
-                    // Compute equivalent eddy viscosity
-                    auto grad = compute_velocity_gradient(mesh, velocity, i, j);
+                    // Compute equivalent eddy viscosity (MAC-aware gradients)
+                    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+                    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+                    VelocityGradient grad;
+                    grad.dudx = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+                    grad.dudy = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+                    grad.dvdx = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+                    grad.dvdy = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
+                    
                     double Sxy = grad.Sxy();
                     double k_val = k_local(i, j);
                     
@@ -845,8 +852,15 @@ void TurbulenceNNTBNN::update(
                     tau_ij->yy(i, j) = tau_yy;
                 }
                 
-                // Also compute equivalent eddy viscosity
-                auto grad = compute_velocity_gradient(mesh, velocity, i, j);
+                // Also compute equivalent eddy viscosity (MAC-aware gradients)
+                const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+                const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+                VelocityGradient grad;
+                grad.dudx = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+                grad.dudy = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+                grad.dvdx = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+                grad.dvdy = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
+                
                 double Sxy = grad.Sxy();
                 double k_val = k_local(i, j);
                 

@@ -1328,7 +1328,7 @@ void RANSSolver::correct_velocity() {
 }
 
 double RANSSolver::compute_residual() {
-    // Compute residual based on velocity change
+ // Compute residual based on velocity change
     double max_res = 0.0;
     
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {

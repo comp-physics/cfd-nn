@@ -215,8 +215,15 @@ void EARSMClosure::compute_nu_t(
             double eps = C_mu * k_loc * omega_loc;
             double tau = k_loc / std::max(eps, 1e-20);
             
-            // Get velocity gradient for strain/rotation magnitudes
-            VelocityGradient grad = compute_velocity_gradient(mesh, velocity, i, j);
+            // Get velocity gradient for strain/rotation magnitudes (MAC-aware)
+            const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+            const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+            VelocityGradient grad;
+            grad.dudx = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+            grad.dudy = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+            grad.dvdx = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+            grad.dvdy = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
+            
             double S_mag = grad.S_mag();
             double Omega_mag = grad.Omega_mag();
             

@@ -32,7 +32,7 @@ void compute_velocity_gradients_gpu(
 //   - v stored at y-faces: size (Ny+2Ng+1) × (Nx+2Ng)
 //   - Outputs are cell-centered: size (Ny+2Ng) × (Nx+2Ng)
 //
-// Uses central differences matching CPU compute_velocity_gradient():
+// Uses central differences matching CPU compute_gradients_from_mac_cpu():
 //   dudx(i,j) = (u(i+1,j) - u(i-1,j)) / (2*dx)
 //   dudy(i,j) = (u(i,j+1) - u(i,j-1)) / (2*dy)
 //   etc.

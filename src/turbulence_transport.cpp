@@ -85,8 +85,8 @@ void SSTClosure::compute_nu_t(
     
     ensure_initialized(mesh);
     
-    // Compute velocity gradients
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    // Compute velocity gradients (MAC-aware for CPU/GPU consistency)
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double a1 = constants_.a1;
     
@@ -447,7 +447,7 @@ void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocit
 void SSTKOmegaTransport::compute_velocity_gradients(
     const Mesh& mesh, const VectorField& velocity)
 {
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
 }
 
 void SSTKOmegaTransport::compute_blending_functions(
@@ -1267,7 +1267,7 @@ void KOmegaTransport::advance_turbulence(
     
     // CPU fallback path
     std::cout << "[KOmegaTransport] Using CPU fallback for advance_turbulence" << std::endl;
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;
     const double dy = mesh.dy;
