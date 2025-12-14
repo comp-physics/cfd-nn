@@ -230,6 +230,13 @@ private:
     void upload_all() {}
 };
 
+#ifdef USE_GPU_OFFLOAD
+/// GPU runtime verification functions (compiled only when USE_GPU_OFFLOAD=ON)
+/// These are defined in src/gpu_init.cpp to enforce compile-time separation
+void verify_device_available();
+bool is_pointer_present(void* ptr);
+#endif
+
 } // namespace gpu
 } // namespace nncfd
 

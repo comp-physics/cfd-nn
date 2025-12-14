@@ -1,5 +1,6 @@
 #include "solver.hpp"
 #include "timing.hpp"
+#include "gpu_utils.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -2290,13 +2291,8 @@ void RANSSolver::write_vtk(const std::string& filename) const {
 
 #ifdef USE_GPU_OFFLOAD
 void RANSSolver::initialize_gpu_buffers() {
-    int num_devices = omp_get_num_devices();
-    if (num_devices == 0) {
-        throw std::runtime_error(
-            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
-            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
-        );
-    }
+    // Verify GPU is available (throws if not)
+    gpu::verify_device_available();
     
     // Get raw pointers to all field data
     field_total_size_ = (mesh_->Nx + 2) * (mesh_->Ny + 2);  // For cell-centered fields
@@ -2381,7 +2377,7 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(alloc: velocity_old_v_ptr_[0:v_total_size])
     
     // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
-    if (!omp_target_is_present(velocity_u_ptr_, omp_get_default_device())) {
+    if (!gpu::is_pointer_present(velocity_u_ptr_)) {
         throw std::runtime_error("GPU mapping failed despite device availability");
     }
     

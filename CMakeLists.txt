@@ -93,6 +93,12 @@ set(LIB_SOURCES
 
 # Core library
 add_library(nn_cfd_core ${LIB_SOURCES})
+
+# Add GPU-only sources when GPU offload is enabled
+if(USE_GPU_OFFLOAD)
+    target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
+endif()
+
 if(OpenMP_CXX_FOUND)
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
 endif()

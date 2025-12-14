@@ -1,4 +1,5 @@
 #include "poisson_solver_multigrid.hpp"
+#include "gpu_utils.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -775,15 +776,9 @@ int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, c
 void MultigridPoissonSolver::initialize_gpu_buffers() {
     // Force OpenMP runtime initialization before checking devices
     omp_set_default_device(0);
-
-    int num_devices = omp_get_num_devices();
-
-    if (num_devices == 0) {
-        throw std::runtime_error(
-            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
-            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
-        );
-    }
+    
+    // Verify GPU is available (throws if not)
+    gpu::verify_device_available();
     
     // Allocate persistent device storage for all levels
     u_ptrs_.resize(levels_.size());
@@ -808,7 +803,7 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     }
     
     // Verify mappings succeeded
-    if (!u_ptrs_.empty() && !omp_target_is_present(u_ptrs_[0], omp_get_default_device())) {
+    if (!u_ptrs_.empty() && !gpu::is_pointer_present(u_ptrs_[0])) {
         throw std::runtime_error("GPU mapping failed despite device availability");
     }
     

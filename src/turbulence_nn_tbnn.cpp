@@ -32,15 +32,7 @@ void TurbulenceNNTBNN::load(const std::string& weights_dir, const std::string& s
 
 void TurbulenceNNTBNN::upload_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
-    int num_devices = omp_get_num_devices();
-
-    if (num_devices == 0) {
-        throw std::runtime_error(
-            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
-            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
-        );
-    }
-    
+    // MLP upload_to_gpu() will verify device availability and throw if not available
     mlp_.upload_to_gpu();
     gpu_ready_ = mlp_.is_on_gpu();
     full_gpu_ready_ = gpu_ready_;  // Full pipeline also ready

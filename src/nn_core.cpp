@@ -1,4 +1,5 @@
 #include "nn_core.hpp"
+#include "gpu_utils.hpp"
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -251,14 +252,8 @@ void MLP::upload_to_gpu() {
         return;
     }
     
-    // Check GPU availability
-    int num_devices = omp_get_num_devices();
-    if (num_devices == 0) {
-        throw std::runtime_error(
-            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
-            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
-        );
-    }
+    // Verify GPU is available (throws if not)
+    gpu::verify_device_available();
     
     // Flatten weights for contiguous GPU memory
     flatten_weights();
