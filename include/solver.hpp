@@ -11,6 +11,31 @@
 
 namespace nncfd {
 
+/// Selector for which velocity field to use in unified GPU/CPU routines
+enum class VelocityWhich {
+    Current,  ///< Current velocity (velocity_)
+    Star,     ///< Predictor velocity (velocity_star_)
+    Old       ///< Previous time step (velocity_old_)
+};
+
+/// Helper struct for velocity pointer pairs from SolverDeviceView
+struct FaceVelPtrs {
+    const double* u;
+    const double* v;
+    int u_stride;
+    int v_stride;
+};
+
+/// Select velocity pointers from SolverDeviceView based on which field
+inline FaceVelPtrs select_face_velocity(const SolverDeviceView& v, VelocityWhich which) {
+    switch (which) {
+    case VelocityWhich::Current: return {v.u_face, v.v_face, v.u_stride, v.v_stride};
+    case VelocityWhich::Star:    return {v.u_star_face, v.v_star_face, v.u_stride, v.v_stride};
+    case VelocityWhich::Old:     return {v.u_old_face, v.v_old_face, v.u_stride, v.v_stride};
+    }
+    return {nullptr, nullptr, 0, 0};
+}
+
 /// Boundary condition specification for velocity
 struct VelocityBC {
     enum Type { NoSlip, Periodic, Inflow, Outflow };
@@ -161,7 +186,7 @@ private:
     void apply_velocity_bc();
     void compute_convective_term(const VectorField& vel, VectorField& conv);
     void compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, VectorField& diff);
-    void compute_divergence(const VectorField& vel, ScalarField& div);
+    void compute_divergence(VelocityWhich which, ScalarField& div);
     void correct_velocity();
     double compute_residual();
     

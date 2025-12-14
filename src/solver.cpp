@@ -653,6 +653,9 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
                               PoissonBC::Neumann, PoissonBC::Neumann);
 
 #ifdef USE_GPU_OFFLOAD
+    // Fail-fast if GPU offload is enabled but no device is available
+    gpu::verify_device_available();
+    
     initialize_gpu_buffers();
     // GPU buffers are now mapped and will persist for solver lifetime
     // NOTE: Turbulence models manage their own GPU buffers independently
@@ -762,11 +765,15 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
 
 void RANSSolver::apply_velocity_bc() {
     NVTX_PUSH("apply_velocity_bc");
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
-    const int u_stride = velocity_.u_stride();
-    const int v_stride = velocity_.v_stride();
+    
+    // Get unified view (device pointers in GPU build, host pointers in CPU build)
+    auto v = get_solver_view();
+    
+    const int Nx = v.Nx;
+    const int Ny = v.Ny;
+    const int Ng = v.Ng;
+    const int u_stride = v.u_stride;
+    const int v_stride = v.v_stride;
     const int u_total_Ny = Ny + 2 * Ng;
     const int v_total_Nx = Nx + 2 * Ng;
 
@@ -780,15 +787,62 @@ void RANSSolver::apply_velocity_bc() {
     const bool y_hi_periodic = (velocity_bc_.y_hi == VelocityBC::Periodic);
     const bool y_hi_noslip   = (velocity_bc_.y_hi == VelocityBC::NoSlip);
 
-#ifdef USE_GPU_OFFLOAD
-    if (gpu::should_use_gpu_path()) {
-        double* u_ptr = velocity_u_ptr_;
-        double* v_ptr = velocity_v_ptr_;
-        const size_t u_total_size = velocity_.u_total_size();
-        const size_t v_total_size = velocity_.v_total_size();
+    double* u_ptr = v.u_face;
+    double* v_ptr = v.v_face;
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
 
-        // Apply u BCs in x-direction
-        const int n_u_x_bc = u_total_Ny * Ng;
+    // Apply u BCs in x-direction
+    const int n_u_x_bc = u_total_Ny * Ng;
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size])
+    for (int idx = 0; idx < n_u_x_bc; ++idx) {
+        int j = idx / Ng;
+        int g = idx % Ng;
+        apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
+                              x_lo_periodic, x_hi_periodic, u_ptr);
+    }
+
+    // Apply u BCs in y-direction
+    const int n_u_y_bc = (Nx + 1 + 2 * Ng) * Ng;
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size])
+    for (int idx = 0; idx < n_u_y_bc; ++idx) {
+        int i = idx / Ng;
+        int g = idx % Ng;
+        apply_u_bc_y_staggered(i, g, Ny, Ng, u_stride,
+                              y_lo_periodic, y_lo_noslip,
+                              y_hi_periodic, y_hi_noslip, u_ptr);
+    }
+
+    // Apply v BCs in x-direction
+    const int n_v_x_bc = (Ny + 1 + 2 * Ng) * Ng;
+    #pragma omp target teams distribute parallel for \
+        map(present: v_ptr[0:v_total_size])
+    for (int idx = 0; idx < n_v_x_bc; ++idx) {
+        int j = idx / Ng;
+        int g = idx % Ng;
+        apply_v_bc_x_staggered(j, g, Nx, Ng, v_stride,
+                              x_lo_periodic, x_lo_noslip,
+                              x_hi_periodic, x_hi_noslip, v_ptr);
+    }
+
+    // Apply v BCs in y-direction
+    const int n_v_y_bc = v_total_Nx * Ng;
+    #pragma omp target teams distribute parallel for \
+        map(present: v_ptr[0:v_total_size])
+    for (int idx = 0; idx < n_v_y_bc; ++idx) {
+        int i = idx / Ng;
+        int g = idx % Ng;
+        apply_v_bc_y_staggered(i, g, Ny, Ng, v_stride,
+                              y_lo_periodic, y_lo_noslip,
+                              y_hi_periodic, y_hi_noslip, v_ptr);
+    }
+    
+    // CORNER FIX: For fully periodic domains, apply x-direction BCs again
+    // to ensure corner ghosts are correctly wrapped after y-direction BCs modified them
+    // This was missing in the old GPU path!
+    if (x_lo_periodic && x_hi_periodic) {
         #pragma omp target teams distribute parallel for \
             map(present: u_ptr[0:u_total_size])
         for (int idx = 0; idx < n_u_x_bc; ++idx) {
@@ -797,33 +851,9 @@ void RANSSolver::apply_velocity_bc() {
             apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
                                   x_lo_periodic, x_hi_periodic, u_ptr);
         }
-
-        // Apply u BCs in y-direction
-        const int n_u_y_bc = (Nx + 1 + 2 * Ng) * Ng;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size])
-        for (int idx = 0; idx < n_u_y_bc; ++idx) {
-            int i = idx / Ng;
-            int g = idx % Ng;
-            apply_u_bc_y_staggered(i, g, Ny, Ng, u_stride,
-                                  y_lo_periodic, y_lo_noslip,
-                                  y_hi_periodic, y_hi_noslip, u_ptr);
-        }
-
-        // Apply v BCs in x-direction
-        const int n_v_x_bc = (Ny + 1 + 2 * Ng) * Ng;
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size])
-        for (int idx = 0; idx < n_v_x_bc; ++idx) {
-            int j = idx / Ng;
-            int g = idx % Ng;
-            apply_v_bc_x_staggered(j, g, Nx, Ng, v_stride,
-                                  x_lo_periodic, x_lo_noslip,
-                                  x_hi_periodic, x_hi_noslip, v_ptr);
-        }
-
-        // Apply v BCs in y-direction
-        const int n_v_y_bc = v_total_Nx * Ng;
+    }
+    
+    if (y_lo_periodic && y_hi_periodic) {
         #pragma omp target teams distribute parallel for \
             map(present: v_ptr[0:v_total_size])
         for (int idx = 0; idx < n_v_y_bc; ++idx) {
@@ -833,306 +863,168 @@ void RANSSolver::apply_velocity_bc() {
                                   y_lo_periodic, y_lo_noslip,
                                   y_hi_periodic, y_hi_noslip, v_ptr);
         }
-        NVTX_POP();  // End apply_velocity_bc (GPU path)
-        return;
-    }
-#endif
-
-    // CPU path: staggered BCs on host pointers
-    double* u_ptr = velocity_.u_data().data();
-    double* v_ptr = velocity_.v_data().data();
-
-    // Apply u BCs in x-direction
-    for (int j = 0; j < u_total_Ny; ++j) {
-        for (int g = 0; g < Ng; ++g) {
-            apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
-                                  x_lo_periodic, x_hi_periodic, u_ptr);
-        }
-    }
-
-    // Apply u BCs in y-direction
-    for (int i = 0; i < Nx + 1 + 2 * Ng; ++i) {
-        for (int g = 0; g < Ng; ++g) {
-            apply_u_bc_y_staggered(i, g, Ny, Ng, u_stride,
-                                  y_lo_periodic, y_lo_noslip,
-                                  y_hi_periodic, y_hi_noslip, u_ptr);
-        }
-    }
-
-    // Apply v BCs in x-direction
-    for (int j = 0; j < Ny + 1 + 2 * Ng; ++j) {
-        for (int g = 0; g < Ng; ++g) {
-            apply_v_bc_x_staggered(j, g, Nx, Ng, v_stride,
-                                  x_lo_periodic, x_lo_noslip,
-                                  x_hi_periodic, x_hi_noslip, v_ptr);
-        }
-    }
-
-    // Apply v BCs in y-direction  
-    for (int i = 0; i < v_total_Nx; ++i) {
-        for (int g = 0; g < Ng; ++g) {
-            apply_v_bc_y_staggered(i, g, Ny, Ng, v_stride,
-                                  y_lo_periodic, y_lo_noslip,
-                                  y_hi_periodic, y_hi_noslip, v_ptr);
-        }
     }
     
-    // CORNER FIX: For fully periodic domains, apply x-direction BCs again
-    // to ensure corner ghosts are correctly wrapped after y-direction BCs modified them
-    if (x_lo_periodic && x_hi_periodic) {
-        for (int j = 0; j < u_total_Ny; ++j) {
-            for (int g = 0; g < Ng; ++g) {
-                apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
-                                      x_lo_periodic, x_hi_periodic, u_ptr);
-            }
-        }
-    }
-    
-    if (y_lo_periodic && y_hi_periodic) {
-        for (int i = 0; i < v_total_Nx; ++i) {
-            for (int g = 0; g < Ng; ++g) {
-                apply_v_bc_y_staggered(i, g, Ny, Ng, v_stride,
-                                      y_lo_periodic, y_lo_noslip,
-                                      y_hi_periodic, y_hi_noslip, v_ptr);
-            }
-        }
-    }
     NVTX_POP();  // End apply_velocity_bc
 }
 
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
-    const double dx = mesh_->dx;
-    const double dy = mesh_->dy;
-    [[maybe_unused]] const int Nx = mesh_->Nx;
-    [[maybe_unused]] const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
-    const int u_stride = vel.u_stride();
-    const int v_stride = vel.v_stride();
+    (void)vel;   // Unused - always operates on velocity_ via view
+    (void)conv;  // Unused - always operates on conv_ via view
+    
+    // Get unified view
+    auto v = get_solver_view();
+    
+    const double dx = v.dx;
+    const double dy = v.dy;
+    const int Nx = v.Nx;
+    const int Ny = v.Ny;
+    const int Ng = v.Ng;
+    const int u_stride = v.u_stride;
+    const int v_stride = v.v_stride;
     const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: staggered convection on GPU
-    if (gpu::should_use_gpu_path()) {
-        const size_t u_total_size = vel.u_total_size();
-        const size_t v_total_size = vel.v_total_size();
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
 
-        const double* u_ptr      = velocity_u_ptr_;
-        const double* v_ptr      = velocity_v_ptr_;
-        double*       conv_u_ptr = conv_u_ptr_;
-        double*       conv_v_ptr = conv_v_ptr_;
+    const double* u_ptr      = v.u_face;
+    const double* v_ptr      = v.v_face;
+    double*       conv_u_ptr = v.conv_u;
+    double*       conv_v_ptr = v.conv_v;
 
-        // Compute u-momentum convection at x-faces
-        const int n_u_faces = (Nx + 1) * Ny;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
-            firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i_local = idx % (Nx + 1);
-            int j_local = idx / (Nx + 1);
-            int i = i_local + Ng;
-            int j = j_local + Ng;
+    // Compute u-momentum convection at x-faces
+    const int n_u_faces = (Nx + 1) * Ny;
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
+        firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
+    for (int idx = 0; idx < n_u_faces; ++idx) {
+        int i_local = idx % (Nx + 1);
+        int j_local = idx / (Nx + 1);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
 
-            convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, use_central,
-                                              u_ptr, v_ptr, conv_u_ptr);
-        }
-
-        // Compute v-momentum convection at y-faces
-        const int n_v_faces = Nx * (Ny + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
-            firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i_local = idx % Nx;
-            int j_local = idx / Nx;
-            int i = i_local + Ng;
-            int j = j_local + Ng;
-
-            convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, use_central,
-                                              u_ptr, v_ptr, conv_v_ptr);
-        }
-        return;
-    }
-#endif
-
-    // CPU path: staggered convection on CPU
-    const double* u_ptr      = vel.u_data().data();
-    const double* v_ptr      = vel.v_data().data();
-    double*       conv_u_ptr = conv.u_data().data();
-    double*       conv_v_ptr = conv.v_data().data();
-
-    // Compute u-momentum convection at x-faces: i in [Ng, Ng+Nx], j in [Ng, Ng+Ny-1]
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i <= Ng + Nx; ++i) {
-            convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, use_central,
-                                              u_ptr, v_ptr, conv_u_ptr);
-        }
+        convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, use_central,
+                                          u_ptr, v_ptr, conv_u_ptr);
     }
 
-    // Compute v-momentum convection at y-faces: i in [Ng, Ng+Nx-1], j in [Ng, Ng+Ny]
-    for (int j = Ng; j <= Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, use_central,
-                                              u_ptr, v_ptr, conv_v_ptr);
-        }
+    // Compute v-momentum convection at y-faces
+    const int n_v_faces = Nx * (Ny + 1);
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
+        firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
+    for (int idx = 0; idx < n_v_faces; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = idx / Nx;
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+
+        convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, use_central,
+                                          u_ptr, v_ptr, conv_v_ptr);
     }
 }
 
 void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, 
                                         VectorField& diff) {
-    const double dx = mesh_->dx;
-    const double dy = mesh_->dy;
-    [[maybe_unused]] const int Nx = mesh_->Nx;
-    [[maybe_unused]] const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
-    const int u_stride = vel.u_stride();
-    const int v_stride = vel.v_stride();
-    const int nu_stride = mesh_->total_Nx();
+    (void)vel;     // Unused - always operates on velocity_ via view
+    (void)nu_eff;  // Unused - always operates on nu_eff_ via view
+    (void)diff;    // Unused - always operates on diff_ via view
+    
+    // Get unified view
+    auto v = get_solver_view();
+    
+    const double dx = v.dx;
+    const double dy = v.dy;
+    const int Nx = v.Nx;
+    const int Ny = v.Ny;
+    const int Ng = v.Ng;
+    const int u_stride = v.u_stride;
+    const int v_stride = v.v_stride;
+    const int nu_stride = v.cell_stride;
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: staggered diffusion on GPU
-    if (gpu::should_use_gpu_path()) {
-        const size_t u_total_size = vel.u_total_size();
-        const size_t v_total_size = vel.v_total_size();
-        const size_t nu_total_size = field_total_size_;
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    const size_t nu_total_size = field_total_size_;
 
-        const double* u_ptr      = velocity_u_ptr_;
-        const double* v_ptr      = velocity_v_ptr_;
-        const double* nu_ptr     = nu_eff_ptr_;
-        double*       diff_u_ptr = diff_u_ptr_;
-        double*       diff_v_ptr = diff_v_ptr_;
+    const double* u_ptr      = v.u_face;
+    const double* v_ptr      = v.v_face;
+    const double* nu_ptr     = v.nu_eff;
+    double*       diff_u_ptr = v.diff_u;
+    double*       diff_v_ptr = v.diff_v;
 
-        // Compute u-momentum diffusion at x-faces
-        const int n_u_faces = (Nx + 1) * Ny;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
-            firstprivate(dx, dy, u_stride, nu_stride, Nx, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i_local = idx % (Nx + 1);
-            int j_local = idx / (Nx + 1);
-            int i = i_local + Ng;
-            int j = j_local + Ng;
+    // Compute u-momentum diffusion at x-faces
+    const int n_u_faces = (Nx + 1) * Ny;
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
+        firstprivate(dx, dy, u_stride, nu_stride, Nx, Ng)
+    for (int idx = 0; idx < n_u_faces; ++idx) {
+        int i_local = idx % (Nx + 1);
+        int j_local = idx / (Nx + 1);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
 
-            diffusive_u_face_kernel_staggered(i, j, u_stride, nu_stride, u_stride, dx, dy,
-                                             u_ptr, nu_ptr, diff_u_ptr);
-        }
-
-        // Compute v-momentum diffusion at y-faces
-        const int n_v_faces = Nx * (Ny + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
-            firstprivate(dx, dy, v_stride, nu_stride, Nx, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i_local = idx % Nx;
-            int j_local = idx / Nx;
-            int i = i_local + Ng;
-            int j = j_local + Ng;
-
-            diffusive_v_face_kernel_staggered(i, j, v_stride, nu_stride, v_stride, dx, dy,
-                                             v_ptr, nu_ptr, diff_v_ptr);
-        }
-        return;
-    }
-#endif
-
-    // CPU path: staggered diffusion on CPU
-    const double* u_ptr      = vel.u_data().data();
-    const double* v_ptr      = vel.v_data().data();
-    const double* nu_ptr     = nu_eff.data().data();
-    double*       diff_u_ptr = diff.u_data().data();
-    double*       diff_v_ptr = diff.v_data().data();
-
-    // Compute u-momentum diffusion at x-faces: i in [Ng, Ng+Nx], j in [Ng, Ng+Ny-1]
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i <= Ng + Nx; ++i) {
-            diffusive_u_face_kernel_staggered(i, j, u_stride, nu_stride, u_stride, dx, dy,
-                                             u_ptr, nu_ptr, diff_u_ptr);
-        }
+        diffusive_u_face_kernel_staggered(i, j, u_stride, nu_stride, u_stride, dx, dy,
+                                         u_ptr, nu_ptr, diff_u_ptr);
     }
 
-    // Compute v-momentum diffusion at y-faces: i in [Ng, Ng+Nx-1], j in [Ng, Ng+Ny]
-    for (int j = Ng; j <= Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            diffusive_v_face_kernel_staggered(i, j, v_stride, nu_stride, v_stride, dx, dy,
-                                             v_ptr, nu_ptr, diff_v_ptr);
-        }
+    // Compute v-momentum diffusion at y-faces
+    const int n_v_faces = Nx * (Ny + 1);
+    #pragma omp target teams distribute parallel for \
+        map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
+        firstprivate(dx, dy, v_stride, nu_stride, Nx, Ng)
+    for (int idx = 0; idx < n_v_faces; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = idx / Nx;
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+
+        diffusive_v_face_kernel_staggered(i, j, v_stride, nu_stride, v_stride, dx, dy,
+                                         v_ptr, nu_ptr, diff_v_ptr);
     }
 }
 
-void RANSSolver::compute_divergence(const VectorField& vel, ScalarField& div) {
-    const double dx = mesh_->dx;
-    const double dy = mesh_->dy;
-    [[maybe_unused]] const int Nx = mesh_->Nx;
-    [[maybe_unused]] const int Ny = mesh_->Ny;
-    const int div_stride = mesh_->total_Nx();
-    const int u_stride = vel.u_stride();
-    const int v_stride = vel.v_stride();
-
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: staggered divergence on GPU
-    if (gpu::should_use_gpu_path()) {
-        const int n_cells = Nx * Ny;
-        const size_t u_total_size = vel.u_total_size();
-        const size_t v_total_size = vel.v_total_size();
-        const size_t div_total_size = field_total_size_;
-
-        // Use SolverDeviceView to centralize pointer selection
-        auto view = get_solver_view();
-        
-        // Determine correct GPU pointers based on which VectorField was passed
-        // Compare data pointers to identify which field this is
-        const double* u_ptr = nullptr;
-        const double* v_ptr = nullptr;
-        if (vel.u_data().data() == velocity_.u_data().data()) {
-            u_ptr = view.u_face;
-            v_ptr = view.v_face;
-        } else if (vel.u_data().data() == velocity_star_.u_data().data()) {
-            u_ptr = view.u_star_face;
-            v_ptr = view.v_star_face;
-        } else {
-            // Unknown field - fall back to CPU
-            goto cpu_divergence_fallback;
-        }
-        
-        // Output divergence (always div_velocity_)
-        double* div_ptr = view.div;
-
-        // Use target data for scalar parameters (NVHPC workaround)
-        #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx)
-        {
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size])
-            for (int idx = 0; idx < n_cells; ++idx) {
-                const int i = idx % Nx + 1;  // Cell center i index (with ghosts)
-                const int j = idx / Nx + 1;  // Cell center j index (with ghosts)
-
-                // Fully inlined divergence computation
-                const int u_right = j * u_stride + (i + 1);
-                const int u_left = j * u_stride + i;
-                const int v_top = (j + 1) * v_stride + i;
-                const int v_bottom = j * v_stride + i;
-                const int div_idx = j * div_stride + i;
-                
-                const double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
-                const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
-                div_ptr[div_idx] = dudx + dvdy;
-            }
-        }
-        return;
-    }
+void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
+    (void)div;  // Unused - always operates on div_velocity_ via view
     
-cpu_divergence_fallback:
-#endif
-    {
-        // CPU path: staggered divergence on CPU
-        const double* u_ptr  = vel.u_data().data();
-        const double* v_ptr  = vel.v_data().data();
-        double*       div_ptr = div.data().data();
+    // Get unified view
+    auto v = get_solver_view();
+    auto vel_ptrs = select_face_velocity(v, which);
+    
+    const double dx = v.dx;
+    const double dy = v.dy;
+    const int Nx = v.Nx;
+    const int Ny = v.Ny;
+    const int div_stride = v.cell_stride;
+    const int u_stride = vel_ptrs.u_stride;
+    const int v_stride = vel_ptrs.v_stride;
 
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                divergence_cell_kernel_staggered(i, j, u_stride, v_stride, div_stride, dx, dy,
-                                                u_ptr, v_ptr, div_ptr);
-            }
+    const int n_cells = Nx * Ny;
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    const size_t div_total_size = field_total_size_;
+
+    const double* u_ptr = vel_ptrs.u;
+    const double* v_ptr = vel_ptrs.v;
+    double* div_ptr = v.div;
+
+    // Use target data for scalar parameters (NVHPC workaround)
+    #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx)
+    {
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int i = idx % Nx + 1;  // Cell center i index (with ghosts)
+            const int j = idx / Nx + 1;  // Cell center j index (with ghosts)
+
+            // Fully inlined divergence computation
+            const int u_right = j * u_stride + (i + 1);
+            const int u_left = j * u_stride + i;
+            const int v_top = (j + 1) * v_stride + i;
+            const int v_bottom = j * v_stride + i;
+            const int div_idx = j * div_stride + i;
+            
+            const double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
+            const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
+            div_ptr[div_idx] = dudx + dvdy;
         }
     }
 }
@@ -1167,161 +1059,112 @@ void RANSSolver::compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_d
 }
 
 void RANSSolver::correct_velocity() {
-    const double dx = mesh_->dx;
-    const double dy = mesh_->dy;
-    const double dt = current_dt_;
-    [[maybe_unused]] const int Nx = mesh_->Nx;
-    [[maybe_unused]] const int Ny = mesh_->Ny;
-    const int p_stride = mesh_->total_Nx();
-    const int u_stride = velocity_.u_stride();
-    const int v_stride = velocity_.v_stride();
-    const int Ng = mesh_->Nghost;
+    NVTX_PUSH("correct_velocity");
+    
+    // Get unified view (device pointers in GPU build, host pointers in CPU build)
+    auto v = get_solver_view();
+    
+    const double dx = v.dx;
+    const double dy = v.dy;
+    const double dt = v.dt;
+    const int Nx = v.Nx;
+    const int Ny = v.Ny;
+    const int Ng = v.Ng;
+    const int u_stride = v.u_stride;
+    const int v_stride = v.v_stride;
+    const int p_stride = v.cell_stride;
     
     const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) && 
                             (velocity_bc_.x_hi == VelocityBC::Periodic);
     const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) && 
                             (velocity_bc_.y_hi == VelocityBC::Periodic);
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: staggered velocity correction on GPU
-    if (gpu::should_use_gpu_path()) {
-        const int n_cells = Nx * Ny;
-        const size_t u_total_size = velocity_.u_total_size();
-        const size_t v_total_size = velocity_.v_total_size();
-        const size_t p_total_size = field_total_size_;
+    const int n_cells = Nx * Ny;
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    const size_t p_total_size = field_total_size_;
 
-        const double* u_star_ptr = velocity_star_u_ptr_;
-        const double* v_star_ptr = velocity_star_v_ptr_;
-        const double* p_corr_ptr = pressure_corr_ptr_;
-        double*       u_ptr      = velocity_u_ptr_;
-        double*       v_ptr      = velocity_v_ptr_;
-        double*       p_ptr      = pressure_ptr_;
+    const double* u_star_ptr = v.u_star_face;
+    const double* v_star_ptr = v.v_star_face;
+    const double* p_corr_ptr = v.p_corr;
+    double*       u_ptr      = v.u_face;
+    double*       v_ptr      = v.v_face;
+    double*       p_ptr      = v.p;
 
-        // Correct ALL u-velocities at x-faces (including redundant face if periodic)
-        const int n_u_faces = (Nx + 1) * Ny;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], p_corr_ptr[0:p_total_size]) \
-            firstprivate(dx, dt, u_stride, p_stride, Nx, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i_local = idx % (Nx + 1);
-            int j_local = idx / (Nx + 1);
-            int i = i_local + Ng;
-            int j = j_local + Ng;
+    // Correct ALL u-velocities at x-faces (including redundant face if periodic)
+    const int n_u_faces = (Nx + 1) * Ny;
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], p_corr_ptr[0:p_total_size]) \
+        firstprivate(dx, dt, u_stride, p_stride, Nx, Ng)
+    for (int idx = 0; idx < n_u_faces; ++idx) {
+        int i_local = idx % (Nx + 1);
+        int j_local = idx / (Nx + 1);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
 
-            correct_u_face_kernel_staggered(i, j, u_stride, p_stride, dx, dt,
-                                           u_star_ptr, p_corr_ptr, u_ptr);
-        }
-        
-        // Enforce exact x-periodicity: average the left and right edge values
-        if (x_periodic) {
-            const int n_u_periodic = Ny;
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:u_total_size]) \
-                firstprivate(u_stride, Nx, Ng)
-            for (int j_local = 0; j_local < n_u_periodic; ++j_local) {
-                int j = j_local + Ng;
-                int i_left = Ng;
-                int i_right = Ng + Nx;
-                double u_avg = 0.5 * (u_ptr[j * u_stride + i_left] + u_ptr[j * u_stride + i_right]);
-                u_ptr[j * u_stride + i_left] = u_avg;
-                u_ptr[j * u_stride + i_right] = u_avg;
-            }
-        }
-
-        // Correct ALL v-velocities at y-faces (including redundant face if periodic)
-        const int n_v_faces = Nx * (Ny + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
-            firstprivate(dy, dt, v_stride, p_stride, Nx, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i_local = idx % Nx;
-            int j_local = idx / Nx;
-            int i = i_local + Ng;
-            int j = j_local + Ng;
-
-            correct_v_face_kernel_staggered(i, j, v_stride, p_stride, dy, dt,
-                                           v_star_ptr, p_corr_ptr, v_ptr);
-        }
-        
-        // Enforce exact y-periodicity: average the bottom and top edge values
-        if (y_periodic) {
-            const int n_v_periodic = Nx;
-            #pragma omp target teams distribute parallel for \
-                map(present: v_ptr[0:v_total_size]) \
-                firstprivate(v_stride, Ny, Ng)
-            for (int i_local = 0; i_local < n_v_periodic; ++i_local) {
-                int i = i_local + Ng;
-                int j_bottom = Ng;
-                int j_top = Ng + Ny;
-                double v_avg = 0.5 * (v_ptr[j_bottom * v_stride + i] + v_ptr[j_top * v_stride + i]);
-                v_ptr[j_bottom * v_stride + i] = v_avg;
-                v_ptr[j_top * v_stride + i] = v_avg;
-            }
-        }
-
-        // Update pressure at cell centers
-        #pragma omp target teams distribute parallel for \
-            map(present: p_ptr[0:p_total_size], p_corr_ptr[0:p_total_size]) \
-            firstprivate(p_stride, Nx)
-        for (int idx = 0; idx < n_cells; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-
-            update_pressure_kernel(i, j, p_stride, p_corr_ptr, p_ptr);
-        }
-    } else {
-#endif
-        // CPU path: staggered velocity correction on CPU
-        const double* u_star_ptr = velocity_star_.u_data().data();
-        const double* v_star_ptr = velocity_star_.v_data().data();
-        const double* p_corr_ptr = pressure_correction_.data().data();
-        double*       u_ptr      = velocity_.u_data().data();
-        double*       v_ptr      = velocity_.v_data().data();
-        double*       p_ptr      = pressure_.data().data();
-
-        // Correct ALL u-velocities at x-faces (including redundant if periodic)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                correct_u_face_kernel_staggered(i, j, u_stride, p_stride, dx, dt,
-                                               u_star_ptr, p_corr_ptr, u_ptr);
-            }
-        }
-        
-        // Enforce exact x-periodicity: average left and right edges
-        if (x_periodic) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                double u_avg = 0.5 * (u_ptr[j * u_stride + Ng] + u_ptr[j * u_stride + (Ng + Nx)]);
-                u_ptr[j * u_stride + Ng] = u_avg;
-                u_ptr[j * u_stride + (Ng + Nx)] = u_avg;
-            }
-        }
-
-        // Correct ALL v-velocities at y-faces (including redundant if periodic)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                correct_v_face_kernel_staggered(i, j, v_stride, p_stride, dy, dt,
-                                               v_star_ptr, p_corr_ptr, v_ptr);
-            }
-        }
-        
-        // Enforce exact y-periodicity: average bottom and top edges
-        if (y_periodic) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                double v_avg = 0.5 * (v_ptr[Ng * v_stride + i] + v_ptr[(Ng + Ny) * v_stride + i]);
-                v_ptr[Ng * v_stride + i] = v_avg;
-                v_ptr[(Ng + Ny) * v_stride + i] = v_avg;
-            }
-        }
-
-        // Update pressure at cell centers
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                update_pressure_kernel(i, j, p_stride, p_corr_ptr, p_ptr);
-            }
-        }
-#ifdef USE_GPU_OFFLOAD
+        correct_u_face_kernel_staggered(i, j, u_stride, p_stride, dx, dt,
+                                       u_star_ptr, p_corr_ptr, u_ptr);
     }
-#endif
+    
+    // Enforce exact x-periodicity: average the left and right edge values
+    if (x_periodic) {
+        const int n_u_periodic = Ny;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(u_stride, Nx, Ng)
+        for (int j_local = 0; j_local < n_u_periodic; ++j_local) {
+            int j = j_local + Ng;
+            int i_left = Ng;
+            int i_right = Ng + Nx;
+            double u_avg = 0.5 * (u_ptr[j * u_stride + i_left] + u_ptr[j * u_stride + i_right]);
+            u_ptr[j * u_stride + i_left] = u_avg;
+            u_ptr[j * u_stride + i_right] = u_avg;
+        }
+    }
+
+    // Correct ALL v-velocities at y-faces (including redundant face if periodic)
+    const int n_v_faces = Nx * (Ny + 1);
+    #pragma omp target teams distribute parallel for \
+        map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
+        firstprivate(dy, dt, v_stride, p_stride, Nx, Ng)
+    for (int idx = 0; idx < n_v_faces; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = idx / Nx;
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+
+        correct_v_face_kernel_staggered(i, j, v_stride, p_stride, dy, dt,
+                                       v_star_ptr, p_corr_ptr, v_ptr);
+    }
+    
+    // Enforce exact y-periodicity: average the bottom and top edge values
+    if (y_periodic) {
+        const int n_v_periodic = Nx;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(v_stride, Ny, Ng)
+        for (int i_local = 0; i_local < n_v_periodic; ++i_local) {
+            int i = i_local + Ng;
+            int j_bottom = Ng;
+            int j_top = Ng + Ny;
+            double v_avg = 0.5 * (v_ptr[j_bottom * v_stride + i] + v_ptr[j_top * v_stride + i]);
+            v_ptr[j_bottom * v_stride + i] = v_avg;
+            v_ptr[j_top * v_stride + i] = v_avg;
+        }
+    }
+
+    // Update pressure at cell centers
+    #pragma omp target teams distribute parallel for \
+        map(present: p_ptr[0:p_total_size], p_corr_ptr[0:p_total_size]) \
+        firstprivate(p_stride, Nx)
+    for (int idx = 0; idx < n_cells; ++idx) {
+        int i = idx % Nx + Ng;
+        int j = idx / Nx + Ng;
+
+        update_pressure_kernel(i, j, p_stride, p_corr_ptr, p_ptr);
+    }
+    
+    NVTX_POP();  // End correct_velocity
 }
 
 double RANSSolver::compute_residual() {
@@ -1524,124 +1367,90 @@ double RANSSolver::step() {
     // 3. Compute provisional velocity u* (without pressure gradient) at face locations
     // u* = u^n + dt * (-conv + diff + body_force)
     NVTX_PUSH("predictor_step");
-    [[maybe_unused]] const int u_stride = velocity_.u_stride();
-    [[maybe_unused]] const int v_stride = velocity_.v_stride();
+    
+    // Get unified view (reuse Nx, Ny, Ng from function scope)
+    auto v = get_solver_view();
+    
+    const int u_stride_pred = v.u_stride;
+    const int v_stride_pred = v.v_stride;
+    const double dt = v.dt;
+    const double fx = fx_;
+    const double fy = fy_;
     
     const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) && 
                             (velocity_bc_.x_hi == VelocityBC::Periodic);
     const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) && 
                             (velocity_bc_.y_hi == VelocityBC::Periodic);
     
-#ifdef USE_GPU_OFFLOAD
-    if (gpu::should_use_gpu_path()) {
-        const size_t u_total_size = velocity_.u_total_size();
-        const size_t v_total_size = velocity_.v_total_size();
-        const double dt = current_dt_;
-        const double fx = fx_;
-        const double fy = fy_;
-        const double* u_ptr = velocity_u_ptr_;
-        const double* v_ptr = velocity_v_ptr_;
-        double* u_star_ptr = velocity_star_u_ptr_;
-        double* v_star_ptr = velocity_star_v_ptr_;
-        const double* conv_u_ptr = conv_u_ptr_;
-        const double* conv_v_ptr = conv_v_ptr_;
-        const double* diff_u_ptr = diff_u_ptr_;
-        const double* diff_v_ptr = diff_v_ptr_;
+    const size_t u_total_size_pred = velocity_.u_total_size();
+    const size_t v_total_size_pred = velocity_.v_total_size();
+    
+    const double* u_ptr = v.u_face;
+    const double* v_ptr = v.v_face;
+    double* u_star_ptr = v.u_star_face;
+    double* v_star_ptr = v.v_star_face;
+    const double* conv_u_ptr = v.conv_u;
+    const double* conv_v_ptr = v.conv_v;
+    const double* diff_u_ptr = v.diff_u;
+    const double* diff_v_ptr = v.diff_v;
+    
+    // Compute u* at ALL x-faces (including redundant if periodic)
+    const int n_u_faces_pred = (Nx + 1) * Ny;
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size_pred], u_star_ptr[0:u_total_size_pred], \
+                    conv_u_ptr[0:u_total_size_pred], diff_u_ptr[0:u_total_size_pred]) \
+        firstprivate(dt, fx, u_stride_pred, Nx, Ng)
+    for (int idx = 0; idx < n_u_faces_pred; ++idx) {
+        int i_local = idx % (Nx + 1);
+        int j_local = idx / (Nx + 1);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int u_idx = j * u_stride_pred + i;
         
-        // Compute u* at ALL x-faces (including redundant if periodic)
-        const int n_u_faces = (Nx + 1) * Ny;
+        u_star_ptr[u_idx] = u_ptr[u_idx] + dt * (-conv_u_ptr[u_idx] + diff_u_ptr[u_idx] + fx);
+    }
+    
+    // Enforce exact x-periodicity for u*: average left and right edges
+    if (x_periodic) {
+        const int n_u_periodic = Ny;
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], \
-                        conv_u_ptr[0:u_total_size], diff_u_ptr[0:u_total_size]) \
-            firstprivate(dt, fx, u_stride, Nx, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i_local = idx % (Nx + 1);
-            int j_local = idx / (Nx + 1);
-            int i = i_local + Ng;
+            map(present: u_star_ptr[0:u_total_size_pred]) \
+            firstprivate(u_stride_pred, Nx, Ng)
+        for (int j_local = 0; j_local < n_u_periodic; ++j_local) {
             int j = j_local + Ng;
-            int u_idx = j * u_stride + i;
-            
-            u_star_ptr[u_idx] = u_ptr[u_idx] + dt * (-conv_u_ptr[u_idx] + diff_u_ptr[u_idx] + fx);
+            double u_avg = 0.5 * (u_star_ptr[j * u_stride_pred + Ng] + u_star_ptr[j * u_stride_pred + (Ng + Nx)]);
+            u_star_ptr[j * u_stride_pred + Ng] = u_avg;
+            u_star_ptr[j * u_stride_pred + (Ng + Nx)] = u_avg;
         }
+    }
+    
+    // Compute v* at ALL y-faces (including redundant if periodic)
+    const int n_v_faces_pred = Nx * (Ny + 1);
+    #pragma omp target teams distribute parallel for \
+        map(present: v_ptr[0:v_total_size_pred], v_star_ptr[0:v_total_size_pred], \
+                    conv_v_ptr[0:v_total_size_pred], diff_v_ptr[0:v_total_size_pred]) \
+        firstprivate(dt, fy, v_stride_pred, Nx, Ng)
+    for (int idx = 0; idx < n_v_faces_pred; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = idx / Nx;
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int v_idx = j * v_stride_pred + i;
         
-        // Enforce exact x-periodicity for u*: average left and right edges
-        if (x_periodic) {
-            const int n_u_periodic = Ny;
-            #pragma omp target teams distribute parallel for \
-                map(present: u_star_ptr[0:u_total_size]) \
-                firstprivate(u_stride, Nx, Ng)
-            for (int j_local = 0; j_local < n_u_periodic; ++j_local) {
-                int j = j_local + Ng;
-                double u_avg = 0.5 * (u_star_ptr[j * u_stride + Ng] + u_star_ptr[j * u_stride + (Ng + Nx)]);
-                u_star_ptr[j * u_stride + Ng] = u_avg;
-                u_star_ptr[j * u_stride + (Ng + Nx)] = u_avg;
-            }
-        }
-        
-        // Compute v* at ALL y-faces (including redundant if periodic)
-        const int n_v_faces = Nx * (Ny + 1);
+        v_star_ptr[v_idx] = v_ptr[v_idx] + dt * (-conv_v_ptr[v_idx] + diff_v_ptr[v_idx] + fy);
+    }
+    
+    // Enforce exact y-periodicity for v*: average bottom and top edges
+    if (y_periodic) {
+        const int n_v_periodic = Nx;
         #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], \
-                        conv_v_ptr[0:v_total_size], diff_v_ptr[0:v_total_size]) \
-            firstprivate(dt, fy, v_stride, Nx, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i_local = idx % Nx;
-            int j_local = idx / Nx;
+            map(present: v_star_ptr[0:v_total_size_pred]) \
+            firstprivate(v_stride_pred, Ny, Ng)
+        for (int i_local = 0; i_local < n_v_periodic; ++i_local) {
             int i = i_local + Ng;
-            int j = j_local + Ng;
-            int v_idx = j * v_stride + i;
-            
-            v_star_ptr[v_idx] = v_ptr[v_idx] + dt * (-conv_v_ptr[v_idx] + diff_v_ptr[v_idx] + fy);
-        }
-        
-        // Enforce exact y-periodicity for v*: average bottom and top edges
-        if (y_periodic) {
-            const int n_v_periodic = Nx;
-            #pragma omp target teams distribute parallel for \
-                map(present: v_star_ptr[0:v_total_size]) \
-                firstprivate(v_stride, Ny, Ng)
-            for (int i_local = 0; i_local < n_v_periodic; ++i_local) {
-                int i = i_local + Ng;
-                double v_avg = 0.5 * (v_star_ptr[Ng * v_stride + i] + v_star_ptr[(Ng + Ny) * v_stride + i]);
-                v_star_ptr[Ng * v_stride + i] = v_avg;
-                v_star_ptr[(Ng + Ny) * v_stride + i] = v_avg;
-            }
-        }
-    } else
-#endif
-    {
-        // CPU path: compute u* at ALL x-faces (including redundant if periodic)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                velocity_star_.u(i, j) = velocity_.u(i, j) + current_dt_ * 
-                    (-conv_.u(i, j) + diff_.u(i, j) + fx_);
-            }
-        }
-        
-        // Enforce exact x-periodicity for u*: average left and right edges
-        if (x_periodic) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                double u_avg = 0.5 * (velocity_star_.u(Ng, j) + velocity_star_.u(Ng + Nx, j));
-                velocity_star_.u(Ng, j) = u_avg;
-                velocity_star_.u(Ng + Nx, j) = u_avg;
-            }
-        }
-        
-        // CPU path: compute v* at ALL y-faces (including redundant if periodic)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                velocity_star_.v(i, j) = velocity_.v(i, j) + current_dt_ * 
-                    (-conv_.v(i, j) + diff_.v(i, j) + fy_);
-            }
-        }
-        
-        // Enforce exact y-periodicity for v*: average bottom and top edges
-        if (y_periodic) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                double v_avg = 0.5 * (velocity_star_.v(i, Ng) + velocity_star_.v(i, Ng + Ny));
-                velocity_star_.v(i, Ng) = v_avg;
-                velocity_star_.v(i, Ng + Ny) = v_avg;
-            }
+            double v_avg = 0.5 * (v_star_ptr[Ng * v_stride_pred + i] + v_star_ptr[(Ng + Ny) * v_stride_pred + i]);
+            v_star_ptr[Ng * v_stride_pred + i] = v_avg;
+            v_star_ptr[(Ng + Ny) * v_stride_pred + i] = v_avg;
         }
     }
     
@@ -1677,7 +1486,7 @@ double RANSSolver::step() {
     {
         TIMED_SCOPE("divergence");
         NVTX_PUSH("divergence");
-        compute_divergence(velocity_star_, div_velocity_);
+        compute_divergence(VelocityWhich::Star, div_velocity_);
         NVTX_POP();
     }
     
@@ -1824,77 +1633,53 @@ double RANSSolver::step() {
     
     // Note: iter_ is managed by the outer solve loop, don't increment here
     
-    // Return max velocity change as convergence criterion
-    double max_change = 0.0;
+    // Return max velocity change as convergence criterion (unified view-based)
+    auto v_res = get_solver_view();
     
-#ifdef USE_GPU_OFFLOAD
-    if (gpu::should_use_gpu_path()) {
-        // GPU-resident residual: compute max change on GPU via reduction
-        // velocity_old is now device-resident - NO H→D upload needed!
-        const size_t u_total_size = velocity_.u_total_size();
-        const size_t v_total_size = velocity_.v_total_size();
-        const double* u_new_ptr = velocity_u_ptr_;
-        const double* v_new_ptr = velocity_v_ptr_;
-        const double* u_old_ptr = velocity_old_u_ptr_;
-        const double* v_old_ptr = velocity_old_v_ptr_;
-        const int u_stride = Nx + 2 * Ng + 1;
-        const int v_stride = Nx + 2 * Ng;
-        
-        // Compute max |u_new - u_old| on GPU (both arrays already on device!)
-        const int n_u_faces = (Nx + 1) * Ny;
-        double max_du = 0.0;
-        #pragma omp target teams distribute parallel for reduction(max:max_du) \
-            map(present: u_new_ptr[0:u_total_size], u_old_ptr[0:u_total_size]) \
-            map(to: Ng, u_stride, Nx)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i_local = idx % (Nx + 1);
-            int j_local = idx / (Nx + 1);
-            int i = i_local + Ng;
-            int j = j_local + Ng;
-            int u_idx = j * u_stride + i;
-            double du = u_new_ptr[u_idx] - u_old_ptr[u_idx];
-            if (du < 0.0) du = -du;
-            if (du > max_du) max_du = du;
-        }
-        
-        // Compute max |v_new - v_old| on GPU (both arrays already on device!)
-        const int n_v_faces = Nx * (Ny + 1);
-        double max_dv = 0.0;
-        #pragma omp target teams distribute parallel for reduction(max:max_dv) \
-            map(present: v_new_ptr[0:v_total_size], v_old_ptr[0:v_total_size]) \
-            map(to: Ng, v_stride, Nx)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i_local = idx % Nx;
-            int j_local = idx / Nx;
-            int i = i_local + Ng;
-            int j = j_local + Ng;
-            int v_idx = j * v_stride + i;
-            double dv = v_new_ptr[v_idx] - v_old_ptr[v_idx];
-            if (dv < 0.0) dv = -dv;
-            if (dv > max_dv) max_dv = dv;
-        }
-        
-        max_change = (max_du > max_dv) ? max_du : max_dv;
-    } else
-#endif
-    {
-        // CPU path: compute residual on CPU using velocity_old_
-        // Check u-velocity change at x-faces
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                double du = std::abs(velocity_.u(i, j) - velocity_old_.u(i, j));
-                max_change = std::max(max_change, du);
-            }
-        }
-        
-        // Check v-velocity change at y-faces
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                double dv = std::abs(velocity_.v(i, j) - velocity_old_.v(i, j));
-                max_change = std::max(max_change, dv);
-            }
-        }
+    const size_t u_total_size_res = velocity_.u_total_size();
+    const size_t v_total_size_res = velocity_.v_total_size();
+    const double* u_new_ptr = v_res.u_face;
+    const double* v_new_ptr = v_res.v_face;
+    const double* u_old_ptr = v_res.u_old_face;
+    const double* v_old_ptr = v_res.v_old_face;
+    const int u_stride_res = v_res.u_stride;
+    const int v_stride_res = v_res.v_stride;
+    
+    // Compute max |u_new - u_old| via reduction
+    const int n_u_faces_res = (Nx + 1) * Ny;
+    double max_du = 0.0;
+    #pragma omp target teams distribute parallel for reduction(max:max_du) \
+        map(present: u_new_ptr[0:u_total_size_res], u_old_ptr[0:u_total_size_res]) \
+        map(to: Ng, u_stride_res, Nx)
+    for (int idx = 0; idx < n_u_faces_res; ++idx) {
+        int i_local = idx % (Nx + 1);
+        int j_local = idx / (Nx + 1);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int u_idx = j * u_stride_res + i;
+        double du = u_new_ptr[u_idx] - u_old_ptr[u_idx];
+        if (du < 0.0) du = -du;
+        if (du > max_du) max_du = du;
     }
+    
+    // Compute max |v_new - v_old| via reduction
+    const int n_v_faces_res = Nx * (Ny + 1);
+    double max_dv = 0.0;
+    #pragma omp target teams distribute parallel for reduction(max:max_dv) \
+        map(present: v_new_ptr[0:v_total_size_res], v_old_ptr[0:v_total_size_res]) \
+        map(to: Ng, v_stride_res, Nx)
+    for (int idx = 0; idx < n_v_faces_res; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = idx / Nx;
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int v_idx = j * v_stride_res + i;
+        double dv = v_new_ptr[v_idx] - v_old_ptr[v_idx];
+        if (dv < 0.0) dv = -dv;
+        if (dv > max_dv) max_dv = dv;
+    }
+    
+    double max_change = (max_du > max_dv) ? max_du : max_dv;
 
     return max_change;
 }
@@ -2624,6 +2409,42 @@ void RANSSolver::sync_transport_from_gpu() {
 
 TurbulenceDeviceView RANSSolver::get_device_view() const {
     return TurbulenceDeviceView();  // Returns invalid view (all nullptrs)
+}
+
+SolverDeviceView RANSSolver::get_solver_view() const {
+    // CPU build: always return host pointers
+    SolverDeviceView view;
+    
+    view.u_face = const_cast<double*>(velocity_.u_data().data());
+    view.v_face = const_cast<double*>(velocity_.v_data().data());
+    view.u_star_face = const_cast<double*>(velocity_star_.u_data().data());
+    view.v_star_face = const_cast<double*>(velocity_star_.v_data().data());
+    view.u_old_face = const_cast<double*>(velocity_old_.u_data().data());
+    view.v_old_face = const_cast<double*>(velocity_old_.v_data().data());
+    view.u_stride = velocity_.u_stride();
+    view.v_stride = velocity_.v_stride();
+    
+    view.p = const_cast<double*>(pressure_.data().data());
+    view.p_corr = const_cast<double*>(pressure_correction_.data().data());
+    view.nu_t = const_cast<double*>(nu_t_.data().data());
+    view.nu_eff = const_cast<double*>(nu_eff_.data().data());
+    view.rhs = const_cast<double*>(rhs_poisson_.data().data());
+    view.div = const_cast<double*>(div_velocity_.data().data());
+    view.cell_stride = mesh_->total_Nx();
+    
+    view.conv_u = const_cast<double*>(conv_.u_data().data());
+    view.conv_v = const_cast<double*>(conv_.v_data().data());
+    view.diff_u = const_cast<double*>(diff_.u_data().data());
+    view.diff_v = const_cast<double*>(diff_.v_data().data());
+    
+    view.Nx = mesh_->Nx;
+    view.Ny = mesh_->Ny;
+    view.Ng = mesh_->Nghost;
+    view.dx = mesh_->dx;
+    view.dy = mesh_->dy;
+    view.dt = current_dt_;
+    
+    return view;
 }
 #endif
 
