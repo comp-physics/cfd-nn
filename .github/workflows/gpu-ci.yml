@@ -41,7 +41,7 @@ jobs:
         #SBATCH -p gpu-h200
         #SBATCH -G 1
         #SBATCH --qos=embers
-        #SBATCH -t 01:25:00
+        #SBATCH -t 01:55:00
         #SBATCH -o __SLURM_OUT__
         #SBATCH -e __SLURM_ERR__
         
@@ -83,6 +83,104 @@ jobs:
         echo "=== Building ==="
         make -j8
         mkdir -p output
+
+        echo ""
+        echo "==================================================================="
+        echo "  CPU-only build vs GPU-offload build (perturbed Poisson compare)"
+        echo "==================================================================="
+        echo ""
+
+        # Build a CPU-only reference binary (no GPU offload) and run the same case.
+        cd "__WORKDIR__"
+        rm -rf build_ci_cpu_ref
+        mkdir -p build_ci_cpu_ref
+        cd build_ci_cpu_ref
+
+        echo "=== CMake Configuration (CPU-only reference) ==="
+        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
+        echo ""
+        echo "=== Building (CPU-only reference) ==="
+        make -j8
+        mkdir -p output/cpu_ref
+
+        echo ""
+        echo "--- Running perturbed Poisson test (CPU-only build) ---"
+        ./test_poisson_perturbed --Nx 64 --Ny 64 --nu 0.01 --dp_dx -0.01 --max_iter 2000 --tol 1e-6 --verbose false \
+          | tee output/cpu_ref/poisson_perturbed.log
+
+        # Now run the same case with the GPU-offload build (must offload due to MANDATORY).
+        cd "__WORKDIR__/build_ci_gpu_correctness"
+        mkdir -p output/gpu_ref
+
+        echo ""
+        echo "--- Running perturbed Poisson test (GPU-offload build) ---"
+        ./test_poisson_perturbed --Nx 64 --Ny 64 --nu 0.01 --dp_dx -0.01 --max_iter 2000 --tol 1e-6 --verbose false \
+          | tee output/gpu_ref/poisson_perturbed.log
+
+        echo ""
+        echo "--- Comparing perturbed Poisson diagnostics: CPU-only vs GPU-offload build ---"
+        python3 - <<'PY'
+        import math
+        import os
+        import re
+        import sys
+
+        def parse_metrics(log_path: str):
+            if not os.path.exists(log_path):
+                raise FileNotFoundError(log_path)
+            txt = open(log_path, "r", encoding="utf-8", errors="ignore").read()
+
+            def grab(key: str, pat: str):
+                m = re.search(pat, txt)
+                if not m:
+                    raise RuntimeError(f"missing '{key}' in {log_path}")
+                return float(m.group(1))
+
+            metrics = {
+                "residual": grab("residual", r"Final residual:\\s*([+-]?(?:\\d+\\.\\d*|\\d*\\.\\d+|\\d+)(?:[eE][+-]?\\d+)?)"),
+                "iterations": grab("iterations", r"Iterations:\\s*([0-9]+)"),
+                "bulk_velocity": grab("bulk_velocity", r"Bulk velocity:\\s*([+-]?(?:\\d+\\.\\d*|\\d*\\.\\d+|\\d+)(?:[eE][+-]?\\d+)?)"),
+                "max_div": grab("max_div", r"Max divergence:\\s*([+-]?(?:\\d+\\.\\d*|\\d*\\.\\d+|\\d+)(?:[eE][+-]?\\d+)?)"),
+                "rms_div": grab("rms_div", r"RMS divergence:\\s*([+-]?(?:\\d+\\.\\d*|\\d*\\.\\d+|\\d+)(?:[eE][+-]?\\d+)?)"),
+            }
+            return metrics
+
+        def cmp(name: str, a: float, b: float, tol: float):
+            d = abs(a - b)
+            ok = d <= tol
+            print(f"{name}: cpu={a:.12e} gpu={b:.12e} diff={d:.3e} tol={tol:.1e} {'OK' if ok else 'FAIL'}")
+            return ok
+
+        cpu_log = "__WORKDIR__/build_ci_cpu_ref/output/cpu_ref/poisson_perturbed.log"
+        gpu_log = "__WORKDIR__/build_ci_gpu_correctness/output/gpu_ref/poisson_perturbed.log"
+
+        cpu = parse_metrics(cpu_log)
+        gpu = parse_metrics(gpu_log)
+
+        print("Parsed metrics (CPU-only):", cpu)
+        print("Parsed metrics (GPU-offload):", gpu)
+
+        # Iteration counts can legitimately differ across builds; report only.
+        print(f"iterations: cpu={int(cpu['iterations'])} gpu={int(gpu['iterations'])} (not enforced)")
+
+        ok = True
+        # These should match closely if CPU/GPU paths are consistent.
+        ok &= cmp("bulk_velocity", cpu["bulk_velocity"], gpu["bulk_velocity"], tol=1e-6)
+        ok &= cmp("max_div", cpu["max_div"], gpu["max_div"], tol=1e-8)
+        ok &= cmp("rms_div", cpu["rms_div"], gpu["rms_div"], tol=1e-8)
+        # Residual can vary depending on iteration path; keep looser but still sanity-check.
+        ok &= cmp("residual", cpu["residual"], gpu["residual"], tol=1e-5)
+
+        sys.exit(0 if ok else 1)
+        PY
+
+        echo ""
+        echo "==================================================================="
+        echo "  End-to-end lockstep CPU vs GPU (single binary)"
+        echo "==================================================================="
+        echo ""
+        # Single binary runs CPU-forced then GPU turbulence and compares final fields.
+        ./compare_channel_cpu_gpu --Nx 64 --Ny 128 --max_iter 200 --model baseline
     
         echo ""
         echo "==================================================================="
@@ -300,10 +398,12 @@ jobs:
         echo ""
         echo "=== CMake Config Log ==="
         cat build_ci_gpu_correctness/cmake_config.log 2>/dev/null || echo "No cmake log found (correctness)"
+        cat build_ci_cpu_ref/cmake_config.log 2>/dev/null || echo "No cmake log found (cpu_ref)"
         cat build_ci_gpu_perf/cmake_config.log 2>/dev/null || echo "No cmake log found (perf)"
         echo ""
         echo "=== Checking compiled binaries ==="
         ls -lh build_ci_gpu_correctness/test_* 2>/dev/null || echo "No test binaries found (correctness)"
+        ls -lh build_ci_cpu_ref/test_* 2>/dev/null || echo "No test binaries found (cpu_ref)"
         ls -lh build_ci_gpu_perf/test_* 2>/dev/null || echo "No test binaries found (perf)"
         echo ""
         echo "=== Verifying source again ==="
@@ -319,5 +419,6 @@ jobs:
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out || true
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err || true
         rm -rf build_ci_gpu_correctness || true
+        rm -rf build_ci_cpu_ref || true
         rm -rf build_ci_gpu_perf || true
 
