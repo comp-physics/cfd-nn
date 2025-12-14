@@ -12,6 +12,9 @@ option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
 
+# Suppress unknown pragma warnings in CPU builds (allows OpenMP pragmas to be ignored silently)
+option(SUPPRESS_UNKNOWN_OMP_PRAGMAS "Silence -Wunknown-pragmas for OpenMP pragmas in CPU build" ON)
+
 # Find OpenMP ONLY if GPU offload is enabled
 # CPU builds (USE_GPU_OFFLOAD=OFF) are OpenMP-free to enforce compile-time separation
 if(USE_GPU_OFFLOAD)
@@ -102,6 +105,14 @@ if(USE_BLAS AND BLAS_FOUND)
     target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})
 endif()
 
+# Suppress unknown pragma warnings in CPU builds
+if(NOT USE_GPU_OFFLOAD AND SUPPRESS_UNKNOWN_OMP_PRAGMAS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(nn_cfd_core PRIVATE -Wno-unknown-pragmas)
+        message(STATUS "Suppressing unknown pragma warnings for CPU build")
+    endif()
+endif()
+
 # GPU profiling compile definitions
 if(GPU_PROFILE_TRANSFERS)
     target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_TRANSFERS)
@@ -137,10 +148,6 @@ target_link_libraries(test_nn_simple nn_cfd_core)
 add_executable(test_taylor_green app/test_taylor_green.cpp)
 target_link_libraries(test_taylor_green nn_cfd_core)
 
-# Verification tool for CPU/GPU unified kernels
-# (Commented out - file doesn't exist in current branch)
-#add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
-#target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
 
 # Lockstep CPU vs GPU comparison tool
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
