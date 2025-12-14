@@ -70,7 +70,7 @@ int main() {
     // Compute initial kinetic energy
     const VectorField& vel0 = solver.velocity();
     double KE0 = 0.0;
-    int count = 0;
+    [[maybe_unused]] int count = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double u = 0.5 * (vel0.u(i, j) + vel0.u(i+1, j));

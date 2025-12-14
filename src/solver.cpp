@@ -1141,7 +1141,7 @@ cpu_divergence_fallback:
 }
 
 // Compute max absolute divergence of a velocity field (CPU-side, staggered grid)
-static double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
+[[maybe_unused]] static double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
     const double dx = mesh.dx;
     const double dy = mesh.dy;
     double max_div = 0.0;
