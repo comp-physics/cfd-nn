@@ -52,11 +52,11 @@ jobs:
         
         cd "__WORKDIR__"
         
-        # Run CPU-only vs GPU-offload build comparison (Option 2)
-        ./.github/scripts/compare_cpu_gpu_builds.sh "__WORKDIR__"
-        
         # Run GPU correctness suite (Option 1 + all validation tests)
         ./.github/scripts/gpu_correctness_suite.sh "__WORKDIR__"
+        
+        # Run CPU-only vs GPU-offload build comparison (Option 2)
+        ./.github/scripts/compare_cpu_gpu_builds.sh "__WORKDIR__"
         
         echo ""
         echo "✅ GPU Correctness Suite completed successfully"
