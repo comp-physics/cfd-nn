@@ -798,12 +798,12 @@ Comprehensive continuous integration validates solver correctness on CPU and GPU
 - Runtime: 30s
 
 **What These Tests Prove:**
-- ✅ Solver correctly solves Navier-Stokes equations
-- ✅ 2nd-order spatial accuracy (verified by grid refinement)
-- ✅ Conservation laws satisfied (momentum, mass, energy)
-- ✅ Boundary conditions correct (symmetry, no-slip, periodic)
-- ✅ Time integration accurate and stable
-- ✅ GPU produces identical results to CPU
+- [OK] Solver correctly solves Navier-Stokes equations
+- [OK] 2nd-order spatial accuracy (verified by grid refinement)
+- [OK] Conservation laws satisfied (momentum, mass, energy)
+- [OK] Boundary conditions correct (symmetry, no-slip, periodic)
+- [OK] Time integration accurate and stable
+- [OK] GPU produces identical results to CPU
 
 **Output Validation** (`.github/scripts/validate_turbulence_model.sh`):
 - Non-zero velocity, positive eddy viscosity

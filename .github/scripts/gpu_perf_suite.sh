@@ -1,5 +1,5 @@
 #!/bin/bash
-# GPU Performance Suite - Build and run timed performance benchmarks
+# GPU Performance Suite - CPU vs GPU performance comparison
 # Usage: gpu_perf_suite.sh <workdir>
 # Designed to run on an H200 GPU node via SLURM
 
@@ -9,7 +9,7 @@ WORKDIR="${1:-.}"
 cd "$WORKDIR"
 
 echo "==================================================================="
-echo "  GPU Performance Suite"
+echo "  GPU Performance Suite - CPU vs GPU Comparison"
 echo "==================================================================="
 echo ""
 echo "Host: $(hostname)"
@@ -19,75 +19,142 @@ echo "GPU(s):"
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
 echo ""
 
-# Hard-require OpenMP target offload (fail if it falls back to CPU)
-export OMP_TARGET_OFFLOAD=MANDATORY
-
 chmod +x .github/scripts/*.sh
 
-# Clean rebuild (perf suite must rebuild first)
-rm -rf build_ci_gpu_perf
-mkdir -p build_ci_gpu_perf
-cd build_ci_gpu_perf
+# Build CPU-only binary (single-threaded)
+echo "==================================================================="
+echo "  Building CPU-only binary (Release, single-threaded)"
+echo "==================================================================="
+echo ""
+rm -rf build_cpu
+mkdir -p build_cpu
+cd build_cpu
+echo "=== CMake Configuration ==="
+CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
+echo ""
+echo "=== Building ==="
+make -j8
+mkdir -p output/cpu_perf
+cd ..
 
+# Build GPU-offload binary
+echo ""
 echo "==================================================================="
 echo "  Building GPU-offload binary (Release)"
 echo "==================================================================="
 echo ""
-
+rm -rf build_gpu
+mkdir -p build_gpu
+cd build_gpu
 echo "=== CMake Configuration ==="
 CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
 echo ""
 echo "=== Building ==="
 make -j8
 mkdir -p output/gpu_perf
+cd ..
 
-echo ""
-echo "==================================================================="
-echo "  GPU Performance Cases (timed)"
-echo "==================================================================="
-echo ""
-echo "NOTE: Two runs per case (warmup + timed). Output suppressed for clean timing."
-echo ""
-
-run_case () {
-    local name="$1"
-    shift 1
-    echo "-------------------------------------------"
-    echo "CASE: ${name}"
-    echo "CMD:  $*"
-    echo ""
-    # warmup
-    "$@" >/dev/null 2>&1
-    # timed
-    echo "Timing run..."
-    /usr/bin/time -p "$@" >/dev/null 2>&1
-    echo "PERF_CASE_DONE name=\"${name}\""
-    echo ""
+# Parse timing from TimingStats output
+extract_timing() {
+    local logfile="$1"
+    # Extract "Time Step" total time and average
+    local total=$(grep -E "^Time Step" "$logfile" | awk '{print $3}' || echo "0.0")
+    local avg=$(grep -E "^Time Step" "$logfile" | awk '{print $5}' || echo "0.0")
+    echo "${total} ${avg}"
 }
 
+# Run comparison for one case
+run_comparison_case() {
+    local name="$1"
+    shift 1
+    
+    echo ""
+    echo "==================================================================="
+    echo "CASE: ${name}"
+    echo "==================================================================="
+    echo "CMD: $*"
+    echo ""
+    
+    # CPU run (single-threaded)
+    echo "--- CPU (single-threaded) ---"
+    export OMP_NUM_THREADS=1
+    export OMP_PROC_BIND=true
+    local cpu_log="cpu_${name}.log"
+    (cd build_cpu && "$@") 2>&1 | tee "$cpu_log"
+    
+    echo ""
+    echo "--- GPU ---"
+    export OMP_TARGET_OFFLOAD=MANDATORY
+    unset OMP_NUM_THREADS
+    local gpu_log="gpu_${name}.log"
+    (cd build_gpu && "$@") 2>&1 | tee "$gpu_log"
+    
+    # Extract timing data
+    local cpu_times=$(extract_timing "$cpu_log")
+    local gpu_times=$(extract_timing "$gpu_log")
+    
+    local cpu_total=$(echo "$cpu_times" | awk '{print $1}')
+    local cpu_avg=$(echo "$cpu_times" | awk '{print $2}')
+    local gpu_total=$(echo "$gpu_times" | awk '{print $1}')
+    local gpu_avg=$(echo "$gpu_times" | awk '{print $2}')
+    
+    # Calculate speedup
+    local speedup_total=$(echo "scale=2; $cpu_total / $gpu_total" | bc -l 2>/dev/null || echo "N/A")
+    local speedup_avg=$(echo "scale=2; $cpu_avg / $gpu_avg" | bc -l 2>/dev/null || echo "N/A")
+    
+    # Store results
+    echo "${name}|${cpu_total}|${cpu_avg}|${gpu_total}|${gpu_avg}|${speedup_total}|${speedup_avg}" >> perf_results.txt
+    
+    echo ""
+    echo "--- Quick Summary ---"
+    echo "CPU Total: ${cpu_total}s, Per-step: ${cpu_avg}ms"
+    echo "GPU Total: ${gpu_total}s, Per-step: ${gpu_avg}ms"
+    echo "Speedup: ${speedup_total}x (total), ${speedup_avg}x (per-step)"
+}
+
+# Initialize results file
+rm -f perf_results.txt
+echo "Case|CPU_Total(s)|CPU_PerStep(ms)|GPU_Total(s)|GPU_PerStep(ms)|Speedup_Total|Speedup_PerStep" > perf_results.txt
+
+echo ""
+echo "==================================================================="
+echo "  Running Performance Benchmarks"
+echo "==================================================================="
+
 # Case 1: Channel baseline (medium grid, long run)
-run_case "channel_baseline_256x512_2000" \
+run_comparison_case "channel_baseline_256x512_2000" \
     ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 2000 \
              --model baseline --dp_dx -0.0001 \
-             --output output/gpu_perf/channel_baseline --num_snapshots 0 --quiet
+             --output output/perf/channel_baseline --num_snapshots 0
 
 # Case 2: Channel SST transport (medium grid, moderate iters)
-run_case "channel_sst_256x512_500" \
+run_comparison_case "channel_sst_256x512_500" \
     ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 500 \
              --model sst --dp_dx -0.0001 \
-             --output output/gpu_perf/channel_sst --num_snapshots 0 --quiet
+             --output output/perf/channel_sst --num_snapshots 0
 
 # Case 3: Periodic hills baseline (complex geometry)
-run_case "periodic_hills_baseline_128x96_400" \
+run_comparison_case "periodic_hills_baseline_128x96_400" \
     ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 400 \
                     --model baseline --num_snapshots 0
 
+# Print final summary table
 echo ""
 echo "==================================================================="
-echo "  Performance Summary"
+echo "  Performance Summary: CPU vs GPU"
 echo "==================================================================="
 echo ""
-echo "Extract PERF_CASE_DONE markers and preceding 'time -p' output from log."
-echo "Timing data is printed above (real/user/sys for each case)."
+printf "%-35s %12s %15s %12s %15s %10s %10s\n" \
+       "Case" "CPU Total" "CPU Per-Step" "GPU Total" "GPU Per-Step" "Speedup" "Speedup"
+printf "%-35s %12s %15s %12s %15s %10s %10s\n" \
+       "" "(s)" "(ms)" "(s)" "(ms)" "(Total)" "(Step)"
+printf "%s\n" "$(printf '%.0s-' {1..115})"
+
+tail -n +2 perf_results.txt | while IFS='|' read -r case cpu_t cpu_avg gpu_t gpu_avg sp_t sp_avg; do
+    printf "%-35s %12s %15s %12s %15s %9sx %9sx\n" \
+           "$case" "$cpu_t" "$cpu_avg" "$gpu_t" "$gpu_avg" "$sp_t" "$sp_avg"
+done
+
 echo ""
-echo "✅ GPU Performance Suite completed successfully"
+echo "[PASS] GPU Performance Suite completed successfully"
+

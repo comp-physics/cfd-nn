@@ -126,7 +126,7 @@ class ModelRunner:
             # Parse output for timing info
             timing_info = self._parse_timing(result.stdout)
             
-            print(f"✓ Completed in {elapsed:.2f} seconds")
+            print(f"[OK] Completed in {elapsed:.2f} seconds")
             
             return {
                 'model': model_name,

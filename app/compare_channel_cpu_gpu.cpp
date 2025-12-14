@@ -60,17 +60,17 @@ void compare_scalar_field(const std::string& name, const Mesh& mesh,
     
     std::cout << "  L∞ diff: " << std::scientific << std::setprecision(6) << max_diff;
     if (max_diff > tol_linf) {
-        std::cout << " ✗ EXCEEDS TOLERANCE (" << tol_linf << ")";
+        std::cout << " [FAIL] EXCEEDS TOLERANCE (" << tol_linf << ")";
     } else {
-        std::cout << " ✓";
+        std::cout << " [OK]";
     }
     std::cout << std::endl;
     
     std::cout << "  L2 diff: " << l2;
     if (l2 > tol_l2) {
-        std::cout << " ✗ EXCEEDS TOLERANCE (" << tol_l2 << ")";
+        std::cout << " [FAIL] EXCEEDS TOLERANCE (" << tol_l2 << ")";
     } else {
-        std::cout << " ✓";
+        std::cout << " [OK]";
     }
     std::cout << std::endl;
     
@@ -140,20 +140,20 @@ void compare_vector_field(const std::string& name, const Mesh& mesh,
     
     std::cout << "  u component:\n";
     std::cout << "    L∞: " << std::scientific << std::setprecision(6) << max_u_diff;
-    if (max_u_diff > tol_linf) std::cout << " ✗";
-    else std::cout << " ✓";
+    if (max_u_diff > tol_linf) std::cout << " [FAIL]";
+    else std::cout << " [OK]";
     std::cout << "  L2: " << l2_u;
-    if (l2_u > tol_l2) std::cout << " ✗";
-    else std::cout << " ✓";
+    if (l2_u > tol_l2) std::cout << " [FAIL]";
+    else std::cout << " [OK]";
     std::cout << std::endl;
     
     std::cout << "  v component:\n";
     std::cout << "    L∞: " << max_v_diff;
-    if (max_v_diff > tol_linf) std::cout << " ✗";
-    else std::cout << " ✓";
+    if (max_v_diff > tol_linf) std::cout << " [FAIL]";
+    else std::cout << " [OK]";
     std::cout << "  L2: " << l2_v;
-    if (l2_v > tol_l2) std::cout << " ✗";
-    else std::cout << " ✓";
+    if (l2_v > tol_l2) std::cout << " [FAIL]";
+    else std::cout << " [OK]";
     std::cout << std::endl;
     
     if (max_u_diff > 0) {

@@ -155,7 +155,7 @@ void test_taylor_green_cpu_gpu() {
     compare_scalar(solver_cpu.pressure(), solver_gpu.pressure(), mesh,
                    "Pressure after 10 steps");
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 /// Test 2: Channel flow (periodic-x, wall-y)
@@ -209,7 +209,7 @@ void test_channel_cpu_gpu() {
     compare_scalar(solver_cpu.pressure(), solver_gpu.pressure(), mesh,
                    "Pressure after 10 steps");
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 /// Test 3: Multiple time steps with different grid sizes
@@ -274,10 +274,10 @@ void test_various_grids() {
         
         std::cout << "    Max diff: " << std::scientific << max_diff;
         assert(max_diff < 1e-12);
-        std::cout << " ✓\n";
+        std::cout << " [OK]\n";
     }
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 int main() {
@@ -319,7 +319,7 @@ int main() {
     test_various_grids();
     
     std::cout << "\n========================================\n";
-    std::cout << "All solver CPU/GPU tests PASSED! ✓\n";
+    std::cout << "All solver CPU/GPU tests PASSED!\n";
     std::cout << "========================================\n";
     
     return 0;

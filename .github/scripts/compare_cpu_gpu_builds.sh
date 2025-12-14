@@ -86,7 +86,7 @@ for name, pattern, tol in metrics:
     denom = abs(cpu_val) + 1e-30
     rel = diff / denom
     
-    status = "✓" if diff <= tol else "✗"
+    status = "PASS" if diff <= tol else "FAIL"
     print(f"{status} {name:20s}: cpu={cpu_val:.6e} gpu={gpu_val:.6e} diff={diff:.3e} (tol={tol:.1e})")
     
     if diff > tol:
@@ -101,12 +101,13 @@ if cpu_iters is not None and gpu_iters is not None:
 print("-" * 80)
 
 if not all_ok:
-    print("\n✗ FAILED: CPU-only vs GPU-offload build differences exceed tolerances")
+    print("\n[FAIL] CPU-only vs GPU-offload build differences exceed tolerances")
     sys.exit(1)
 
-print("\n✓ PASSED: CPU-only build and GPU-offload build agree within tolerances")
+print("\n[PASS] CPU-only build and GPU-offload build agree within tolerances")
 sys.exit(0)
 PY
 
 echo ""
-echo "✅ CPU-only vs GPU-offload comparison completed successfully"
+echo "[PASS] CPU-only vs GPU-offload comparison completed successfully"
+

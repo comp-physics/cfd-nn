@@ -29,7 +29,7 @@ echo "  3. Transport models (SST, k-omega)"
 echo "  4. EARSM models (3 variants)"
 echo "  5. Periodic Hills test cases"
 echo ""
-echo -e "${YELLOW}⚠️  This will take approximately 10-15 minutes to complete.${NC}"
+echo -e "${YELLOW}[WARNING] This will take approximately 10-15 minutes to complete.${NC}"
 echo ""
 
 # Ask for confirmation
@@ -66,11 +66,11 @@ echo "--- Building with GPU offload ---"
 make -j8
 
 if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Build failed!${NC}"
+    echo -e "${RED}[FAIL] Build failed!${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✓ Build successful${NC}"
+echo -e "${GREEN}[OK] Build successful${NC}"
 echo ""
 
 cd "$PROJECT_ROOT"
@@ -183,7 +183,7 @@ echo ""
 
 echo ""
 echo "==================================================================="
-echo "  ✅ All GPU CI Tests PASSED!"
+echo "  [PASS] All GPU CI Tests PASSED!"
 echo "==================================================================="
 echo ""
 EOFSBATCH
@@ -239,7 +239,7 @@ echo "==================================================================="
 echo ""
 
 if [ $EXIT_CODE -eq 0 ]; then
-    echo -e "${GREEN}✅✅✅ ALL GPU CI TESTS PASSED! ✅✅✅${NC}"
+    echo -e "${GREEN}[PASS] ALL GPU CI TESTS PASSED!${NC}"
     echo ""
     echo "Your code has been validated with the complete GPU CI test suite."
     echo "You are safe to push to the repository!"
@@ -255,7 +255,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     
     exit 0
 else
-    echo -e "${RED}❌ GPU CI TESTS FAILED!${NC}"
+    echo -e "${RED}[FAIL] GPU CI TESTS FAILED!${NC}"
     echo ""
     echo "Fix the issues above before pushing to avoid CI failures."
     echo "Log files retained for debugging:"

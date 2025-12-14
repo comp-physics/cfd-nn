@@ -584,7 +584,6 @@ void SSTKOmegaTransport::advance_turbulence(
 #ifdef USE_GPU_OFFLOAD
     // GPU path using device_view (no model-owned flat buffers!)
     if (device_view && device_view->is_valid()) {
-        std::cout << "[SSTKOmegaTransport] Using GPU path for advance_turbulence!" << std::endl;
         // Use the existing fused SST transport GPU implementation,
         // but operate directly on solver-owned device-resident data
         const int Nx = mesh.Nx;
@@ -1227,7 +1226,6 @@ void KOmegaTransport::advance_turbulence(
 #ifdef USE_GPU_OFFLOAD
     // GPU path using device_view and komega_transport_step_gpu kernel
     if (device_view && device_view->is_valid()) {
-        std::cout << "[KOmegaTransport] Using GPU path for advance_turbulence!" << std::endl;
         // All pointers are solver-owned and already device-resident
         // No data upload/download needed!
         const int Nx = mesh.Nx;

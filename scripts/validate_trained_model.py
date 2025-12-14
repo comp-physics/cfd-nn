@@ -194,13 +194,13 @@ def print_results(results, model_type):
     print(f"\nNormalized RMSE: {normalized_rmse:.3f}")
     
     if normalized_rmse < 0.1:
-        print("✓ Excellent agreement with DNS!")
+        print("[EXCELLENT] Excellent agreement with DNS!")
     elif normalized_rmse < 0.3:
-        print("✓ Good agreement with DNS")
+        print("[GOOD] Good agreement with DNS")
     elif normalized_rmse < 0.5:
-        print("⚠ Moderate agreement - consider more training")
+        print("[WARNING] Moderate agreement - consider more training")
     else:
-        print("⚠ Poor agreement - model may need retraining")
+        print("[WARNING] Poor agreement - model may need retraining")
     
     print("\n" + "="*70 + "\n")
 

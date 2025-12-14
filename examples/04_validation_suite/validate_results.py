@@ -106,7 +106,7 @@ def main():
         vtk_file = output_dir / case_info['dir'] / "velocity_final.vtk"
         
         if not vtk_file.exists():
-            print(f"✗ {case_name:25s} - File not found")
+            print(f"[FAIL] {case_name:25s} - File not found")
             continue
         
         try:
@@ -136,7 +136,7 @@ def main():
                     'passed': rel_error < case_info['tolerance']
                 }
                 
-                status = "✓ PASS" if rel_error < case_info['tolerance'] else "✗ FAIL"
+                status = "[PASS]" if rel_error < case_info['tolerance'] else "[FAIL]"
                 print(f"{status} {case_name:25s} Error: {rel_error*100:.2f}%")
                 
             elif case_info['type'] == 'dns':
@@ -144,7 +144,7 @@ def main():
                 dns_y, dns_u = get_dns_data(case_info['params']['Re_tau'])
                 
                 if dns_y is None:
-                    print(f"⚠  {case_name:25s} - No DNS data available")
+                    print(f"[WARNING] {case_name:25s} - No DNS data available")
                     continue
                 
                 # Compute u_tau from simulation
@@ -177,12 +177,12 @@ def main():
                     'passed': error < case_info['tolerance']
                 }
                 
-                status = "✓ PASS" if error < case_info['tolerance'] else "✗ FAIL"
+                status = "[PASS]" if error < case_info['tolerance'] else "[FAIL]"
                 Re_tau = u_tau * 1.0 / case_info['params']['nu']
                 print(f"{status} {case_name:25s} Error: {error*100:.1f}%  Re_tau: {Re_tau:.0f}")
                 
         except Exception as e:
-            print(f"✗ {case_name:25s} - Error: {e}")
+            print(f"[FAIL] {case_name:25s} - Error: {e}")
     
     print()
     
@@ -222,7 +222,7 @@ def main():
             ax.set_xlim([1, 500])
         
         # Title with pass/fail status
-        status_str = "✓ PASS" if data['passed'] else "✗ FAIL"
+        status_str = "[PASS]" if data['passed'] else "[FAIL]"
         ax.set_title(f"{case_name} - {status_str} (Error: {data['error']*100:.1f}%)", 
                      fontweight='bold')
         ax.legend(fontsize=9)
@@ -249,11 +249,11 @@ def main():
     print()
     
     if passed == total:
-        print("🎉 All validation cases PASSED!")
+        print("[PASS] All validation cases PASSED!")
     elif passed > 0:
-        print("⚠️  Some validation cases failed - check tolerances/models")
+        print("[WARNING] Some validation cases failed - check tolerances/models")
     else:
-        print("❌ All validation cases FAILED - check solver!")
+        print("[FAIL] All validation cases FAILED - check solver!")
     
     print("="*70)
     

@@ -136,11 +136,12 @@ echo "Testing 2D perturbed channel (validates Poisson solver with non-trivial fl
 ./test_poisson_perturbed --Nx 64 --Ny 64 --nu 0.01 --dp_dx -0.01 --max_iter 2000 --tol 1e-6 --verbose false || {
     echo ""
     echo "╔═══════════════════════════════════════════════════════╗"
-    echo "║  ✗✗✗ PERTURBED CHANNEL TEST FAILED ✗✗✗              ║"
+    echo "║  [FAIL] PERTURBED CHANNEL TEST FAILED               ║"
     echo "╚═══════════════════════════════════════════════════════╝"
     echo ""
     exit 1
 }
 
 echo ""
-echo "✅ GPU Correctness Suite completed successfully"
+echo "[PASS] GPU Correctness Suite completed successfully"
+

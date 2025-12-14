@@ -299,9 +299,9 @@ void test_mixing_length_consistency() {
     std::cout << "    Max rel: " << worst_rel << "\n";
     
     if (all_passed) {
-        std::cout << "\n✓ MixingLengthModel CPU/GPU consistency: PASSED\n";
+        std::cout << "\n[PASS] MixingLengthModel CPU/GPU consistency: PASSED\n";
     } else {
-        std::cout << "\n✗ MixingLengthModel CPU/GPU consistency: FAILED\n";
+        std::cout << "\n[FAIL] MixingLengthModel CPU/GPU consistency: FAILED\n";
         assert(false);
     }
 }

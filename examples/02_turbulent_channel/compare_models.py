@@ -125,11 +125,11 @@ def main():
                     'y': y,
                     'u': u
                 }
-                print(f"✓ Loaded: {name:12s} u_tau = {u_tau:.4f}")
+                print(f"[OK] Loaded: {name:12s} u_tau = {u_tau:.4f}")
             except Exception as e:
-                print(f"✗ Failed: {name:12s} ({e})")
+                print(f"[FAIL] Failed: {name:12s} ({e})")
         else:
-            print(f"✗ Missing: {name:12s} (file not found)")
+            print(f"[FAIL] Missing: {name:12s} (file not found)")
     
     if not data:
         print("\nERROR: No simulation data found!")

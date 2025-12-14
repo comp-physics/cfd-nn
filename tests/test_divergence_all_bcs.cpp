@@ -113,7 +113,7 @@ void test_divergence_periodic_periodic() {
     // With staggered grid + periodic BC fix, should be at machine epsilon
     assert(max_div < 1e-10 && "Divergence too large for periodic domain!");
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 /// Test 2: Periodic-X, Wall-Y (Channel flow)
@@ -164,7 +164,7 @@ void test_divergence_periodic_wall() {
     // Should also be at machine epsilon
     assert(max_div < 1e-10 && "Divergence too large for channel flow!");
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 /// Test 3: Wall-X, Periodic-Y (Spanwise periodic)
@@ -213,7 +213,7 @@ void test_divergence_wall_periodic() {
     
     assert(max_div < 1e-10 && "Divergence too large for spanwise periodic!");
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 /// Test 4: All walls (lid-driven cavity-like)
@@ -280,7 +280,7 @@ void test_divergence_all_walls() {
     
     assert(max_div < 1e-10 && "Divergence too large for all-wall BCs!");
     
-    std::cout << "  ✓ PASSED\n";
+    std::cout << "  [PASS]\n";
 }
 
 int main() {
@@ -298,7 +298,7 @@ int main() {
     test_divergence_all_walls();
     
     std::cout << "\n========================================\n";
-    std::cout << "All divergence tests PASSED! ✓\n";
+    std::cout << "All divergence tests PASSED!\n";
     std::cout << "========================================\n";
     
     return 0;

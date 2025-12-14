@@ -1346,10 +1346,6 @@ double RANSSolver::compute_residual() {
 double RANSSolver::step() {
     TIMED_SCOPE("solver_step");
     
-    static bool debug_div = (std::getenv("NNCFD_DEBUG_DIV") != nullptr);
-    static bool debug_div_poisson = (std::getenv("NNCFD_DEBUG_DIV_POISSON") != nullptr);
-    static bool debug_extra_poisson = (std::getenv("NNCFD_DEBUG_EXTRA_POISSON") != nullptr);
-    
     // Store old velocity for convergence check (at face locations for staggered grid)
     const int Ng = mesh_->Nghost;
     const int Nx = mesh_->Nx;
@@ -1810,10 +1806,6 @@ double RANSSolver::step() {
             // GPU-RESIDENT PATH: solve directly on device without host staging
             // This eliminates the DtoH/HtoD transfers that happened in the old path
             cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-            
-            if (debug_extra_poisson) {
-                mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-            }
         } else
 #endif
         {
@@ -1822,13 +1814,6 @@ double RANSSolver::step() {
                 cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
             } else {
                 cycles = poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-            }
-            if (debug_extra_poisson) {
-                if (use_multigrid_) {
-                    mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-                } else {
-                    poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-                }
             }
         }
         
@@ -1848,16 +1833,6 @@ double RANSSolver::step() {
         NVTX_PUSH("velocity_correction");
         correct_velocity();
         NVTX_POP();
-    }
-    
-    if (debug_div || debug_div_poisson) {
-        double max_div = compute_max_divergence(*mesh_, velocity_);
-        if (debug_div_poisson) {
-            std::cout << "[Debug] iter=" << iter_
-                      << " max_div_after_proj=" << std::scientific << max_div
-                      << " dt=" << current_dt_
-                      << std::endl;
-        }
     }
     
     // 6. Apply boundary conditions
@@ -1937,16 +1912,6 @@ double RANSSolver::step() {
         }
     }
 
-    if (debug_div) {
-        double max_div = compute_max_divergence(*mesh_, velocity_);
-        // Print a few initial steps and then every 50 iterations
-        if (iter_ < 10 || (iter_ % 50 == 0)) {
-            std::cout << "[Debug] iter=" << iter_
-                      << " max_div=" << std::scientific << max_div
-                      << " dt=" << current_dt_
-                      << std::endl;
-        }
-    }
     return max_change;
 }
 
@@ -2381,11 +2346,6 @@ void RANSSolver::initialize_gpu_buffers() {
     dvdy_ptr_ = dvdy_.data().data();
     wall_distance_ptr_ = wall_distance_.data().data();
     
-    if (config_.verbose) {
-        std::cout << "Mapping " << (21 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
-                  << " MB to GPU for persistent solver arrays...\n";
-    }
-    
 #ifdef GPU_PROFILE_TRANSFERS
     auto transfer_start = std::chrono::steady_clock::now();
 #endif
@@ -2441,13 +2401,9 @@ void RANSSolver::initialize_gpu_buffers() {
     std::chrono::duration<double> transfer_time = transfer_end - transfer_start;
     double mb_transferred = 16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0;
     double bandwidth = mb_transferred / transfer_time.count();
-    std::cout << "[GPU_PROFILE] Initial H→D transfer: " << mb_transferred << " MB in " 
-              << transfer_time.count() << " s (" << bandwidth << " MB/s)\n";
+    (void)mb_transferred;
+    (void)bandwidth;
 #endif
-    
-    if (config_.verbose) {
-        std::cout << "✓ GPU arrays mapped successfully (persistent, data resident on device)\n";
-    }
 }
 
 void RANSSolver::cleanup_gpu_buffers() {

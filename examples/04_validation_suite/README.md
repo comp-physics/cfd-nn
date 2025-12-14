@@ -170,7 +170,7 @@ Generates multi-panel comparison:
 - Turbulent cases: u+ vs y+ compared to DNS
 
 Each panel shows:
-- ✓ PASS or ✗ FAIL status
+- [PASS] or [FAIL] status
 - Quantitative error percentage
 - Visual comparison
 

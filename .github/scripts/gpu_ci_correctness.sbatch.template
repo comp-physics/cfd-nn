@@ -24,4 +24,5 @@ cd "__WORKDIR__"
 ./.github/scripts/compare_cpu_gpu_builds.sh "__WORKDIR__"
 
 echo ""
-echo "✅ GPU Correctness Suite completed successfully"
+echo "[PASS] GPU Correctness Suite completed successfully"
+

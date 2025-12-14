@@ -50,7 +50,7 @@ for dt_config in "${timesteps[@]}"; do
     ./channel --config "$EXAMPLE_DIR/temporal_convergence_configs/$cfg" \
               --output "$OUTPUT_DIR/$dt_level/"
     
-    echo "✓ $dt_level complete"
+    echo "[OK] $dt_level complete"
     echo ""
 done
 

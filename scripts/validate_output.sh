@@ -22,19 +22,19 @@ check_vtk_file() {
     local filename=$(basename "$file")
     
     if [ ! -f "$file" ]; then
-        echo "✗ ${filename}: File not found"
+        echo "[FAIL] ${filename}: File not found"
         return 1
     fi
     
     # Check if file is empty
     if [ ! -s "$file" ]; then
-        echo "✗ ${filename}: File is empty"
+        echo "[FAIL] ${filename}: File is empty"
         return 1
     fi
     
     # Check for NaN values (case insensitive)
     if grep -qi "nan" "$file"; then
-        echo "✗ ${filename}: Contains NaN values"
+        echo "[FAIL] ${filename}: Contains NaN values"
         if [ "$VERBOSE" = "1" ]; then
             echo "  First NaN occurrence:"
             grep -n -i "nan" "$file" | head -3 | sed 's/^/    /'
@@ -44,7 +44,7 @@ check_vtk_file() {
     
     # Check for Inf values (case insensitive)
     if grep -qi "inf" "$file"; then
-        echo "✗ ${filename}: Contains Inf values"
+        echo "[FAIL] ${filename}: Contains Inf values"
         if [ "$VERBOSE" = "1" ]; then
             echo "  First Inf occurrence:"
             grep -n -i "inf" "$file" | head -3 | sed 's/^/    /'
@@ -55,7 +55,7 @@ check_vtk_file() {
     # Check for very large values that might indicate numerical instability
     # Look for numbers with magnitude > 1e10
     if grep -qE '[0-9]\.[0-9]+e\+[0-9]{2,}' "$file"; then
-        echo "⚠ ${filename}: Contains very large values (>1e10)"
+        echo "[WARNING] ${filename}: Contains very large values (>1e10)"
         if [ "$VERBOSE" = "1" ]; then
             echo "  Sample large values:"
             grep -oE '[0-9]\.[0-9]+e\+[0-9]{2,}' "$file" | head -3 | sed 's/^/    /'
@@ -65,7 +65,7 @@ check_vtk_file() {
     
     # Check that file has actual data (POINT_DATA or CELL_DATA)
     if ! grep -q "POINT_DATA\|CELL_DATA" "$file"; then
-        echo "✗ ${filename}: No data section found"
+        echo "[FAIL] ${filename}: No data section found"
         return 1
     fi
     
@@ -73,12 +73,12 @@ check_vtk_file() {
     if grep -q "velocity" "$file"; then
         local n_velocities=$(grep -A 1000000 "velocity" "$file" | grep -E "^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?" | wc -l)
         if [ "$n_velocities" -lt 10 ]; then
-            echo "✗ ${filename}: Too few velocity values ($n_velocities)"
+            echo "[FAIL] ${filename}: Too few velocity values ($n_velocities)"
             return 1
         fi
     fi
     
-    echo "✓ ${filename}: Valid"
+    echo "[OK] ${filename}: Valid"
     return 0
 }
 
@@ -88,36 +88,36 @@ check_dat_file() {
     local filename=$(basename "$file")
     
     if [ ! -f "$file" ]; then
-        echo "⚠ ${filename}: File not found (may be optional)"
+        echo "[WARNING] ${filename}: File not found (may be optional)"
         return 0
     fi
     
     # Check if file is empty
     if [ ! -s "$file" ]; then
-        echo "✗ ${filename}: File is empty"
+        echo "[FAIL] ${filename}: File is empty"
         return 1
     fi
     
     # Count data lines (excluding comments and empty lines)
     local n_lines=$(grep -v "^#" "$file" | grep -v "^$" | wc -l)
     if [ "$n_lines" -lt 2 ]; then
-        echo "✗ ${filename}: Too few data lines ($n_lines)"
+            echo "[FAIL] ${filename}: Too few data lines ($n_lines)"
         return 1
     fi
     
     # Check for NaN - NO NaNs allowed in valid output!
     if grep -qi "nan" "$file"; then
-        echo "✗ ${filename}: Contains NaN values"
+        echo "[FAIL] ${filename}: Contains NaN values"
         return 1
     fi
     
     # Check for Inf
     if grep -qi "inf" "$file"; then
-        echo "✗ ${filename}: Contains Inf values"
+        echo "[FAIL] ${filename}: Contains Inf values"
         return 1
     fi
     
-    echo "✓ ${filename}: Valid ($n_lines data lines)"
+    echo "[OK] ${filename}: Valid ($n_lines data lines)"
     return 0
 }
 
@@ -126,7 +126,7 @@ echo "Checking VTK files..."
 VTK_FILES=$(find "$OUTPUT_DIR" -name "*.vtk" 2>/dev/null)
 
 if [ -z "$VTK_FILES" ]; then
-    echo "⚠ No VTK files found in ${OUTPUT_DIR}"
+    echo "[WARNING] No VTK files found in ${OUTPUT_DIR}"
 else
     for file in $VTK_FILES; do
         CHECKS=$((CHECKS + 1))
@@ -162,16 +162,16 @@ echo "Failures: ${FAILURES}"
 echo ""
 
 if [ $CHECKS -eq 0 ]; then
-    echo "⚠ Warning: No files were validated!"
+    echo "[WARNING] No files were validated!"
     echo "  This may indicate the output directory is empty or misconfigured."
     exit 1
 fi
 
 if [ $FAILURES -eq 0 ]; then
-    echo "✓ All validations passed!"
+    echo "[PASS] All validations passed!"
     exit 0
 else
-    echo "✗ Validation failed with ${FAILURES} error(s)"
+    echo "[FAIL] Validation failed with ${FAILURES} error(s)"
     exit 1
 fi
 

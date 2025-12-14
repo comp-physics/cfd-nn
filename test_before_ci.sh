@@ -23,7 +23,7 @@ TESTS_PASSED=true
 
 cleanup_on_exit() {
     if [ "$TESTS_PASSED" = false ]; then
-        echo -e "${RED}❌ Pre-CI tests FAILED!${NC}"
+        echo -e "${RED}[FAIL] Pre-CI tests FAILED!${NC}"
         echo "Fix the issues above before pushing to avoid CI failures."
         exit 1
     fi
@@ -49,7 +49,7 @@ test_build_type() {
     echo "--- Configuring CMake ---"
     cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" > cmake_output.log 2>&1
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ CMake configuration failed!${NC}"
+        echo -e "${RED}[FAIL] CMake configuration failed!${NC}"
         cat cmake_output.log
         TESTS_PASSED=false
         return 1
@@ -59,7 +59,7 @@ test_build_type() {
     echo "--- Building ($BUILD_TYPE) ---"
     make -j4 2>&1 | tee build.log
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Build failed!${NC}"
+        echo -e "${RED}[FAIL] Build failed!${NC}"
         TESTS_PASSED=false
         return 1
     fi
@@ -68,12 +68,12 @@ test_build_type() {
     if [ "$BUILD_TYPE" = "Release" ]; then
         echo "--- Checking for compiler warnings ---"
         if grep -i "warning:" build.log; then
-            echo -e "${RED}❌ Compiler warnings detected!${NC}"
+            echo -e "${RED}[FAIL] Compiler warnings detected!${NC}"
             echo "Fix all warnings before pushing."
             TESTS_PASSED=false
             return 1
         else
-            echo -e "${GREEN}✓ No warnings${NC}"
+            echo -e "${GREEN}[OK] No warnings${NC}"
         fi
     fi
     
@@ -81,13 +81,13 @@ test_build_type() {
     echo "--- Running tests ($BUILD_TYPE) ---"
     ctest --output-on-failure
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Tests failed in $BUILD_TYPE build!${NC}"
+        echo -e "${RED}[FAIL] Tests failed in $BUILD_TYPE build!${NC}"
         TESTS_PASSED=false
         return 1
     fi
     
     cd "$PROJECT_ROOT"
-    echo -e "${GREEN}✓ $BUILD_TYPE build passed all tests${NC}"
+    echo -e "${GREEN}[PASS] $BUILD_TYPE build passed all tests${NC}"
 }
 
 # Test both build types (matching CI)
@@ -97,7 +97,7 @@ test_build_type "Debug"
 # Summary
 echo ""
 echo "==================================================================="
-echo -e "${GREEN}✓✓✓ All Pre-CI Tests PASSED! ✓✓✓${NC}"
+echo -e "${GREEN}[PASS] All Pre-CI Tests PASSED!${NC}"
 echo "==================================================================="
 echo ""
 echo "Both Debug and Release builds succeeded."

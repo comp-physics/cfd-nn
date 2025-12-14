@@ -73,7 +73,7 @@ for grid_config in "${grids[@]}"; do
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
     
-    echo "✓ $grid complete in ${ELAPSED}s"
+    echo "[OK] $grid complete in ${ELAPSED}s"
     echo ""
 done
 

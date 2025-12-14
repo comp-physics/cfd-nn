@@ -61,3 +61,4 @@ if [ "$EXIT_CODE" != "0" ]; then
   echo "Job failed with exit code: ${EXIT_CODE}"
   exit 1
 fi
+

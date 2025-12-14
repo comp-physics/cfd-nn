@@ -219,7 +219,6 @@ void TurbulenceGEP::update(const Mesh& mesh,
 #ifdef USE_GPU_OFFLOAD
     // GPU path using device_view
     if (device_view && device_view->is_valid()) {
-        std::cout << "[TurbulenceGEP] Using GPU path for update!" << std::endl;
         const int Nx = mesh.Nx;
         const int Ny = mesh.Ny;
         const int Ng = mesh.Nghost;
