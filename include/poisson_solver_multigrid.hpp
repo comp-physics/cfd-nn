@@ -49,13 +49,6 @@ public:
     void sync_level_to_gpu(int level);
     void sync_level_from_gpu(int level);
     
-#ifdef USE_GPU_OFFLOAD
-    /// Get device pointers for direct GPU-GPU copies
-    double* get_u_device_ptr(int level) { return gpu_ready_ ? u_ptrs_[level] : nullptr; }
-    double* get_f_device_ptr(int level) { return gpu_ready_ ? f_ptrs_[level] : nullptr; }
-    size_t get_level_size(int level) const { return gpu_ready_ ? level_sizes_[level] : 0; }
-#endif
-    
 private:
     /// Grid level in multigrid hierarchy
     struct GridLevel {

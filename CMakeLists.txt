@@ -60,15 +60,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Optional BLAS support
-option(USE_BLAS "Use BLAS for linear algebra operations" OFF)
-if(USE_BLAS)
-    find_package(BLAS)
-    if(BLAS_FOUND)
-        add_definitions(-DUSE_BLAS)
-    endif()
-endif()
-
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
@@ -99,10 +90,6 @@ add_library(nn_cfd_core ${LIB_SOURCES})
 if(USE_GPU_OFFLOAD)
     target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
-endif()
-
-if(USE_BLAS AND BLAS_FOUND)
-    target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -144,10 +131,6 @@ target_link_libraries(periodic_hills nn_cfd_core)
 
 add_executable(test_nn_simple app/test_nn_simple.cpp)
 target_link_libraries(test_nn_simple nn_cfd_core)
-
-add_executable(test_taylor_green app/test_taylor_green.cpp)
-target_link_libraries(test_taylor_green nn_cfd_core)
-
 
 # Lockstep CPU vs GPU comparison tool
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
