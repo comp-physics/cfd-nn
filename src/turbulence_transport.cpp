@@ -1,4 +1,5 @@
 #include "turbulence_transport.hpp"
+#include "gpu_kernels.hpp"
 #include "timing.hpp"
 #include <cmath>
 #include <algorithm>
@@ -84,8 +85,8 @@ void SSTClosure::compute_nu_t(
     
     ensure_initialized(mesh);
     
-    // Compute velocity gradients
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    // Compute velocity gradients (MAC-aware for CPU/GPU consistency)
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double a1 = constants_.a1;
     
@@ -222,7 +223,9 @@ SSTKOmegaTransport::~SSTKOmegaTransport() {
 
 void SSTKOmegaTransport::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu_available()) {
+    // Check if GPU is available
+    #include <omp.h>
+    if (omp_get_num_devices() == 0) {
         buffers_on_gpu_ = false;
         return;
     }
@@ -444,7 +447,7 @@ void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocit
 void SSTKOmegaTransport::compute_velocity_gradients(
     const Mesh& mesh, const VectorField& velocity)
 {
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
 }
 
 void SSTKOmegaTransport::compute_blending_functions(
@@ -571,25 +574,200 @@ void SSTKOmegaTransport::advance_turbulence(
     double dt,
     ScalarField& k,
     ScalarField& omega,
-    const ScalarField& nu_t_prev)
+    const ScalarField& nu_t_prev,
+    const TurbulenceDeviceView* device_view)
 {
     TIMED_SCOPE("sst_transport");
     
     ensure_initialized(mesh);
     
-#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_SST_TRANSPORT
-    // TEMPORARILY DISABLED: GPU path for SST has memory management issues during cleanup
-    // The issue appears to be timing-dependent - works with NVCOMPILER_ACC_NOTIFY but crashes otherwise
-    // TODO: Debug and re-enable GPU path for SST transport model
-    // Ensure GPU buffers are allocated (lazy initialization)
-    if (!buffers_on_gpu_ && omp_get_num_devices() > 0) {
-        allocate_gpu_buffers(mesh);
-    }
-    
-    if (buffers_on_gpu_ && omp_get_num_devices() > 0) {
-        advance_turbulence_gpu(mesh, velocity, dt, k, omega, nu_t_prev);
+#ifdef USE_GPU_OFFLOAD
+    // GPU path using device_view (no model-owned flat buffers!)
+    if (device_view && device_view->is_valid()) {
+        // Use the existing fused SST transport GPU implementation,
+        // but operate directly on solver-owned device-resident data
+        const int Nx = mesh.Nx;
+        const int Ny = mesh.Ny;
+        const int Ng = mesh.Nghost;
+        const int n_cells = Nx * Ny;
+        const int cell_stride = mesh.total_Nx();
+        const size_t cell_total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+        const size_t u_total_size = (size_t)mesh.total_Ny() * (mesh.total_Nx() + 1);
+        const size_t v_total_size = (size_t)(mesh.total_Ny() + 1) * mesh.total_Nx();
+        
+        const double dx = mesh.dx;
+        const double dy = mesh.dy;
+        const double dx2 = dx * dx;
+        const double dy2 = dy * dy;
+        const double inv_2dx = 1.0 / (2.0 * dx);
+        const double inv_2dy = 1.0 / (2.0 * dy);
+        
+        // Copy model constants to local for GPU capture
+        const double nu = nu_;
+        const double beta_star = constants_.beta_star;
+        const double beta1 = constants_.beta1;
+        const double beta2 = constants_.beta2;
+        const double alpha1 = constants_.alpha1;
+        const double alpha2 = constants_.alpha2;
+        const double sigma_k1 = constants_.sigma_k1;
+        const double sigma_k2 = constants_.sigma_k2;
+        const double sigma_omega1 = constants_.sigma_omega1;
+        const double sigma_omega2 = constants_.sigma_omega2;
+        const double k_min = constants_.k_min;
+        const double k_max = constants_.k_max;
+        const double omega_min = constants_.omega_min;
+        const double omega_max = constants_.omega_max;
+        const double CD_min = constants_.CD_omega_min;
+        
+        // Get device pointers from device_view
+        const double* u_ptr = device_view->u_face;
+        const double* v_ptr = device_view->v_face;
+        double* k_ptr = device_view->k;
+        double* omega_ptr = device_view->omega;
+        const double* nu_t_ptr = device_view->nu_t;
+        const double* wall_dist_ptr = device_view->wall_distance;
+        const int u_stride = device_view->u_stride;
+        const int v_stride = device_view->v_stride;
+        
+        // Fused SST transport kernel (all on GPU, no staging)
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], \
+                         k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size], \
+                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
+        for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
+            int i = cell_idx % Nx;
+            int j = cell_idx / Nx;
+            int ii = i + Ng;
+            int jj = j + Ng;
+            
+            int idx_c = jj * cell_stride + ii;
+            int idx_ip = jj * cell_stride + (ii + 1);
+            int idx_im = jj * cell_stride + (ii - 1);
+            int idx_jp = (jj + 1) * cell_stride + ii;
+            int idx_jm = (jj - 1) * cell_stride + ii;
+            
+            // Velocity gradients from MAC grid
+            const int u_idx_ip = jj * u_stride + (ii + 1);
+            const int u_idx_im = jj * u_stride + (ii - 1);
+            const int u_idx_jp = (jj + 1) * u_stride + ii;
+            const int u_idx_jm = (jj - 1) * u_stride + ii;
+            const int v_idx_ip = jj * v_stride + (ii + 1);
+            const int v_idx_im = jj * v_stride + (ii - 1);
+            const int v_idx_jp = (jj + 1) * v_stride + ii;
+            const int v_idx_jm = (jj - 1) * v_stride + ii;
+            
+            double dudx_v = (u_ptr[u_idx_ip] - u_ptr[u_idx_im]) * inv_2dx;
+            double dudy_v = (u_ptr[u_idx_jp] - u_ptr[u_idx_jm]) * inv_2dy;
+            double dvdx_v = (v_ptr[v_idx_ip] - v_ptr[v_idx_im]) * inv_2dx;
+            double dvdy_v = (v_ptr[v_idx_jp] - v_ptr[v_idx_jm]) * inv_2dy;
+            
+            // Get cell-centered velocity (interpolate from faces)
+            double u_c = 0.5 * (u_ptr[jj * u_stride + ii] + u_ptr[jj * u_stride + (ii+1)]);
+            double v_c = 0.5 * (v_ptr[jj * v_stride + ii] + v_ptr[(jj+1) * v_stride + ii]);
+            
+            double k_c = k_ptr[idx_c];
+            double omega_c = omega_ptr[idx_c];
+            double y_wall = wall_dist_ptr[idx_c];
+            double nu_t_c = nu_t_ptr[idx_c];
+            
+            k_c = (k_c > k_min) ? k_c : k_min;
+            omega_c = (omega_c > omega_min) ? omega_c : omega_min;
+            double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
+            nu_t_c = (nu_t_c > 0.0) ? nu_t_c : 0.0;
+            
+            // Strain rate
+            double Sxx = dudx_v;
+            double Syy = dvdy_v;
+            double Sxy = 0.5 * (dudy_v + dvdx_v);
+            double S2 = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+            
+            // Cross-diffusion for F1
+            double dkdx = (k_ptr[idx_ip] - k_ptr[idx_im]) * inv_2dx;
+            double dkdy = (k_ptr[idx_jp] - k_ptr[idx_jm]) * inv_2dy;
+            double domegadx = (omega_ptr[idx_ip] - omega_ptr[idx_im]) * inv_2dx;
+            double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_2dy;
+            
+            double CD_omega = 2.0 * sigma_omega2 / omega_c * (dkdx * domegadx + dkdy * domegady);
+            CD_omega = (CD_omega > CD_min) ? CD_omega : CD_min;
+            
+            // F1 blending
+            double sqrt_k = sqrt(k_c);
+            double arg1_1 = sqrt_k / (beta_star * omega_c * y_safe);
+            double arg1_2 = 500.0 * nu / (y_safe * y_safe * omega_c);
+            double arg1_3 = 4.0 * sigma_omega2 * k_c / (CD_omega * y_safe * y_safe);
+            double arg1 = arg1_1;
+            arg1 = (arg1 > arg1_2) ? arg1 : arg1_2;
+            arg1 = (arg1 < arg1_3) ? arg1 : arg1_3;
+            double F1 = tanh(arg1 * arg1 * arg1 * arg1);
+            
+            // Blended constants
+            double beta = F1 * beta1 + (1.0 - F1) * beta2;
+            double alpha = F1 * alpha1 + (1.0 - F1) * alpha2;
+            double sigma_k = F1 * sigma_k1 + (1.0 - F1) * sigma_k2;
+            double sigma_omega = F1 * sigma_omega1 + (1.0 - F1) * sigma_omega2;
+            
+            // Effective diffusivities
+            double nu_k = nu + sigma_k * nu_t_c;
+            double nu_omega_eff = nu + sigma_omega * nu_t_c;
+            
+            // Production (limited)
+            double P_k = 2.0 * nu_t_c * S2;
+            double P_k_limit = 10.0 * beta_star * k_c * omega_c;
+            P_k = (P_k < P_k_limit) ? P_k : P_k_limit;
+            
+            // Advection (upwind)
+            double adv_k, adv_omega;
+            if (u_c >= 0) {
+                adv_k = u_c * (k_c - k_ptr[idx_im]) / dx;
+                adv_omega = u_c * (omega_c - omega_ptr[idx_im]) / dx;
+            } else {
+                adv_k = u_c * (k_ptr[idx_ip] - k_c) / dx;
+                adv_omega = u_c * (omega_ptr[idx_ip] - omega_c) / dx;
+            }
+            if (v_c >= 0) {
+                adv_k += v_c * (k_c - k_ptr[idx_jm]) / dy;
+                adv_omega += v_c * (omega_c - omega_ptr[idx_jm]) / dy;
+            } else {
+                adv_k += v_c * (k_ptr[idx_jp] - k_c) / dy;
+                adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) / dy;
+            }
+            
+            // Diffusion
+            double diff_k = nu_k * ((k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2
+                                  + (k_ptr[idx_jp] - 2.0*k_c + k_ptr[idx_jm]) / dy2);
+            double diff_omega = nu_omega_eff * ((omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2
+                                              + (omega_ptr[idx_jp] - 2.0*omega_c + omega_ptr[idx_jm]) / dy2);
+            
+            // Cross-diffusion term for omega equation
+            double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c 
+                      * (dkdx * domegadx + dkdy * domegady);
+            CD = (CD > 0.0) ? CD : 0.0;
+            
+            // RHS
+            double rhs_k = P_k - beta_star * k_c * omega_c + diff_k - adv_k;
+            double rhs_omega = alpha * (omega_c / k_c) * P_k 
+                             - beta * omega_c * omega_c
+                             + diff_omega - adv_omega + CD;
+            
+            // Update
+            double k_new = k_c + dt * rhs_k;
+            double omega_new = omega_c + dt * rhs_omega;
+            
+            // Clip
+            k_new = (k_new > k_min) ? k_new : k_min;
+            k_new = (k_new < k_max) ? k_new : k_max;
+            omega_new = (omega_new > omega_min) ? omega_new : omega_min;
+            omega_new = (omega_new < omega_max) ? omega_new : omega_max;
+            
+            k_ptr[idx_c] = k_new;
+            omega_ptr[idx_c] = omega_new;
+        }
+        
+        // Transport PDE done entirely on GPU - no CPU sync needed
         return;
     }
+#else
+    (void)device_view;
 #endif
     
     // CPU implementation
@@ -913,15 +1091,76 @@ void SSTKOmegaTransport::update(
     const ScalarField& k,
     const ScalarField& omega,
     ScalarField& nu_t,
-    TensorField* tau_ij)
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view)
 {
     ensure_initialized(mesh);
     
-    // Use the closure to compute nu_t
+#ifdef USE_GPU_OFFLOAD
+    // GPU path using device_view (Phase 2 for closure, Phase 4 for full transport)
+    if (device_view && device_view->is_valid()) {
+        // Check if we have an SST-type closure or default SST closure
+        bool use_sst_closure = (closure_ && 
+                                (closure_->name() == "SST" || 
+                                 dynamic_cast<SSTClosure*>(closure_.get()) != nullptr));
+        
+        if (use_sst_closure || !closure_) {
+            // Direct SST closure on GPU
+            const int Nx = mesh.Nx;
+            const int Ny = mesh.Ny;
+            const int Ng = mesh.Nghost;
+            const int stride = mesh.total_Nx();
+            const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+            
+            // CRITICAL: Compute gradients first (SST closure needs them)
+            gpu_kernels::compute_gradients_from_mac_gpu(
+                device_view->u_face,
+                device_view->v_face,
+                device_view->dudx,
+                device_view->dudy,
+                device_view->dvdx,
+                device_view->dvdy,
+                Nx, Ny, Ng,
+                device_view->dx, device_view->dy,
+                device_view->u_stride,
+                device_view->v_stride,
+                stride,
+                velocity.u_total_size(),
+                velocity.v_total_size(),
+                total_size
+            );
+            
+            // Now compute SST closure using gradients
+            gpu_kernels::compute_sst_closure_gpu(
+                device_view->k,              // Already on device
+                device_view->omega,          // Already on device
+                device_view->dudx,           // Gradients just computed
+                device_view->dudy,
+                device_view->dvdx,
+                device_view->dvdy,
+                device_view->wall_distance,  // Wall distance on device (full field with ghosts)
+                device_view->nu_t,           // Output on device
+                Nx, Ny, Ng, stride, total_size, total_size,  // Last arg: wall_dist_size = total_size (not interior!)
+                nu_,                         // Laminar viscosity
+                constants_.a1,               // SST constant (0.31)
+                constants_.beta_star,        // SST constant (0.09)
+                constants_.k_min, constants_.omega_min,
+                1000.0                       // nu_t_max multiplier
+            );
+            
+            // No CPU sync needed - nu_t stays on device for solver
+            return;
+        }
+    }
+#else
+    (void)device_view;
+#endif
+    
+    // CPU path or custom closure
     if (closure_) {
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
-        // Fallback: simple k/omega
+        // Fallback: simple k/omega on CPU
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double k_loc = std::max(constants_.k_min, k(i, j));
@@ -977,12 +1216,56 @@ void KOmegaTransport::advance_turbulence(
     double dt,
     ScalarField& k,
     ScalarField& omega,
-    const ScalarField& nu_t_prev)
+    const ScalarField& nu_t_prev,
+    const TurbulenceDeviceView* device_view)
 {
     TIMED_SCOPE("komega_transport");
     
     ensure_initialized(mesh);
-    compute_all_velocity_gradients(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    
+#ifdef USE_GPU_OFFLOAD
+    // GPU path using device_view and komega_transport_step_gpu kernel
+    if (device_view && device_view->is_valid()) {
+        // All pointers are solver-owned and already device-resident
+        // No data upload/download needed!
+        const int Nx = mesh.Nx;
+        const int Ny = mesh.Ny;
+        const int Ng = mesh.Nghost;
+        const int cell_stride = mesh.total_Nx();
+        const size_t cell_total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+        const size_t u_total_size = (size_t)mesh.total_Ny() * (mesh.total_Nx() + 1);
+        const size_t v_total_size = (size_t)(mesh.total_Ny() + 1) * mesh.total_Nx();
+        
+        gpu_kernels::komega_transport_step_gpu(
+            device_view->u_face, device_view->v_face,   // Velocity on GPU
+            device_view->k, device_view->omega,          // k, omega on GPU (in/out)
+            device_view->nu_t,                           // nu_t_prev on GPU (uses ghost+stride)
+            Nx, Ny, Ng,
+            cell_stride,
+            device_view->u_stride, device_view->v_stride,
+            cell_total_size,
+            u_total_size, v_total_size,
+            mesh.dx, mesh.dy, dt,
+            nu_, constants_.sigma_k, constants_.sigma_omega,
+            constants_.beta, constants_.beta_star, constants_.alpha,
+            constants_.k_min, constants_.k_max,
+            constants_.omega_min, constants_.omega_max
+        );
+        
+        // Transport PDE done entirely on GPU - no CPU sync needed
+        // k and omega ScalarFields will be synced by solver if needed for output
+        return;
+    } else {
+        std::cout << "[KOmegaTransport] GPU path NOT taken. device_view=" << device_view 
+                  << " valid=" << (device_view ? device_view->is_valid() : false) << std::endl;
+    }
+#else
+    (void)device_view;
+#endif
+    
+    // CPU fallback path
+    std::cout << "[KOmegaTransport] Using CPU fallback for advance_turbulence" << std::endl;
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;
     const double dy = mesh.dy;
@@ -1047,11 +1330,46 @@ void KOmegaTransport::update(
     const ScalarField& k,
     const ScalarField& omega,
     ScalarField& nu_t,
-    TensorField* tau_ij)
+    TensorField* tau_ij,
+    const TurbulenceDeviceView* device_view)
 {
+#ifdef USE_GPU_OFFLOAD
+    // GPU path using device_view (Phase 2)
+    // Run GPU closure for default Boussinesq or when no custom closure is set
+    bool use_gpu_boussinesq = (!closure_ || 
+                               (closure_ && closure_->name() == "Boussinesq") ||
+                               dynamic_cast<BoussinesqClosure*>(closure_.get()) != nullptr);
+    
+    if (device_view && device_view->is_valid() && use_gpu_boussinesq) {
+        // Direct Boussinesq closure on GPU
+        const int Nx = mesh.Nx;
+        const int Ny = mesh.Ny;
+        const int Ng = mesh.Nghost;
+        const int stride = mesh.total_Nx();
+        const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+        
+        gpu_kernels::compute_boussinesq_closure_gpu(
+            device_view->k,           // Already on device
+            device_view->omega,       // Already on device
+            device_view->nu_t,        // Output on device
+            Nx, Ny, Ng, stride, total_size,
+            nu_,                      // Laminar viscosity
+            constants_.k_min, constants_.omega_min,
+            1000.0                    // nu_t_max multiplier
+        );
+        
+        // No CPU sync needed - nu_t stays on device for solver
+        return;
+    }
+#else
+    (void)device_view;
+#endif
+    
+    // CPU path or custom closure
     if (closure_) {
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
+        // Fallback: CPU Boussinesq closure
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double k_loc = std::max(constants_.k_min, k(i, j));

@@ -145,6 +145,15 @@ public:
     const ScalarField& xy_field() const { return xy_; }
     const ScalarField& yy_field() const { return yy_; }
     
+    /// Get raw data vectors (for GPU mapping)
+    std::vector<double>& xx_data() { return xx_.data(); }
+    std::vector<double>& xy_data() { return xy_.data(); }
+    std::vector<double>& yy_data() { return yy_.data(); }
+    
+    const std::vector<double>& xx_data() const { return xx_.data(); }
+    const std::vector<double>& xy_data() const { return xy_.data(); }
+    const std::vector<double>& yy_data() const { return yy_.data(); }
+    
     /// Fill all components
     void fill(double xx_val, double xy_val, double yy_val);
     

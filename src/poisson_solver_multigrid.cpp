@@ -660,11 +660,6 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         // Check convergence after each cycle
         residual_ = compute_max_residual(0);
         
-        if (cfg.verbose && (cycle + 1) % 2 == 0) {
-            std::cout << "MG cycle " << cycle + 1 
-                      << ", residual = " << residual_ << "\n";
-        }
-        
         if (residual_ < cfg.tol) {
             break;
         }
@@ -755,11 +750,6 @@ int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, c
             // Compute residual on GPU, then copy result to CPU for convergence check
             residual_ = compute_max_residual(0);
             
-            if (cfg.verbose && (cycle + 1) % 2 == 0) {
-                std::cout << "MG cycle " << cycle + 1 
-                          << ", residual = " << residual_ << "\n";
-            }
-            
             if (residual_ < cfg.tol) {
                 break;
             }
@@ -797,16 +787,11 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     omp_set_default_device(0);
     
     int num_devices = omp_get_num_devices();
-    std::cout << "[MultigridPoisson] Detected " << num_devices << " GPU device(s)\n";
     
     if (num_devices == 0) {
         gpu_ready_ = false;
-        std::cout << "[MultigridPoisson] No GPU devices found, using CPU path\n";
         return;
     }
-    
-    std::cout << "[MultigridPoisson] Initializing GPU buffers for " << levels_.size() 
-              << " levels, finest grid: " << levels_[0]->Nx << "x" << levels_[0]->Ny << "\n";
     
     // Allocate persistent device storage for all levels
     u_ptrs_.resize(levels_.size());
@@ -831,7 +816,6 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     }
     
     gpu_ready_ = true;
-    std::cout << "[MultigridPoisson] GPU buffers allocated successfully\n";
 }
 
 void MultigridPoissonSolver::cleanup_gpu_buffers() {

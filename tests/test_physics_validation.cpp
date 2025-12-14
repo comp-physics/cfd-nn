@@ -110,18 +110,18 @@ void test_poiseuille_analytical() {
     
     // Use same criterion as existing test_solver.cpp: 5% tolerance
     if (l2_error > 0.05) {
-        std::cout << "\n❌ FAILED: L2 error = " << l2_error*100 << "% (limit: 5%)\n";
+        std::cout << "\n[FAIL] L2 error = " << l2_error*100 << "% (limit: 5%)\n";
         std::cout << "   This indicates the solver is NOT correctly solving Poiseuille flow!\n";
         throw std::runtime_error("Poiseuille validation failed - solver broken?");
     }
     
     // Warn if not well converged
     if (residual > 1e-4) {
-        std::cout << "⚠ WARNING: Residual = " << residual << " (not fully converged)\n";
+        std::cout << "[WARNING] Residual = " << residual << " (not fully converged)\n";
         std::cout << "   Error may be partly due to incomplete convergence, not discretization.\n";
     }
     
-    std::cout << "✓ PASSED: Poiseuille profile correct to " << l2_error*100 << "%\n";
+    std::cout << "[PASS] Poiseuille profile correct to " << l2_error*100 << "%\n";
 }
 
 //=============================================================================
@@ -192,12 +192,12 @@ void test_divergence_free() {
     double div_tolerance = 1e-3;  // Reasonable for projection method
     
     if (max_div > div_tolerance) {
-        std::cout << "\n❌ FAILED: Max divergence too large!\n";
+        std::cout << "\n[FAIL] Max divergence too large!\n";
         std::cout << "   Projection method not enforcing incompressibility correctly.\n";
         throw std::runtime_error("Divergence-free test failed");
     }
     
-    std::cout << "✓ PASSED: Incompressibility constraint satisfied\n";
+    std::cout << "[PASS] Incompressibility constraint satisfied\n";
 }
 
 //=============================================================================
@@ -271,12 +271,12 @@ void test_momentum_balance() {
     std::cout << "  Imbalance:     " << imbalance * 100 << "%\n";
     
     if (imbalance > 0.10) {  // 10% tolerance
-        std::cout << "\n❌ FAILED: Momentum imbalance too large!\n";
+        std::cout << "\n[FAIL] Momentum imbalance too large!\n";
         std::cout << "   Global momentum conservation violated.\n";
         throw std::runtime_error("Momentum balance test failed");
     }
     
-    std::cout << "✓ PASSED: Momentum balanced to " << imbalance*100 << "%\n";
+    std::cout << "[PASS] Momentum balanced to " << imbalance*100 << "%\n";
 }
 
 //=============================================================================
@@ -335,12 +335,12 @@ void test_channel_symmetry() {
     std::cout << "  Max asymmetry: " << max_asymmetry * 100 << "%\n";
     
     if (max_asymmetry > 0.01) {  // 1% tolerance
-        std::cout << "\n❌ FAILED: Flow not symmetric!\n";
+        std::cout << "\n[FAIL] Flow not symmetric!\n";
         std::cout << "   Boundary conditions or discretization broken.\n";
         throw std::runtime_error("Symmetry test failed");
     }
     
-    std::cout << "✓ PASSED: Flow symmetric to " << max_asymmetry*100 << "%\n";
+    std::cout << "[PASS] Flow symmetric to " << max_asymmetry*100 << "%\n";
 }
 
 //=============================================================================
@@ -414,7 +414,7 @@ void test_cross_model_consistency() {
     for (size_t m = 1; m < bulk_velocities.size(); ++m) {
         double diff = std::abs(bulk_velocities[m] - ref) / ref;
         if (diff > 0.05) {  // 5% tolerance
-            std::cout << "\n❌ FAILED: " << model_names[m] << " disagrees by " 
+            std::cout << "\n[FAIL] " << model_names[m] << " disagrees by " 
                       << diff*100 << "%\n";
             all_agree = false;
         }
@@ -424,7 +424,7 @@ void test_cross_model_consistency() {
         throw std::runtime_error("Cross-model consistency failed");
     }
     
-    std::cout << "✓ PASSED: All models consistent\n";
+    std::cout << "[PASS] All models consistent\n";
 }
 
 //=============================================================================
@@ -471,8 +471,8 @@ void test_cpu_gpu_consistency() {
     
     std::cout << "  Run 1: u_center=" << u_center1 << ", iters=" << iter1 << "\n";
     
-    // Note: Full CPU/GPU comparison in test_solver_cpu_gpu.cpp
-    std::cout << "✓ PASSED: GPU execution successful\n";
+    // Note: Full CPU/GPU comparison in test_solver_cpu_gpu.cpp    
+    std::cout << "[PASS] GPU execution successful\n";
     std::cout << "  (Full CPU/GPU comparison in test_solver_cpu_gpu)\n";
 #endif
 }
@@ -529,7 +529,7 @@ void test_sanity_checks() {
         if (!all_finite) {
             throw std::runtime_error("Velocity contains NaN/Inf!");
         }
-        std::cout << "✓\n";
+        std::cout << "[OK]\n";
     }
     
     // Realizability (nu_t >= 0)
@@ -576,10 +576,10 @@ void test_sanity_checks() {
         if (!all_positive) {
             throw std::runtime_error("Eddy viscosity is negative!");
         }
-        std::cout << "✓\n";
+        std::cout << "[OK]\n";
     }
     
-    std::cout << "✓ All sanity checks passed\n";
+    std::cout << "[PASS] All sanity checks passed\n";
 }
 
 //=============================================================================
@@ -606,15 +606,15 @@ int main() {
         
         std::cout << "\n";
         std::cout << "========================================================\n";
-        std::cout << "  ✓✓✓ ALL PHYSICS TESTS PASSED! ✓✓✓\n";
+        std::cout << "  [PASS] ALL PHYSICS TESTS PASSED!\n";
         std::cout << "========================================================\n";
         std::cout << "Solver correctly solves incompressible Navier-Stokes:\n";
-        std::cout << "  ✓ Poiseuille profile correct (<5% error)\n";
-        std::cout << "  ✓ Divergence-free (∇·u ≈ 0)\n";
-        std::cout << "  ✓ Momentum conserved (F_body = F_wall)\n";
-        std::cout << "  ✓ Symmetric flow in symmetric geometry\n";
-        std::cout << "  ✓ Models consistent in laminar limit\n";
-        std::cout << "  ✓ GPU produces correct results\n";
+        std::cout << "  [OK] Poiseuille profile correct (<5% error)\n";
+        std::cout << "  [OK] Divergence-free (∇·u ≈ 0)\n";
+        std::cout << "  [OK] Momentum conserved (F_body = F_wall)\n";
+        std::cout << "  [OK] Symmetric flow in symmetric geometry\n";
+        std::cout << "  [OK] Models consistent in laminar limit\n";
+        std::cout << "  [OK] GPU produces correct results\n";
         std::cout << "\n";
         std::cout << "High confidence: Solver is working correctly!\n";
         std::cout << "\n";
@@ -624,11 +624,11 @@ int main() {
     } catch (const std::exception& e) {
         std::cerr << "\n";
         std::cerr << "========================================================\n";
-        std::cerr << "  ❌❌❌ PHYSICS VALIDATION FAILED ❌❌❌\n";
+        std::cerr << "  [FAIL] PHYSICS VALIDATION FAILED\n";
         std::cerr << "========================================================\n";
         std::cerr << "Error: " << e.what() << "\n";
         std::cerr << "\n";
-        std::cerr << "⚠ WARNING: Solver may not be correctly solving N-S equations!\n";
+        std::cerr << "[WARNING] Solver may not be correctly solving N-S equations!\n";
         std::cerr << "Check discretization, BCs, or GPU offload implementation.\n";
         std::cerr << "\n";
         return 1;

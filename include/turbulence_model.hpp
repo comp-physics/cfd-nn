@@ -12,25 +12,73 @@
 
 namespace nncfd {
 
+/// Device view for turbulence models: pointers to solver-owned GPU-resident data
+/// This struct is passed to turbulence model update() calls when GPU is enabled
+/// to avoid repeated map(present:) clauses and pointer aliasing issues.
+struct TurbulenceDeviceView {
+    // Velocity field (staggered MAC grid, solver-owned, persistent on GPU)
+    double* u_face = nullptr;           // u at x-faces: (Ny+2Ng) × (Nx+2Ng+1)
+    double* v_face = nullptr;           // v at y-faces: (Ny+2Ng+1) × (Nx+2Ng)
+    int u_stride = 0;                   // u row stride
+    int v_stride = 0;                   // v row stride
+    
+    // Turbulence fields (cell-centered, solver-owned, persistent on GPU)
+    double* k = nullptr;                // TKE (if transport model)
+    double* omega = nullptr;            // Specific dissipation (if transport model)
+    double* nu_t = nullptr;             // Eddy viscosity output
+    int cell_stride = 0;                // Cell-centered row stride
+    
+    // Reynolds stress tensor components (cell-centered, for EARSM/TBNN)
+    double* tau_xx = nullptr;
+    double* tau_xy = nullptr;
+    double* tau_yy = nullptr;
+    
+    // Scratch buffers for gradients (solver-owned, persistent on GPU)
+    double* dudx = nullptr;             // Cell-centered gradients
+    double* dudy = nullptr;
+    double* dvdx = nullptr;
+    double* dvdy = nullptr;
+    
+    // Wall distance (cell-centered, precomputed, persistent on GPU)
+    double* wall_distance = nullptr;
+    
+    // Mesh parameters (scalars, passed by value to GPU kernels)
+    int Nx = 0;                         // Interior cells in x
+    int Ny = 0;                         // Interior cells in y
+    int Ng = 0;                         // Ghost cells
+    double dx = 0.0;                    // Grid spacing
+    double dy = 0.0;
+    double delta = 0.0;                 // Reference length scale
+    
+    // Check if view is valid (all essential pointers non-null)
+    bool is_valid() const {
+        return (u_face != nullptr && v_face != nullptr && nu_t != nullptr &&
+                dudx != nullptr && dudy != nullptr && dvdx != nullptr && dvdy != nullptr &&
+                Nx > 0 && Ny > 0);
+    }
+};
+
 /// Abstract base class for turbulence closures
 class TurbulenceModel {
 public:
     virtual ~TurbulenceModel() = default;
     
     /// Update turbulent quantities given current mean flow
-    /// @param mesh      Computational mesh
-    /// @param velocity  Mean velocity field
-    /// @param k         Turbulent kinetic energy (optional, may be unused)
-    /// @param omega     Specific dissipation rate (optional, may be unused)
-    /// @param nu_t      [out] Eddy viscosity field
-    /// @param tau_ij    [out] Reynolds stress tensor (optional, for TBNN)
+    /// @param mesh       Computational mesh
+    /// @param velocity   Mean velocity field
+    /// @param k          Turbulent kinetic energy (optional, may be unused)
+    /// @param omega      Specific dissipation rate (optional, may be unused)
+    /// @param nu_t       [out] Eddy viscosity field
+    /// @param tau_ij     [out] Reynolds stress tensor (optional, for TBNN)
+    /// @param device_view [optional] Device view for GPU-resident data (nullptr = use CPU path)
     virtual void update(
         const Mesh& mesh,
         const VectorField& velocity,
         const ScalarField& k,
         const ScalarField& omega,
         ScalarField& nu_t,
-        TensorField* tau_ij = nullptr
+        TensorField* tau_ij = nullptr,
+        const TurbulenceDeviceView* device_view = nullptr
     ) = 0;
     
     /// Get model name
@@ -51,13 +99,15 @@ public:
     /// @param k          [in/out] Turbulent kinetic energy
     /// @param omega      [in/out] Specific dissipation rate
     /// @param nu_t_prev  Eddy viscosity from previous step (for diffusion coefficients)
+    /// @param device_view [optional] Device view for GPU-resident data (nullptr = use CPU path)
     virtual void advance_turbulence(
         const Mesh& mesh,
         const VectorField& velocity,
         double dt,
         ScalarField& k,
         ScalarField& omega,
-        const ScalarField& nu_t_prev
+        const ScalarField& nu_t_prev,
+        const TurbulenceDeviceView* device_view = nullptr
     ) {
         (void)mesh;
         (void)velocity;
@@ -65,6 +115,7 @@ public:
         (void)k;
         (void)omega;
         (void)nu_t_prev;
+        (void)device_view;
     }
     
     /// Initialize any model-specific fields (e.g., k, omega for transport models)

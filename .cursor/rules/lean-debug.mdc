@@ -1,0 +1,28 @@
+---
+description: "Lean debugging: packets only (CI/SLURM/local)"
+alwaysApply: true
+priority: 10
+---
+
+DEBUGGING RULE
+- Never request full logs. Use packets only.
+- Do not proceed with diagnosis until the relevant packet output is provided.
+
+RESULT PACKET (ask for only this)
+1) Exact command
+2) Where it ran (OS/arch + compiler/runtime versions if relevant)
+3) Exit status (code/signal)
+4) First error block + <= 40 lines context
+5) Tail: stderr <= 120 lines, stdout <= 80 lines
+6) File:line references
+
+PREFERRED COMMANDS
+- GitHub CI: run `./tools/ci_packet.sh <runid>` via terminal tool (if <runid> missing, run `./tools/ci_packet.sh`).
+- SLURM: run `./tools/spkt <JOBID>` via terminal tool (if <JOBID> missing, run `./tools/spkt`).
+- Local: run `./tools/local_packet.sh <command...>` via terminal tool.
+
+If terminal execution is unavailable or blocked by approvals, ask for approval or ask me to run the single command.
+
+OUTPUT
+- Patch/diff first.
+- If more info is needed: ask for ONE additional item only.

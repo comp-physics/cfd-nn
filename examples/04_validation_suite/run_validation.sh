@@ -53,7 +53,7 @@ for case_config in "${cases[@]}"; do
               --output_dir "$OUTPUT_DIR/$case" \
         || echo "WARNING: $case may not have fully converged"
     
-    echo "✓ $case complete"
+    echo "[OK] $case complete"
 done
 
 echo ""

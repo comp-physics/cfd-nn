@@ -127,13 +127,13 @@ def main():
                 y, u, Nx, Ny = read_vtk_solution(vtk_file)
                 if Nx == Nx_expected and Ny == Ny_expected:
                     solutions[name] = {'y': y, 'u': u, 'Nx': Nx, 'Ny': Ny}
-                    print(f"  ✓ {name:12s} {Nx:4d} x {Ny:4d}")
+                    print(f"  [OK] {name:12s} {Nx:4d} x {Ny:4d}")
                 else:
-                    print(f"  ✗ {name:12s} Wrong dimensions: {Nx} x {Ny}")
+                    print(f"  [FAIL] {name:12s} Wrong dimensions: {Nx} x {Ny}")
             except Exception as e:
-                print(f"  ✗ {name:12s} Error: {e}")
+                print(f"  [FAIL] {name:12s} Error: {e}")
         else:
-            print(f"  ✗ {name:12s} File not found")
+            print(f"  [FAIL] {name:12s} File not found")
     
     if len(solutions) < 2:
         print("\nERROR: Need at least 2 grid levels!")

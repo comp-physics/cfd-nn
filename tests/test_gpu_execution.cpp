@@ -24,10 +24,10 @@ void test_gpu_available() {
     std::cout << "  Number of GPU devices: " << num_devices << "\n";
     
     if (num_devices > 0) {
-        std::cout << "  ✓ GPU devices available\n";
+        std::cout << "  [OK] GPU devices available\n";
         std::cout << "PASSED\n";
     } else {
-        std::cout << "  ✗ No GPU devices found (tests will use CPU fallback)\n";
+        std::cout << "  [WARNING] No GPU devices found (tests will use CPU fallback)\n";
         std::cout << "WARNING: GPU compiled but no devices available\n";
     }
 #else
@@ -269,10 +269,10 @@ int main() {
 #ifdef USE_GPU_OFFLOAD
     int num_devices = omp_get_num_devices();
     if (num_devices > 0) {
-        std::cout << "✓ All GPU execution tests passed!\n";
-        std::cout << "✓ GPU is actually being used for computation\n";
+        std::cout << "[PASS] All GPU execution tests passed!\n";
+        std::cout << "[OK] GPU is actually being used for computation\n";
     } else {
-        std::cout << "⚠ Tests compiled with GPU support but no devices available\n";
+        std::cout << "[WARNING] Tests compiled with GPU support but no devices available\n";
         std::cout << "  (This is expected on CPU-only nodes)\n";
     }
 #else

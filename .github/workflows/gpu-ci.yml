@@ -11,7 +11,7 @@ on:
 jobs:
   gpu-tests:
     runs-on: self-hosted
-    timeout-minutes: 90
+    timeout-minutes: 150
     
     steps:
     - name: Clean workspace
@@ -24,229 +24,23 @@ jobs:
     
     - uses: actions/checkout@v3
     
-    - name: Verify critical GPU fixes are present in source
+    - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |
-        echo "========================================="
-        echo "Verifying Critical GPU Fixes (Dec 8, 2024)"
-        echo "========================================="
-        echo ""
-        echo "These checks prevent regression of 4 critical bugs that would"
-        echo "cause incorrect results when comparing CPU vs GPU runs."
-        echo ""
-        
-        # Check Fix #1: Stride-based indexing in turbulence models
-        echo "Fix #1: Stride-based indexing in turbulence models"
-        if grep -q "int i = idx % Nx + 1.*skip ghost" src/turbulence_transport.cpp; then
-          echo "  ✓ Found stride-based indexing in turbulence_transport.cpp"
-        else
-          echo "  ✗ MISSING stride-based indexing in turbulence_transport.cpp!"
-          echo "     Bug would cause wrong array indexing on GPU (100% wrong results)"
-          exit 1
-        fi
-        
-        if grep -q "int cell_idx = j \* stride + i.*Stride-based index" src/turbulence_gep.cpp; then
-          echo "  ✓ Found stride-based indexing in turbulence_gep.cpp"
-        else
-          echo "  ✗ MISSING stride-based indexing in turbulence_gep.cpp!"
-          exit 1
-        fi
-        
-        # Check Fix #2: GPU sync after transport equation updates
-        echo ""
-        echo "Fix #2: GPU sync after transport equation updates"
-        if grep -A5 "advance_turbulence" src/solver.cpp | grep -q "target update to.*k_ptr_"; then
-          echo "  ✓ Found GPU sync after advance_turbulence()"
-        else
-          echo "  ✗ MISSING GPU sync after transport equation updates!"
-          echo "     Bug would cause stale data in SST/k-omega models (divergence)"
-          exit 1
-        fi
-        
-        # Check Fix #3: Correct map sizes with total_size
-        echo ""
-        echo "Fix #3: Correct map clause sizes (total_size for arrays with ghosts)"
-        if grep -q "map(to:.*total_size" src/turbulence_transport.cpp; then
-          echo "  ✓ Found correct map size (total_size) in turbulence_transport.cpp"
-        else
-          echo "  ✗ MISSING correct map size!"
-          echo "     Bug would cause size mismatch in GPU mapping"
-          exit 1
-        fi
-        
-        # Check Fix #4: Original memory fix (k_ptr_, omega_ptr_)
-        echo ""
-        echo "Fix #4: GPU memory pointers (k_ptr_, omega_ptr_)"
-        if grep -q "double\* k_ptr_" include/solver.hpp && grep -q "double\* omega_ptr_" include/solver.hpp; then
-          echo "  ✓ Found k_ptr_ and omega_ptr_ declarations"
-        else
-          echo "  ✗ MISSING GPU pointer declarations!"
-          exit 1
-        fi
-        
-        if grep -q "k_ptr_ = k_.data().data()" src/solver.cpp; then
-          echo "  ✓ Found k_ptr_ initialization"
-        else
-          echo "  ✗ MISSING k_ptr_ initialization!"
-          exit 1
-        fi
-        
-        echo ""
-        echo "✅ All 4 critical GPU fixes verified in source code"
-        echo ""
-    
-    - name: Submit GPU CI to Slurm (Embers QoS, 1 GPU)
+        ./.github/scripts/submit_and_monitor_slurm.sh \
+          ./.github/scripts/gpu_ci_correctness.sbatch.template \
+          "${GITHUB_WORKSPACE}" \
+          "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" \
+          "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" \
+          "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch"
+
+    - name: Submit GPU performance suite to Slurm (H200, 1 GPU)
       run: |
-        set -euo pipefail
-        
-        SBATCH_SCRIPT="${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.sbatch"
-        SLURM_OUT="${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.out"
-        SLURM_ERR="${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.err"
-        
-        cat > "${SBATCH_SCRIPT}" <<'EOF'
-        #!/bin/bash
-        #SBATCH -J gpu-ci
-        #SBATCH -A gts-sbryngelson3
-        #SBATCH -N 1
-        #SBATCH --ntasks-per-node=4
-        #SBATCH -p gpu-v100,gpu-a100,gpu-h100,gpu-l40s,gpu-h200
-        #SBATCH -G 1
-        #SBATCH --qos=embers
-        #SBATCH -t 01:25:00
-        #SBATCH -o __SLURM_OUT__
-        #SBATCH -e __SLURM_ERR__
-        
-        set -euo pipefail
-        
-        module reset
-        module load nvhpc/25.5
-        
-        echo "==================================================================="
-        echo "  GPU CI Slurm Job Environment"
-        echo "==================================================================="
-        echo ""
-        echo "Host: $(hostname)"
-        echo "Date: $(date)"
-        echo ""
-        echo "GPU(s):"
-        nvidia-smi
-        echo ""
-        
-        # Hard-require OpenMP target offload (fail if it falls back to CPU)
-        export OMP_TARGET_OFFLOAD=MANDATORY
-        
-        cd "__WORKDIR__"
-        
-        chmod +x scripts/run_gpu_ci_test.sh
-        chmod +x .github/scripts/*.sh
-        
-        rm -rf build_ci_gpu
-        mkdir -p build_ci_gpu
-        cd build_ci_gpu
-        
-        echo "=== CMake Configuration ==="
-        CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
-        echo ""
-        echo "=== CMake Configuration Summary ==="
-        grep -E "GPU offload|CXX compiler|OpenMP|NVIDIA" cmake_config.log || echo "No GPU-related config found"
-        echo ""
-        echo "=== Building ==="
-        make -j8
-        mkdir -p output
-        
-        echo ""
-        echo "==================================================================="
-        echo "  Comprehensive GPU tests"
-        echo "==================================================================="
-        echo ""
-        
-        ../scripts/run_gpu_ci_test.sh "all_gpu_tests" \
-          "bash -c '\
-            chmod +x ../.github/scripts/*.sh && \
-            mkdir -p output/gpu_validation && \
-            echo \"======================================\" && \
-            echo \"1. Unit Tests\" && \
-            echo \"======================================\" && \
-            ctest --output-on-failure && \
-            echo \"\" && \
-            echo \"======================================\" && \
-            echo \"2. Algebraic Models (Fast Validation)\" && \
-            echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh baseline \"Baseline\" 64 128 5000 output/gpu_validation/baseline && \
-            ../.github/scripts/test_turbulence_model_gpu.sh gep \"GEP\" 64 128 5000 output/gpu_validation/gep && \
-            echo \"\" && \
-            echo \"======================================\" && \
-            echo \"3. Neural Network Models\" && \
-            echo \"======================================\" && \
-            echo \"   3a. NN-MLP (skipping - requires model files)\" && \
-            echo \"   3b. NN-TBNN (skipping - requires model files)\" && \
-            echo \"\" && \
-            echo \"======================================\" && \
-            echo \"4. Transport Equation Models (Fast Validation)\" && \
-            echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh sst \"SST k-omega\" 64 128 500 output/gpu_validation/sst && \
-            ../.github/scripts/test_turbulence_model_gpu.sh komega \"k-omega (Wilcox)\" 64 128 500 output/gpu_validation/komega && \
-            echo \"\" && \
-            echo \"======================================\" && \
-            echo \"5. EARSM Models\" && \
-            echo \"======================================\" && \
-            ../.github/scripts/test_turbulence_model_gpu.sh earsm_wj \"Wallin-Johansson EARSM\" 256 512 1000 output/gpu_validation/earsm_wj && \
-            ../.github/scripts/test_turbulence_model_gpu.sh earsm_gs \"Gatski-Speziale EARSM\" 256 512 1000 output/gpu_validation/earsm_gs && \
-            ../.github/scripts/test_turbulence_model_gpu.sh earsm_pope \"Pope Quadratic EARSM\" 256 512 1000 output/gpu_validation/earsm_pope && \
-            echo \"\" && \
-            echo \"======================================\" && \
-            echo \"6. Periodic Hills - Complex Geometry (Fast Validation)\" && \
-            echo \"======================================\" && \
-            echo \"   Testing with Baseline model\" && \
-            ./periodic_hills --Nx 64 --Ny 48 --nu 0.001 --max_iter 200 --model baseline --num_snapshots 0'" \
-          20
-        
-        echo ""
-        echo "==================================================================="
-        echo "  CPU/GPU Consistency Validation (Critical)"
-        echo "==================================================================="
-        echo ""
-        ./test_cpu_gpu_consistency
-        
-        echo ""
-        echo "==================================================================="
-        echo "  Physics Validation (Comprehensive)"
-        echo "==================================================================="
-        echo ""
-        ./test_physics_validation
-        ./test_tg_validation
-        
-        echo ""
-        echo "==================================================================="
-        echo "  Perturbed Channel Flow Test"
-        echo "==================================================================="
-        echo ""
-        echo "Testing 2D perturbed channel (validates Poisson solver with non-trivial flow)"
-        ./test_poisson_perturbed --Nx 64 --Ny 64 --nu 0.01 --dp_dx -0.01 --max_iter 2000 --tol 1e-6 --verbose false || {
-          echo ""
-          echo "╔═══════════════════════════════════════════════════════╗"
-          echo "║  ✗✗✗ PERTURBED CHANNEL TEST FAILED ✗✗✗              ║"
-          echo "╚═══════════════════════════════════════════════════════╝"
-          echo ""
-          exit 1
-        }
-        
-        echo ""
-        echo "✅ Slurm GPU CI completed successfully"
-        EOF
-        
-        sed -i "s|__WORKDIR__|${GITHUB_WORKSPACE}|g" "${SBATCH_SCRIPT}"
-        sed -i "s|__SLURM_OUT__|${SLURM_OUT}|g" "${SBATCH_SCRIPT}"
-        sed -i "s|__SLURM_ERR__|${SLURM_ERR}|g" "${SBATCH_SCRIPT}"
-        
-        echo "Submitting Slurm job..."
-        sbatch -W "${SBATCH_SCRIPT}"
-        
-        echo ""
-        echo "=== Slurm STDOUT ==="
-        cat "${SLURM_OUT}" || true
-        echo ""
-        echo "=== Slurm STDERR ==="
-        cat "${SLURM_ERR}" || true
+        ./.github/scripts/submit_and_monitor_slurm.sh \
+          ./.github/scripts/gpu_ci_perf.sbatch.template \
+          "${GITHUB_WORKSPACE}" \
+          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" \
+          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" \
+          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch"
     
     - name: Debug info on failure
       if: failure()
@@ -256,10 +50,14 @@ jobs:
         echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
         echo ""
         echo "=== CMake Config Log ==="
-        cat build_ci_gpu/cmake_config.log 2>/dev/null || echo "No cmake log found"
+        cat build_ci_gpu_correctness/cmake_config.log 2>/dev/null || echo "No cmake log found (correctness)"
+        cat build_ci_cpu_ref/cmake_config.log 2>/dev/null || echo "No cmake log found (cpu_ref)"
+        cat build_ci_gpu_perf/cmake_config.log 2>/dev/null || echo "No cmake log found (perf)"
         echo ""
         echo "=== Checking compiled binaries ==="
-        ls -lh build_ci_gpu/test_* 2>/dev/null || echo "No test binaries found"
+        ls -lh build_ci_gpu_correctness/test_* 2>/dev/null || echo "No test binaries found (correctness)"
+        ls -lh build_ci_cpu_ref/test_* 2>/dev/null || echo "No test binaries found (cpu_ref)"
+        ls -lh build_ci_gpu_perf/test_* 2>/dev/null || echo "No test binaries found (perf)"
         echo ""
         echo "=== Verifying source again ==="
         grep -c "k_ptr_" include/solver.hpp src/solver.cpp || echo "k_ptr_ not found!"
@@ -267,8 +65,13 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.sbatch || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.out || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_${GITHUB_RUN_ID}.err || true
-        rm -rf build_ci_gpu || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out || true
+        rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err || true
+        rm -rf build_ci_gpu_correctness || true
+        rm -rf build_ci_cpu_ref || true
+        rm -rf build_ci_gpu_perf || true
 

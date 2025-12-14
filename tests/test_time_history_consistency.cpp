@@ -184,17 +184,17 @@ void test_time_history() {
     
     bool passed = true;
     if (max_u_diff > tol_field || max_v_diff > tol_field) {
-        std::cout << "\n✗ FAILED: Field differences exceed tolerance (" << tol_field << ")\n";
+        std::cout << "\n[FAIL] Field differences exceed tolerance (" << tol_field << ")\n";
         passed = false;
     }
     
     if (max_ke_diff > tol_scalar || max_flux_diff > tol_scalar) {
-        std::cout << "\n✗ FAILED: Scalar differences exceed tolerance (" << tol_scalar << ")\n";
+        std::cout << "\n[FAIL] Scalar differences exceed tolerance (" << tol_scalar << ")\n";
         passed = false;
     }
     
     if (passed) {
-        std::cout << "\n✓ PASSED: CPU and GPU remain consistent over " << num_steps << " time steps\n";
+        std::cout << "\n[PASS] CPU and GPU remain consistent over " << num_steps << " time steps\n";
     } else {
         assert(false);
     }

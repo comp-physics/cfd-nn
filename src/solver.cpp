@@ -21,15 +21,32 @@
     #define NVTX_PUSH(name) nvtxRangePushA(name)
     #define NVTX_POP() nvtxRangePop()
     #define NVTX_AVAILABLE 1
+    
+    // RAII scope guard for NVTX ranges (prevents unmatched push/pop on early returns)
+    struct NvtxRangeScope {
+        explicit NvtxRangeScope(const char* name) { nvtxRangePushA(name); }
+        ~NvtxRangeScope() { nvtxRangePop(); }
+        NvtxRangeScope(const NvtxRangeScope&) = delete;
+        NvtxRangeScope& operator=(const NvtxRangeScope&) = delete;
+    };
+    #define NVTX_RANGE(name) NvtxRangeScope nvtx_scope_##__LINE__(name)
 #else
     // Lightweight markers when NVTX is not available
     #define NVTX_PUSH(name) do { if (false) std::cout << "NVTX: " << name << std::endl; } while(0)
     #define NVTX_POP() do { } while(0)
     #define NVTX_AVAILABLE 0
+    struct NvtxRangeScope {
+        explicit NvtxRangeScope(const char*) {}
+    };
+    #define NVTX_RANGE(name) NvtxRangeScope nvtx_scope_##__LINE__(name)
 #endif
 #else
 #define NVTX_PUSH(name)
 #define NVTX_POP()
+struct NvtxRangeScope {
+    explicit NvtxRangeScope(const char*) {}
+};
+#define NVTX_RANGE(name) NvtxRangeScope nvtx_scope_##__LINE__(name)
 #endif
 
 namespace nncfd {
@@ -618,11 +635,19 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , conv_(mesh)                 // Persistent convective work field
     , diff_(mesh)                 // Persistent diffusive work field
     , velocity_old_(mesh)         // GPU-resident old velocity for residual
+    , dudx_(mesh), dudy_(mesh), dvdx_(mesh), dvdy_(mesh)  // Gradient scratch for turbulence
+    , wall_distance_(mesh)        // Precomputed wall distance field
     , poisson_solver_(mesh)
     , mg_poisson_solver_(mesh)
     , use_multigrid_(true)
     , current_dt_(config.dt)
 {
+    // Precompute wall distance (once, then stays on GPU if enabled)
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            wall_distance_(i, j) = mesh.wall_distance(i, j);
+        }
+    }
     // Set up Poisson solver BCs (periodic in x, Neumann in y for channel)
     poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                            PoissonBC::Neumann, PoissonBC::Neumann);
@@ -742,6 +767,7 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
 }
 
 void RANSSolver::apply_velocity_bc() {
+    NVTX_PUSH("apply_velocity_bc");
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Ng = mesh_->Nghost;
@@ -813,6 +839,7 @@ void RANSSolver::apply_velocity_bc() {
                                   y_lo_periodic, y_lo_noslip,
                                   y_hi_periodic, y_hi_noslip, v_ptr);
         }
+        NVTX_POP();  // End apply_velocity_bc (GPU path)
         return;
     }
 #endif
@@ -876,6 +903,7 @@ void RANSSolver::apply_velocity_bc() {
             }
         }
     }
+    NVTX_POP();  // End apply_velocity_bc
 }
 
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
@@ -1113,7 +1141,7 @@ cpu_divergence_fallback:
 }
 
 // Compute max absolute divergence of a velocity field (CPU-side, staggered grid)
-static double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
+[[maybe_unused]] static double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
     const double dx = mesh.dx;
     const double dy = mesh.dy;
     double max_div = 0.0;
@@ -1300,7 +1328,7 @@ void RANSSolver::correct_velocity() {
 }
 
 double RANSSolver::compute_residual() {
-    // Compute residual based on velocity change
+ // Compute residual based on velocity change
     double max_res = 0.0;
     
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
@@ -1318,10 +1346,6 @@ double RANSSolver::compute_residual() {
 double RANSSolver::step() {
     TIMED_SCOPE("solver_step");
     
-    static bool debug_div = (std::getenv("NNCFD_DEBUG_DIV") != nullptr);
-    static bool debug_div_poisson = (std::getenv("NNCFD_DEBUG_DIV_POISSON") != nullptr);
-    static bool debug_extra_poisson = (std::getenv("NNCFD_DEBUG_EXTRA_POISSON") != nullptr);
-    
     // Store old velocity for convergence check (at face locations for staggered grid)
     const int Ng = mesh_->Nghost;
     const int Nx = mesh_->Nx;
@@ -1330,6 +1354,7 @@ double RANSSolver::step() {
 #ifdef USE_GPU_OFFLOAD
     // GPU path: copy current velocity to velocity_old on device (device-to-device, no H↔D)
     if (gpu_ready_) {
+        NVTX_PUSH("velocity_copy");
         const size_t u_total_size = velocity_.u_total_size();
         const size_t v_total_size = velocity_.v_total_size();
         const int u_stride = Nx + 2 * Ng + 1;
@@ -1354,6 +1379,7 @@ double RANSSolver::step() {
                 velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
             }
         }
+        NVTX_POP();
     } else
 #endif
     {
@@ -1374,21 +1400,34 @@ double RANSSolver::step() {
     if (turb_model_ && turb_model_->uses_transport_equations()) {
         TIMED_SCOPE("turbulence_transport");
         NVTX_PUSH("turbulence_transport");
+        
+        // Get device view for GPU-accelerated transport
+        const TurbulenceDeviceView* device_view_ptr = nullptr;
+#ifdef USE_GPU_OFFLOAD
+        TurbulenceDeviceView device_view;
+        if (gpu_ready_) {
+            device_view = get_device_view();
+            if (device_view.is_valid()) {
+                device_view_ptr = &device_view;
+            }
+        }
+#endif
+        
         turb_model_->advance_turbulence(
             *mesh_,
             velocity_,
             current_dt_,
             k_,          // Updated in-place
             omega_,      // Updated in-place
-            nu_t_        // Previous step's nu_t for diffusion coefficients
+            nu_t_,       // Previous step's nu_t for diffusion coefficients
+            device_view_ptr
         );
         NVTX_POP();
         
 #ifdef USE_GPU_OFFLOAD
         // CRITICAL FIX: Sync k and omega to GPU after transport equation update
-        // advance_turbulence() may update k/omega on CPU, so we need to sync to GPU
-        // before the next turbulence update() call which expects GPU-resident data
-        if (gpu_ready_) {
+        // ONLY if model didn't use GPU path (models operating on device_view don't need this)
+        if (gpu_ready_ && !turb_model_->is_gpu_ready()) {
             #pragma omp target update to(k_ptr_[0:field_total_size_])
             #pragma omp target update to(omega_ptr_[0:field_total_size_])
         }
@@ -1399,8 +1438,22 @@ double RANSSolver::step() {
     if (turb_model_) {
         TIMED_SCOPE("turbulence_update");
         NVTX_PUSH("turbulence_update");
+        
+        // PHASE 1 GPU OPTIMIZATION: Pass device view if GPU is ready
+        const TurbulenceDeviceView* device_view_ptr = nullptr;
+#ifdef USE_GPU_OFFLOAD
+        TurbulenceDeviceView device_view;
+        if (gpu_ready_) {
+            device_view = get_device_view();
+            if (device_view.is_valid()) {
+                device_view_ptr = &device_view;
+            }
+        }
+#endif
+        
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
-                           turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr);
+                           turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr,
+                           device_view_ptr);
         NVTX_POP();
         
         // Turbulence models now manage their own GPU buffers and copy results back to CPU nu_t
@@ -1416,6 +1469,7 @@ double RANSSolver::step() {
     // GPU path: compute directly on GPU without CPU fill
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+        NVTX_PUSH("nu_eff_computation");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
         const int n_cells = Nx * Ny;
@@ -1449,6 +1503,7 @@ double RANSSolver::step() {
                 nu_eff_ptr[cell_idx] = nu;
             }
         }
+        NVTX_POP();
     } else
 #endif
     {
@@ -1480,6 +1535,7 @@ double RANSSolver::step() {
     
     // 3. Compute provisional velocity u* (without pressure gradient) at face locations
     // u* = u^n + dt * (-conv + diff + body_force)
+    NVTX_PUSH("predictor_step");
     [[maybe_unused]] const int u_stride = velocity_.u_stride();
     [[maybe_unused]] const int v_stride = velocity_.v_stride();
     
@@ -1613,7 +1669,15 @@ double RANSSolver::step() {
         std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
     }
 #endif
-    apply_velocity_bc();
+    
+    // PHASE 1.5 OPTIMIZATION: Skip redundant BC call for fully periodic domains
+    // The inline periodic averaging above already handles periodic BCs correctly
+    // Only apply BCs if domain has non-periodic boundaries (which need ghost cell updates)
+    const bool needs_bc_update = !x_periodic || !y_periodic;
+    if (needs_bc_update) {
+        apply_velocity_bc();
+    }
+    
     std::swap(velocity_, velocity_star_);
 #ifdef USE_GPU_OFFLOAD
     // Swap pointers back to restore original mapping
@@ -1622,6 +1686,7 @@ double RANSSolver::step() {
         std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
     }
 #endif
+    NVTX_POP();  // End predictor_step
     
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*
@@ -1741,10 +1806,6 @@ double RANSSolver::step() {
             // GPU-RESIDENT PATH: solve directly on device without host staging
             // This eliminates the DtoH/HtoD transfers that happened in the old path
             cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-            
-            if (debug_extra_poisson) {
-                mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-            }
         } else
 #endif
         {
@@ -1753,13 +1814,6 @@ double RANSSolver::step() {
                 cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
             } else {
                 cycles = poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-            }
-            if (debug_extra_poisson) {
-                if (use_multigrid_) {
-                    mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-                } else {
-                    poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-                }
             }
         }
         
@@ -1779,16 +1833,6 @@ double RANSSolver::step() {
         NVTX_PUSH("velocity_correction");
         correct_velocity();
         NVTX_POP();
-    }
-    
-    if (debug_div || debug_div_poisson) {
-        double max_div = compute_max_divergence(*mesh_, velocity_);
-        if (debug_div_poisson) {
-            std::cout << "[Debug] iter=" << iter_
-                      << " max_div_after_proj=" << std::scientific << max_div
-                      << " dt=" << current_dt_
-                      << std::endl;
-        }
     }
     
     // 6. Apply boundary conditions
@@ -1868,16 +1912,6 @@ double RANSSolver::step() {
         }
     }
 
-    if (debug_div) {
-        double max_div = compute_max_divergence(*mesh_, velocity_);
-        // Print a few initial steps and then every 50 iterations
-        if (iter_ < 10 || (iter_ % 50 == 0)) {
-            std::cout << "[Debug] iter=" << iter_
-                      << " max_div=" << std::scientific << max_div
-                      << " dt=" << current_dt_
-                      << std::endl;
-        }
-    }
     return max_change;
 }
 
@@ -2300,10 +2334,17 @@ void RANSSolver::initialize_gpu_buffers() {
     k_ptr_ = k_.data().data();
     omega_ptr_ = omega_.data().data();
     
-    if (config_.verbose) {
-        std::cout << "Mapping " << (16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0) 
-                  << " MB to GPU for persistent solver arrays...\n";
-    }
+    // Reynolds stress tensor components (for EARSM/TBNN)
+    tau_xx_ptr_ = tau_ij_.xx_data().data();
+    tau_xy_ptr_ = tau_ij_.xy_data().data();
+    tau_yy_ptr_ = tau_ij_.yy_data().data();
+    
+    // Gradient scratch buffers for turbulence models
+    dudx_ptr_ = dudx_.data().data();
+    dudy_ptr_ = dudy_.data().data();
+    dvdx_ptr_ = dvdx_.data().data();
+    dvdy_ptr_ = dvdy_.data().data();
+    wall_distance_ptr_ = wall_distance_.data().data();
     
 #ifdef GPU_PROFILE_TRANSFERS
     auto transfer_start = std::chrono::steady_clock::now();
@@ -2332,6 +2373,18 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
     // k and omega are NOT mapped here - turbulence models manage their own GPU copies
     
+    // Reynolds stress tensor components (alloc - will be computed by EARSM/TBNN on GPU)
+    #pragma omp target enter data map(alloc: tau_xx_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: tau_xy_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: tau_yy_ptr_[0:field_total_size_])
+    
+    // Gradient scratch buffers for turbulence models (alloc, not to - computed on GPU)
+    #pragma omp target enter data map(alloc: dudx_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: dudy_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: dvdx_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(alloc: dvdy_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: wall_distance_ptr_[0:field_total_size_])  // Precomputed, upload once
+    
     // Allocate device-resident "old velocity" buffers for residual computation
     // Host storage exists but is never used - device copy is authoritative
     // This eliminates per-step H→D upload for residual computation
@@ -2348,13 +2401,9 @@ void RANSSolver::initialize_gpu_buffers() {
     std::chrono::duration<double> transfer_time = transfer_end - transfer_start;
     double mb_transferred = 16 * field_total_size_ * sizeof(double) / 1024.0 / 1024.0;
     double bandwidth = mb_transferred / transfer_time.count();
-    std::cout << "[GPU_PROFILE] Initial H→D transfer: " << mb_transferred << " MB in " 
-              << transfer_time.count() << " s (" << bandwidth << " MB/s)\n";
+    (void)mb_transferred;
+    (void)bandwidth;
 #endif
-    
-    if (config_.verbose) {
-        std::cout << "✓ GPU arrays mapped successfully (persistent, data resident on device)\n";
-    }
 }
 
 void RANSSolver::cleanup_gpu_buffers() {
@@ -2385,6 +2434,18 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: diff_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(delete: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: div_velocity_ptr_[0:field_total_size_])
+    
+    // Delete gradient scratch buffers
+    #pragma omp target exit data map(delete: dudx_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: dudy_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: dvdx_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: dvdy_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: wall_distance_ptr_[0:field_total_size_])
+    
+    // Delete Reynolds stress tensor buffers
+    #pragma omp target exit data map(delete: tau_xx_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_xy_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_yy_ptr_[0:field_total_size_])
     
     gpu_ready_ = false;
 }
@@ -2435,6 +2496,50 @@ void RANSSolver::sync_transport_from_gpu() {
         #pragma omp target update from(omega_ptr_[0:field_total_size_])
     }
 }
+
+TurbulenceDeviceView RANSSolver::get_device_view() const {
+    TurbulenceDeviceView view;
+    
+    if (!gpu_ready_) {
+        return view;  // Returns invalid view (all nullptrs)
+    }
+    
+    // Velocity field (staggered, solver-owned, persistent on GPU)
+    view.u_face = velocity_u_ptr_;
+    view.v_face = velocity_v_ptr_;
+    view.u_stride = velocity_.u_stride();
+    view.v_stride = velocity_.v_stride();
+    
+    // Turbulence fields (cell-centered)
+    view.k = k_ptr_;
+    view.omega = omega_ptr_;
+    view.nu_t = nu_t_ptr_;
+    view.cell_stride = mesh_->total_Nx();  // Stride for cell-centered fields
+    
+    // Reynolds stress tensor
+    view.tau_xx = tau_xx_ptr_;
+    view.tau_xy = tau_xy_ptr_;
+    view.tau_yy = tau_yy_ptr_;
+    
+    // Gradient scratch buffers
+    view.dudx = dudx_ptr_;
+    view.dudy = dudy_ptr_;
+    view.dvdx = dvdx_ptr_;
+    view.dvdy = dvdy_ptr_;
+    
+    // Wall distance
+    view.wall_distance = wall_distance_ptr_;
+    
+    // Mesh parameters
+    view.Nx = mesh_->Nx;
+    view.Ny = mesh_->Ny;
+    view.Ng = mesh_->Nghost;
+    view.dx = mesh_->dx;
+    view.dy = mesh_->dy;
+    view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
+    
+    return view;
+}
 #else
 // No-op implementations when GPU offloading is disabled
 void RANSSolver::initialize_gpu_buffers() {
@@ -2459,6 +2564,10 @@ void RANSSolver::sync_solution_from_gpu() {
 
 void RANSSolver::sync_transport_from_gpu() {
     // No-op
+}
+
+TurbulenceDeviceView RANSSolver::get_device_view() const {
+    return TurbulenceDeviceView();  // Returns invalid view (all nullptrs)
 }
 #endif
 

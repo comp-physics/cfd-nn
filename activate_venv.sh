@@ -1,7 +1,7 @@
 #!/bin/bash
 # Convenience script to activate virtual environment
 source venv/bin/activate
-echo "✓ Virtual environment activated"
+echo "[OK] Virtual environment activated"
 echo "Python: $(which python)"
 echo "PyTorch: $(python -c 'import torch; print(torch.__version__)')"
 echo ""

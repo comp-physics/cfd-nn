@@ -125,13 +125,13 @@ int main(int argc, char** argv) {
     const double div_tolerance = 1e-3;  // Same as physics validation tests
     
     if (max_div > div_tolerance) {
-        std::cout << "\n❌ FAILED: Max divergence = " << max_div << " > " << div_tolerance << "\n";
+        std::cout << "\n[FAIL] Max divergence = " << max_div << " > " << div_tolerance << "\n";
         std::cout << "   Incompressibility constraint not satisfied!\n";
         std::cout << "   Poisson solver may be broken.\n";
         return 1;
     }
     
-    std::cout << "✓ PASSED: Incompressibility satisfied (max_div < " << div_tolerance << ")\n";
+    std::cout << "[PASS] Incompressibility satisfied (max_div < " << div_tolerance << ")\n";
     
     // Print timing summary
     std::cout << "\n";

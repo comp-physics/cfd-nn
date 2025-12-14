@@ -220,7 +220,8 @@ public:
         double dt,
         ScalarField& k,
         ScalarField& omega,
-        const ScalarField& nu_t_prev
+        const ScalarField& nu_t_prev,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     void update(
@@ -229,7 +230,8 @@ public:
         const ScalarField& k,
         const ScalarField& omega,
         ScalarField& nu_t,
-        TensorField* tau_ij = nullptr
+        TensorField* tau_ij = nullptr,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     std::string name() const override { return "SSTKOmega"; }
@@ -316,7 +318,8 @@ public:
         double dt,
         ScalarField& k,
         ScalarField& omega,
-        const ScalarField& nu_t_prev
+        const ScalarField& nu_t_prev,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     void update(
@@ -325,7 +328,8 @@ public:
         const ScalarField& k,
         const ScalarField& omega,
         ScalarField& nu_t,
-        TensorField* tau_ij = nullptr
+        TensorField* tau_ij = nullptr,
+        const TurbulenceDeviceView* device_view = nullptr
     ) override;
     
     std::string name() const override { return "KOmega"; }

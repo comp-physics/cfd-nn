@@ -70,7 +70,7 @@ int main() {
     // Compute initial kinetic energy
     const VectorField& vel0 = solver.velocity();
     double KE0 = 0.0;
-    int count = 0;
+    [[maybe_unused]] int count = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double u = 0.5 * (vel0.u(i, j) + vel0.u(i+1, j));
@@ -154,21 +154,21 @@ int main() {
     
     bool passed = true;
     if (error_final < 0.05) {
-        std::cout << "✓✓✓ EXCELLENT: <5% error in energy decay\n";
+        std::cout << "[EXCELLENT] <5% error in energy decay\n";
     } else if (error_final < 0.10) {
-        std::cout << "✓✓ VERY GOOD: <10% error\n";
+        std::cout << "[VERY GOOD] <10% error\n";
     } else if (error_final < 0.20) {
-        std::cout << "✓ ACCEPTABLE: <20% error\n";
+        std::cout << "[ACCEPTABLE] <20% error\n";
     } else {
-        std::cout << "❌ FAILED: Error too large\n";
+        std::cout << "[FAIL] Error too large\n";
         passed = false;
     }
     
     std::cout << "\nWhat this test validates:\n";
-    std::cout << "  ✓ Viscous terms correctly implemented\n";
-    std::cout << "  ✓ Projection method preserves divergence-free field\n";
-    std::cout << "  ✓ Time integration stable and reasonably accurate\n";
-    std::cout << "  ✓ Periodic BCs working correctly\n";
+    std::cout << "  [OK] Viscous terms correctly implemented\n";
+    std::cout << "  [OK] Projection method preserves divergence-free field\n";
+    std::cout << "  [OK] Time integration stable and reasonably accurate\n";
+    std::cout << "  [OK] Periodic BCs working correctly\n";
     std::cout << "========================================================\n\n";
     
     return passed ? 0 : 1;

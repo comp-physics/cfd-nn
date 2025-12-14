@@ -134,11 +134,11 @@ def main():
     
     # Check if error is acceptable
     if rel_error < 0.01:  # 1% error
-        print("✅ PASSED: Solution matches analytical Poiseuille profile!")
+        print("[PASS] Solution matches analytical Poiseuille profile!")
     elif rel_error < 0.05:  # 5% error
-        print("⚠️  WARNING: Solution close but not exact (error > 1%)")
+        print("[WARNING] Solution close but not exact (error > 1%)")
     else:
-        print("❌ FAILED: Solution does not match analytical profile!")
+        print("[FAIL] Solution does not match analytical profile!")
     
     # Create comparison plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))

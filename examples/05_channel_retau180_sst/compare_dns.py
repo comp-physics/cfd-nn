@@ -124,7 +124,7 @@ def plot_comparison(y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns,
     
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"✓ Saved comparison plot: {output_file}")
+    print(f"[OK] Saved comparison plot: {output_file}")
     plt.close()
 
 def compute_errors(y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns):
@@ -186,7 +186,7 @@ def main():
     # Convert to wall units
     y_plus_sim, u_plus_sim, u_tau = compute_wall_units(y, u, nu, rho)
     
-    print(f"✓ Loaded {len(y)} points from simulation")
+    print(f"[OK] Loaded {len(y)} points from simulation")
     print(f"  Friction velocity u_tau = {u_tau:.6f}")
     print(f"  Re_tau = u_tau * delta / nu = {u_tau * 1.0 / nu:.2f}")
     print(f"  Max y+ = {np.max(y_plus_sim):.2f}")
@@ -195,7 +195,7 @@ def main():
     # Load DNS data
     print("Loading DNS reference data (Moser et al. 1999)...")
     y_plus_dns, u_plus_dns = load_dns_data_retau180()
-    print(f"✓ Loaded {len(y_plus_dns)} DNS reference points")
+    print(f"[OK] Loaded {len(y_plus_dns)} DNS reference points")
     print("")
     
     # Create comparison plot

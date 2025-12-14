@@ -37,6 +37,6 @@ echo ""
 SCRIPT_DIR="$(dirname "$0")"
 "$SCRIPT_DIR/validate_turbulence_model.sh" "$NAME" "$OUTPUT_DIR"
 
-echo "✓ $NAME validated successfully"
+echo "[OK] $NAME validated successfully"
 echo ""
 

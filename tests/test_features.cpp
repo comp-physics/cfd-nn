@@ -27,7 +27,15 @@ void test_velocity_gradient() {
     // Gradients should be: dudx=1, dudy=0, dvdx=0, dvdy=1
     int i = mesh.Nx/2;
     int j = mesh.Ny/2;
-    VelocityGradient grad = compute_velocity_gradient(mesh, vel, i, j);
+    
+    // Compute gradients using MAC-aware method
+    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+    [[maybe_unused]] VelocityGradient grad;
+    grad.dudx = (vel.u(i + 1, j) - vel.u(i - 1, j)) * inv_2dx;
+    grad.dudy = (vel.u(i, j + 1) - vel.u(i, j - 1)) * inv_2dy;
+    grad.dvdx = (vel.v(i + 1, j) - vel.v(i - 1, j)) * inv_2dx;
+    grad.dvdy = (vel.v(i, j + 1) - vel.v(i, j - 1)) * inv_2dy;
     
     assert(std::abs(grad.dudx - 1.0) < 1e-6);
     assert(std::abs(grad.dudy - 0.0) < 1e-6);

@@ -132,6 +132,13 @@ void test_mixing_length_consistency() {
         std::cout << "SKIPPED (no GPU devices)\n";
         return;
     }
+    
+    // Force offload to fail if no GPU available
+    omp_set_default_device(0);
+    if (omp_get_num_devices() == 0) {
+        std::cout << "SKIPPED (no GPU devices after setting default)\n";
+        return;
+    }
 #else
     std::cout << "SKIPPED (GPU offload not enabled)\n";
     return;
@@ -164,62 +171,109 @@ void test_mixing_length_consistency() {
         // Verify field addresses are different
         assert(nu_t_gpu.data().data() != nu_t_cpu.data().data());
         
-        // GPU path - CRITICAL: initialize GPU buffers so update() uses GPU
-        MixingLengthModel model_gpu;
-        model_gpu.set_nu(1.0 / 10000.0);
-        model_gpu.set_delta(0.5);
-        model_gpu.initialize_gpu_buffers(mesh);
+        // GPU path - Use a simple stub solver to provide device view
+        // This ensures we're testing the ACTUAL refactored GPU path (device_view != nullptr)
         
-        // Hard check: GPU must be ready (otherwise this is CPU-vs-CPU!)
-        if (!model_gpu.is_gpu_ready()) {
-            std::cout << "    FAILED: GPU buffers not ready (would be CPU-vs-CPU test!)\n";
+#ifdef USE_GPU_OFFLOAD
+        // Manually create device view for this test
+        // Allocate and map arrays to GPU
+        const int total_cells = mesh.total_cells();
+        const int u_total = velocity.u_total_size();
+        const int v_total = velocity.v_total_size();
+        
+        double* u_ptr = velocity.u_data().data();
+        double* v_ptr = velocity.v_data().data();
+        double* nu_t_ptr = nu_t_gpu.data().data();
+        
+        // Gradient scratch buffers
+        std::vector<double> dudx_data(total_cells, 0.0);
+        std::vector<double> dudy_data(total_cells, 0.0);
+        std::vector<double> dvdx_data(total_cells, 0.0);
+        std::vector<double> dvdy_data(total_cells, 0.0);
+        std::vector<double> wall_dist_data(total_cells, 0.0);
+        
+        // Precompute wall distance
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                int idx = mesh.index(i, j);
+                wall_dist_data[idx] = mesh.wall_distance(i, j);
+            }
+        }
+        
+        double* dudx_ptr = dudx_data.data();
+        double* dudy_ptr = dudy_data.data();
+        double* dvdx_ptr = dvdx_data.data();
+        double* dvdy_ptr = dvdy_data.data();
+        double* wall_dist_ptr = wall_dist_data.data();
+        
+        // Map to GPU
+        #pragma omp target enter data map(to: u_ptr[0:u_total])
+        #pragma omp target enter data map(to: v_ptr[0:v_total])
+        #pragma omp target enter data map(alloc: nu_t_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dudx_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dudy_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dvdx_ptr[0:total_cells])
+        #pragma omp target enter data map(alloc: dvdy_ptr[0:total_cells])
+        #pragma omp target enter data map(to: wall_dist_ptr[0:total_cells])
+        
+        // Create device view
+        TurbulenceDeviceView device_view;
+        device_view.u_face = u_ptr;
+        device_view.v_face = v_ptr;
+        device_view.u_stride = velocity.u_stride();
+        device_view.v_stride = velocity.v_stride();
+        device_view.nu_t = nu_t_ptr;
+        device_view.cell_stride = mesh.total_Nx();
+        device_view.dudx = dudx_ptr;
+        device_view.dudy = dudy_ptr;
+        device_view.dvdx = dvdx_ptr;
+        device_view.dvdy = dvdy_ptr;
+        device_view.wall_distance = wall_dist_ptr;
+        device_view.Nx = mesh.Nx;
+        device_view.Ny = mesh.Ny;
+        device_view.Ng = mesh.Nghost;
+        device_view.dx = mesh.dx;
+        device_view.dy = mesh.dy;
+        device_view.delta = 0.5;
+        
+        // Verify device view is valid
+        if (!device_view.is_valid()) {
+            std::cout << "    FAILED: Device view is not valid!\n";
             assert(false);
         }
         
+        // GPU path - Pass device view to force GPU execution
+        MixingLengthModel model_gpu;
+        model_gpu.set_nu(1.0 / 10000.0);
+        model_gpu.set_delta(0.5);
+        
+        model_gpu.update(mesh, velocity, k, omega, nu_t_gpu, nullptr, &device_view);
+        
+        // Download result from GPU
+        #pragma omp target update from(nu_t_ptr[0:total_cells])
+        
+        // Cleanup GPU buffers
+        #pragma omp target exit data map(delete: u_ptr[0:u_total])
+        #pragma omp target exit data map(delete: v_ptr[0:v_total])
+        #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dudx_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dudy_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dvdx_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dvdy_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: wall_dist_ptr[0:total_cells])
+#else
+        // CPU fallback (shouldn't reach here due to earlier guards)
+        MixingLengthModel model_gpu;
+        model_gpu.set_nu(1.0 / 10000.0);
+        model_gpu.set_delta(0.5);
         model_gpu.update(mesh, velocity, k, omega, nu_t_gpu);
+#endif
         
-        // CPU reference (explicit reimplementation)
-        ScalarField dudx(mesh), dudy(mesh), dvdx(mesh), dvdy(mesh);
-        compute_all_velocity_gradients(mesh, velocity, dudx, dudy, dvdx, dvdy);
-        
-        const double nu = 1.0 / 10000.0;
-        const double kappa = 0.41;
-        const double A_plus = 26.0;
-        const double delta = 0.5;
-        
-        // Estimate u_tau
-        double u_tau = 0.0;
-        {
-            int j = mesh.j_begin();
-            double dudy_wall = 0.0;
-            int count = 0;
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                dudy_wall += std::abs(dudy(i, j));
-                ++count;
-            }
-            dudy_wall /= count;
-            double tau_w = nu * dudy_wall;
-            u_tau = std::sqrt(tau_w);
-        }
-        u_tau = std::max(u_tau, 1e-10);
-        
-        // CPU computation
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double y_wall = mesh.wall_distance(i, j);
-                double y_plus = y_wall * u_tau / nu;
-                double damping = 1.0 - std::exp(-y_plus / A_plus);
-                double l_mix = kappa * y_wall * damping;
-                l_mix = std::min(l_mix, 0.5 * delta);
-                
-                double Sxx = dudx(i, j);
-                double Syy = dvdy(i, j);
-                double Sxy = 0.5 * (dudy(i, j) + dvdx(i, j));
-                double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-                
-                nu_t_cpu(i, j) = l_mix * l_mix * S_mag;
-            }
-        }
+        // CPU reference (use actual model implementation)
+        MixingLengthModel model_cpu;
+        model_cpu.set_nu(1.0 / 10000.0);
+        model_cpu.set_delta(0.5);
+        model_cpu.update(mesh, velocity, k, omega, nu_t_cpu);
         
         // Compare
         auto cmp = compare_fields(mesh, nu_t_cpu, nu_t_gpu, "nu_t");
@@ -227,9 +281,9 @@ void test_mixing_length_consistency() {
         worst_abs = std::max(worst_abs, cmp.max_abs_diff);
         worst_rel = std::max(worst_rel, cmp.max_rel_diff);
         
-        // Tolerances (algorithm-based, not platform-based)
-        const double tol_abs = 1e-10;
-        const double tol_rel = 1e-8;
+        // Tolerances (tight for MAC-consistent CPU/GPU paths)
+        const double tol_abs = 1e-12;
+        const double tol_rel = 1e-10;
         
         if (cmp.max_abs_diff > tol_abs && cmp.max_rel_diff > tol_rel) {
             std::cout << "    FAILED: Differences exceed tolerance\n";
@@ -245,9 +299,9 @@ void test_mixing_length_consistency() {
     std::cout << "    Max rel: " << worst_rel << "\n";
     
     if (all_passed) {
-        std::cout << "\n✓ MixingLengthModel CPU/GPU consistency: PASSED\n";
+        std::cout << "\n[PASS] MixingLengthModel CPU/GPU consistency: PASSED\n";
     } else {
-        std::cout << "\n✗ MixingLengthModel CPU/GPU consistency: FAILED\n";
+        std::cout << "\n[FAIL] MixingLengthModel CPU/GPU consistency: FAILED\n";
         assert(false);
     }
 }
@@ -435,46 +489,11 @@ void test_randomized_regression() {
         // GPU path (model already initialized)
         model_gpu.update(mesh, vel, k, omega, nu_t_gpu);
         
-        // CPU reference
-        ScalarField dudx(mesh), dudy(mesh), dvdx(mesh), dvdy(mesh);
-        compute_all_velocity_gradients(mesh, vel, dudx, dudy, dvdx, dvdy);
-        
-        const double nu = 1.0 / 10000.0;
-        const double kappa = 0.41;
-        const double A_plus = 26.0;
-        const double delta = 0.5;
-        
-        double u_tau = 0.0;
-        {
-            int j = mesh.j_begin();
-            double dudy_wall = 0.0;
-            int count = 0;
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                dudy_wall += std::abs(dudy(i, j));
-                ++count;
-            }
-            dudy_wall /= count;
-            double tau_w = nu * dudy_wall;
-            u_tau = std::sqrt(tau_w);
-        }
-        u_tau = std::max(u_tau, 1e-10);
-        
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double y_wall = mesh.wall_distance(i, j);
-                double y_plus = y_wall * u_tau / nu;
-                double damping = 1.0 - std::exp(-y_plus / A_plus);
-                double l_mix = kappa * y_wall * damping;
-                l_mix = std::min(l_mix, 0.5 * delta);
-                
-                double Sxx = dudx(i, j);
-                double Syy = dvdy(i, j);
-                double Sxy = 0.5 * (dudy(i, j) + dvdx(i, j));
-                double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-                
-                nu_t_cpu(i, j) = l_mix * l_mix * S_mag;
-            }
-        }
+        // CPU reference (use actual model implementation)
+        MixingLengthModel model_cpu;
+        model_cpu.set_nu(1.0 / 10000.0);
+        model_cpu.set_delta(0.5);
+        model_cpu.update(mesh, vel, k, omega, nu_t_cpu);
         
         // Compare
         double max_abs = 0.0, max_rel = 0.0;
@@ -503,8 +522,8 @@ void test_randomized_regression() {
     std::cout << "    Max abs diff: " << std::scientific << worst_abs << "\n";
     std::cout << "    Max rel diff: " << worst_rel << "\n";
     
-    const double tol_abs = 1e-10;
-    const double tol_rel = 1e-8;
+    const double tol_abs = 1e-12;
+    const double tol_rel = 1e-10;
     
     if (worst_abs > tol_abs && worst_rel > tol_rel) {
         std::cout << "  FAILED: Worst case exceeds tolerance\n";

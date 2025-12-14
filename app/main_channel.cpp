@@ -18,6 +18,7 @@
 #include <iomanip>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
 
 using namespace nncfd;
 
@@ -146,6 +147,13 @@ int main(int argc, char** argv) {
     // Parse command line
     config.parse_args(argc, argv);
     config.print();
+    
+    // Ensure output directory exists
+    try {
+        std::filesystem::create_directories(config.output_dir);
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: Could not create output directory: " << e.what() << "\n";
+    }
     
     // Compute expected max velocity for Poiseuille flow
     double H = (config.y_max - config.y_min) / 2.0;

@@ -4,38 +4,34 @@
 
 namespace nncfd {
 
-VelocityGradient compute_velocity_gradient(
-    const Mesh& mesh,
-    const VectorField& velocity,
-    int i, int j) {
-    
-    double dx = mesh.dx;
-    double dy = mesh.dy;
-    
-    VelocityGradient grad;
-    
-    // Central differences
-    grad.dudx = (velocity.u(i+1, j) - velocity.u(i-1, j)) / (2.0 * dx);
-    grad.dudy = (velocity.u(i, j+1) - velocity.u(i, j-1)) / (2.0 * dy);
-    grad.dvdx = (velocity.v(i+1, j) - velocity.v(i-1, j)) / (2.0 * dx);
-    grad.dvdy = (velocity.v(i, j+1) - velocity.v(i, j-1)) / (2.0 * dy);
-    
-    return grad;
-}
-
-void compute_all_velocity_gradients(
+/// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
+/// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
+void compute_gradients_from_mac_cpu(
     const Mesh& mesh,
     const VectorField& velocity,
     ScalarField& dudx, ScalarField& dudy,
     ScalarField& dvdx, ScalarField& dvdy) {
     
+    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+    
+    // Loop over interior cells
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            auto grad = compute_velocity_gradient(mesh, velocity, i, j);
-            dudx(i, j) = grad.dudx;
-            dudy(i, j) = grad.dudy;
-            dvdx(i, j) = grad.dvdx;
-            dvdy(i, j) = grad.dvdy;
+            // For gradients at cell (i,j), sample neighboring face values
+            // This matches the GPU kernel's indexing exactly
+            
+            // dudx: central difference of u at x-faces
+            dudx(i, j) = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+            
+            // dudy: central difference of u at x-faces in y-direction
+            dudy(i, j) = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+            
+            // dvdx: central difference of v at y-faces in x-direction
+            dvdx(i, j) = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+            
+            // dvdy: central difference of v at y-faces
+            dvdy(i, j) = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
         }
     }
 }
@@ -51,7 +47,15 @@ Features compute_features_scalar_nut(
     
     Features feat(6);  // 6 features for scalar nu_t model
     
-    auto grad = compute_velocity_gradient(mesh, velocity, i, j);
+    // Compute gradients using MAC-aware method (matches GPU)
+    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+    
+    VelocityGradient grad;
+    grad.dudx = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+    grad.dudy = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+    grad.dvdx = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+    grad.dvdy = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
     
     double S_mag = grad.S_mag();
     double Omega_mag = grad.Omega_mag();
@@ -97,7 +101,15 @@ Features compute_features_tbnn(
     
     Features feat(5);  // Invariants for TBNN
     
-    auto grad = compute_velocity_gradient(mesh, velocity, i, j);
+    // Compute gradients using MAC-aware method (matches GPU)
+    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
+    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
+    
+    VelocityGradient grad;
+    grad.dudx = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
+    grad.dudy = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
+    grad.dvdx = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
+    grad.dvdy = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
     
     double S_mag = grad.S_mag();
     double Omega_mag = grad.Omega_mag();
@@ -301,8 +313,8 @@ void FeatureComputer::compute_scalar_features(
     const ScalarField& omega,
     std::vector<Features>& features) {
     
-    // Compute all gradients first
-    compute_all_velocity_gradients(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    // Compute all gradients first (MAC-aware for CPU/GPU consistency)
+    compute_gradients_from_mac_cpu(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Resize output
     int n_interior = mesh_->Nx * mesh_->Ny;
@@ -325,7 +337,7 @@ void FeatureComputer::compute_tbnn_features(
     std::vector<Features>& features,
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>>& basis) {
     
-    compute_all_velocity_gradients(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac_cpu(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     int n_interior = mesh_->Nx * mesh_->Ny;
     features.resize(n_interior);

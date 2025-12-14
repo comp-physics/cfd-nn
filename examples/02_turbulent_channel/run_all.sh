@@ -59,7 +59,7 @@ for model_config in "${models[@]}"; do
               --output_dir "$OUTPUT_DIR/$model" \
         || echo "WARNING: $model failed or didn't converge fully"
     
-    echo "✓ $model complete"
+    echo "[OK] $model complete"
 done
 
 echo ""

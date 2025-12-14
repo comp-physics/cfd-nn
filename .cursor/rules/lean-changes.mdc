@@ -1,0 +1,23 @@
+---
+description: "Lean changes: tight scope, low churn"
+globs: ["**/*.{c,cc,cpp,cxx,h,hpp,hxx,F,f90,f95,f03,f08,jl,md,txt}"]
+alwaysApply: true
+priority: 20
+---
+
+GOAL
+- Minimal token usage and minimal code churn.
+
+SCOPE
+- Do NOT scan the entire repository.
+- Default to <= 3 files and <= 200 LOC touched.
+- If more is needed, STOP and ask with proposed file list + why (<= 4 bullets).
+
+OUTPUT
+- Default output: unified diff only.
+- If text is needed: <= 4 bullets, 1 sentence each.
+- Do NOT create new markdown/doc files unless explicitly asked.
+
+BEHAVIOR
+- When unsure, ask 1 targeted question instead of exploring widely.
+- Keep existing style/conventions; no large renames/reformats unless asked.
