@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <iostream>
+#include <cassert>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -250,6 +251,15 @@ void MLP::upload_to_gpu() {
         return;
     }
     
+    // Check GPU availability
+    int num_devices = omp_get_num_devices();
+    if (num_devices == 0) {
+        throw std::runtime_error(
+            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
+            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
+        );
+    }
+    
     // Flatten weights for contiguous GPU memory
     flatten_weights();
     
@@ -291,7 +301,7 @@ void MLP::upload_to_gpu() {
 
 void MLP::free_gpu() {
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized before freeing");
     
     // Check sizes BEFORE getting pointers (handles moved-from objects)
     size_t w_size = all_weights_.size();

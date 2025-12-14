@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <fstream>
 #include <cstdlib>
+#include <cassert>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -671,7 +672,7 @@ void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
         turb_model_->set_nu(config_.nu);
         
         // Initialize turbulence model GPU buffers if GPU is available and mesh is initialized
-        if (mesh_ && gpu_ready_) {
+        if (mesh_) {
             turb_model_->initialize_gpu_buffers(*mesh_);
         }
     }
@@ -711,9 +712,7 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
     
 #ifdef USE_GPU_OFFLOAD
     // Ensure initialized fields are mirrored to device for GPU runs
-    if (gpu_ready_) {
-        sync_to_gpu();
-    }
+    sync_to_gpu();
 #endif
 }
 
@@ -754,15 +753,13 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
     // CRITICAL: Sync k_ and omega_ to GPU after CPU-side initialization
     // These were modified at lines 419-420 AFTER initialize_gpu_buffers() ran
     // Without this sync, GPU kernels will use stale zero values instead of proper initial conditions
-    if (gpu_ready_ && turb_model_ && turb_model_->uses_transport_equations()) {
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
         #pragma omp target update to(k_ptr_[0:field_total_size_])
         #pragma omp target update to(omega_ptr_[0:field_total_size_])
     }
 
     // Also sync velocity to device so GPU path starts from correct ICs
-    if (gpu_ready_) {
-        sync_to_gpu();
-    }
+    sync_to_gpu();
 #endif
 }
 
@@ -787,7 +784,7 @@ void RANSSolver::apply_velocity_bc() {
     const bool y_hi_noslip   = (velocity_bc_.y_hi == VelocityBC::NoSlip);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         double* u_ptr = velocity_u_ptr_;
         double* v_ptr = velocity_v_ptr_;
         const size_t u_total_size = velocity_.u_total_size();
@@ -918,7 +915,7 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered convection on GPU
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const size_t u_total_size = vel.u_total_size();
         const size_t v_total_size = vel.v_total_size();
 
@@ -996,7 +993,7 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered diffusion on GPU
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const size_t u_total_size = vel.u_total_size();
         const size_t v_total_size = vel.v_total_size();
         const size_t nu_total_size = field_total_size_;
@@ -1075,7 +1072,7 @@ void RANSSolver::compute_divergence(const VectorField& vel, ScalarField& div) {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered divergence on GPU
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const int n_cells = Nx * Ny;
         const size_t u_total_size = vel.u_total_size();
         const size_t v_total_size = vel.v_total_size();
@@ -1190,7 +1187,7 @@ void RANSSolver::correct_velocity() {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: staggered velocity correction on GPU
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const int n_cells = Nx * Ny;
         const size_t u_total_size = velocity_.u_total_size();
         const size_t v_total_size = velocity_.v_total_size();
@@ -1356,37 +1353,34 @@ double RANSSolver::step() {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: copy current velocity to velocity_old on device (device-to-device, no H↔D)
-    if (gpu_ready_) {
-        NVTX_PUSH("velocity_copy");
-        const size_t u_total_size = velocity_.u_total_size();
-        const size_t v_total_size = velocity_.v_total_size();
-        const int u_stride = Nx + 2 * Ng + 1;
-        const int v_stride = Nx + 2 * Ng;
-        
-        // Copy u-velocity device-to-device
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: velocity_u_ptr_[0:u_total_size], velocity_old_u_ptr_[0:u_total_size])
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                const int idx = j * u_stride + i;
-                velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
-            }
+    NVTX_PUSH("velocity_copy");
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    const int u_stride = Nx + 2 * Ng + 1;
+    const int v_stride = Nx + 2 * Ng;
+    
+    // Copy u-velocity device-to-device
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: velocity_u_ptr_[0:u_total_size], velocity_old_u_ptr_[0:u_total_size])
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i <= Ng + Nx; ++i) {
+            const int idx = j * u_stride + i;
+            velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
         }
-        
-        // Copy v-velocity device-to-device
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: velocity_v_ptr_[0:v_total_size], velocity_old_v_ptr_[0:v_total_size])
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                const int idx = j * v_stride + i;
-                velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
-            }
+    }
+    
+    // Copy v-velocity device-to-device
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: velocity_v_ptr_[0:v_total_size], velocity_old_v_ptr_[0:v_total_size])
+    for (int j = Ng; j <= Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * v_stride + i;
+            velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
         }
-        NVTX_POP();
-    } else
-#endif
-    {
-        // CPU path: use host-side velocity_old_ (only when GPU not available)
+    }
+    NVTX_POP();
+#else
+    // CPU path: use host-side velocity_old_
         for (int j = Ng; j < Ng + Ny; ++j) {
             for (int i = Ng; i <= Ng + Nx; ++i) {
                 velocity_old_.u(i, j) = velocity_.u(i, j);
@@ -1407,12 +1401,9 @@ double RANSSolver::step() {
         // Get device view for GPU-accelerated transport
         const TurbulenceDeviceView* device_view_ptr = nullptr;
 #ifdef USE_GPU_OFFLOAD
-        TurbulenceDeviceView device_view;
-        if (gpu_ready_) {
-            device_view = get_device_view();
-            if (device_view.is_valid()) {
-                device_view_ptr = &device_view;
-            }
+        TurbulenceDeviceView device_view = get_device_view();
+        if (device_view.is_valid()) {
+            device_view_ptr = &device_view;
         }
 #endif
         
@@ -1430,7 +1421,7 @@ double RANSSolver::step() {
 #ifdef USE_GPU_OFFLOAD
         // CRITICAL FIX: Sync k and omega to GPU after transport equation update
         // ONLY if model didn't use GPU path (models operating on device_view don't need this)
-        if (gpu_ready_ && !turb_model_->is_gpu_ready()) {
+        if (!turb_model_->is_gpu_ready()) {
             #pragma omp target update to(k_ptr_[0:field_total_size_])
             #pragma omp target update to(omega_ptr_[0:field_total_size_])
         }
@@ -1445,12 +1436,9 @@ double RANSSolver::step() {
         // PHASE 1 GPU OPTIMIZATION: Pass device view if GPU is ready
         const TurbulenceDeviceView* device_view_ptr = nullptr;
 #ifdef USE_GPU_OFFLOAD
-        TurbulenceDeviceView device_view;
-        if (gpu_ready_) {
-            device_view = get_device_view();
-            if (device_view.is_valid()) {
-                device_view_ptr = &device_view;
-            }
+        TurbulenceDeviceView device_view = get_device_view();
+        if (device_view.is_valid()) {
+            device_view_ptr = &device_view;
         }
 #endif
         
@@ -1462,16 +1450,14 @@ double RANSSolver::step() {
         // Turbulence models now manage their own GPU buffers and copy results back to CPU nu_t
         // Sync nu_t to GPU for use in nu_eff computation
 #ifdef USE_GPU_OFFLOAD
-        if (gpu_ready_) {
-            #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-        }
+        #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
 #endif
     }
     
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
     // GPU path: compute directly on GPU without CPU fill
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+    if (mesh_->Nx >= 32 && mesh_->Ny >= 32) {
         NVTX_PUSH("nu_eff_computation");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
@@ -1548,7 +1534,7 @@ double RANSSolver::step() {
                             (velocity_bc_.y_hi == VelocityBC::Periodic);
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const size_t u_total_size = velocity_.u_total_size();
         const size_t v_total_size = velocity_.v_total_size();
         const double dt = current_dt_;
@@ -1667,10 +1653,8 @@ double RANSSolver::step() {
     // CRITICAL: std::swap invalidates GPU pointers - they still point to old memory
     // After swap, velocity_u_ptr_ points to what is now velocity_star_ data!
     // Must swap the pointers too to keep them consistent
-    if (gpu_ready_) {
-        std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-        std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
-    }
+    std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+    std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
 #endif
     
     // PHASE 1.5 OPTIMIZATION: Skip redundant BC call for fully periodic domains
@@ -1684,10 +1668,8 @@ double RANSSolver::step() {
     std::swap(velocity_, velocity_star_);
 #ifdef USE_GPU_OFFLOAD
     // Swap pointers back to restore original mapping
-    if (gpu_ready_) {
-        std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-        std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
-    }
+    std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+    std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
 #endif
     NVTX_POP();  // End predictor_step
     
@@ -1705,7 +1687,7 @@ double RANSSolver::step() {
     double mean_div = 0.0;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+    if (mesh_->Nx >= 32 && mesh_->Ny >= 32) {
         // GPU-resident path: compute mean divergence on device via reduction
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
@@ -1805,7 +1787,7 @@ double RANSSolver::step() {
         
         int cycles = 0;
 #ifdef USE_GPU_OFFLOAD
-        if (gpu_ready_ && mesh_->Nx >= 32 && mesh_->Ny >= 32 && use_multigrid_) {
+        if (mesh_->Nx >= 32 && mesh_->Ny >= 32 && use_multigrid_) {
             // GPU-RESIDENT PATH: solve directly on device without host staging
             // This eliminates the DtoH/HtoD transfers that happened in the old path
             cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
@@ -1847,7 +1829,7 @@ double RANSSolver::step() {
     double max_change = 0.0;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         // GPU-resident residual: compute max change on GPU via reduction
         // velocity_old is now device-resident - NO H→D upload needed!
         const size_t u_total_size = velocity_.u_total_size();
@@ -2310,9 +2292,10 @@ void RANSSolver::write_vtk(const std::string& filename) const {
 void RANSSolver::initialize_gpu_buffers() {
     int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
-        gpu_ready_ = false;
-        std::cout << "No GPU devices found, disabling GPU offload\n";
-        return;
+        throw std::runtime_error(
+            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
+            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
+        );
     }
     
     // Get raw pointers to all field data
@@ -2397,6 +2380,11 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(alloc: velocity_old_u_ptr_[0:u_total_size])
     #pragma omp target enter data map(alloc: velocity_old_v_ptr_[0:v_total_size])
     
+    // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
+    if (!omp_target_is_present(velocity_u_ptr_, omp_get_default_device())) {
+        throw std::runtime_error("GPU mapping failed despite device availability");
+    }
+    
     gpu_ready_ = true;
     
 #ifdef GPU_PROFILE_TRANSFERS
@@ -2410,7 +2398,7 @@ void RANSSolver::initialize_gpu_buffers() {
 }
 
 void RANSSolver::cleanup_gpu_buffers() {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized before cleanup");
     
     // Staggered grid sizes
     const size_t u_total_size = velocity_.u_total_size();
@@ -2454,7 +2442,7 @@ void RANSSolver::cleanup_gpu_buffers() {
 }
 
 void RANSSolver::sync_to_gpu() {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized before sync");
     
     // Update GPU with changed fields (typically after CPU-side modifications)
     // Staggered grid: u and v have different sizes
@@ -2476,7 +2464,7 @@ void RANSSolver::sync_from_gpu() {
 }
 
 void RANSSolver::sync_solution_from_gpu() {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized before sync");
     
     // Download only primary solution fields needed for I/O/analysis
     // Staggered grid: u and v have different sizes
@@ -2490,7 +2478,7 @@ void RANSSolver::sync_solution_from_gpu() {
 }
 
 void RANSSolver::sync_transport_from_gpu() {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized before sync");
     
     // Download transport equation fields (k, omega) only if turbulence model uses them
     // For laminar runs (turb_model = none), this saves hundreds of MB on large grids!
@@ -2501,11 +2489,9 @@ void RANSSolver::sync_transport_from_gpu() {
 }
 
 TurbulenceDeviceView RANSSolver::get_device_view() const {
-    TurbulenceDeviceView view;
+    assert(gpu_ready_ && "GPU must be initialized to get device view");
     
-    if (!gpu_ready_) {
-        return view;  // Returns invalid view (all nullptrs)
-    }
+    TurbulenceDeviceView view;
     
     // Velocity field (staggered, solver-owned, persistent on GPU)
     view.u_face = velocity_u_ptr_;
@@ -2548,67 +2534,37 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     SolverDeviceView view;
     
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu_ready_) {
-        // CPU fallback: return host pointers
-        view.u_face = const_cast<double*>(velocity_.u_data().data());
-        view.v_face = const_cast<double*>(velocity_.v_data().data());
-        view.u_star_face = const_cast<double*>(velocity_star_.u_data().data());
-        view.v_star_face = const_cast<double*>(velocity_star_.v_data().data());
-        view.u_old_face = const_cast<double*>(velocity_old_.u_data().data());
-        view.v_old_face = const_cast<double*>(velocity_old_.v_data().data());
-        view.u_stride = velocity_.u_stride();
-        view.v_stride = velocity_.v_stride();
-        
-        view.p = const_cast<double*>(pressure_.data().data());
-        view.p_corr = const_cast<double*>(pressure_correction_.data().data());
-        view.nu_t = const_cast<double*>(nu_t_.data().data());
-        view.nu_eff = const_cast<double*>(nu_eff_.data().data());
-        view.rhs = const_cast<double*>(rhs_poisson_.data().data());
-        view.div = const_cast<double*>(div_velocity_.data().data());
-        view.cell_stride = mesh_->total_Nx();
-        
-        view.conv_u = const_cast<double*>(conv_.u_data().data());
-        view.conv_v = const_cast<double*>(conv_.v_data().data());
-        view.diff_u = const_cast<double*>(diff_.u_data().data());
-        view.diff_v = const_cast<double*>(diff_.v_data().data());
-        
-        view.Nx = mesh_->Nx;
-        view.Ny = mesh_->Ny;
-        view.Ng = mesh_->Nghost;
-        view.dx = mesh_->dx;
-        view.dy = mesh_->dy;
-        view.dt = current_dt_;
-    } else {
-        // GPU path: return device-present pointers
-        view.u_face = velocity_u_ptr_;
-        view.v_face = velocity_v_ptr_;
-        view.u_star_face = velocity_star_u_ptr_;
-        view.v_star_face = velocity_star_v_ptr_;
-        view.u_old_face = velocity_old_u_ptr_;
-        view.v_old_face = velocity_old_v_ptr_;
-        view.u_stride = velocity_.u_stride();
-        view.v_stride = velocity_.v_stride();
-        
-        view.p = pressure_ptr_;
-        view.p_corr = pressure_corr_ptr_;
-        view.nu_t = nu_t_ptr_;
-        view.nu_eff = nu_eff_ptr_;
-        view.rhs = rhs_poisson_ptr_;
-        view.div = div_velocity_ptr_;
-        view.cell_stride = mesh_->total_Nx();
-        
-        view.conv_u = conv_u_ptr_;
-        view.conv_v = conv_v_ptr_;
-        view.diff_u = diff_u_ptr_;
-        view.diff_v = diff_v_ptr_;
-        
-        view.Nx = mesh_->Nx;
-        view.Ny = mesh_->Ny;
-        view.Ng = mesh_->Nghost;
-        view.dx = mesh_->dx;
-        view.dy = mesh_->dy;
-        view.dt = current_dt_;
-    }
+    assert(gpu_ready_ && "GPU must be initialized to get solver view");
+    
+    // GPU path: return device-present pointers
+    view.u_face = velocity_u_ptr_;
+    view.v_face = velocity_v_ptr_;
+    view.u_star_face = velocity_star_u_ptr_;
+    view.v_star_face = velocity_star_v_ptr_;
+    view.u_old_face = velocity_old_u_ptr_;
+    view.v_old_face = velocity_old_v_ptr_;
+    view.u_stride = velocity_.u_stride();
+    view.v_stride = velocity_.v_stride();
+    
+    view.p = pressure_ptr_;
+    view.p_corr = pressure_corr_ptr_;
+    view.nu_t = nu_t_ptr_;
+    view.nu_eff = nu_eff_ptr_;
+    view.rhs = rhs_poisson_ptr_;
+    view.div = div_velocity_ptr_;
+    view.cell_stride = mesh_->total_Nx();
+    
+    view.conv_u = conv_u_ptr_;
+    view.conv_v = conv_v_ptr_;
+    view.diff_u = diff_u_ptr_;
+    view.diff_v = diff_v_ptr_;
+    
+    view.Nx = mesh_->Nx;
+    view.Ny = mesh_->Ny;
+    view.Ng = mesh_->Nghost;
+    view.dx = mesh_->dx;
+    view.dy = mesh_->dy;
+    view.dt = current_dt_;
 #else
     // CPU build: always return host pointers
     view.u_face = const_cast<double*>(velocity_.u_data().data());

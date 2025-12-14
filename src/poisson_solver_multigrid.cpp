@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <cstring>  // for memcpy in debug
+#include <cassert>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -13,8 +14,10 @@ namespace nncfd {
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
     
-    // Note: GPU buffers are initialized lazily on first solve() call
-    // because OpenMP runtime may not be ready during construction
+#ifdef USE_GPU_OFFLOAD
+    // Initialize GPU buffers immediately - will throw if no GPU available
+    initialize_gpu_buffers();
+#endif
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
@@ -56,7 +59,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
     int Ng = 1;  // Ghost cells
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && Nx >= 16 && Ny >= 16) {
+    if (Nx >= 16 && Ny >= 16) {
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const int stride = Nx + 2;
@@ -207,7 +210,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: red-black Gauss-Seidel on persistent device arrays
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
@@ -299,7 +302,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path with persistent device arrays
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (Nx >= 32 && Ny >= 32) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         const double* u_ptr = u_ptrs_[level];
@@ -339,7 +342,7 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && coarse.Nx >= 16 && coarse.Ny >= 16) {
+    if (coarse.Nx >= 16 && coarse.Ny >= 16) {
         const int Nx_c = coarse.Nx;
         const int Ny_c = coarse.Ny;
         const int stride_f = fine.Nx + 2;
@@ -394,7 +397,7 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && fine.Nx >= 32 && fine.Ny >= 32) {
+    if (fine.Nx >= 32 && fine.Ny >= 32) {
         const int Nx_c = coarse.Nx;
         const int Ny_c = coarse.Ny;
         const int Nx_f = fine.Nx;
@@ -532,7 +535,7 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && grid.Nx >= 32 && grid.Ny >= 32) {
+    if (grid.Nx >= 32 && grid.Ny >= 32) {
         // Compute max residual on GPU and return scalar to host
         const int Nx = grid.Nx;
         const int Ny = grid.Ny;
@@ -572,7 +575,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && grid.Nx >= 32 && grid.Ny >= 32) {
+    if (grid.Nx >= 32 && grid.Ny >= 32) {
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const int Nx = grid.Nx;
@@ -620,12 +623,6 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 }
 
 int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg) {
-#ifdef USE_GPU_OFFLOAD
-    // Lazy GPU initialization on first solve for THIS instance
-    if (!gpu_ready_) {
-        initialize_gpu_buffers();
-    }
-#endif
     
     // Copy RHS and initial guess to finest level (CPU side)
     auto& finest = *levels_[0];
@@ -699,14 +696,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
 #ifdef USE_GPU_OFFLOAD
 int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, const PoissonConfig& cfg) {
-    // Lazy GPU initialization on first solve_device() call for THIS instance
-    if (!gpu_ready_) {
-        initialize_gpu_buffers();
-        
-        if (!gpu_ready_) {
-            throw std::runtime_error("solve_device() called but GPU not available");
-        }
-    }
+    assert(gpu_ready_ && "GPU must be initialized in constructor");
     
     // Device-resident solve: work directly on GPU pointers without host staging
     // This eliminates the DtoH/HtoD transfers that happen in regular solve()
@@ -785,12 +775,14 @@ int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, c
 void MultigridPoissonSolver::initialize_gpu_buffers() {
     // Force OpenMP runtime initialization before checking devices
     omp_set_default_device(0);
-    
+
     int num_devices = omp_get_num_devices();
-    
+
     if (num_devices == 0) {
-        gpu_ready_ = false;
-        return;
+        throw std::runtime_error(
+            "GPU build (USE_GPU_OFFLOAD=ON) requires GPU device at runtime.\n"
+            "Found 0 devices. Either run on GPU-enabled node or rebuild with USE_GPU_OFFLOAD=OFF."
+        );
     }
     
     // Allocate persistent device storage for all levels
@@ -815,11 +807,16 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         #pragma omp target enter data map(alloc: r_ptrs_[lvl][0:total_size])
     }
     
+    // Verify mappings succeeded
+    if (!u_ptrs_.empty() && !omp_target_is_present(u_ptrs_[0], omp_get_default_device())) {
+        throw std::runtime_error("GPU mapping failed despite device availability");
+    }
+    
     gpu_ready_ = true;
 }
 
 void MultigridPoissonSolver::cleanup_gpu_buffers() {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized");
     
     for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
         const size_t total_size = level_sizes_[lvl];
@@ -833,7 +830,7 @@ void MultigridPoissonSolver::cleanup_gpu_buffers() {
 }
 
 void MultigridPoissonSolver::sync_level_to_gpu(int level) {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized");
     const size_t total_size = level_sizes_[level];
     
     #pragma omp target update to(u_ptrs_[level][0:total_size])
@@ -842,7 +839,7 @@ void MultigridPoissonSolver::sync_level_to_gpu(int level) {
 }
 
 void MultigridPoissonSolver::sync_level_from_gpu(int level) {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized");
     const size_t total_size = level_sizes_[level];
     
     #pragma omp target update from(u_ptrs_[level][0:total_size])

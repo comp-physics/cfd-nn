@@ -31,7 +31,7 @@ void TurbulenceNNMLP::load(const std::string& weights_dir, const std::string& sc
 void TurbulenceNNMLP::upload_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_ready_) {
-        mlp_.upload_to_gpu();
+        mlp_.upload_to_gpu();  // Will throw if no GPU available
         gpu_ready_ = mlp_.is_on_gpu();
     }
 #endif
