@@ -27,13 +27,18 @@ public:
     int solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg);
     
 #ifdef USE_GPU_OFFLOAD
-    /// Device-resident solve: work directly on GPU pointers (no host staging)
-    /// @param rhs_device Device pointer to RHS array (size = Nx+2 * Ny+2)
-    /// @param p_device Device pointer to solution array (size = Nx+2 * Ny+2)
+    /// Device-resident solve: work directly on present-mapped pointers (no host staging)
+    /// 
+    /// Model 1 contract: Parameters are HOST pointers that must already be mapped to device
+    /// via persistent `#pragma omp target enter data`. The solver uses `map(present: ...)` 
+    /// internally, so no additional H↔D transfers occur during the solve.
+    /// 
+    /// @param rhs_present Host pointer to RHS array (must be present-mapped, size = Nx+2 * Ny+2)
+    /// @param p_present Host pointer to solution array (must be present-mapped, size = Nx+2 * Ny+2)
     /// @param cfg Solver configuration
     /// @return Number of V-cycles performed
-    /// @note Both arrays must already be on device with map(present:)
-    int solve_device(double* rhs_device, double* p_device, const PoissonConfig& cfg);
+    /// @note For true device pointers (omp_target_alloc), use is_device_ptr instead (not implemented)
+    int solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg);
 #endif
     
     /// Get final residual

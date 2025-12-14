@@ -688,28 +688,29 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 }
 
 #ifdef USE_GPU_OFFLOAD
-int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, const PoissonConfig& cfg) {
+int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg) {
     assert(gpu_ready_ && "GPU must be initialized in constructor");
     
-    // Device-resident solve: work directly on GPU pointers without host staging
-    // This eliminates the DtoH/HtoD transfers that happen in regular solve()
+    // Device-resident solve using Model 1 (host pointer + present mapping)
+    // Parameters are host pointers that caller has already mapped via `target enter data`.
+    // We use map(present: ...) to access the device copies without additional transfers.
     
     auto& finest = *levels_[0];
     const int Nx = finest.Nx;
     const int Ny = finest.Ny;
     const size_t total_size = (Nx + 2) * (Ny + 2);
     
-    // Get device pointers for finest level
+    // Get device pointers for finest level multigrid buffers
     double* u_dev = u_ptrs_[0];
     double* f_dev = f_ptrs_[0];
     
-    // Copy RHS and initial guess from caller's device-mapped arrays to multigrid level-0 device buffers
+    // Copy RHS and initial guess from caller's present-mapped arrays to multigrid level-0 buffers
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
-        map(present: rhs_device[0:total_size], p_device[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
+        map(present: rhs_present[0:total_size], p_present[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
     for (size_t idx = 0; idx < total_size; ++idx) {
-        f_dev[idx] = rhs_device[idx];
-        u_dev[idx] = p_device[idx];
+        f_dev[idx] = rhs_present[idx];
+        u_dev[idx] = p_present[idx];
     }
     
     apply_bc(0);
@@ -754,12 +755,12 @@ int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, c
         subtract_mean(0);
     }
     
-    // Copy result from multigrid level-0 device buffer back to caller's device pointer
+    // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
-        map(present: p_device[0:total_size], u_dev[0:total_size])
+        map(present: p_present[0:total_size], u_dev[0:total_size])
     for (size_t idx = 0; idx < total_size; ++idx) {
-        p_device[idx] = u_dev[idx];
+        p_present[idx] = u_dev[idx];
     }
     
     return cycle + 1;

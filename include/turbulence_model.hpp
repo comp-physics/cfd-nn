@@ -16,6 +16,10 @@ namespace nncfd {
 /// Device view for turbulence models: pointers to solver-owned GPU-resident data
 /// This struct is passed to turbulence model update() calls when GPU is enabled
 /// to avoid repeated map(present:) clauses and pointer aliasing issues.
+///
+/// MODEL 1 CONTRACT: All pointers are HOST pointers that have been persistently
+/// mapped to GPU via `target enter data`. Kernels use `map(present: ...)` to
+/// access device copies. No device-to-host transfers occur during compute.
 struct TurbulenceDeviceView {
     // Velocity field (staggered MAC grid, solver-owned, persistent on GPU)
     double* u_face = nullptr;           // u at x-faces: (Ny+2Ng) × (Nx+2Ng+1)
@@ -61,6 +65,10 @@ struct TurbulenceDeviceView {
 
 /// Device view for core solver: pointers to GPU-resident solver arrays
 /// Parallel to TurbulenceDeviceView but for projection/NS step
+///
+/// MODEL 1 CONTRACT: All pointers are HOST pointers that have been persistently
+/// mapped to GPU via `target enter data`. Kernels use `map(present: ...)` to
+/// access device copies. No device-to-host transfers occur during compute.
 struct SolverDeviceView {
     // Velocity fields (staggered)
     double* u_face = nullptr;

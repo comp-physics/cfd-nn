@@ -1005,15 +1005,17 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     const double* u_ptr = vel_ptrs.u;
     const double* v_ptr = vel_ptrs.v;
     double* div_ptr = v.div;
+    
+    const int Ng = v.Ng;
 
     // Use target data for scalar parameters (NVHPC workaround)
-    #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx)
+    #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx, Ng)
     {
         #pragma omp target teams distribute parallel for \
             map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size])
         for (int idx = 0; idx < n_cells; ++idx) {
-            const int i = idx % Nx + 1;  // Cell center i index (with ghosts)
-            const int j = idx / Nx + 1;  // Cell center j index (with ghosts)
+            const int i = idx % Nx + Ng;  // Cell center i index (with ghosts)
+            const int j = idx / Nx + Ng;  // Cell center j index (with ghosts)
 
             // Fully inlined divergence computation
             const int u_right = j * u_stride + (i + 1);
@@ -2078,7 +2080,7 @@ void RANSSolver::initialize_gpu_buffers() {
     gpu::verify_device_available();
     
     // Get raw pointers to all field data
-    field_total_size_ = (mesh_->Nx + 2) * (mesh_->Ny + 2);  // For cell-centered fields
+    field_total_size_ = mesh_->total_cells();  // (Nx + 2*Nghost) * (Ny + 2*Nghost) for cell-centered fields
     
     // Staggered grid: u and v have different sizes
     velocity_u_ptr_ = velocity_.u_data().data();
