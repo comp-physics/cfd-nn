@@ -1081,23 +1081,26 @@ void RANSSolver::compute_divergence(const VectorField& vel, ScalarField& div) {
         const size_t v_total_size = vel.v_total_size();
         const size_t div_total_size = field_total_size_;
 
+        // Use SolverDeviceView to centralize pointer selection
+        auto view = get_solver_view();
+        
         // Determine correct GPU pointers based on which VectorField was passed
         // Compare data pointers to identify which field this is
         const double* u_ptr = nullptr;
         const double* v_ptr = nullptr;
         if (vel.u_data().data() == velocity_.u_data().data()) {
-            u_ptr = velocity_u_ptr_;
-            v_ptr = velocity_v_ptr_;
+            u_ptr = view.u_face;
+            v_ptr = view.v_face;
         } else if (vel.u_data().data() == velocity_star_.u_data().data()) {
-            u_ptr = velocity_star_u_ptr_;
-            v_ptr = velocity_star_v_ptr_;
+            u_ptr = view.u_star_face;
+            v_ptr = view.v_star_face;
         } else {
             // Unknown field - fall back to CPU
             goto cpu_divergence_fallback;
         }
         
         // Output divergence (always div_velocity_)
-        double* div_ptr = div_velocity_ptr_;
+        double* div_ptr = view.div;
 
         // Use target data for scalar parameters (NVHPC workaround)
         #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx)
@@ -2537,6 +2540,106 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
     view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
+    
+    return view;
+}
+
+SolverDeviceView RANSSolver::get_solver_view() const {
+    SolverDeviceView view;
+    
+#ifdef USE_GPU_OFFLOAD
+    if (!gpu_ready_) {
+        // CPU fallback: return host pointers
+        view.u_face = const_cast<double*>(velocity_.u_data().data());
+        view.v_face = const_cast<double*>(velocity_.v_data().data());
+        view.u_star_face = const_cast<double*>(velocity_star_.u_data().data());
+        view.v_star_face = const_cast<double*>(velocity_star_.v_data().data());
+        view.u_old_face = const_cast<double*>(velocity_old_.u_data().data());
+        view.v_old_face = const_cast<double*>(velocity_old_.v_data().data());
+        view.u_stride = velocity_.u_stride();
+        view.v_stride = velocity_.v_stride();
+        
+        view.p = const_cast<double*>(pressure_.data().data());
+        view.p_corr = const_cast<double*>(pressure_correction_.data().data());
+        view.nu_t = const_cast<double*>(nu_t_.data().data());
+        view.nu_eff = const_cast<double*>(nu_eff_.data().data());
+        view.rhs = const_cast<double*>(rhs_poisson_.data().data());
+        view.div = const_cast<double*>(div_velocity_.data().data());
+        view.cell_stride = mesh_->total_Nx();
+        
+        view.conv_u = const_cast<double*>(conv_.u_data().data());
+        view.conv_v = const_cast<double*>(conv_.v_data().data());
+        view.diff_u = const_cast<double*>(diff_.u_data().data());
+        view.diff_v = const_cast<double*>(diff_.v_data().data());
+        
+        view.Nx = mesh_->Nx;
+        view.Ny = mesh_->Ny;
+        view.Ng = mesh_->Nghost;
+        view.dx = mesh_->dx;
+        view.dy = mesh_->dy;
+        view.dt = current_dt_;
+    } else {
+        // GPU path: return device-present pointers
+        view.u_face = velocity_u_ptr_;
+        view.v_face = velocity_v_ptr_;
+        view.u_star_face = velocity_star_u_ptr_;
+        view.v_star_face = velocity_star_v_ptr_;
+        view.u_old_face = velocity_old_u_ptr_;
+        view.v_old_face = velocity_old_v_ptr_;
+        view.u_stride = velocity_.u_stride();
+        view.v_stride = velocity_.v_stride();
+        
+        view.p = pressure_ptr_;
+        view.p_corr = pressure_corr_ptr_;
+        view.nu_t = nu_t_ptr_;
+        view.nu_eff = nu_eff_ptr_;
+        view.rhs = rhs_poisson_ptr_;
+        view.div = div_velocity_ptr_;
+        view.cell_stride = mesh_->total_Nx();
+        
+        view.conv_u = conv_u_ptr_;
+        view.conv_v = conv_v_ptr_;
+        view.diff_u = diff_u_ptr_;
+        view.diff_v = diff_v_ptr_;
+        
+        view.Nx = mesh_->Nx;
+        view.Ny = mesh_->Ny;
+        view.Ng = mesh_->Nghost;
+        view.dx = mesh_->dx;
+        view.dy = mesh_->dy;
+        view.dt = current_dt_;
+    }
+#else
+    // CPU build: always return host pointers
+    view.u_face = const_cast<double*>(velocity_.u_data().data());
+    view.v_face = const_cast<double*>(velocity_.v_data().data());
+    view.u_star_face = const_cast<double*>(velocity_star_.u_data().data());
+    view.v_star_face = const_cast<double*>(velocity_star_.v_data().data());
+    view.u_old_face = const_cast<double*>(velocity_old_.u_data().data());
+    view.v_old_face = const_cast<double*>(velocity_old_.v_data().data());
+    view.u_stride = velocity_.u_stride();
+    view.v_stride = velocity_.v_stride();
+    
+    view.p = const_cast<double*>(pressure_.data().data());
+    view.p_corr = const_cast<double*>(pressure_correction_.data().data());
+    view.nu_t = const_cast<double*>(nu_t_.data().data());
+    view.nu_eff = const_cast<double*>(nu_eff_.data().data());
+    view.rhs = const_cast<double*>(rhs_poisson_.data().data());
+    view.div = const_cast<double*>(div_velocity_.data().data());
+    view.cell_stride = mesh_->total_Nx();
+    
+    view.conv_u = const_cast<double*>(conv_.u_data().data());
+    view.conv_v = const_cast<double*>(conv_.v_data().data());
+    view.diff_u = const_cast<double*>(diff_.u_data().data());
+    view.diff_v = const_cast<double*>(diff_.v_data().data());
+    
+    view.Nx = mesh_->Nx;
+    view.Ny = mesh_->Ny;
+    view.Ng = mesh_->Nghost;
+    view.dx = mesh_->dx;
+    view.dy = mesh_->dy;
+    view.dt = current_dt_;
+#endif
     
     return view;
 }

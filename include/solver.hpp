@@ -224,6 +224,10 @@ public:
     /// Returns a view with pointers to solver-owned GPU data.
     /// Only valid if gpu_ready_ == true.
     TurbulenceDeviceView get_device_view() const;
+    
+    /// Get solver view for core NS/projection kernels
+    /// Returns GPU-resident pointers if gpu_ready_, else host pointers
+    SolverDeviceView get_solver_view() const;
 };
 
 } // namespace nncfd

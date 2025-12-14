@@ -58,6 +58,43 @@ struct TurbulenceDeviceView {
     }
 };
 
+/// Device view for core solver: pointers to GPU-resident solver arrays
+/// Parallel to TurbulenceDeviceView but for projection/NS step
+struct SolverDeviceView {
+    // Velocity fields (staggered)
+    double* u_face = nullptr;
+    double* v_face = nullptr;
+    double* u_star_face = nullptr;
+    double* v_star_face = nullptr;
+    double* u_old_face = nullptr;
+    double* v_old_face = nullptr;
+    int u_stride = 0;
+    int v_stride = 0;
+    
+    // Scalar fields (cell-centered)
+    double* p = nullptr;
+    double* p_corr = nullptr;
+    double* nu_t = nullptr;
+    double* nu_eff = nullptr;
+    double* rhs = nullptr;
+    double* div = nullptr;
+    int cell_stride = 0;
+    
+    // Work arrays
+    double* conv_u = nullptr;
+    double* conv_v = nullptr;
+    double* diff_u = nullptr;
+    double* diff_v = nullptr;
+    
+    // Mesh parameters
+    int Nx = 0, Ny = 0, Ng = 0;
+    double dx = 0.0, dy = 0.0, dt = 0.0;
+    
+    bool is_valid() const {
+        return (u_face && v_face && p && nu_eff && Nx > 0 && Ny > 0);
+    }
+};
+
 /// Abstract base class for turbulence closures
 class TurbulenceModel {
 public:
