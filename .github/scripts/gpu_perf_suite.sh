@@ -54,15 +54,6 @@ make -j8
 mkdir -p output/gpu_perf
 cd ..
 
-# Parse timing from TimingStats output
-extract_timing() {
-    local logfile="$1"
-    # Extract "Time Step" total time and average
-    local total=$(grep -E "^Time Step" "$logfile" | awk '{print $3}' || echo "0.0")
-    local avg=$(grep -E "^Time Step" "$logfile" | awk '{print $5}' || echo "0.0")
-    echo "${total} ${avg}"
-}
-
 # Run comparison for one case
 run_comparison_case() {
     local name="$1"
@@ -89,27 +80,14 @@ run_comparison_case() {
     local gpu_log="gpu_${name}.log"
     (cd build_gpu && "$@") 2>&1 | tee "$gpu_log"
     
-    # Extract timing data
-    local cpu_times=$(extract_timing "$cpu_log")
-    local gpu_times=$(extract_timing "$gpu_log")
-    
-    local cpu_total=$(echo "$cpu_times" | awk '{print $1}')
-    local cpu_avg=$(echo "$cpu_times" | awk '{print $2}')
-    local gpu_total=$(echo "$gpu_times" | awk '{print $1}')
-    local gpu_avg=$(echo "$gpu_times" | awk '{print $2}')
-    
-    # Calculate speedup
-    local speedup_total=$(echo "scale=2; $cpu_total / $gpu_total" | bc -l 2>/dev/null || echo "N/A")
-    local speedup_avg=$(echo "scale=2; $cpu_avg / $gpu_avg" | bc -l 2>/dev/null || echo "N/A")
-    
-    # Store results
-    echo "${name}|${cpu_total}|${cpu_avg}|${gpu_total}|${gpu_avg}|${speedup_total}|${speedup_avg}" >> perf_results.txt
-    
     echo ""
     echo "--- Quick Summary ---"
-    echo "CPU Total: ${cpu_total}s, Per-step: ${cpu_avg}ms"
-    echo "GPU Total: ${gpu_total}s, Per-step: ${gpu_avg}ms"
-    echo "Speedup: ${speedup_total}x (total), ${speedup_avg}x (per-step)"
+    # Use Python script to extract timings and compute speedup
+    local summary=$(python3 .github/scripts/compute_speedup.py "${name}" "$cpu_log" "$gpu_log")
+    echo "$summary" | head -n 3
+    
+    # Last line is pipe-delimited data for table
+    echo "$summary" | tail -n 1 >> perf_results.txt
 }
 
 # Initialize results file

@@ -31,7 +31,7 @@ void test_velocity_gradient() {
     // Compute gradients using MAC-aware method
     const double inv_2dx = 1.0 / (2.0 * mesh.dx);
     const double inv_2dy = 1.0 / (2.0 * mesh.dy);
-    VelocityGradient grad;
+    [[maybe_unused]] VelocityGradient grad;
     grad.dudx = (vel.u(i + 1, j) - vel.u(i - 1, j)) * inv_2dx;
     grad.dudy = (vel.u(i, j + 1) - vel.u(i, j - 1)) * inv_2dy;
     grad.dvdx = (vel.v(i + 1, j) - vel.v(i - 1, j)) * inv_2dx;
