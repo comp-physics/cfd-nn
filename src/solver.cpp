@@ -1354,6 +1354,7 @@ double RANSSolver::step() {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: copy current velocity to velocity_old on device (device-to-device, no H↔D)
+    {
     NVTX_PUSH("velocity_copy");
     const size_t u_total_size = velocity_.u_total_size();
     const size_t v_total_size = velocity_.v_total_size();
@@ -1380,19 +1381,20 @@ double RANSSolver::step() {
         }
     }
     NVTX_POP();
+    }
 #else
     // CPU path: use host-side velocity_old_
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                velocity_old_.u(i, j) = velocity_.u(i, j);
-            }
-        }
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                velocity_old_.v(i, j) = velocity_.v(i, j);
-            }
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i <= Ng + Nx; ++i) {
+            velocity_old_.u(i, j) = velocity_.u(i, j);
         }
     }
+    for (int j = Ng; j <= Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            velocity_old_.v(i, j) = velocity_.v(i, j);
+        }
+    }
+#endif
     
     // 1a. Advance turbulence transport equations (if model uses them)
     if (turb_model_ && turb_model_->uses_transport_equations()) {

@@ -3,7 +3,9 @@
 
 #include "mesh.hpp"
 #include "fields.hpp"
+#include "config.hpp"
 #include "nn_core.hpp"
+#include "solver.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
 #include <iostream>
@@ -30,7 +32,7 @@ void test_gpu_available() {
         // GPU build with no device should fail - test that it does
         std::cout << "  Testing GPU-required contract (should throw)...\n";
         try {
-            Mesh mesh(1.0, 1.0, 8, 8);
+            Mesh mesh = Mesh::create_uniform(8, 8);
             Config cfg;
             RANSSolver solver(mesh, cfg);  // Should throw during GPU init
             std::cout << "FAILED: Expected exception but none thrown\n";
