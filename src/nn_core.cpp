@@ -1,3 +1,19 @@
+/// @file nn_core.cpp
+/// @brief Pure C++ neural network inference engine with GPU acceleration
+///
+/// This file implements a self-contained MLP (Multi-Layer Perceptron) inference
+/// engine with no external dependencies (no TensorFlow, PyTorch, ONNX, etc.).
+/// Key features:
+/// - Forward pass for fully-connected networks
+/// - Multiple activation functions (ReLU, Tanh, Sigmoid, Swish, GELU)
+/// - Input normalization (z-score scaling)
+/// - Weight loading from text files
+/// - GPU-accelerated batched inference via OpenMP target offload
+/// - Zero-copy operation when weights are on GPU
+///
+/// The implementation is optimized for turbulence modeling where the same network
+/// is evaluated at thousands of grid points per time step.
+
 #include "nn_core.hpp"
 #include "gpu_utils.hpp"
 #include <fstream>

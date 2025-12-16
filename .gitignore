@@ -18,13 +18,8 @@ Makefile
 # Executables
 channel
 periodic_hills
-test_mesh
-test_poisson
-test_nn_simple
-test_solver
-test_features
-test_turbulence
-test_nn_core
+compare_channel_cpu_gpu
+test_*
 
 # Python
 venv/

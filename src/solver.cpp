@@ -1,3 +1,17 @@
+/// @file solver.cpp
+/// @brief Implementation of incompressible RANS solver with fractional-step projection method
+///
+/// This file implements the RANSSolver class, which solves the Reynolds-Averaged Navier-Stokes
+/// equations using a fractional-step projection method. Key features:
+/// - Fractional-step time integration (explicit Euler + pressure projection)
+/// - Multigrid Poisson solver for pressure correction
+/// - Staggered MAC grid discretization (2nd-order central differences)
+/// - GPU acceleration via OpenMP target offload
+/// - Support for multiple turbulence models (algebraic, transport, EARSM, neural networks)
+///
+/// The implementation includes unified CPU/GPU kernels that compile for both host and device,
+/// ensuring numerical consistency between platforms.
+
 #include "solver.hpp"
 #include "timing.hpp"
 #include "gpu_utils.hpp"

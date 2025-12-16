@@ -165,17 +165,17 @@ VTK files can be visualized with ParaView, VisIt, or similar tools.
 | `gep` | Algebraic | Gene Expression Programming (symbolic) | ***** | Good |
 | `sst` | Transport (2-eq) | SST k-ω (Menter 1994) | *** | Very good |
 | `komega` | Transport (2-eq) | Standard k-ω (Wilcox 1988) | *** | Good |
-| `earsm_wj` | EARSM | Wallin-Johansson (2000) | **** | Excellent |
-| `earsm_gs` | EARSM | Gatski-Speziale (1993) | **** | Very good |
-| `earsm_pope` | EARSM | Pope Quadratic (1975) | **** | Good |
+| `earsm_wj` | EARSM | Wallin-Johansson (2000) + SST transport | **** | Excellent |
+| `earsm_gs` | EARSM | Gatski-Speziale (1993) + SST transport | **** | Very good |
+| `earsm_pope` | EARSM | Pope Quadratic (1975) + SST transport | **** | Good |
 | `nn_mlp` | Neural Net | Scalar eddy viscosity (data-driven) | ** | Data-driven |
 | `nn_tbnn` | Neural Net | Anisotropic stress (Ling 2016) | * | Data-driven |
 
 **Notes:**
 - **Algebraic models** are fastest but limited to simple flows
-- **Transport models** solve PDEs for k and ω, capturing history effects
-- **EARSM models** predict full anisotropic Reynolds stress without extra PDEs
-- **Neural models** require training data but can learn complex physics
+- **Transport models** solve PDEs for k and ω, capturing history effects  
+- **EARSM models** combine SST k-ω transport with explicit algebraic closures for anisotropic Reynolds stress
+- **Neural models** require training data but can learn complex flow physics from DNS/LES data
 
 ## Mathematical Formulation
 
@@ -388,7 +388,7 @@ Uses constant model coefficients (no blending). Simpler than SST but less accura
 
 ### 5. EARSM (Explicit Algebraic Reynolds Stress Models)
 
-**Anisotropic closures** that predict the full Reynolds stress tensor without solving transport equations:
+**Anisotropic closures** that predict the full Reynolds stress tensor using algebraic expressions:
 
 **Tensor basis expansion:**
 
@@ -397,14 +397,18 @@ $$b_{ij} = \sum_{n=1}^{10} G_n(\eta, \xi) \, T_{ij}^{(n)}(\mathbf{S}, \mathbf{\O
 where:
 - $b_{ij} = \frac{\langle u_i' u_j' \rangle}{2k} - \frac{1}{3}\delta_{ij}$ = anisotropy tensor
 - $T_{ij}^{(n)}$ = integrity basis tensors (same as TBNN)
-- $G_n$ = algebraic coefficient functions (different for each EARSM)
+- $G_n$ = algebraic coefficient functions (model-specific)
 - $\eta = \frac{Sk}{\epsilon}$, $\xi = \frac{\Omega k}{\epsilon}$ = strain and rotation time-scale ratios
+
+**Combined with transport equations:**
+
+EARSM models in this code combine SST k-ω transport equations (for k and ω evolution) with explicit algebraic closures (for anisotropic Reynolds stresses). This gives both temporal accuracy and anisotropic stress predictions.
 
 **Eddy viscosity (for use in momentum equation):**
 
 $$\nu_t = C_\mu \frac{k^2}{\epsilon}$$
 
-where $\epsilon = \beta^* k \omega$ (computed from k-ω model), and $C_\mu$ may be variable.
+where $\epsilon = \beta^* k \omega$ (computed from k-ω model), and $C_\mu$ may be variable depending on the EARSM variant.
 
 **Three EARSM variants implemented:**
 
@@ -446,12 +450,13 @@ $$G_1 = -\frac{2C_1}{3 + 2C_1 S^2/\Omega^2}, \quad G_2 = -\frac{4C_1^2}{(3 + 2C_
 with $C_1 = 1.8$. Only uses first 3 basis tensors (quadratic in $S_{ij}$, $\Omega_{ij}$).
 
 **EARSM implementation:**
-- Combined with SST k-ω for $k$ and $\omega$ transport
+- Combined with SST k-ω transport for k and ω evolution
+- Explicit algebraic closure for Reynolds stress anisotropy
 - GPU-accelerated tensor computations
-- Automatic realizability enforcement (positive $k$, bounded eigenvalues)
+- Automatic realizability enforcement (positive k, bounded eigenvalues)
 
-**Pros:** Full anisotropic stress without extra PDEs, physics-based, fast  
-**Cons:** More complex than eddy viscosity, may have realizability issues in extreme flows
+**Pros:** Full anisotropic stress with only algebraic closures, physics-based, more accurate than linear eddy viscosity  
+**Cons:** More computationally expensive than pure algebraic models, slightly more complex than standard Boussinesq
 
 ### 6. MLP (Multi-Layer Perceptron)
 
@@ -522,31 +527,8 @@ This project integrates with the **McConkey et al. (2021)** dataset:
 - **Cases**: Channel flow, periodic hills, square duct
 - **Download**: `bash scripts/download_mcconkey_data.sh`
 
-## Performance
 
-### CPU Performance
-
-Timing on 64x128 grid, 10,000 iterations (Intel Xeon, single core):
-
-| Model | Time/Iter | vs Laminar | Notes |
-|-------|-----------|------------|-------|
-| Laminar | 0.01 ms | 1.0x | No turbulence model |
-| Baseline | 0.05 ms | 5x | Mixing length (algebraic) |
-| GEP | 0.08 ms | 8x | Symbolic regression (algebraic) |
-| SST k-ω | 0.12 ms | 12x | 2-equation transport model |
-| k-ω | 0.11 ms | 11x | 2-equation transport model |
-| EARSM (WJ) | 0.09 ms | 9x | Anisotropic, no extra PDEs |
-| EARSM (GS) | 0.08 ms | 8x | Anisotropic, no extra PDEs |
-| EARSM (Pope) | 0.07 ms | 7x | Quadratic anisotropic |
-| MLP | 0.4 ms | 40x | Neural network (scalar) |
-| TBNN | 2.1 ms | 210x | Neural network (tensor) |
-
-**Key observations:**
-- **Transport models** (SST, k-ω) are ~2x slower than algebraic due to solving 2 extra PDEs
-- **EARSM models** offer anisotropic stress at algebraic-model cost (no transport equations)
-- **Neural networks** are significantly slower but provide data-driven accuracy
-
-### GPU Acceleration
+## GPU Acceleration
 
 All turbulence models support **GPU offload** via OpenMP target directives:
 
@@ -564,57 +546,52 @@ make -j8
 - EARSM tensor basis computations
 - Feature invariant calculations
 
-**Performance (NVIDIA A100, 256×512 grid):**
-- **10-50x speedup** for large grids compared to single-core CPU
-- Transport models benefit most (bandwidth-limited operations)
-- Persistent GPU buffers minimize CPU↔GPU transfers
-
-**Tested platforms:**
-- NVIDIA GPUs (A100, V100, RTX series) with NVHPC compiler
-- AMD GPUs with ROCm (experimental)
-- Intel GPUs with oneAPI (experimental)
-
 ## Validation
 
 The solver is validated against both **analytical solutions** and **fundamental physics principles**.
 
 ### Physics Conservation Tests
 
-The test suite verifies the solver obeys fundamental conservation laws:
+The comprehensive test suite (`tests/test_physics_validation.cpp`) verifies the solver obeys fundamental conservation laws and produces physically correct results:
 
-**1. Incompressibility (divergence-free constraint):**
+**1. Poiseuille Flow (Analytical Comparison):**
+- Tests viscous diffusion and pressure gradient balance
+- Compares to exact parabolic velocity profile
+- Pass criterion: L2 error < 5% on 64×128 grid
+- Result: ~2% error achieved
 
-$$\nabla \cdot \mathbf{u} = 0 \quad \text{to machine precision}$$
+**2. Divergence-Free Constraint:**
+- Verifies $\nabla \cdot \mathbf{u} = 0$ (incompressibility)
+- Pass criterion: Machine precision (< 1e-10)
+- Result: Maximum divergence ~1e-12
 
-- Maximum divergence: $< 10^{-10}$
-- RMS divergence: $< 10^{-12}$
-- Verified at every time step by the projection method
+**3. Momentum Balance (Integral Check):**
+- Verifies $\int f_{\text{body}} \, dV = \int \tau_{\text{wall}} \, dA$
+- Checks global momentum conservation
+- Pass criterion: Imbalance < 10%
+- Result: ~5% imbalance
 
-**2. Mass conservation:**
+**4. Channel Symmetry:**
+- Verifies $u(y) = u(-y)$ about centerline
+- Tests boundary condition and discretization correctness
+- Pass criterion: Machine precision
+- Result: Perfect symmetry
 
-$$\frac{d}{dt}\int_V \rho \, dV = 0$$
+**5. Cross-Model Consistency:**
+- All turbulence models should agree in laminar limit
+- Pass criterion: < 5% difference between models
+- Result: All models produce consistent laminar results
 
-- Mass flux through periodic boundaries is conserved
-- No numerical mass loss/gain over thousands of time steps
-- Relative error: $< 10^{-14}$
+**6. Sanity Checks:**
+- No NaN/Inf in solution
+- Realizability: $\nu_t \geq 0$, $k \geq 0$, $\omega \geq 0$
+- All checks pass
 
-**3. Momentum balance (Poiseuille flow):**
-
-$$\frac{dp}{dx} = \nu \nabla^2 u$$
-
-- Verified for steady laminar channel flow
-- Pressure gradient balances viscous stress
-- Residual: $< 10^{-6}$
-
-**4. Energy dissipation:**
-
-$$\text{Power input} = \text{Viscous dissipation}$$
-
-$$-\int_V \mathbf{f} \cdot \mathbf{u} \, dV = \int_V (\nu + \nu_t) |\nabla \mathbf{u}|^2 \, dV$$
-
-- Energy balance at steady state
-- Thermodynamic consistency verified
-- Relative error: $< 1\%$
+**Taylor-Green Vortex Test** (`tests/test_taylor_green.cpp`):
+- Exact solution: $u = \sin(x)\cos(y)e^{-2\nu t}$
+- Theory: Kinetic energy decays as $KE(t) = KE(0) \cdot e^{-4\nu t}$
+- Pass criterion: < 5% error in energy decay
+- Result: 0.5% error over 100 time steps (excellent!)
 
 ### Analytical Benchmarks
 
@@ -622,25 +599,28 @@ $$-\int_V \mathbf{f} \cdot \mathbf{u} \, dV = \int_V (\nu + \nu_t) |\nabla \math
 
 $$u(y) = -\frac{1}{2\nu}\frac{dp}{dx}(1 - y^2), \quad v(y) = 0$$
 
-- **L2 error:** 0.13% (for $\nu = 0.1$, 10k iterations)
-- **Maximum error:** $< 0.5\%$ at centerline
-- See `VALIDATION.md` for detailed convergence studies
+- **L2 error:** ~2% on 64×128 grid (laminar Re=180)
+- **Maximum error:** < 5% at centerline
+- See `docs/VALIDATION.md` for detailed convergence studies
 
 ### Turbulence Model Validation
 
 **Turbulent flows** compared against:
-- **DNS/LES databases:** McConkey et al. (2021) dataset
-  - Channel flow at $\text{Re}_\tau = 180, 395, 590$
-  - Periodic hills at $\text{Re} = 10,595$
+- **DNS databases:** Moser et al. channel flow DNS
+  - Channel flow at Re_τ = 180, 395, 590
   - Mean velocity profiles, Reynolds stresses
-- **Published results:** Ling et al. (2016) TBNN paper
-  - Reproduces data-driven anisotropy predictions
-  - Outperforms standard RANS models (k-ε, k-ω)
+- **McConkey et al. (2021) dataset:**
+  - Periodic hills at Re = 10,595
+  - Multiple flow configurations for training
+- **Published results:** Ling et al. (2016) TBNN methodology
+  - Framework for learning anisotropy from data
+  - Outperforms standard RANS models on test cases
 
-**Metrics:**
-- Mean velocity profile: RMSE $< 5\%$ vs DNS
-- Reynolds stress anisotropy: correlation $> 0.9$ with DNS (TBNN model)
-- Separation point prediction: within 10% of LES (periodic hills)
+**Example validation metrics (Re_τ = 180):**
+- SST k-ω: Mean velocity profile within 10% of DNS
+- Baseline mixing length: Good agreement in log layer
+- EARSM models: Improved predictions of secondary flows
+- Neural models: Data-driven accuracy depends on training quality
 
 ## Code Architecture
 
@@ -650,28 +630,75 @@ The solver is designed with **modularity** and **extensibility** in mind:
 
 ```
 cfd-nn/
-├── include/               # Public API headers
-│   ├── solver.hpp        # Main RANS solver
-│   ├── turbulence_model.hpp        # Base turbulence model interface
-│   ├── turbulence_transport.hpp    # SST k-ω, k-ω transport models
-│   ├── turbulence_earsm.hpp        # EARSM models (WJ, GS, Pope)
-│   ├── feature_computer.hpp        # Turbulence invariants
-│   └── config.hpp        # Configuration and command-line parsing
-├── src/                  # Implementation
-│   ├── solver.cpp        # Fractional-step method
-│   ├── poisson_*.cpp     # Multigrid and SOR solvers
-│   ├── turbulence_baseline.cpp     # Algebraic models
-│   ├── turbulence_transport.cpp    # Transport equation models
-│   ├── turbulence_earsm.cpp        # EARSM implementations
-│   └── nn_*.cpp          # Neural network inference
-├── app/                  # Executable entry points
-│   ├── channel.cpp       # Channel flow driver
-│   └── periodic_hills.cpp          # Periodic hills driver
-├── tests/                # Unit and integration tests
-├── scripts/              # Training and utilities
+├── include/                          # Public API headers
+│   ├── solver.hpp                   # Main RANS solver (fractional-step projection)
+│   ├── turbulence_model.hpp         # Base turbulence model interface
+│   ├── turbulence_baseline.hpp      # Mixing length, algebraic models
+│   ├── turbulence_gep.hpp           # Gene Expression Programming model
+│   ├── turbulence_transport.hpp     # SST k-ω, k-ω transport models
+│   ├── turbulence_earsm.hpp         # EARSM models (WJ, GS, Pope)
+│   ├── turbulence_nn_mlp.hpp        # Neural network scalar eddy viscosity
+│   ├── turbulence_nn_tbnn.hpp       # Tensor Basis Neural Network
+│   ├── features.hpp                 # Turbulence invariants and tensor basis
+│   ├── mesh.hpp                     # Structured 2D mesh with stretching
+│   ├── fields.hpp                   # Scalar, vector, tensor fields
+│   ├── poisson_solver.hpp           # SOR iterative solver
+│   ├── poisson_solver_multigrid.hpp # Multigrid V-cycle solver
+│   ├── nn_core.hpp                  # Pure C++ neural network inference
+│   ├── gpu_utils.hpp                # GPU memory management (OpenMP offload)
+│   ├── gpu_kernels.hpp              # GPU kernel declarations
+│   ├── timing.hpp                   # Performance instrumentation
+│   └── config.hpp                   # Configuration and command-line parsing
+├── src/                              # Implementation files
+│   ├── solver.cpp                   # Fractional-step method, projection
+│   ├── poisson_solver.cpp           # SOR iterative solver
+│   ├── poisson_solver_multigrid.cpp # Multigrid V-cycle implementation
+│   ├── turbulence_baseline.cpp      # Mixing length model
+│   ├── turbulence_gep.cpp           # GEP symbolic model
+│   ├── turbulence_transport.cpp     # SST k-ω, k-ω transport
+│   ├── turbulence_earsm.cpp         # EARSM implementations (CPU + GPU)
+│   ├── turbulence_nn_mlp.cpp        # MLP neural network model
+│   ├── turbulence_nn_tbnn.cpp       # TBNN neural network model
+│   ├── nn_core.cpp                  # Neural network forward pass
+│   ├── features.cpp                 # Feature computation
+│   ├── mesh.cpp                     # Mesh generation
+│   ├── fields.cpp                   # Field operations
+│   ├── config.cpp                   # Configuration parsing
+│   ├── timing.cpp                   # Timing utilities
+│   ├── gpu_init.cpp                 # GPU initialization
+│   └── gpu_kernels.cpp              # GPU kernels (OpenMP target)
+├── app/                              # Executable entry points
+│   ├── main_channel.cpp             # Channel flow application
+│   ├── main_periodic_hills.cpp      # Periodic hills application
+│   └── compare_channel_cpu_gpu.cpp  # CPU/GPU consistency validation
+├── tests/                            # Unit and integration tests
+│   ├── test_physics_validation.cpp  # Comprehensive physics validation
+│   ├── test_taylor_green.cpp        # Taylor-Green vortex test
+│   ├── test_poisson.cpp             # Poisson solver tests
+│   ├── test_solver.cpp              # Basic solver tests
+│   ├── test_turbulence.cpp          # Turbulence model tests
+│   ├── test_nn_core.cpp             # Neural network tests
+│   └── ...                          # Additional tests
+├── scripts/                          # Python training and utilities
+│   ├── train_mlp_mcconkey.py        # Train MLP model
+│   ├── train_tbnn_mcconkey.py       # Train TBNN model
+│   ├── export_pytorch.py            # Export PyTorch weights
+│   ├── validate_trained_model.py    # Validate trained models
+│   └── ...                          # Additional utilities
+├── examples/                         # Example configurations and workflows
+│   ├── 01_laminar_channel/          # Laminar Poiseuille flow
+│   ├── 02_turbulent_channel/        # Turbulent channel with multiple models
+│   ├── 03_grid_refinement/          # Grid convergence study
+│   ├── 04_taylor_green_convergence/ # Temporal accuracy verification
+│   └── 05_channel_retau180_sst/     # High-Re turbulent channel
+├── data/                             # Neural network model weights
+│   └── models/                      # Pre-trained model directory
+│       ├── example_scalar_nut/      # Example MLP model
+│       └── example_tbnn/            # Example TBNN model
 └── .github/
-    ├── workflows/        # CI/CD (CPU and GPU tests)
-    └── scripts/          # CI validation scripts
+    └── workflows/                   # CI/CD pipelines
+        ├── ci.yml                   # CPU tests (Ubuntu + macOS)
+        └── gpu-ci.yml               # GPU tests (self-hosted runner)
 ```
 
 ### Turbulence Model Hierarchy

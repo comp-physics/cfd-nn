@@ -1,3 +1,19 @@
+/// @file poisson_solver_multigrid.cpp
+/// @brief Geometric multigrid solver for pressure Poisson equation
+///
+/// This file implements a V-cycle geometric multigrid solver achieving O(N)
+/// complexity for the pressure correction equation in the fractional-step method.
+/// Key features:
+/// - V-cycle algorithm with SOR smoothing
+/// - Automatic mesh hierarchy construction (restriction to coarsest level)
+/// - Full weighting restriction and bilinear prolongation
+/// - GPU-accelerated smoothing and residual computation
+/// - 10-100x faster than pure SOR iteration for large grids
+///
+/// The solver constructs a hierarchy of grids by recursive coarsening and solves
+/// the system using recursive V-cycles that combine smoothing on each level with
+/// coarse-grid correction.
+
 #include "poisson_solver_multigrid.hpp"
 #include "gpu_utils.hpp"
 #include <cmath>

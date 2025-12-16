@@ -1,3 +1,17 @@
+/// @file turbulence_transport.cpp
+/// @brief Implementation of transport equation turbulence models (SST k-ω, k-ω)
+///
+/// This file implements two-equation RANS models that solve transport PDEs:
+/// - SST k-ω (Menter 1994): Blended k-ω/k-ε with strain-rate limiter
+/// - Standard k-ω (Wilcox 1988): Original k-ω formulation
+///
+/// These models provide good accuracy for complex flows including separation,
+/// adverse pressure gradients, and streamline curvature. Both include:
+/// - Production, dissipation, and diffusion terms
+/// - Wall boundary conditions (low-Re formulation)
+/// - GPU-accelerated transport step and closure
+/// - Positivity enforcement and realizability constraints
+
 #include "turbulence_transport.hpp"
 #include "gpu_kernels.hpp"
 #include "timing.hpp"

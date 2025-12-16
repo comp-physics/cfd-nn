@@ -1,3 +1,14 @@
+/// @file turbulence_baseline.cpp
+/// @brief Implementation of algebraic turbulence models (mixing length, GEP)
+///
+/// This file implements simple algebraic eddy viscosity models:
+/// - Mixing length model with van Driest damping (wall-resolved RANS)
+/// - Algebraic k-omega model (simplified without transport equations)
+/// - Factory function for creating turbulence models from configuration
+///
+/// These models provide fast, zero-equation closures suitable for attached
+/// boundary layers but limited for separated flows.
+
 #include "turbulence_baseline.hpp"
 #include "turbulence_gep.hpp"
 #include "turbulence_nn_mlp.hpp"

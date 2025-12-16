@@ -1,3 +1,17 @@
+/// @file turbulence_earsm.cpp
+/// @brief Implementation of Explicit Algebraic Reynolds Stress Models (EARSM)
+///
+/// This file implements EARSM closures that provide anisotropic Reynolds stress
+/// predictions using algebraic expressions combined with SST k-ω transport:
+/// - Wallin-Johansson EARSM (2000): Full anisotropic model with cubic solution
+/// - Gatski-Speziale EARSM (1993): Regularized quadratic formulation
+/// - Pope Quadratic (1975): Simple quadratic nonlinear model
+///
+/// EARSM models compute the anisotropy tensor b_ij as a weighted sum of tensor
+/// basis functions, where the weights are algebraic functions of strain/rotation
+/// invariants. This captures complex physics (streamline curvature, secondary flows)
+/// without solving additional transport equations for Reynolds stresses.
+
 #include "turbulence_earsm.hpp"
 #include "timing.hpp"
 #include "gpu_kernels.hpp"

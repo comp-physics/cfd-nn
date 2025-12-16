@@ -1,3 +1,17 @@
+/// @file features.cpp
+/// @brief Feature computation for data-driven turbulence models
+///
+/// This file implements computation of turbulence invariants and tensor basis
+/// functions used by neural network and EARSM models. Key features:
+/// - Velocity gradient computation from MAC staggered grid
+/// - Galilean/rotation invariants of strain and rotation tensors
+/// - Tensor basis functions (Pope 1975 integrity basis)
+/// - Feature normalization for neural network inputs
+/// - Anisotropy tensor reconstruction from basis coefficients
+///
+/// The invariants computed here are frame-independent (Galilean invariant) and
+/// form the inputs to data-driven closures like TBNN and EARSM.
+
 #include "features.hpp"
 #include <cmath>
 #include <algorithm>
