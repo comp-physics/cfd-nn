@@ -102,6 +102,9 @@ public:
     const VectorField& velocity() const { return velocity_; }
     const ScalarField& pressure() const { return pressure_; }
     const ScalarField& nu_t() const { return nu_t_; }
+    const ScalarField& k() const { return k_; }
+    const ScalarField& omega() const { return omega_; }
+    const ScalarField& nu_eff() const { return nu_eff_; }
     
     VectorField& velocity() { return velocity_; }
     ScalarField& pressure() { return pressure_; }

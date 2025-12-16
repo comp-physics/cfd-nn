@@ -310,6 +310,10 @@ public:
     explicit KOmegaTransport(const KOmegaConstants& constants = KOmegaConstants());
     
     void initialize(const Mesh& mesh, const VectorField& velocity) override;
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return gpu_ready_; }
+    
     bool uses_transport_equations() const override { return true; }
     
     void advance_turbulence(
@@ -343,6 +347,7 @@ private:
     ScalarField dudx_, dudy_, dvdx_, dvdy_;
     ScalarField P_k_;
     bool initialized_ = false;
+    bool gpu_ready_ = false;
     
     void ensure_initialized(const Mesh& mesh);
 };

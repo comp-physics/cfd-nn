@@ -202,6 +202,11 @@ if(BUILD_TESTS)
     add_executable(test_tg_validation tests/test_taylor_green.cpp)
     target_link_libraries(test_tg_validation nn_cfd_core)
     add_test(NAME TaylorGreenValidationTest COMMAND test_tg_validation)
+    
+    # Perturbed channel validation - comprehensive turbulence model testing (1000 steps on GPU)
+    add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
+    target_link_libraries(test_perturbed_channel nn_cfd_core)
+    add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
 endif()
 
 # Installation

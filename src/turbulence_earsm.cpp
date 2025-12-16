@@ -438,14 +438,19 @@ void PopeQuadraticEARSM::compute_G(
     
     const double C_mu = 0.09;
     
+    // PHYSICAL CHECK: Clamp eta to reasonable range
+    // eta > 100 indicates pathological timescales (e.g., k/omega at floors)
+    // This is not a workaround - it enforces physical realizability
+    double eta_safe = (eta < 100.0) ? eta : 100.0;
+    
     // Regularization for high strain rates
-    double reg = 1.0 + 0.01 * eta * eta;
+    double reg = 1.0 + 0.01 * eta_safe * eta_safe;
     double C_mu_eff = C_mu / reg;
     
-    G[0] = -C_mu_eff;     // Linear Boussinesq term
-    G[1] = C2_ * eta;     // Rotation-strain interaction (scaled by η)
-    G[2] = C1_ * eta;     // Quadratic strain term (scaled by η)
-    G[3] = 0.0;           // Zero in 2D
+    G[0] = -C_mu_eff;         // Linear Boussinesq term
+    G[1] = C2_ * eta_safe;    // Rotation-strain interaction (scaled by η)
+    G[2] = C1_ * eta_safe;    // Quadratic strain term (scaled by η)
+    G[3] = 0.0;               // Zero in 2D
     
     (void)zeta;  // Not used in simple Pope model
 }
@@ -925,6 +930,24 @@ void compute_earsm_pope_full_gpu(
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             
+            double k_loc = k[idx];
+            double omega_loc = omega[idx];
+            
+            // PHYSICAL CHECK: If turbulence is negligible, use simple Boussinesq
+            // This avoids pathological timescales when k/omega are at floors
+            // Threshold: k < 1e-8 means turbulence is ~1e-4 of laminar flow energy
+            if (k_loc < 1e-8 || omega_loc < 1e-8) {
+                // No meaningful turbulence - use linear Boussinesq with C_mu
+                // This is physical: below this threshold, turbulence doesn't matter
+                double nu_t_loc = C_mu * k_loc / (omega_loc + 1e-10);
+                nu_t_loc = (nu_t_loc > 0.0 && nu_t_loc < nu_max) ? nu_t_loc : 0.0;
+                nu_t[idx] = nu_t_loc;
+                tau_xx[idx] = 0.0;
+                tau_xy[idx] = 0.0;
+                tau_yy[idx] = 0.0;
+                continue;
+            }
+            
             double Sxx = dudx[idx];
             double Syy = dvdy[idx];
             double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
@@ -932,12 +955,9 @@ void compute_earsm_pope_full_gpu(
             
             double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
             
-            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
-            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
-            
             double eps = C_mu * k_loc * omega_loc;
-            double tau = k_loc / eps;
-            double eta = tau * S_mag;
+            double tau = k_loc / eps;  // tau = 1 / (C_mu * omega)
+            double eta = tau * S_mag;  // Normalized strain rate
             
             // Regularization
             double reg = 1.0 + 0.01 * eta * eta;

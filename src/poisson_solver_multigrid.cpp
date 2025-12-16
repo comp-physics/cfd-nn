@@ -659,15 +659,13 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Final residual
     residual_ = compute_max_residual(0);
     
-    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
-    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
-    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
-    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    // Subtract mean for singular Poisson problems (no Dirichlet BCs)
+    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
+    // and we must fix the nullspace by subtracting the mean
+    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet);
     
-    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
+    if (!has_dirichlet) {
         subtract_mean(0);
     }
     
@@ -743,15 +741,13 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     // Final residual (always compute at end for diagnostics)
     residual_ = compute_max_residual(0);
     
-    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
-    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
-    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
-    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    // Subtract mean for singular Poisson problems (no Dirichlet BCs)
+    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
+    // and we must fix the nullspace by subtracting the mean
+    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet);
     
-    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
+    if (!has_dirichlet) {
         subtract_mean(0);
     }
     

@@ -2,6 +2,8 @@
 
 #include "mesh.hpp"
 #include "fields.hpp"
+#include "solver.hpp"
+#include "config.hpp"
 #include "turbulence_model.hpp"
 #include "turbulence_baseline.hpp"
 #include "turbulence_gep.hpp"
@@ -220,32 +222,56 @@ void test_sst_komega_transport() {
 void test_komega_transport() {
     std::cout << "Testing standard k-omega transport model... ";
     
+    // Use RANSSolver to ensure GPU path is exercised
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
     
-    VectorField vel(mesh, 1.0, 0.0);
-    ScalarField k(mesh, 0.01);
-    ScalarField omega(mesh, 100.0);
-    ScalarField nu_t(mesh, 0.0);
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.turb_model = TurbulenceModelType::KOmega;
+    config.adaptive_dt = false;
+    config.verbose = false;
     
-    KOmegaTransport model;
-    model.set_nu(0.001);
-    model.initialize(mesh, vel);
+    RANSSolver solver(mesh, config);
     
-    assert(model.uses_transport_equations());
-    assert(model.name() == "KOmega");
+    // Set periodic BCs
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    solver.set_velocity_bc(bc);
     
-    // Take a transport step
-    double dt = 0.001;
-    model.advance_turbulence(mesh, vel, dt, k, omega, nu_t);
-    model.update(mesh, vel, k, omega, nu_t);
+    // Attach k-omega model
+    auto model = create_turbulence_model(TurbulenceModelType::KOmega);
+    assert(model->uses_transport_equations());
+    assert(model->name() == "KOmega");
+    solver.set_turbulence_model(std::move(model));
     
-    // Check validity
+    // Initialize with uniform flow
+    solver.initialize_uniform(1.0, 0.0);
+    
+    // Take a few steps (exercises advance_turbulence + update on GPU)
+    for (int step = 0; step < 5; ++step) {
+        solver.step();
+    }
+    
+    // Sync from GPU and check validity
+    solver.sync_from_gpu();
+    
+    const ScalarField& k = solver.k();
+    const ScalarField& omega = solver.omega();
+    const ScalarField& nu_t = solver.nu_t();
+    
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             assert(std::isfinite(k(i, j)));
             assert(std::isfinite(omega(i, j)));
             assert(std::isfinite(nu_t(i, j)));
+            assert(k(i, j) > 0.0);
+            assert(omega(i, j) > 0.0);
+            assert(nu_t(i, j) >= 0.0);
         }
     }
     

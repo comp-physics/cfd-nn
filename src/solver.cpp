@@ -62,7 +62,8 @@ namespace nncfd {
 inline void apply_u_bc_x_staggered(
     int j, int g,
     int Nx, int Ng, int u_stride,
-    bool x_lo_periodic, bool x_hi_periodic,
+    bool x_lo_periodic, bool x_lo_noslip,
+    bool x_hi_periodic, bool x_hi_noslip,
     double* u_ptr)
 {
     // CRITICAL for staggered grid with periodic BCs:
@@ -75,14 +76,32 @@ inline void apply_u_bc_x_staggered(
         u_ptr[j * u_stride + i_right] = u_ptr[j * u_stride + i_left];
     }
     
-    // Now set ghost cells for stencils
-    if (x_lo_periodic) {
+    // Left boundary: u is the normal velocity at x-faces
+    if (x_lo_noslip) {
+        // No-penetration: u = 0 at wall face (i = Ng)
+        // This is Dirichlet BC for the normal velocity
+        if (g == 0) {
+            u_ptr[j * u_stride + Ng] = 0.0;
+        }
+        // Set ghost faces to zero for stencil consistency
+        int i_ghost = Ng - 1 - g;
+        u_ptr[j * u_stride + i_ghost] = 0.0;
+    } else if (x_lo_periodic) {
         int i_ghost = Ng - 1 - g;
         int i_periodic = Ng + Nx - 1 - g;
         u_ptr[j * u_stride + i_ghost] = u_ptr[j * u_stride + i_periodic];
     }
     
-    if (x_hi_periodic) {
+    // Right boundary
+    if (x_hi_noslip) {
+        // No-penetration: u = 0 at wall face (i = Ng + Nx)
+        if (g == 0) {
+            u_ptr[j * u_stride + (Ng + Nx)] = 0.0;
+        }
+        // Set ghost faces to zero for stencil consistency
+        int i_ghost = Ng + Nx + 1 + g;
+        u_ptr[j * u_stride + i_ghost] = 0.0;
+    } else if (x_hi_periodic) {
         int i_ghost = Ng + Nx + 1 + g;  // Ghost on right (+1 because Ng+Nx is now interior)
         int i_periodic = Ng + 1 + g;     // Wrap from left interior
         u_ptr[j * u_stride + i_ghost] = u_ptr[j * u_stride + i_periodic];
@@ -706,6 +725,50 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
     velocity_ = initial_velocity;
     apply_velocity_bc();
     
+    // Initialize k, omega for transport models if not already set
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
+        // Estimate initial turbulence from velocity magnitude
+        double u_max = 0.0;
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                double u = 0.5 * (velocity_.u(i, j) + velocity_.u(i+1, j));
+                double v = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
+                double u_mag = std::sqrt(u*u + v*v);
+                u_max = std::max(u_max, u_mag);
+            }
+        }
+        // Use reasonable reference velocity - minimum 1% of bulk or 0.01 whichever is larger
+        // This ensures k/omega stay above the low-turbulence threshold (1e-8) for EARSM
+        double u_ref = std::max(u_max, 0.01);
+        double Ti = 0.05;  // 5% turbulence intensity
+        double k_init = 1.5 * (u_ref * Ti) * (u_ref * Ti);
+        // Ensure k_init is physically meaningful (above low-turb threshold)
+        k_init = std::max(k_init, 1e-7);
+        
+        double omega_init = k_init / (0.09 * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
+        omega_init = std::max(omega_init, 1e-6);  // Ensure omega is also meaningful
+        
+        k_.fill(k_init);
+        omega_.fill(omega_init);
+        
+        // Set wall values for omega (higher near walls)
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            // Bottom wall
+            int j_bot = mesh_->j_begin();
+            double y_bot = mesh_->wall_distance(i, j_bot);
+            if (y_bot > 1e-10) {
+                omega_(i, j_bot) = 10.0 * 6.0 * config_.nu / (0.075 * y_bot * y_bot);
+            }
+            
+            // Top wall
+            int j_top = mesh_->j_end() - 1;
+            double y_top = mesh_->wall_distance(i, j_top);
+            if (y_top > 1e-10) {
+                omega_(i, j_top) = 10.0 * 6.0 * config_.nu / (0.075 * y_top * y_top);
+            }
+        }
+    }
+    
     if (turb_model_) {
         turb_model_->initialize(*mesh_, velocity_);
     }
@@ -726,7 +789,11 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
         double u_ref = std::max(std::abs(u0), 0.01);
         double Ti = 0.05;  // 5% turbulence intensity
         double k_init = 1.5 * (u_ref * Ti) * (u_ref * Ti);
+        // Ensure k_init is physically meaningful (above low-turb threshold)
+        k_init = std::max(k_init, 1e-7);
+        
         double omega_init = k_init / (0.09 * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
+        omega_init = std::max(omega_init, 1e-6);  // Ensure omega is also meaningful
         
         k_.fill(k_init);
         omega_.fill(omega_init);
@@ -800,7 +867,8 @@ void RANSSolver::apply_velocity_bc() {
         int j = idx / Ng;
         int g = idx % Ng;
         apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
-                              x_lo_periodic, x_hi_periodic, u_ptr);
+                              x_lo_periodic, x_lo_noslip,
+                              x_hi_periodic, x_hi_noslip, u_ptr);
     }
 
     // Apply u BCs in y-direction
@@ -849,7 +917,8 @@ void RANSSolver::apply_velocity_bc() {
             int j = idx / Ng;
             int g = idx % Ng;
             apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
-                                  x_lo_periodic, x_hi_periodic, u_ptr);
+                                  x_lo_periodic, x_lo_noslip,
+                                  x_hi_periodic, x_hi_noslip, u_ptr);
         }
     }
     
@@ -1291,10 +1360,16 @@ double RANSSolver::step() {
                            device_view_ptr);
         NVTX_POP();
         
-        // Turbulence models now manage their own GPU buffers and copy results back to CPU nu_t
-        // Sync nu_t to GPU for use in nu_eff computation
+        // CRITICAL FIX: Only sync nu_t to GPU if the model didn't use GPU path
+        // Models that use device_view write directly to GPU nu_t and should NOT be overwritten
+        // Models that work on CPU (like NN-MLP) write to host nu_t and MUST be synced to GPU
 #ifdef USE_GPU_OFFLOAD
+        // If device_view was valid and model is GPU-ready, nu_t is already on device
+        // Otherwise (CPU path), sync host nu_t to device
+        bool model_used_gpu = (device_view_ptr && device_view_ptr->is_valid() && turb_model_->is_gpu_ready());
+        if (!model_used_gpu) {
         #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
+        }
 #endif
     }
     
@@ -1581,8 +1656,51 @@ double RANSSolver::step() {
     {
         TIMED_SCOPE("poisson_solve");
         NVTX_PUSH("poisson_solve");
+        
+        // CRITICAL: Use relative tolerance for Poisson solver (standard multigrid practice)
+        // When turbulence changes effective viscosity, RHS magnitude varies significantly
+        // Absolute tolerance would be too strict for small RHS, too loose for large RHS
+        double rhs_norm_sq = 0.0;
+        int rhs_count = 0;
+        
+#ifdef USE_GPU_OFFLOAD
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int Nxg = Nx + 2*mesh_->Nghost;
+        const int i_begin = mesh_->i_begin();
+        const int j_begin = mesh_->j_begin();
+        
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: rhs_poisson_ptr_[0:field_total_size_]) \
+            reduction(+:rhs_norm_sq, rhs_count)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int ii = i + i_begin;
+                int jj = j + j_begin;
+                int idx = ii + jj * Nxg;
+                double rhs_val = rhs_poisson_ptr_[idx];
+                rhs_norm_sq += rhs_val * rhs_val;
+                rhs_count++;
+            }
+        }
+#else
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                double rhs_val = rhs_poisson_(i, j);
+                rhs_norm_sq += rhs_val * rhs_val;
+                rhs_count++;
+            }
+        }
+#endif
+        
+        double rhs_rms = std::sqrt(rhs_norm_sq / std::max(rhs_count, 1));
+        
+        // Scale tolerance by RHS magnitude (relative convergence)
+        // Use max(rhs_rms, 1e-12) to avoid making tolerance too tight for near-zero RHS
+        double effective_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
+        
         PoissonConfig pcfg;
-        pcfg.tol = config_.poisson_tol;
+        pcfg.tol = effective_tol;
         pcfg.max_iter = config_.poisson_max_iter;
         pcfg.omega = config_.poisson_omega;
         pcfg.verbose = false;  // Disable per-cycle output (too verbose)
@@ -1690,17 +1808,20 @@ std::pair<double, int> RANSSolver::solve_steady() {
     double residual = 1.0;
     
     if (config_.verbose) {
+        // Enable line buffering for immediate output visibility (SLURM/redirected stdout)
+        std::cout << std::unitbuf;
+        
         if (config_.adaptive_dt) {
             std::cout << std::setw(8) << "Iter" 
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
                       << std::setw(12) << "dt"
-                      << "\n";
+                      << std::endl;
         } else {
             std::cout << std::setw(8) << "Iter" 
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
-                      << "\n";
+                      << std::endl;
         }
     }
     
@@ -1719,19 +1840,19 @@ std::pair<double, int> RANSSolver::solve_steady() {
                           << std::setw(15) << std::scientific << std::setprecision(3) << residual
                           << std::setw(15) << std::fixed << max_vel
                           << std::setw(12) << std::scientific << std::setprecision(2) << current_dt_
-                          << "\n";
+                          << std::endl;  // Flush for immediate visibility
             } else {
                 std::cout << std::setw(8) << iter_ + 1
                           << std::setw(15) << std::scientific << std::setprecision(3) << residual
                           << std::setw(15) << std::fixed << max_vel
-                          << "\n";
+                          << std::endl;  // Flush for immediate visibility
             }
         }
         
         if (residual < config_.tol) {
             if (config_.verbose) {
                 std::cout << "Converged at iteration " << iter_ + 1 
-                          << " with residual " << residual << "\n";
+                          << " with residual " << residual << std::endl;
             }
             break;
         }
@@ -1739,7 +1860,7 @@ std::pair<double, int> RANSSolver::solve_steady() {
         // Check for divergence
         if (std::isnan(residual) || std::isinf(residual)) {
             if (config_.verbose) {
-                std::cerr << "Solver diverged at iteration " << iter_ + 1 << "\n";
+                std::cerr << "Solver diverged at iteration " << iter_ + 1 << std::endl;
             }
             break;
         }
@@ -1769,9 +1890,9 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
         std::cout << "Will output ";
         if (num_snapshots > 0) {
             std::cout << num_snapshots << " VTK snapshots (every " 
-                     << snapshot_freq << " iterations)\n";
+                     << snapshot_freq << " iterations)" << std::endl;
         } else {
-            std::cout << "final VTK snapshot only\n";
+            std::cout << "final VTK snapshot only" << std::endl;
         }
     }
     
@@ -1779,17 +1900,20 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
     int snapshot_count = 0;
     
     if (config_.verbose) {
+        // Enable line buffering for immediate output visibility
+        std::cout << std::unitbuf;
+        
         if (config_.adaptive_dt) {
             std::cout << std::setw(8) << "Iter" 
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
                       << std::setw(12) << "dt"
-                      << "\n";
+                      << std::endl;
         } else {
             std::cout << std::setw(8) << "Iter" 
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
-                      << "\n";
+                      << std::endl;
         }
     }
     
@@ -1811,11 +1935,11 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
                 write_vtk(vtk_file);
                 if (config_.verbose) {
                     std::cout << "Wrote snapshot " << snapshot_count 
-                             << ": " << vtk_file << "\n";
+                             << ": " << vtk_file << std::endl;
                 }
             } catch (const std::exception& e) {
                 std::cerr << "Warning: Could not write VTK snapshot: " 
-                         << e.what() << "\n";
+                         << e.what() << std::endl;
             }
         }
         
@@ -1827,19 +1951,19 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
                           << std::setw(15) << std::scientific << std::setprecision(3) << residual
                           << std::setw(15) << std::fixed << max_vel
                           << std::setw(12) << std::scientific << std::setprecision(2) << current_dt_
-                          << "\n";
+                          << std::endl;
             } else {
                 std::cout << std::setw(8) << iter_ + 1
                           << std::setw(15) << std::scientific << std::setprecision(3) << residual
                           << std::setw(15) << std::fixed << max_vel
-                          << "\n";
+                          << std::endl;
             }
         }
         
         if (residual < config_.tol) {
             if (config_.verbose) {
                 std::cout << "Converged at iteration " << iter_ + 1 
-                          << " with residual " << residual << "\n";
+                          << " with residual " << residual << std::endl;
             }
             break;
         }
@@ -1847,7 +1971,7 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
         // Check for divergence
         if (std::isnan(residual) || std::isinf(residual)) {
             if (config_.verbose) {
-                std::cerr << "Solver diverged at iteration " << iter_ + 1 << "\n";
+                std::cerr << "Solver diverged at iteration " << iter_ + 1 << std::endl;
             }
             break;
         }
@@ -1973,31 +2097,87 @@ void RANSSolver::write_fields(const std::string& prefix) const {
 }
 
 double RANSSolver::compute_adaptive_dt() const {
-    // CFL condition: dt <= CFL * min(dx, dy) / |u_max|
-    double u_max = 1e-10;  // Small value to avoid division by zero
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    const double nu = config_.nu;
+    
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: compute both CFL and diffusive constraints on device with reductions
+    // This avoids expensive device→host transfers every iteration
+    
+    double u_max = 1e-10;
+    double nu_eff_max = nu;
+    
+    const size_t u_total_size = velocity_.u_total_size();
+    const size_t v_total_size = velocity_.v_total_size();
+    const size_t field_total_size = field_total_size_;
+    const int u_stride = Nx + 2*Ng + 1;
+    const int v_stride = Nx + 2*Ng;
+    const int stride = Nx + 2*Ng;
+    
+    // Compute max velocity magnitude (for advective CFL) on GPU
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: velocity_u_ptr_[0:u_total_size], velocity_v_ptr_[0:v_total_size]) \
+        reduction(max:u_max)
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i < Nx; ++i) {
+            int ii = i + Ng;
+            int jj = j + Ng;
+            // Interpolate u and v to cell center for staggered grid
+            double u_avg = 0.5 * (velocity_u_ptr_[jj * u_stride + ii] + 
+                                  velocity_u_ptr_[jj * u_stride + ii + 1]);
+            double v_avg = 0.5 * (velocity_v_ptr_[jj * v_stride + ii] + 
+                                  velocity_v_ptr_[(jj + 1) * v_stride + ii]);
+            double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
+            if (u_mag > u_max) u_max = u_mag;
+        }
+    }
+    
+    // Compute max effective viscosity (for diffusive CFL) on GPU if turbulence active
+    if (turb_model_) {
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: nu_t_ptr_[0:field_total_size]) \
+            reduction(max:nu_eff_max)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int ii = i + Ng;
+                int jj = j + Ng;
+                int idx = jj * stride + ii;
+                double nu_eff = nu + nu_t_ptr_[idx];
+                if (nu_eff > nu_eff_max) nu_eff_max = nu_eff;
+            }
+        }
+    }
+    
+#else
+    // CPU fallback: original host-side computation
+    double u_max = 1e-10;
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            // CRITICAL: Use correct magnitude for staggered grid (interpolates to cell center)
-            // DO NOT mix u(i,j) and v(i,j) - they're at different physical locations!
             double u_mag = velocity_.magnitude(i, j);
             u_max = std::max(u_max, u_mag);
         }
     }
-    double dt_cfl = config_.CFL_max * std::min(mesh_->dx, mesh_->dy) / u_max;
     
-    // Diffusion stability: dt <= factor * min(dx^2, dy^2) / nu_eff_max
-    double nu_eff_max = config_.nu;
+    double nu_eff_max = nu;
     if (turb_model_) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                nu_eff_max = std::max(nu_eff_max, config_.nu + nu_t_(i, j));
+                nu_eff_max = std::max(nu_eff_max, nu + nu_t_(i, j));
             }
         }
     }
+#endif
+    
+    // Compute time step constraints (same for GPU and CPU)
     double dx_min = std::min(mesh_->dx, mesh_->dy);
+    double dt_cfl = config_.CFL_max * dx_min / u_max;
+    
+    // Diffusive stability: dt < 0.25 * dx² / ν (hard limit from von Neumann analysis)
+    // NOTE: Do NOT scale by CFL_max - this is a stability constant, not a tuning parameter
     double dt_diff = 0.25 * dx_min * dx_min / nu_eff_max;
     
-    // Take minimum of both constraints
     return std::min(dt_cfl, dt_diff);
 }
 

@@ -1124,6 +1124,23 @@ void KOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocity) 
     }
 }
 
+void KOmegaTransport::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    // KOmegaTransport uses solver-owned GPU buffers via device_view
+    // No separate buffers to allocate, but mark as GPU-ready so solver knows
+    // we will use device_view GPU kernels and won't need host→device syncs
+    gpu::verify_device_available();
+    gpu_ready_ = true;
+#else
+    (void)mesh;
+    gpu_ready_ = false;
+#endif
+}
+
+void KOmegaTransport::cleanup_gpu_buffers() {
+    gpu_ready_ = false;
+}
+
 void KOmegaTransport::advance_turbulence(
     const Mesh& mesh,
     const VectorField& velocity,
@@ -1169,16 +1186,12 @@ void KOmegaTransport::advance_turbulence(
         // Transport PDE done entirely on GPU - no CPU sync needed
         // k and omega ScalarFields will be synced by solver if needed for output
         return;
-    } else {
-        std::cout << "[KOmegaTransport] GPU path NOT taken. device_view=" << device_view 
-                  << " valid=" << (device_view ? device_view->is_valid() : false) << std::endl;
     }
 #else
     (void)device_view;
 #endif
     
-    // CPU fallback path
-    std::cout << "[KOmegaTransport] Using CPU fallback for advance_turbulence" << std::endl;
+    // CPU fallback path (only used when GPU offload disabled or device_view invalid)
     compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;
