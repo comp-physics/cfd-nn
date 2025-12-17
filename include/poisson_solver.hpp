@@ -40,10 +40,6 @@ public:
     /// Returns number of iterations taken
     int solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg = PoissonConfig());
     
-    /// Solve with variable coefficient: nabla*(alphanablap) = rhs
-    int solve_variable(const ScalarField& alpha, const ScalarField& rhs, 
-                       ScalarField& p, const PoissonConfig& cfg = PoissonConfig());
-    
     /// Get final residual
     double residual() const { return residual_; }
     

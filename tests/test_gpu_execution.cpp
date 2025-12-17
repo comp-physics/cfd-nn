@@ -3,7 +3,9 @@
 
 #include "mesh.hpp"
 #include "fields.hpp"
+#include "config.hpp"
 #include "nn_core.hpp"
+#include "solver.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
 #include <iostream>
@@ -27,8 +29,18 @@ void test_gpu_available() {
         std::cout << "  [OK] GPU devices available\n";
         std::cout << "PASSED\n";
     } else {
-        std::cout << "  [WARNING] No GPU devices found (tests will use CPU fallback)\n";
-        std::cout << "WARNING: GPU compiled but no devices available\n";
+        // GPU build with no device should fail - test that it does
+        std::cout << "  Testing GPU-required contract (should throw)...\n";
+        try {
+            Mesh mesh = Mesh::create_uniform(8, 8);
+            Config cfg;
+            RANSSolver solver(mesh, cfg);  // Should throw during GPU init
+            std::cout << "FAILED: Expected exception but none thrown\n";
+            assert(false);
+        } catch (const std::runtime_error& e) {
+            std::cout << "  [OK] Correctly threw: " << e.what() << "\n";
+            std::cout << "PASSED\n";
+        }
     }
 #else
     std::cout << "SKIPPED (USE_GPU_OFFLOAD not defined)\n";
@@ -41,7 +53,7 @@ void test_mlp_gpu_execution() {
 #ifdef USE_GPU_OFFLOAD
     int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
-        std::cout << "SKIPPED (no GPU devices)\n";
+        std::cout << "SKIPPED (no GPU devices - would throw)\n";
         return;
     }
     
@@ -106,7 +118,7 @@ void test_turbulence_nn_mlp_gpu() {
 #ifdef USE_GPU_OFFLOAD
     int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
-        std::cout << "SKIPPED (no GPU devices)\n";
+        std::cout << "SKIPPED (no GPU devices - would throw)\n";
         return;
     }
     
@@ -163,7 +175,7 @@ void test_turbulence_nn_tbnn_gpu() {
 #ifdef USE_GPU_OFFLOAD
     int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
-        std::cout << "SKIPPED (no GPU devices)\n";
+        std::cout << "SKIPPED (no GPU devices - would throw)\n";
         return;
     }
     
@@ -220,7 +232,7 @@ void test_actual_gpu_usage() {
 #ifdef USE_GPU_OFFLOAD
     int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
-        std::cout << "SKIPPED (no GPU devices)\n";
+        std::cout << "SKIPPED (no GPU devices - would throw)\n";
         return;
     }
     

@@ -1,3 +1,17 @@
+/// @file turbulence_transport.cpp
+/// @brief Implementation of transport equation turbulence models (SST k-ω, k-ω)
+///
+/// This file implements two-equation RANS models that solve transport PDEs:
+/// - SST k-ω (Menter 1994): Blended k-ω/k-ε with strain-rate limiter
+/// - Standard k-ω (Wilcox 1988): Original k-ω formulation
+///
+/// These models provide good accuracy for complex flows including separation,
+/// adverse pressure gradients, and streamline curvature. Both include:
+/// - Production, dissipation, and diffusion terms
+/// - Wall boundary conditions (low-Re formulation)
+/// - GPU-accelerated transport step and closure
+/// - Positivity enforcement and realizability constraints
+
 #include "turbulence_transport.hpp"
 #include "gpu_kernels.hpp"
 #include "timing.hpp"
@@ -90,92 +104,10 @@ void SSTClosure::compute_nu_t(
     
     const double a1 = constants_.a1;
     
-    // IMPORTANT: SSTClosure GPU path disabled - causes pointer aliasing with RANSSolver's GPU buffers
-    // The caller (RANSSolver or SSTKOmegaTransport) will handle GPU sync if needed
-#ifdef USE_GPU_OFFLOAD_DISABLED_FOR_CLOSURE
-    if (false && omp_get_num_devices() > 0) {
-        const int Nx = mesh.Nx;
-        const int Ny = mesh.Ny;
-        const int n_cells = Nx * Ny;
-        const int stride = mesh.total_Nx();
-        const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
-        
-        // Get raw pointers
-        const double* dudx_ptr = dudx_.data().data();
-        const double* dudy_ptr = dudy_.data().data();
-        const double* dvdx_ptr = dvdx_.data().data();
-        const double* dvdy_ptr = dvdy_.data().data();
-        const double* k_ptr = k.data().data();        // Already on GPU from solver
-        const double* omega_ptr = omega.data().data(); // Already on GPU from solver
-        double* nu_t_ptr = nu_t.data().data();         // Already on GPU from solver
-        
-        const double nu = nu_;
-        const double beta_star = constants_.beta_star;
-        const double k_min = constants_.k_min;
-        const double omega_min = constants_.omega_min;
-        
-        // Precompute wall distances (flatten to match interior cells loop order)
-        std::vector<double> wall_dist(n_cells);
-        int flat_idx = 0;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                wall_dist[flat_idx++] = mesh.wall_distance(i, j);
-            }
-        }
-        const double* wall_dist_ptr = wall_dist.data();
-        
-        // CRITICAL FIX: Use stride-based indexing for arrays with ghost cells
-        // Arrays k, omega, nu_t have size (Nx+2)*(Ny+2), not Nx*Ny
-        // Don't use map() clause - let runtime handle mapping automatically
-        #pragma omp target teams distribute parallel for \
-            map(to: dudx_ptr[0:total_size], dudy_ptr[0:total_size], \
-                    dvdx_ptr[0:total_size], dvdy_ptr[0:total_size], \
-                    wall_dist_ptr[0:n_cells])
-        for (int idx = 0; idx < n_cells; ++idx) {
-            // Convert flat index to (i,j) including ghost cells
-            const int i = idx % Nx + 1;  // +1 to skip ghost cells
-            const int j = idx / Nx + 1;
-            const int cell_idx = j * stride + i;  // Stride-based index for arrays with ghosts
-            
-            double k_loc = k_ptr[cell_idx];
-            double omega_loc = omega_ptr[cell_idx];
-            double y_wall = wall_dist_ptr[idx];  // Wall dist is flat (no ghosts)
-            
-            k_loc = (k_loc > k_min) ? k_loc : k_min;
-            omega_loc = (omega_loc > omega_min) ? omega_loc : omega_min;
-            double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
-            
-            // Strain rate magnitude from gradient fields (also have ghosts, use cell_idx)
-            double Sxx = dudx_ptr[cell_idx];
-            double Syy = dvdy_ptr[cell_idx];
-            double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
-            // F2 blending function
-            double sqrt_k = sqrt(k_loc);
-            double term1 = 2.0 * sqrt_k / (beta_star * omega_loc * y_safe);
-            double term2 = 500.0 * nu / (y_safe * y_safe * omega_loc);
-            double arg2 = (term1 > term2) ? term1 : term2;
-            double F2 = tanh(arg2 * arg2);
-            
-            // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
-            double denom = a1 * omega_loc;
-            double SF2 = S_mag * F2;
-            denom = (denom > SF2) ? denom : SF2;
-            
-            double nu_t_loc = a1 * k_loc / denom;
-            
-            // Clipping
-            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
-            double max_nu_t = 1000.0 * nu;
-            nu_t_loc = (nu_t_loc < max_nu_t) ? nu_t_loc : max_nu_t;
-            
-            nu_t_ptr[cell_idx] = nu_t_loc;  // Write to correct cell with ghosts
-        }
-        
-        return;
-    }
-#endif
+    // NOTE: SSTClosure GPU path is intentionally disabled to avoid pointer aliasing
+    // issues with RANSSolver's GPU buffers. The caller (RANSSolver or SSTKOmegaTransport)
+    // handles GPU synchronization when needed. This CPU-only path is acceptable because
+    // the SST closure computation is relatively cheap compared to transport equation solves.
     
     // CPU path
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -223,12 +155,8 @@ SSTKOmegaTransport::~SSTKOmegaTransport() {
 
 void SSTKOmegaTransport::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    // Check if GPU is available
-    #include <omp.h>
-    if (omp_get_num_devices() == 0) {
-        buffers_on_gpu_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     int n_interior = mesh.Nx * mesh.Ny;
     
@@ -337,14 +265,16 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
         size_t wall_size = wall_dist_flat_.size();
         size_t work_size = work_flat_.size();
         
-        // Map buffers to GPU - use single pragma with multiple arrays (like NN models)
+        // Map buffers to GPU - use 'to' for k/omega to upload initial values
+        // k and omega are initialized by RANSSolver::initialize() before this is called
+        // so we MUST upload them. Other arrays are computed on GPU, so use alloc.
         #pragma omp target enter data \
-            map(alloc: k_ptr[0:k_size]) \
-            map(alloc: omega_ptr[0:omega_size]) \
+            map(to: k_ptr[0:k_size]) \
+            map(to: omega_ptr[0:omega_size]) \
             map(alloc: nu_t_ptr[0:nu_t_size]) \
             map(alloc: u_ptr[0:u_size]) \
             map(alloc: v_ptr[0:v_size]) \
-            map(alloc: wall_ptr[0:wall_size]) \
+            map(to: wall_ptr[0:wall_size]) \
             map(alloc: work_ptr[0:work_size])
         
         buffers_on_gpu_ = true;  // Mark as mapped (separate from gpu_ready_)
@@ -1210,6 +1140,23 @@ void KOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocity) 
     }
 }
 
+void KOmegaTransport::initialize_gpu_buffers(const Mesh& mesh) {
+#ifdef USE_GPU_OFFLOAD
+    // KOmegaTransport uses solver-owned GPU buffers via device_view
+    // No separate buffers to allocate, but mark as GPU-ready so solver knows
+    // we will use device_view GPU kernels and won't need host→device syncs
+    gpu::verify_device_available();
+    gpu_ready_ = true;
+#else
+    (void)mesh;
+    gpu_ready_ = false;
+#endif
+}
+
+void KOmegaTransport::cleanup_gpu_buffers() {
+    gpu_ready_ = false;
+}
+
 void KOmegaTransport::advance_turbulence(
     const Mesh& mesh,
     const VectorField& velocity,
@@ -1255,16 +1202,12 @@ void KOmegaTransport::advance_turbulence(
         // Transport PDE done entirely on GPU - no CPU sync needed
         // k and omega ScalarFields will be synced by solver if needed for output
         return;
-    } else {
-        std::cout << "[KOmegaTransport] GPU path NOT taken. device_view=" << device_view 
-                  << " valid=" << (device_view ? device_view->is_valid() : false) << std::endl;
     }
 #else
     (void)device_view;
 #endif
     
-    // CPU fallback path
-    std::cout << "[KOmegaTransport] Using CPU fallback for advance_turbulence" << std::endl;
+    // CPU fallback path (only used when GPU offload disabled or device_view invalid)
     compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;

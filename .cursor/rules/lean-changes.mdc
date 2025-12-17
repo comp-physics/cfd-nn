@@ -17,6 +17,7 @@ OUTPUT
 - Default output: unified diff only.
 - If text is needed: <= 4 bullets, 1 sentence each.
 - Do NOT create new markdown/doc files unless explicitly asked.
+- Always submit slurm jobs using the embers QOS
 
 BEHAVIOR
 - When unsure, ask 1 targeted question instead of exploring widely.

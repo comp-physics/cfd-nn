@@ -15,16 +15,13 @@ Makefile
 *.cmake
 !CMakeLists.txt
 
-# Executables
+# Executables (in build directories only, not source files)
 channel
 periodic_hills
-test_mesh
-test_poisson
-test_nn_simple
-test_solver
-test_features
-test_turbulence
-test_nn_core
+compare_channel_cpu_gpu
+profile_solver
+/test_*
+build*/test_*
 
 # Python
 venv/
@@ -123,4 +120,6 @@ nsys*
 
 logs/
 *.nsys-rep
-
+*.slurm
+.cache/
+compile_commands.json

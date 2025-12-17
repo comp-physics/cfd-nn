@@ -33,7 +33,7 @@ public:
     void initialize(const Mesh& mesh, const VectorField& velocity) override;
     void initialize_gpu_buffers(const Mesh& mesh) override;
     void cleanup_gpu_buffers() override;
-    bool is_gpu_ready() const override { return gpu_ready_; }
+    bool is_gpu_ready() const override { return true; }  // GEP uses device_view, no internal GPU state
     
     void update(const Mesh& mesh,
                 const VectorField& velocity,
@@ -74,26 +74,6 @@ private:
     /// Compute GEP correction factor based on invariants
     double compute_gep_factor(double I1_S, double I2_S, double I1_Omega, double I2_Omega,
                               double y_plus, double Re_d) const;
-    
-    // GPU management (members ALWAYS present for ABI stability)
-    bool gpu_ready_ = false;
-    [[maybe_unused]] bool buffers_on_gpu_ = false;
-    [[maybe_unused]] int cached_n_cells_ = 0;
-    
-    // Flat arrays for GPU
-    std::vector<double> S_mag_flat_;
-    std::vector<double> Omega_mag_flat_;
-    std::vector<double> wall_dist_flat_;
-    std::vector<double> u_mag_flat_;
-    std::vector<double> nu_t_gpu_flat_;
-    
-#ifdef USE_GPU_OFFLOAD
-    void allocate_gpu_arrays(const Mesh& mesh);
-    void free_gpu_arrays();
-#else
-    void allocate_gpu_arrays(const Mesh& mesh) { (void)mesh; }
-    void free_gpu_arrays() {}
-#endif
 };
 
 } // namespace nncfd

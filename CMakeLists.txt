@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 project(nn_cfd VERSION 0.1.0 LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(CMAKE_EXPORT_COMPILE_COMMANDS)
+  add_custom_target(clangd_compile_commands ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            ${CMAKE_SOURCE_DIR}/compile_commands.json
+    BYPRODUCTS ${CMAKE_SOURCE_DIR}/compile_commands.json
+    COMMENT "Copy compile_commands.json to source dir for clangd"
+  )
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -12,10 +23,16 @@ option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
 
-# Find OpenMP (optional on macOS where AppleClang lacks OpenMP)
-find_package(OpenMP)
-if(NOT OpenMP_CXX_FOUND)
-    message(WARNING "OpenMP not found - building without OpenMP parallelization")
+# Suppress unknown pragma warnings in CPU builds (allows OpenMP pragmas to be ignored silently)
+option(SUPPRESS_UNKNOWN_OMP_PRAGMAS "Silence -Wunknown-pragmas for OpenMP pragmas in CPU build" ON)
+
+# Find OpenMP ONLY if GPU offload is enabled
+# CPU builds (USE_GPU_OFFLOAD=OFF) are OpenMP-free to enforce compile-time separation
+if(USE_GPU_OFFLOAD)
+    find_package(OpenMP REQUIRED)
+    if(NOT OpenMP_CXX_FOUND)
+        message(FATAL_ERROR "GPU offload requires OpenMP support")
+    endif()
 endif()
 
 # Compiler flags
@@ -25,11 +42,8 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
 
 # GPU offloading configuration
 if(USE_GPU_OFFLOAD)
-    if(NOT OpenMP_CXX_FOUND)
-        message(FATAL_ERROR "GPU offloading requires OpenMP support")
-    endif()
     add_definitions(-DUSE_GPU_OFFLOAD)
-    message(STATUS "GPU offloading ENABLED")
+    message(STATUS "GPU offloading ENABLED (GPU required at runtime)")
     
     # Detect compiler and set appropriate flags
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
@@ -48,24 +62,13 @@ if(USE_GPU_OFFLOAD)
     else()
         message(WARNING "Unknown compiler for GPU offloading: ${CMAKE_CXX_COMPILER_ID}")
     endif()
-elseif(OpenMP_CXX_FOUND)
-    message(STATUS "GPU offloading DISABLED (CPU-only OpenMP)")
 else()
-    message(STATUS "OpenMP not available - single-threaded build")
+    message(STATUS "CPU build (OpenMP disabled, single-threaded)")
 endif()
 
 # Default to Release build
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
-endif()
-
-# Optional BLAS support
-option(USE_BLAS "Use BLAS for linear algebra operations" OFF)
-if(USE_BLAS)
-    find_package(BLAS)
-    if(BLAS_FOUND)
-        add_definitions(-DUSE_BLAS)
-    endif()
 endif()
 
 # Include directories
@@ -93,12 +96,22 @@ set(LIB_SOURCES
 
 # Core library
 add_library(nn_cfd_core ${LIB_SOURCES})
-if(OpenMP_CXX_FOUND)
+
+# Add GPU-only sources and link OpenMP when GPU offload is enabled
+if(USE_GPU_OFFLOAD)
+    target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
+    # Propagate USE_GPU_OFFLOAD to all targets that link this library
+    # This ensures tests compile with the same GPU settings as the library
+    target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
 endif()
 
-if(USE_BLAS AND BLAS_FOUND)
-    target_link_libraries(nn_cfd_core ${BLAS_LIBRARIES})
+# Suppress unknown pragma warnings in CPU builds
+if(NOT USE_GPU_OFFLOAD AND SUPPRESS_UNKNOWN_OMP_PRAGMAS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(nn_cfd_core PRIVATE -Wno-unknown-pragmas)
+        message(STATUS "Suppressing unknown pragma warnings for CPU build")
+    endif()
 endif()
 
 # GPU profiling compile definitions
@@ -120,30 +133,20 @@ if(GPU_PROFILE_KERNELS)
     endif()
 endif()
 
-# Executables
+# Main application executables
 add_executable(channel app/main_channel.cpp)
 target_link_libraries(channel nn_cfd_core)
-
-add_executable(test_poisson_perturbed app/test_poisson_perturbed.cpp)
-target_link_libraries(test_poisson_perturbed nn_cfd_core)
 
 add_executable(periodic_hills app/main_periodic_hills.cpp)
 target_link_libraries(periodic_hills nn_cfd_core)
 
-add_executable(test_nn_simple app/test_nn_simple.cpp)
-target_link_libraries(test_nn_simple nn_cfd_core)
-
-add_executable(test_taylor_green app/test_taylor_green.cpp)
-target_link_libraries(test_taylor_green nn_cfd_core)
-
-# Verification tool for CPU/GPU unified kernels
-# (Commented out - file doesn't exist in current branch)
-#add_executable(verify_cpu_gpu_match verify_cpu_gpu_match.cpp)
-#target_link_libraries(verify_cpu_gpu_match nn_cfd_core)
-
-# Lockstep CPU vs GPU comparison tool
+# CPU vs GPU comparison tool (for validation)
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
 target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
+
+# Profiling driver (limited steps for nsys analysis)
+add_executable(profile_solver app/profile_solver.cpp)
+target_link_libraries(profile_solver nn_cfd_core)
 
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
@@ -211,6 +214,16 @@ if(BUILD_TESTS)
     add_executable(test_tg_validation tests/test_taylor_green.cpp)
     target_link_libraries(test_tg_validation nn_cfd_core)
     add_test(NAME TaylorGreenValidationTest COMMAND test_tg_validation)
+    
+    # Perturbed channel validation - comprehensive turbulence model testing (1000 steps on GPU)
+    add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
+    target_link_libraries(test_perturbed_channel nn_cfd_core)
+    add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
+    
+    # NaN/Inf guard test - verifies abort-on-NaN behavior
+    add_executable(test_turbulence_guard tests/test_turbulence_guard.cpp)
+    target_link_libraries(test_turbulence_guard nn_cfd_core)
+    add_test(NAME NanInfGuardTest COMMAND test_turbulence_guard)
 endif()
 
 # Installation

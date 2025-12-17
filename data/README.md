@@ -1,6 +1,14 @@
 # Neural Network Weights Directory
 
-This directory should contain the neural network weights and scaling parameters for the NN-based turbulence models.
+This directory contains neural network weights and scaling parameters for the NN-based turbulence models.
+
+**Organization:**
+- Root directory (`data/`): Legacy example weights (kept for backward compatibility)
+- `models/` subdirectory: Organized model storage with metadata (recommended)
+  - `models/example_scalar_nut/` - Example MLP scalar eddy viscosity model
+  - `models/example_tbnn/` - Example TBNN tensor basis model
+
+To use a model from the `models/` directory, use `--nn_preset <model_name>` (e.g., `--nn_preset example_tbnn`).
 
 ## File Format
 

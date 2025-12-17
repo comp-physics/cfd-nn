@@ -1,3 +1,12 @@
+/// @file config.cpp
+/// @brief Configuration file parsing and command-line argument processing
+///
+/// Implements the Config class for managing simulation parameters. Supports:
+/// - Key-value config file parsing (.cfg format)
+/// - Command-line argument processing (--flag value syntax)
+/// - Automatic Reynolds number calculations from specified parameters
+/// - Parameter validation and consistency checking
+
 #include "config.hpp"
 #include <iostream>
 #include <sstream>

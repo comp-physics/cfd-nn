@@ -3,10 +3,6 @@
 #include "timing.hpp"
 #include <algorithm>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 namespace nncfd {
 
 TurbulenceNNMLP::TurbulenceNNMLP()
@@ -31,7 +27,7 @@ void TurbulenceNNMLP::load(const std::string& weights_dir, const std::string& sc
 void TurbulenceNNMLP::upload_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_ready_) {
-        mlp_.upload_to_gpu();
+        mlp_.upload_to_gpu();  // Will throw if no GPU available
         gpu_ready_ = mlp_.is_on_gpu();
     }
 #endif
@@ -39,10 +35,8 @@ void TurbulenceNNMLP::upload_to_gpu() {
 
 void TurbulenceNNMLP::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        gpu_ready_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     const int n_cells = mesh.Nx * mesh.Ny;
     upload_to_gpu();  // Upload MLP weights if not already done
@@ -234,14 +228,29 @@ void TurbulenceNNMLP::update(
         {
             TIMED_SCOPE("nn_mlp_postprocess");
             int idx = 0;
+            int nan_count = 0;
+            int clipped_count = 0;
             for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
                 for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                     // Output is raw nu_t prediction
                     double nu_t_nn = outputs_flat_[idx * output_dim];
                     
+                    // Check for NaN/Inf and replace with safe value
+                    if (!std::isfinite(nu_t_nn)) {
+                        ++nan_count;
+                        // Fallback to baseline or zero
+                        nu_t_nn = (blend_with_baseline_ && baseline_) ? baseline_nu_t_(i, j) : 0.0;
+                    } else {
                     // Ensure positivity and apply clipping
-                    nu_t_nn = std::max(0.0, nu_t_nn);
-                    nu_t_nn = std::min(nu_t_nn, nu_t_max_);
+                        if (nu_t_nn < 0.0) {
+                            nu_t_nn = 0.0;
+                            ++clipped_count;
+                        }
+                        if (nu_t_nn > nu_t_max_) {
+                            nu_t_nn = nu_t_max_;
+                            ++clipped_count;
+                        }
+                    }
                     
                     // Apply blending with baseline if enabled
                     if (blend_with_baseline_ && baseline_) {
@@ -254,6 +263,12 @@ void TurbulenceNNMLP::update(
                     ++idx;
                 }
             }
+            
+            // Warn if NaN/Inf detected
+            if (nan_count > 0) {
+                std::cerr << "[WARNING] NN-MLP produced " << nan_count 
+                          << " NaN/Inf values (replaced with fallback)" << std::endl;
+            }
         }
     } else
 #endif
@@ -262,6 +277,7 @@ void TurbulenceNNMLP::update(
         TIMED_SCOPE("nn_mlp_inference_cpu");
         
         int idx = 0;
+        int nan_count = 0;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 // Forward pass
@@ -270,9 +286,15 @@ void TurbulenceNNMLP::update(
                 // Output is raw nu_t prediction
                 double nu_t_nn = output.empty() ? 0.0 : output[0];
                 
+                // Check for NaN/Inf and replace with safe value
+                if (!std::isfinite(nu_t_nn)) {
+                    ++nan_count;
+                    nu_t_nn = (blend_with_baseline_ && baseline_) ? baseline_nu_t_(i, j) : 0.0;
+                } else {
                 // Ensure positivity and apply clipping
                 nu_t_nn = std::max(0.0, nu_t_nn);
                 nu_t_nn = std::min(nu_t_nn, nu_t_max_);
+                }
                 
                 // Apply blending with baseline if enabled
                 if (blend_with_baseline_ && baseline_) {
@@ -284,6 +306,12 @@ void TurbulenceNNMLP::update(
                 
                 ++idx;
             }
+        }
+        
+        // Warn if NaN/Inf detected
+        if (nan_count > 0) {
+            std::cerr << "[WARNING] NN-MLP (CPU) produced " << nan_count 
+                      << " NaN/Inf values (replaced with fallback)" << std::endl;
         }
     }
 }

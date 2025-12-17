@@ -232,52 +232,5 @@ int PoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonCo
     return iter + 1;
 }
 
-int PoissonSolver::solve_variable(const ScalarField& alpha, const ScalarField& rhs, 
-                                  ScalarField& p, const PoissonConfig& cfg) {
-    // Solve: div(alpha * grad(p)) = rhs
-    // Using SOR with variable coefficient
-    
-    apply_bc(p);
-    
-    double dx = mesh_->dx;
-    double dy = mesh_->dy;
-    
-    int iter = 0;
-    for (; iter < cfg.max_iter; ++iter) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                // Face-averaged alpha values
-                double alpha_e = 0.5 * (alpha(i, j) + alpha(i+1, j));
-                double alpha_w = 0.5 * (alpha(i, j) + alpha(i-1, j));
-                double alpha_n = 0.5 * (alpha(i, j) + alpha(i, j+1));
-                double alpha_s = 0.5 * (alpha(i, j) + alpha(i, j-1));
-                
-                double ae = alpha_e / (dx * dx);
-                double aw = alpha_w / (dx * dx);
-                double an = alpha_n / (dy * dy);
-                double as = alpha_s / (dy * dy);
-                double ap = ae + aw + an + as;
-                
-                double p_old = p(i, j);
-                double p_gs = (ae * p(i+1, j) + aw * p(i-1, j)
-                             + an * p(i, j+1) + as * p(i, j-1)
-                             - rhs(i, j)) / ap;
-                
-                p(i, j) = (1.0 - cfg.omega) * p_old + cfg.omega * p_gs;
-            }
-        }
-        apply_bc(p);
-        
-        if ((iter + 1) % 100 == 0) {
-            residual_ = compute_residual(rhs, p);  // Approximate check
-            if (residual_ < cfg.tol) {
-                break;
-            }
-        }
-    }
-    
-    return iter + 1;
-}
-
 } // namespace nncfd
 

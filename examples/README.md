@@ -67,6 +67,21 @@ Quantifies numerical error using Richardson extrapolation across 4 grid levels.
 
 ---
 
+### [04_taylor_green_convergence/](04_taylor_green_convergence/) - **Temporal Accuracy**
+
+**What**: Taylor-Green vortex convergence study  
+**Time**: ~15 minutes  
+**Level**: Advanced  
+
+Validates temporal integration accuracy using exact Taylor-Green solution.
+
+**Key Learning**:
+- Verify temporal order of accuracy
+- Energy decay verification
+- Time step sensitivity
+
+---
+
 ### [04_validation_suite/](04_validation_suite/) - **Benchmark Suite**
 
 **What**: 4 validation cases (2 analytical, 2 DNS benchmarks)  
@@ -75,12 +90,27 @@ Quantifies numerical error using Richardson extrapolation across 4 grid levels.
 
 Comprehensive test suite comparing against:
 - Poiseuille analytical solutions (Re = 100, 1000)
-- Moser DNS data (Re_τ = 180, 395)
+- Channel flow benchmarks (Re_τ = 180, 395)
 
 **Key Learning**:
 - Verification vs Validation
-- Comparison with DNS benchmarks
+- Comparison with benchmarks
 - Acceptable error thresholds for RANS
+
+---
+
+### [05_channel_retau180_sst/](05_channel_retau180_sst/) - **SST k-ω Model**
+
+**What**: High-Reynolds turbulent channel with SST k-ω transport  
+**Time**: ~20 minutes (GPU), ~1 hour (CPU)  
+**Level**: Advanced  
+
+Demonstrates full transport equation turbulence modeling with SST k-ω.
+
+**Key Learning**:
+- Transport equation models
+- GPU acceleration benefits
+- Complex turbulence physics
 
 ---
 

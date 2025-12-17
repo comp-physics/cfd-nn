@@ -1,0 +1,25 @@
+CompileFlags:
+  Add:
+    - "-std=c++17"
+  Remove:
+    - "--c++17"
+    - "-mp"
+    - "-mp=*"
+    - "-mp=gpu"
+    - "-fopenmp-targets=*"
+    - "-foffload=*"
+    - "-gpu=*"
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+  ClangTidy:
+    Add:
+      - "bugprone-*"
+      - "performance-*"
+      - "modernize-*"
+    Remove:
+      - "modernize-use-trailing-return-type"   # optional noise
+
+Index:
+  Background: Build

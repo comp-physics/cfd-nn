@@ -1,6 +1,7 @@
 #include "turbulence_gep.hpp"
 #include "gpu_kernels.hpp"
 #include "timing.hpp"
+#include "features.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -25,101 +26,12 @@ void TurbulenceGEP::initialize(const Mesh& mesh, const VectorField& velocity) {
 }
 
 void TurbulenceGEP::initialize_gpu_buffers(const Mesh& mesh) {
-#ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        gpu_ready_ = false;
-        return;
-    }
-    
-    const int n_cells = mesh.Nx * mesh.Ny;
-    
-    // Check if already allocated for this mesh size
-    if (buffers_on_gpu_ && cached_n_cells_ == n_cells) {
-        gpu_ready_ = true;
-        return;
-    }
-    
-    // Free old buffers if they exist
-    free_gpu_arrays();
-    
-    // Allocate GPU buffers
-    allocate_gpu_arrays(mesh);
-    
-    cached_n_cells_ = n_cells;
-    buffers_on_gpu_ = true;
-    gpu_ready_ = true;
-#else
+    // GEP uses device_view for GPU execution, no internal GPU state needed
     (void)mesh;
-    gpu_ready_ = false;
-#endif
 }
-
-#ifdef USE_GPU_OFFLOAD
-void TurbulenceGEP::allocate_gpu_arrays(const Mesh& mesh) {
-    const int n_cells = mesh.Nx * mesh.Ny;
-    const int total_size = mesh.total_cells();
-    const int stride = mesh.total_Nx();
-    
-    // Allocate flat arrays
-    S_mag_flat_.resize(n_cells, 0.0);
-    Omega_mag_flat_.resize(n_cells, 0.0);
-    wall_dist_flat_.resize(n_cells, 0.0);
-    u_mag_flat_.resize(n_cells, 0.0);
-    nu_t_gpu_flat_.resize(total_size, 0.0);
-    
-    // Precompute wall distances
-    int idx = 0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            wall_dist_flat_[idx++] = mesh.wall_distance(i, j);
-        }
-    }
-    
-    // Get pointers
-    double* S_mag_ptr = S_mag_flat_.data();
-    double* Omega_mag_ptr = Omega_mag_flat_.data();
-    double* wall_dist_ptr = wall_dist_flat_.data();
-    double* u_mag_ptr = u_mag_flat_.data();
-    double* nu_t_ptr = nu_t_gpu_flat_.data();
-    
-    // Map to GPU persistently
-    #pragma omp target enter data map(alloc: S_mag_ptr[0:n_cells])
-    #pragma omp target enter data map(alloc: Omega_mag_ptr[0:n_cells])
-    #pragma omp target enter data map(to: wall_dist_ptr[0:n_cells])
-    #pragma omp target enter data map(alloc: u_mag_ptr[0:n_cells])
-    #pragma omp target enter data map(alloc: nu_t_ptr[0:total_size])
-}
-
-void TurbulenceGEP::free_gpu_arrays() {
-    if (!buffers_on_gpu_) return;
-    
-    const int n_cells = cached_n_cells_;
-    if (n_cells == 0) return;
-    
-    // Need to compute total_size for nu_t (which has ghost cells)
-    const int total_size = nu_t_gpu_flat_.size();
-    
-    double* S_mag_ptr = S_mag_flat_.data();
-    double* Omega_mag_ptr = Omega_mag_flat_.data();
-    double* wall_dist_ptr = wall_dist_flat_.data();
-    double* u_mag_ptr = u_mag_flat_.data();
-    double* nu_t_ptr = nu_t_gpu_flat_.data();
-    
-    #pragma omp target exit data map(delete: S_mag_ptr[0:n_cells])
-    #pragma omp target exit data map(delete: Omega_mag_ptr[0:n_cells])
-    #pragma omp target exit data map(delete: wall_dist_ptr[0:n_cells])
-    #pragma omp target exit data map(delete: u_mag_ptr[0:n_cells])
-    #pragma omp target exit data map(delete: nu_t_ptr[0:total_size])
-    
-    buffers_on_gpu_ = false;
-}
-#endif
 
 void TurbulenceGEP::cleanup_gpu_buffers() {
-#ifdef USE_GPU_OFFLOAD
-    free_gpu_arrays();
-#endif
-    gpu_ready_ = false;
+    // GEP uses device_view for GPU execution, no internal GPU state to clean up
 }
 
 void TurbulenceGEP::ensure_initialized(const Mesh& mesh) {
@@ -211,13 +123,15 @@ void TurbulenceGEP::update(const Mesh& mesh,
                            TensorField* tau_ij,
                            const TurbulenceDeviceView* device_view) {
     (void)tau_ij;  // GEP provides eddy viscosity only, not explicit Reynolds stresses
+    (void)k;       // Not used by algebraic GEP model
+    (void)omega;   // Not used by algebraic GEP model
     TIMED_SCOPE("gep_update");
     
     ensure_initialized(mesh);
     feature_computer_.set_reference(nu_, u_ref_, delta_);
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path using device_view
+    // GPU path using device_view (like Baseline/EARSM)
     if (device_view && device_view->is_valid()) {
         const int Nx = mesh.Nx;
         const int Ny = mesh.Ny;
@@ -321,186 +235,65 @@ void TurbulenceGEP::update(const Mesh& mesh,
     (void)device_view;
 #endif
     
-    // CPU fallback path
-    [[maybe_unused]] double delta = delta_;
+    // CPU fallback path - match GPU implementation exactly
+    // Use same MAC gradient computation as GPU for consistency
+    ScalarField dudx_field(mesh), dudy_field(mesh), dvdx_field(mesh), dvdy_field(mesh);
+    compute_gradients_from_mac_cpu(mesh, velocity, dudx_field, dudy_field, dvdx_field, dvdy_field);
+    
     constexpr double kappa = 0.41;
     constexpr double A_plus = 26.0;
+    const int variant_val = static_cast<int>(variant_);
     
-    // Compute velocity gradients for all cells
-    std::vector<Features> features;
-    {
-        TIMED_SCOPE("gep_features");
-        feature_computer_.compute_scalar_features(velocity, k, omega, features);
-    }
-    
-    {
-        TIMED_SCOPE("gep_compute");
-        
-#ifdef USE_GPU_OFFLOAD
-        // GPU path using persistent mapping
-        if (gpu_ready_) {
-            const int n_cells = mesh.Nx * mesh.Ny;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Get precomputed gradients (matching GPU kernel)
+            double Sxx = dudx_field(i, j);
+            double Syy = dvdy_field(i, j);
+            double Sxy = 0.5 * (dudy_field(i, j) + dvdx_field(i, j));
+            double Oxy = 0.5 * (dudy_field(i, j) - dvdx_field(i, j));
             
-            // Flatten features for GPU into our persistent arrays
-            for (int idx = 0; idx < n_cells; ++idx) {
-                if (idx < static_cast<int>(features.size()) && features[idx].size() > 0) {
-                    S_mag_flat_[idx] = features[idx][0];
-                    Omega_mag_flat_[idx] = (features[idx].size() > 1) ? features[idx][1] : 0.0;
-                } else {
-                    S_mag_flat_[idx] = 0.0;
-                    Omega_mag_flat_[idx] = 0.0;
-                }
+            double S_mag_sq = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+            double S_mag = std::sqrt(S_mag_sq);
+            double Omega_mag = std::sqrt(2.0 * Oxy * Oxy);
+            
+            // Wall distance and y+
+            double y_wall = mesh.wall_distance(i, j);
+            y_wall = std::max(y_wall, 1e-10);
+            
+            // Approximate y+ from local strain rate (same as GPU)
+            double y_plus = S_mag * y_wall / (nu_ + 1e-20);
+            double f_damp = 1.0 - std::exp(-y_plus / A_plus);
+            f_damp = f_damp * f_damp;
+            
+            // Compute GEP correction factor based on variant (same logic as GPU)
+            double f_gep = 1.0;
+            if (variant_val == 0) {  // WS2016_Channel
+                double ratio = (S_mag > 1e-10) ? Omega_mag / S_mag : 1.0;
+                double f_rot = 1.0 / (1.0 + 0.1 * ratio * ratio);
+                f_gep = f_damp * f_rot;
+            } else if (variant_val == 1) {  // WS2016_PeriodicHill
+                double ratio = (S_mag > 1e-10) ? Omega_mag / S_mag : 1.0;
+                double f_sep = 1.0 / (1.0 + 0.2 * ratio * ratio);
+                double f_wall = std::tanh(y_plus / 50.0);
+                f_gep = f_wall * f_sep;
+            } else {  // Simple
+                f_gep = f_damp;
             }
             
-            // Flatten velocity magnitudes into our persistent array
-            int idx = 0;
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double u_val = velocity.u(i, j);
-                    double v_val = velocity.v(i, j);
-                    u_mag_flat_[idx++] = std::sqrt(u_val * u_val + v_val * v_val);
-                }
-            }
+            // Mixing length: l = kappa * y * f_gep
+            double l = kappa * y_wall * f_gep;
             
-            // Get pointers to persistent GPU buffers
-            const double* S_mag_ptr = S_mag_flat_.data();
-            const double* Omega_mag_ptr = Omega_mag_flat_.data();
-            const double* wall_dist_ptr = wall_dist_flat_.data();
-            const double* u_mag_ptr = u_mag_flat_.data();
-            double* nu_t_gpu_ptr = nu_t_gpu_flat_.data();
+            // Eddy viscosity: nu_t = l^2 * |S|
+            double nu_t_val = l * l * S_mag;
             
-            const int Nx = mesh.Nx;
-            const int variant_int = static_cast<int>(variant_);
-            const double nu = nu_;
-            const double nu_t_max = nu_t_max_;
-            const int stride = mesh.total_Nx();
-            const size_t total_size = nu_t_gpu_flat_.size();
-            const double kappa = 0.41;
-            const double A_plus = 26.0;
+            // Clipping (same as GPU)
+            nu_t_val = std::max(0.0, nu_t_val);
+            double max_nu_t = 1000.0 * nu_;
+            nu_t_val = std::min(nu_t_val, max_nu_t);
             
-            // Upload data to GPU
-            #pragma omp target update to(S_mag_ptr[0:n_cells])
-            #pragma omp target update to(Omega_mag_ptr[0:n_cells])
-            #pragma omp target update to(u_mag_ptr[0:n_cells])
-            
-            // GPU kernel - NO map() clauses (all arrays already persistent!)
-            #pragma omp target teams distribute parallel for firstprivate(Nx, stride)
-            for (int idx = 0; idx < n_cells; ++idx) {
-                // Convert flat index to (i,j) including ghost cells
-                const int i = idx % Nx + 1;  // +1 to skip ghost cells
-                const int j = idx / Nx + 1;
-                const int cell_idx = j * stride + i;  // Stride-based index
-                
-                // Get wall distance (flat array, no ghosts)
-                double y_wall = wall_dist_ptr[idx];
-                
-                // Estimate u_tau from local velocity magnitude
-                double u_local = u_mag_ptr[idx];
-                double u_tau_est = sqrt(nu * u_local / fmax(y_wall, 1e-10));
-                u_tau_est = fmax(u_tau_est, 1e-6);
-                double y_plus = y_wall * u_tau_est / nu;
-                
-                // Get strain/rotation from features (flat arrays, no ghosts)
-                double S_mag = S_mag_ptr[idx];
-                double Omega_mag = Omega_mag_ptr[idx];
-                
-                // Invariants
-                double I1_S = S_mag * S_mag;
-                double I1_Omega = -Omega_mag * Omega_mag;
-                
-                // GEP correction factor (inline simplified version)
-                double f_gep;
-                if (variant_int == 0) {  // WS2016_Channel
-                    double ratio = (S_mag > 1e-10) ? Omega_mag / S_mag : 1.0;
-                    double f_wall = 1.0 - exp(-y_plus / 26.0);
-                    f_wall = f_wall * f_wall;
-                    double f_rot = 1.0 / (1.0 + 0.1 * ratio * ratio);
-                    f_gep = f_wall * f_rot;
-                } else if (variant_int == 1) {  // WS2016_PeriodicHill
-                    double ratio = (S_mag > 1e-10) ? Omega_mag / S_mag : 1.0;
-                    double f_sep = 1.0 / (1.0 + 0.2 * ratio * ratio);
-                    double f_wall = tanh(y_plus / 50.0);
-                    f_gep = f_wall * f_sep;
-                } else {  // Simple
-                    double f_damp = 1.0 - exp(-y_plus / 26.0);
-                    f_gep = f_damp * f_damp;
-                }
-                
-                // Mixing length with van Driest damping
-                double f_damp = 1.0 - exp(-y_plus / A_plus);
-                double l_mix = kappa * y_wall * f_damp;
-                
-                // Eddy viscosity
-                double nu_t_val = l_mix * l_mix * S_mag * f_gep;
-                
-                // Clipping
-                if (nu_t_val < 0.0) nu_t_val = 0.0;
-                if (nu_t_val > nu_t_max) nu_t_val = nu_t_max;
-                
-                nu_t_gpu_ptr[cell_idx] = nu_t_val;  // Use stride-based index
-            }
-            
-            // Download result from GPU
-            #pragma omp target update from(nu_t_gpu_ptr[0:total_size])
-            
-            // Copy back to provided nu_t field
-            std::copy(nu_t_gpu_flat_.begin(), nu_t_gpu_flat_.end(), nu_t.data().begin());
-            
-            return;
-        }
-#endif
-        
-        // CPU path
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                int idx = (j - mesh.j_begin()) * mesh.Nx + (i - mesh.i_begin());
-                
-                // Get wall distance
-                double y_wall = mesh.wall_distance(i, j);
-                
-                // Compute y+ (wall units)
-                double u_local = std::sqrt(velocity.u(i, j) * velocity.u(i, j) + 
-                                          velocity.v(i, j) * velocity.v(i, j));
-                double u_tau_est = std::sqrt(nu_ * u_local / std::max(y_wall, 1e-10));
-                u_tau_est = std::max(u_tau_est, 1e-6);
-                double y_plus = y_wall * u_tau_est / nu_;
-                
-                // Get strain rate magnitude from features
-                double S_mag = 0.0;
-                if (idx < static_cast<int>(features.size()) && features[idx].size() > 0) {
-                    S_mag = features[idx][0];
-                }
-                
-                // Compute invariants for GEP correction
-                double I1_S = S_mag * S_mag;
-                double Omega_mag = (idx < static_cast<int>(features.size()) && features[idx].size() > 1) 
-                                   ? features[idx][1] : 0.0;
-                double I1_Omega = -Omega_mag * Omega_mag;
-                double I2_S = 0.0;
-                double I2_Omega = 0.0;
-                
-                double Re_d = u_ref_ * delta / nu_;
-                
-                // Compute GEP correction factor
-                double f_gep = compute_gep_factor(I1_S, I2_S, I1_Omega, I2_Omega, y_plus, Re_d);
-                
-                // Mixing length model with GEP correction
-                double l_mix = kappa * y_wall;
-                double f_damp = 1.0 - std::exp(-y_plus / A_plus);
-                l_mix *= f_damp;
-                
-                // Eddy viscosity
-                double nu_t_val = l_mix * l_mix * S_mag * f_gep;
-                
-                // Clipping
-                nu_t_val = std::max(0.0, nu_t_val);
-                nu_t_val = std::min(nu_t_val, nu_t_max_);
-                
-                nu_t(i, j) = nu_t_val;
-            }
+            nu_t(i, j) = nu_t_val;
         }
     }
 }
 
 } // namespace nncfd
-

@@ -3,6 +3,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "config.hpp"
+#include "gpu_utils.hpp"
 #include <memory>
 #include <string>
 
@@ -15,6 +16,10 @@ namespace nncfd {
 /// Device view for turbulence models: pointers to solver-owned GPU-resident data
 /// This struct is passed to turbulence model update() calls when GPU is enabled
 /// to avoid repeated map(present:) clauses and pointer aliasing issues.
+///
+/// MODEL 1 CONTRACT: All pointers are HOST pointers that have been persistently
+/// mapped to GPU via `target enter data`. Kernels use `map(present: ...)` to
+/// access device copies. No device-to-host transfers occur during compute.
 struct TurbulenceDeviceView {
     // Velocity field (staggered MAC grid, solver-owned, persistent on GPU)
     double* u_face = nullptr;           // u at x-faces: (Ny+2Ng) × (Nx+2Ng+1)
@@ -55,6 +60,47 @@ struct TurbulenceDeviceView {
         return (u_face != nullptr && v_face != nullptr && nu_t != nullptr &&
                 dudx != nullptr && dudy != nullptr && dvdx != nullptr && dvdy != nullptr &&
                 Nx > 0 && Ny > 0);
+    }
+};
+
+/// Device view for core solver: pointers to GPU-resident solver arrays
+/// Parallel to TurbulenceDeviceView but for projection/NS step
+///
+/// MODEL 1 CONTRACT: All pointers are HOST pointers that have been persistently
+/// mapped to GPU via `target enter data`. Kernels use `map(present: ...)` to
+/// access device copies. No device-to-host transfers occur during compute.
+struct SolverDeviceView {
+    // Velocity fields (staggered)
+    double* u_face = nullptr;
+    double* v_face = nullptr;
+    double* u_star_face = nullptr;
+    double* v_star_face = nullptr;
+    double* u_old_face = nullptr;
+    double* v_old_face = nullptr;
+    int u_stride = 0;
+    int v_stride = 0;
+    
+    // Scalar fields (cell-centered)
+    double* p = nullptr;
+    double* p_corr = nullptr;
+    double* nu_t = nullptr;
+    double* nu_eff = nullptr;
+    double* rhs = nullptr;
+    double* div = nullptr;
+    int cell_stride = 0;
+    
+    // Work arrays
+    double* conv_u = nullptr;
+    double* conv_v = nullptr;
+    double* diff_u = nullptr;
+    double* diff_v = nullptr;
+    
+    // Mesh parameters
+    int Nx = 0, Ny = 0, Ng = 0;
+    double dx = 0.0, dy = 0.0, dt = 0.0;
+    
+    bool is_valid() const {
+        return (u_face && v_face && p && nu_eff && Nx > 0 && Ny > 0);
     }
 };
 
@@ -141,11 +187,7 @@ protected:
     
     /// Helper to check GPU availability (safe to call from any derived class)
     static bool gpu_available() {
-#ifdef USE_GPU_OFFLOAD
-        return omp_get_num_devices() > 0;
-#else
-        return false;
-#endif
+        return gpu::is_gpu_available();
     }
 };
 

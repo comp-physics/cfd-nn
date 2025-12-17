@@ -1,3 +1,14 @@
+/// @file turbulence_baseline.cpp
+/// @brief Implementation of algebraic turbulence models (mixing length, GEP)
+///
+/// This file implements simple algebraic eddy viscosity models:
+/// - Mixing length model with van Driest damping (wall-resolved RANS)
+/// - Algebraic k-omega model (simplified without transport equations)
+/// - Factory function for creating turbulence models from configuration
+///
+/// These models provide fast, zero-equation closures suitable for attached
+/// boundary layers but limited for separated flows.
+
 #include "turbulence_baseline.hpp"
 #include "turbulence_gep.hpp"
 #include "turbulence_nn_mlp.hpp"
@@ -9,10 +20,6 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
-
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
 
 namespace nncfd {
 
@@ -68,10 +75,8 @@ MixingLengthModel::~MixingLengthModel() {
 
 void MixingLengthModel::initialize_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) {
-        gpu_ready_ = false;
-        return;
-    }
+    // Fail fast if no GPU device available (GPU build requires GPU)
+    gpu::verify_device_available();
     
     const int total_cells = mesh.total_cells();
     

@@ -1,20 +1,36 @@
+/// @file poisson_solver_multigrid.cpp
+/// @brief Geometric multigrid solver for pressure Poisson equation
+///
+/// This file implements a V-cycle geometric multigrid solver achieving O(N)
+/// complexity for the pressure correction equation in the fractional-step method.
+/// Key features:
+/// - V-cycle algorithm with SOR smoothing
+/// - Automatic mesh hierarchy construction (restriction to coarsest level)
+/// - Full weighting restriction and bilinear prolongation
+/// - GPU-accelerated smoothing and residual computation
+/// - 10-100x faster than pure SOR iteration for large grids
+///
+/// The solver constructs a hierarchy of grids by recursive coarsening and solves
+/// the system using recursive V-cycles that combine smoothing on each level with
+/// coarse-grid correction.
+
 #include "poisson_solver_multigrid.hpp"
+#include "gpu_utils.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
 #include <cstring>  // for memcpy in debug
-
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
+#include <cassert>
 
 namespace nncfd {
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
     
-    // Note: GPU buffers are initialized lazily on first solve() call
-    // because OpenMP runtime may not be ready during construction
+#ifdef USE_GPU_OFFLOAD
+    // Initialize GPU buffers immediately - will throw if no GPU available
+    initialize_gpu_buffers();
+#endif
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
@@ -56,7 +72,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
     int Ng = 1;  // Ghost cells
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && Nx >= 16 && Ny >= 16) {
+    if (Nx >= 16 && Ny >= 16) {
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const int stride = Nx + 2;
@@ -113,6 +129,62 @@ void MultigridPoissonSolver::apply_bc(int level) {
                 u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
             } else { // Dirichlet
                 u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+            }
+        }
+        
+        // Re-apply periodic BCs to fix corner ghost cells
+        // When both directions have periodic BCs applied sequentially, corner values
+        // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
+        const bool x_periodic = (bc_x_lo == 2) && (bc_x_hi == 2);
+        const bool y_periodic = (bc_y_lo == 2) && (bc_y_hi == 2);
+        
+        if (x_periodic || y_periodic) {
+            // Re-apply x-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int j = 0; j < Ny + 2; ++j) {
+                int idx = j * stride;
+                
+                // Left boundary (i=0)
+                if (bc_x_lo == 2) { // Periodic
+                    u_ptr[idx] = u_ptr[idx + Nx];
+                } else if (bc_x_lo == 1) { // Neumann
+                    u_ptr[idx] = u_ptr[idx + Ng];
+                } else { // Dirichlet
+                    u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
+                }
+                
+                // Right boundary (i=Nx+1)
+                if (bc_x_hi == 2) { // Periodic
+                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
+                } else if (bc_x_hi == 1) { // Neumann
+                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
+                } else { // Dirichlet
+                    u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
+                }
+            }
+            
+            // Re-apply y-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int i = 0; i < Nx + 2; ++i) {
+                // Bottom boundary (j=0)
+                if (bc_y_lo == 2) { // Periodic
+                    u_ptr[i] = u_ptr[Ny * stride + i];
+                } else if (bc_y_lo == 1) { // Neumann
+                    u_ptr[i] = u_ptr[Ng * stride + i];
+                } else { // Dirichlet
+                    u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
+                }
+                
+                // Top boundary (j=Ny+1)
+                if (bc_y_hi == 2) { // Periodic
+                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
+                } else if (bc_y_hi == 1) { // Neumann
+                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet
+                    u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                }
             }
         }
         
@@ -192,6 +264,86 @@ void MultigridPoissonSolver::apply_bc(int level) {
                 break;
         }
     }
+    
+    // Re-apply periodic BCs to fix corner ghost cells
+    // When both directions have periodic BCs applied sequentially, corner values
+    // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
+    const bool x_periodic = (bc_x_lo_ == PoissonBC::Periodic) && (bc_x_hi_ == PoissonBC::Periodic);
+    const bool y_periodic = (bc_y_lo_ == PoissonBC::Periodic) && (bc_y_hi_ == PoissonBC::Periodic);
+    
+    if (x_periodic || y_periodic) {
+        // Re-apply x-direction boundaries
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            // Left boundary
+            int i_ghost = 0;
+            int i_interior = Ng;
+            int i_periodic = Nx;
+            
+            switch (bc_x_lo_) {
+                case PoissonBC::Periodic:
+                    grid.u(i_ghost, j) = grid.u(i_periodic, j);
+                    break;
+                case PoissonBC::Neumann:
+                    grid.u(i_ghost, j) = grid.u(i_interior, j);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
+                    break;
+            }
+            
+            // Right boundary
+            i_ghost = Nx + Ng;
+            i_interior = Nx + Ng - 1;
+            i_periodic = Ng;
+            
+            switch (bc_x_hi_) {
+                case PoissonBC::Periodic:
+                    grid.u(i_ghost, j) = grid.u(i_periodic, j);
+                    break;
+                case PoissonBC::Neumann:
+                    grid.u(i_ghost, j) = grid.u(i_interior, j);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
+                    break;
+            }
+        }
+        
+        // Re-apply y-direction boundaries
+        for (int i = 0; i < Nx + 2*Ng; ++i) {
+            // Bottom boundary
+            int j_ghost = 0;
+            int j_interior = Ng;
+            
+            switch (bc_y_lo_) {
+                case PoissonBC::Neumann:
+                    grid.u(i, j_ghost) = grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Periodic:
+                    grid.u(i, j_ghost) = grid.u(i, Ny);
+                    break;
+            }
+            
+            // Top boundary
+            j_ghost = Ny + Ng;
+            j_interior = Ny + Ng - 1;
+            
+            switch (bc_y_hi_) {
+                case PoissonBC::Neumann:
+                    grid.u(i, j_ghost) = grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Periodic:
+                    grid.u(i, j_ghost) = grid.u(i, Ng);
+                    break;
+            }
+        }
+    }
 }
 
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
@@ -207,7 +359,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: red-black Gauss-Seidel on persistent device arrays
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
@@ -299,7 +451,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path with persistent device arrays
-    if (gpu_ready_ && Nx >= 32 && Ny >= 32) {
+    if (gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         const double* u_ptr = u_ptrs_[level];
@@ -339,7 +491,7 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && coarse.Nx >= 16 && coarse.Ny >= 16) {
+    if (coarse.Nx >= 16 && coarse.Ny >= 16) {
         const int Nx_c = coarse.Nx;
         const int Ny_c = coarse.Ny;
         const int stride_f = fine.Nx + 2;
@@ -394,7 +546,7 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && fine.Nx >= 32 && fine.Ny >= 32) {
+    if (fine.Nx >= 32 && fine.Ny >= 32) {
         const int Nx_c = coarse.Nx;
         const int Ny_c = coarse.Ny;
         const int Nx_f = fine.Nx;
@@ -489,27 +641,25 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     
     // Zero coarse grid solution
     auto& coarse = *levels_[level + 1];
-    const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_) {
-        const size_t size_c = level_sizes_[level + 1];
-        double* u_coarse = u_ptrs_[level + 1];
-        
-        #pragma omp target teams distribute parallel for \
-            map(present: u_coarse[0:size_c])
-        for (int idx = 0; idx < (int)size_c; ++idx) {
-            u_coarse[idx] = 0.0;
-        }
-    } else
-#endif
-    {
+    assert(gpu_ready_ && "GPU must be initialized");
+    const size_t size_c = level_sizes_[level + 1];
+    double* u_coarse = u_ptrs_[level + 1];
+    
+    #pragma omp target teams distribute parallel for \
+        map(present: u_coarse[0:size_c])
+    for (int idx = 0; idx < (int)size_c; ++idx) {
+        u_coarse[idx] = 0.0;
+    }
+#else
+    const int Ng = 1;
     for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
         for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
             coarse.u(i, j) = 0.0;
-            }
         }
     }
+#endif
     
     // Recursive call to coarser level
     vcycle(level + 1, nu1, nu2);
@@ -532,7 +682,7 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && grid.Nx >= 32 && grid.Ny >= 32) {
+    if (grid.Nx >= 32 && grid.Ny >= 32) {
         // Compute max residual on GPU and return scalar to host
         const int Nx = grid.Nx;
         const int Ny = grid.Ny;
@@ -572,7 +722,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_ready_ && grid.Nx >= 32 && grid.Ny >= 32) {
+    if (grid.Nx >= 32 && grid.Ny >= 32) {
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const int Nx = grid.Nx;
@@ -620,12 +770,6 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 }
 
 int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg) {
-#ifdef USE_GPU_OFFLOAD
-    // Lazy GPU initialization on first solve for THIS instance
-    if (!gpu_ready_) {
-        initialize_gpu_buffers();
-    }
-#endif
     
     // Copy RHS and initial guess to finest level (CPU side)
     auto& finest = *levels_[0];
@@ -640,9 +784,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     
 #ifdef USE_GPU_OFFLOAD
     // Upload to GPU once before all V-cycles
-    if (gpu_ready_) {
-        sync_level_to_gpu(0);
-    }
+    assert(gpu_ready_ && "GPU must be initialized");
+    sync_level_to_gpu(0);
 #endif
     
     apply_bc(0);
@@ -668,23 +811,20 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Final residual
     residual_ = compute_max_residual(0);
     
-    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
-    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
-    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
-    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    // Subtract mean for singular Poisson problems (no Dirichlet BCs)
+    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
+    // and we must fix the nullspace by subtracting the mean
+    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet);
     
-    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
+    if (!has_dirichlet) {
         subtract_mean(0);
     }
     
 #ifdef USE_GPU_OFFLOAD
     // Download from GPU once after all V-cycles
-    if (gpu_ready_) {
-        sync_level_from_gpu(0);
-    }
+    assert(gpu_ready_ && "GPU must be initialized");
+    sync_level_from_gpu(0);
 #endif
     
     // Copy result back to output field (CPU side)
@@ -698,35 +838,29 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 }
 
 #ifdef USE_GPU_OFFLOAD
-int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, const PoissonConfig& cfg) {
-    // Lazy GPU initialization on first solve_device() call for THIS instance
-    if (!gpu_ready_) {
-        initialize_gpu_buffers();
-        
-        if (!gpu_ready_) {
-            throw std::runtime_error("solve_device() called but GPU not available");
-        }
-    }
+int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg) {
+    assert(gpu_ready_ && "GPU must be initialized in constructor");
     
-    // Device-resident solve: work directly on GPU pointers without host staging
-    // This eliminates the DtoH/HtoD transfers that happen in regular solve()
+    // Device-resident solve using Model 1 (host pointer + present mapping)
+    // Parameters are host pointers that caller has already mapped via `target enter data`.
+    // We use map(present: ...) to access the device copies without additional transfers.
     
     auto& finest = *levels_[0];
     const int Nx = finest.Nx;
     const int Ny = finest.Ny;
     const size_t total_size = (Nx + 2) * (Ny + 2);
     
-    // Get device pointers for finest level
+    // Get device pointers for finest level multigrid buffers
     double* u_dev = u_ptrs_[0];
     double* f_dev = f_ptrs_[0];
     
-    // Copy RHS and initial guess from caller's device-mapped arrays to multigrid level-0 device buffers
+    // Copy RHS and initial guess from caller's present-mapped arrays to multigrid level-0 buffers
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
-        map(present: rhs_device[0:total_size], p_device[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
+        map(present: rhs_present[0:total_size], p_present[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
     for (size_t idx = 0; idx < total_size; ++idx) {
-        f_dev[idx] = rhs_device[idx];
-        u_dev[idx] = p_device[idx];
+        f_dev[idx] = rhs_present[idx];
+        u_dev[idx] = p_present[idx];
     }
     
     apply_bc(0);
@@ -759,24 +893,22 @@ int MultigridPoissonSolver::solve_device(double* rhs_device, double* p_device, c
     // Final residual (always compute at end for diagnostics)
     residual_ = compute_max_residual(0);
     
-    // Subtract mean for pure Neumann/periodic problems (singular Poisson)
-    bool is_fully_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                              bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
-    bool is_pure_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-                            bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
-    bool is_mixed_periodic_neumann = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                                      bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    // Subtract mean for singular Poisson problems (no Dirichlet BCs)
+    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
+    // and we must fix the nullspace by subtracting the mean
+    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet);
     
-    if (is_fully_periodic || is_pure_neumann || is_mixed_periodic_neumann) {
+    if (!has_dirichlet) {
         subtract_mean(0);
     }
     
-    // Copy result from multigrid level-0 device buffer back to caller's device pointer
+    // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
-        map(present: p_device[0:total_size], u_dev[0:total_size])
+        map(present: p_present[0:total_size], u_dev[0:total_size])
     for (size_t idx = 0; idx < total_size; ++idx) {
-        p_device[idx] = u_dev[idx];
+        p_present[idx] = u_dev[idx];
     }
     
     return cycle + 1;
@@ -786,12 +918,8 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     // Force OpenMP runtime initialization before checking devices
     omp_set_default_device(0);
     
-    int num_devices = omp_get_num_devices();
-    
-    if (num_devices == 0) {
-        gpu_ready_ = false;
-        return;
-    }
+    // Verify GPU is available (throws if not)
+    gpu::verify_device_available();
     
     // Allocate persistent device storage for all levels
     u_ptrs_.resize(levels_.size());
@@ -815,11 +943,16 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         #pragma omp target enter data map(alloc: r_ptrs_[lvl][0:total_size])
     }
     
+    // Verify mappings succeeded
+    if (!u_ptrs_.empty() && !gpu::is_pointer_present(u_ptrs_[0])) {
+        throw std::runtime_error("GPU mapping failed despite device availability");
+    }
+    
     gpu_ready_ = true;
 }
 
 void MultigridPoissonSolver::cleanup_gpu_buffers() {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized");
     
     for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
         const size_t total_size = level_sizes_[lvl];
@@ -833,7 +966,7 @@ void MultigridPoissonSolver::cleanup_gpu_buffers() {
 }
 
 void MultigridPoissonSolver::sync_level_to_gpu(int level) {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized");
     const size_t total_size = level_sizes_[level];
     
     #pragma omp target update to(u_ptrs_[level][0:total_size])
@@ -842,7 +975,7 @@ void MultigridPoissonSolver::sync_level_to_gpu(int level) {
 }
 
 void MultigridPoissonSolver::sync_level_from_gpu(int level) {
-    if (!gpu_ready_) return;
+    assert(gpu_ready_ && "GPU must be initialized");
     const size_t total_size = level_sizes_[level];
     
     #pragma omp target update from(u_ptrs_[level][0:total_size])

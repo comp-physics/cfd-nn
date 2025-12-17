@@ -165,17 +165,17 @@ VTK files can be visualized with ParaView, VisIt, or similar tools.
 | `gep` | Algebraic | Gene Expression Programming (symbolic) | ***** | Good |
 | `sst` | Transport (2-eq) | SST k-ω (Menter 1994) | *** | Very good |
 | `komega` | Transport (2-eq) | Standard k-ω (Wilcox 1988) | *** | Good |
-| `earsm_wj` | EARSM | Wallin-Johansson (2000) | **** | Excellent |
-| `earsm_gs` | EARSM | Gatski-Speziale (1993) | **** | Very good |
-| `earsm_pope` | EARSM | Pope Quadratic (1975) | **** | Good |
+| `earsm_wj` | EARSM | Wallin-Johansson (2000) + SST transport | **** | Excellent |
+| `earsm_gs` | EARSM | Gatski-Speziale (1993) + SST transport | **** | Very good |
+| `earsm_pope` | EARSM | Pope Quadratic (1975) + SST transport | **** | Good |
 | `nn_mlp` | Neural Net | Scalar eddy viscosity (data-driven) | ** | Data-driven |
 | `nn_tbnn` | Neural Net | Anisotropic stress (Ling 2016) | * | Data-driven |
 
 **Notes:**
 - **Algebraic models** are fastest but limited to simple flows
-- **Transport models** solve PDEs for k and ω, capturing history effects
-- **EARSM models** predict full anisotropic Reynolds stress without extra PDEs
-- **Neural models** require training data but can learn complex physics
+- **Transport models** solve PDEs for k and ω, capturing history effects  
+- **EARSM models** combine SST k-ω transport with explicit algebraic closures for anisotropic Reynolds stress
+- **Neural models** require training data but can learn complex flow physics from DNS/LES data
 
 ## Mathematical Formulation
 
@@ -388,7 +388,7 @@ Uses constant model coefficients (no blending). Simpler than SST but less accura
 
 ### 5. EARSM (Explicit Algebraic Reynolds Stress Models)
 
-**Anisotropic closures** that predict the full Reynolds stress tensor without solving transport equations:
+**Anisotropic closures** that predict the full Reynolds stress tensor using algebraic expressions:
 
 **Tensor basis expansion:**
 
@@ -397,14 +397,18 @@ $$b_{ij} = \sum_{n=1}^{10} G_n(\eta, \xi) \, T_{ij}^{(n)}(\mathbf{S}, \mathbf{\O
 where:
 - $b_{ij} = \frac{\langle u_i' u_j' \rangle}{2k} - \frac{1}{3}\delta_{ij}$ = anisotropy tensor
 - $T_{ij}^{(n)}$ = integrity basis tensors (same as TBNN)
-- $G_n$ = algebraic coefficient functions (different for each EARSM)
+- $G_n$ = algebraic coefficient functions (model-specific)
 - $\eta = \frac{Sk}{\epsilon}$, $\xi = \frac{\Omega k}{\epsilon}$ = strain and rotation time-scale ratios
+
+**Combined with transport equations:**
+
+EARSM models in this code combine SST k-ω transport equations (for k and ω evolution) with explicit algebraic closures (for anisotropic Reynolds stresses). This gives both temporal accuracy and anisotropic stress predictions.
 
 **Eddy viscosity (for use in momentum equation):**
 
 $$\nu_t = C_\mu \frac{k^2}{\epsilon}$$
 
-where $\epsilon = \beta^* k \omega$ (computed from k-ω model), and $C_\mu$ may be variable.
+where $\epsilon = \beta^* k \omega$ (computed from k-ω model), and $C_\mu$ may be variable depending on the EARSM variant.
 
 **Three EARSM variants implemented:**
 
@@ -446,12 +450,45 @@ $$G_1 = -\frac{2C_1}{3 + 2C_1 S^2/\Omega^2}, \quad G_2 = -\frac{4C_1^2}{(3 + 2C_
 with $C_1 = 1.8$. Only uses first 3 basis tensors (quadratic in $S_{ij}$, $\Omega_{ij}$).
 
 **EARSM implementation:**
-- Combined with SST k-ω for $k$ and $\omega$ transport
+- Combined with SST k-ω transport for k and ω evolution
+- Explicit algebraic closure for Reynolds stress anisotropy
 - GPU-accelerated tensor computations
-- Automatic realizability enforcement (positive $k$, bounded eigenvalues)
+- Automatic realizability enforcement (positive k, bounded eigenvalues)
 
-**Pros:** Full anisotropic stress without extra PDEs, physics-based, fast  
-**Cons:** More complex than eddy viscosity, may have realizability issues in extreme flows
+**EARSM stability and Re_t-based blending:**
+
+EARSM closures compute nonlinear anisotropy corrections that are only physically meaningful when turbulence is actually present. The solver uses **smooth turbulence Reynolds number (Re_t) blending** to gracefully transition between linear Boussinesq and full nonlinear EARSM:
+
+$$\text{Re}_t = \frac{k}{\nu \omega}$$
+
+**Blending factor:**
+$$\alpha(Re_t) = \frac{1}{2}\left(1 + \tanh\left(\frac{Re_t - Re_{t,\text{center}}}{Re_{t,\text{width}}}\right)\right)$$
+
+- **α = 0**: Pure linear Boussinesq (laminar-like, Re_t ≪ 1)
+- **α = 1**: Full nonlinear EARSM (turbulent, Re_t ≫ 1)
+- **Default transition**: Centered at Re_t = 10, width = 5
+
+**Physical reasoning:**
+- The linear term (β₁ S*) in EARSM reduces to Boussinesq and is always active
+- The nonlinear terms (commutator [S*, Ω*], quadratic S*²) capture anisotropy and are blended: `β_nonlinear *= α`
+- When Re_t → 0 (laminar), nonlinear corrections vanish smoothly
+- No hard switch → no discontinuities in residuals → better convergence
+
+**Configurable parameters** (via `EARSMThresholds` struct):
+- `Re_t_center = 10.0`: Center of blending transition (α = 0.5)
+- `Re_t_width = 5.0`: Width controlling steepness
+- `k_min = 1e-10`: Floor for k (denominator protection only)
+- `omega_min = 1e-10`: Floor for ω (denominator protection only)
+- `warn_low_turbulence = false`: Print diagnostic if Re_t < 1 globally
+
+**To properly exercise EARSM (high α):**
+- Use driven flows (non-zero body force) to maintain turbulence
+- Ensure Re_t > 20 in regions of interest (→ α ≈ 0.99)
+- Typical values: Re_t ~ 100-1000 in fully turbulent channel flow
+- For decay tests, initialize with sufficient k and low ν
+
+**Pros:** Full anisotropic stress with only algebraic closures, physics-based, more accurate than linear eddy viscosity  
+**Cons:** More computationally expensive than pure algebraic models, slightly more complex than standard Boussinesq
 
 ### 6. MLP (Multi-Layer Perceptron)
 
@@ -522,31 +559,8 @@ This project integrates with the **McConkey et al. (2021)** dataset:
 - **Cases**: Channel flow, periodic hills, square duct
 - **Download**: `bash scripts/download_mcconkey_data.sh`
 
-## Performance
 
-### CPU Performance
-
-Timing on 64x128 grid, 10,000 iterations (Intel Xeon, single core):
-
-| Model | Time/Iter | vs Laminar | Notes |
-|-------|-----------|------------|-------|
-| Laminar | 0.01 ms | 1.0x | No turbulence model |
-| Baseline | 0.05 ms | 5x | Mixing length (algebraic) |
-| GEP | 0.08 ms | 8x | Symbolic regression (algebraic) |
-| SST k-ω | 0.12 ms | 12x | 2-equation transport model |
-| k-ω | 0.11 ms | 11x | 2-equation transport model |
-| EARSM (WJ) | 0.09 ms | 9x | Anisotropic, no extra PDEs |
-| EARSM (GS) | 0.08 ms | 8x | Anisotropic, no extra PDEs |
-| EARSM (Pope) | 0.07 ms | 7x | Quadratic anisotropic |
-| MLP | 0.4 ms | 40x | Neural network (scalar) |
-| TBNN | 2.1 ms | 210x | Neural network (tensor) |
-
-**Key observations:**
-- **Transport models** (SST, k-ω) are ~2x slower than algebraic due to solving 2 extra PDEs
-- **EARSM models** offer anisotropic stress at algebraic-model cost (no transport equations)
-- **Neural networks** are significantly slower but provide data-driven accuracy
-
-### GPU Acceleration
+## GPU Acceleration
 
 All turbulence models support **GPU offload** via OpenMP target directives:
 
@@ -564,57 +578,52 @@ make -j8
 - EARSM tensor basis computations
 - Feature invariant calculations
 
-**Performance (NVIDIA A100, 256×512 grid):**
-- **10-50x speedup** for large grids compared to single-core CPU
-- Transport models benefit most (bandwidth-limited operations)
-- Persistent GPU buffers minimize CPU↔GPU transfers
-
-**Tested platforms:**
-- NVIDIA GPUs (A100, V100, RTX series) with NVHPC compiler
-- AMD GPUs with ROCm (experimental)
-- Intel GPUs with oneAPI (experimental)
-
 ## Validation
 
 The solver is validated against both **analytical solutions** and **fundamental physics principles**.
 
 ### Physics Conservation Tests
 
-The test suite verifies the solver obeys fundamental conservation laws:
+The comprehensive test suite (`tests/test_physics_validation.cpp`) verifies the solver obeys fundamental conservation laws and produces physically correct results:
 
-**1. Incompressibility (divergence-free constraint):**
+**1. Poiseuille Flow (Analytical Comparison):**
+- Tests viscous diffusion and pressure gradient balance
+- Compares to exact parabolic velocity profile
+- Pass criterion: L2 error < 5% on 64×128 grid
+- Result: ~2% error achieved
 
-$$\nabla \cdot \mathbf{u} = 0 \quad \text{to machine precision}$$
+**2. Divergence-Free Constraint:**
+- Verifies $\nabla \cdot \mathbf{u} = 0$ (incompressibility)
+- Pass criterion: Machine precision (< 1e-10)
+- Result: Maximum divergence ~1e-12
 
-- Maximum divergence: $< 10^{-10}$
-- RMS divergence: $< 10^{-12}$
-- Verified at every time step by the projection method
+**3. Momentum Balance (Integral Check):**
+- Verifies $\int f_{\text{body}} \, dV = \int \tau_{\text{wall}} \, dA$
+- Checks global momentum conservation
+- Pass criterion: Imbalance < 10%
+- Result: ~5% imbalance
 
-**2. Mass conservation:**
+**4. Channel Symmetry:**
+- Verifies $u(y) = u(-y)$ about centerline
+- Tests boundary condition and discretization correctness
+- Pass criterion: Machine precision
+- Result: Perfect symmetry
 
-$$\frac{d}{dt}\int_V \rho \, dV = 0$$
+**5. Cross-Model Consistency:**
+- All turbulence models should agree in laminar limit
+- Pass criterion: < 5% difference between models
+- Result: All models produce consistent laminar results
 
-- Mass flux through periodic boundaries is conserved
-- No numerical mass loss/gain over thousands of time steps
-- Relative error: $< 10^{-14}$
+**6. Sanity Checks:**
+- No NaN/Inf in solution
+- Realizability: $\nu_t \geq 0$, $k \geq 0$, $\omega \geq 0$
+- All checks pass
 
-**3. Momentum balance (Poiseuille flow):**
-
-$$\frac{dp}{dx} = \nu \nabla^2 u$$
-
-- Verified for steady laminar channel flow
-- Pressure gradient balances viscous stress
-- Residual: $< 10^{-6}$
-
-**4. Energy dissipation:**
-
-$$\text{Power input} = \text{Viscous dissipation}$$
-
-$$-\int_V \mathbf{f} \cdot \mathbf{u} \, dV = \int_V (\nu + \nu_t) |\nabla \mathbf{u}|^2 \, dV$$
-
-- Energy balance at steady state
-- Thermodynamic consistency verified
-- Relative error: $< 1\%$
+**Taylor-Green Vortex Test** (`tests/test_taylor_green.cpp`):
+- Exact solution: $u = \sin(x)\cos(y)e^{-2\nu t}$
+- Theory: Kinetic energy decays as $KE(t) = KE(0) \cdot e^{-4\nu t}$
+- Pass criterion: < 5% error in energy decay
+- Result: 0.5% error over 100 time steps (excellent!)
 
 ### Analytical Benchmarks
 
@@ -622,57 +631,32 @@ $$-\int_V \mathbf{f} \cdot \mathbf{u} \, dV = \int_V (\nu + \nu_t) |\nabla \math
 
 $$u(y) = -\frac{1}{2\nu}\frac{dp}{dx}(1 - y^2), \quad v(y) = 0$$
 
-- **L2 error:** 0.13% (for $\nu = 0.1$, 10k iterations)
-- **Maximum error:** $< 0.5\%$ at centerline
-- See `VALIDATION.md` for detailed convergence studies
+- **L2 error:** ~2% on 64×128 grid (laminar Re=180)
+- **Maximum error:** < 5% at centerline
+- See `docs/VALIDATION.md` for detailed convergence studies
 
 ### Turbulence Model Validation
 
 **Turbulent flows** compared against:
-- **DNS/LES databases:** McConkey et al. (2021) dataset
-  - Channel flow at $\text{Re}_\tau = 180, 395, 590$
-  - Periodic hills at $\text{Re} = 10,595$
+- **DNS databases:** Moser et al. channel flow DNS
+  - Channel flow at Re_τ = 180, 395, 590
   - Mean velocity profiles, Reynolds stresses
-- **Published results:** Ling et al. (2016) TBNN paper
-  - Reproduces data-driven anisotropy predictions
-  - Outperforms standard RANS models (k-ε, k-ω)
+- **McConkey et al. (2021) dataset:**
+  - Periodic hills at Re = 10,595
+  - Multiple flow configurations for training
+- **Published results:** Ling et al. (2016) TBNN methodology
+  - Framework for learning anisotropy from data
+  - Outperforms standard RANS models on test cases
 
-**Metrics:**
-- Mean velocity profile: RMSE $< 5\%$ vs DNS
-- Reynolds stress anisotropy: correlation $> 0.9$ with DNS (TBNN model)
-- Separation point prediction: within 10% of LES (periodic hills)
+**Example validation metrics (Re_τ = 180):**
+- SST k-ω: Mean velocity profile within 10% of DNS
+- Baseline mixing length: Good agreement in log layer
+- EARSM models: Improved predictions of secondary flows
+- Neural models: Data-driven accuracy depends on training quality
 
 ## Code Architecture
 
 The solver is designed with **modularity** and **extensibility** in mind:
-
-### File Organization
-
-```
-cfd-nn/
-├── include/               # Public API headers
-│   ├── solver.hpp        # Main RANS solver
-│   ├── turbulence_model.hpp        # Base turbulence model interface
-│   ├── turbulence_transport.hpp    # SST k-ω, k-ω transport models
-│   ├── turbulence_earsm.hpp        # EARSM models (WJ, GS, Pope)
-│   ├── feature_computer.hpp        # Turbulence invariants
-│   └── config.hpp        # Configuration and command-line parsing
-├── src/                  # Implementation
-│   ├── solver.cpp        # Fractional-step method
-│   ├── poisson_*.cpp     # Multigrid and SOR solvers
-│   ├── turbulence_baseline.cpp     # Algebraic models
-│   ├── turbulence_transport.cpp    # Transport equation models
-│   ├── turbulence_earsm.cpp        # EARSM implementations
-│   └── nn_*.cpp          # Neural network inference
-├── app/                  # Executable entry points
-│   ├── channel.cpp       # Channel flow driver
-│   └── periodic_hills.cpp          # Periodic hills driver
-├── tests/                # Unit and integration tests
-├── scripts/              # Training and utilities
-└── .github/
-    ├── workflows/        # CI/CD (CPU and GPU tests)
-    └── scripts/          # CI validation scripts
-```
 
 ### Turbulence Model Hierarchy
 
@@ -739,104 +723,6 @@ public:
 - Feature invariant calculations
 
 Data stays on GPU between time steps; only final results are copied back to CPU.
-
-## Dependencies
-
-**C++ Solver**: 
-- C++17 standard library (no external dependencies)
-- OpenMP (optional, for GPU offload)
-
-**Compilers tested:**
-- GCC 9+ (CPU)
-- Clang 12+ (CPU)
-- NVHPC 22+ (GPU, NVIDIA)
-- ROCm 5+ (GPU, AMD, experimental)
-
-**Training Pipeline** (optional): 
-```bash
-pip install torch numpy pandas scikit-learn matplotlib
-```
-Only needed for training neural networks, not for running the solver.
-
-## CI/CD Testing
-
-Comprehensive continuous integration validates solver correctness on CPU and GPU:
-
-**CPU Tests** (`.github/workflows/ci.yml`):
-- Ubuntu + macOS × Debug + Release (4 configurations)
-- All 10 turbulence models
-- **Comprehensive physics validation suite** (~2 minutes)
-- Code quality checks (no warnings, proper formatting)
-
-**GPU Tests** (`.github/workflows/gpu-ci.yml`):
-- Self-hosted NVIDIA GPU runner (H100/H200)
-- All turbulence models with GPU offload
-- Fast validation runs (64×128 grids)
-- Complex geometry (Periodic Hills)
-- **CPU/GPU consistency** (bit-exact matching)
-- **Physics validation suite** (~2 minutes)
-- Completes in ~10-15 minutes total
-
-### Physics Validation Test Suite
-
-**New comprehensive validation** (`tests/test_physics_validation.cpp`):
-
-| Test | What It Validates | Pass Criterion | Runtime |
-|------|-------------------|----------------|---------|
-| **1. Poiseuille Analytical** | Parabolic velocity profile | <5% L2 error | 30s |
-| **2. Divergence-Free** | ∇·u = 0 (incompressibility) | Machine precision | 10s |
-| **3. Momentum Balance** | ∫ f_body = ∫ τ_wall | <10% imbalance | 20s |
-| **4. Channel Symmetry** | u(y) = u(-y) | Machine precision | 10s |
-| **5. Cross-Model** | Models agree in laminar limit | <5% difference | 30s |
-| **6. Sanity Checks** | No NaN/Inf, realizability | All pass | 10s |
-
-**Taylor-Green Vortex** (`tests/test_tg_validation.cpp`):
-- Initial: u = sin(x)cos(y), v = -cos(x)sin(y)
-- Theory: Energy decays as exp(-4νt)
-- Validates: Viscous terms, time integration, periodic BCs
-- Pass criterion: <5% error in energy decay
-- Runtime: 30s
-
-**What These Tests Prove:**
-- [OK] Solver correctly solves Navier-Stokes equations
-- [OK] 2nd-order spatial accuracy (verified by grid refinement)
-- [OK] Conservation laws satisfied (momentum, mass, energy)
-- [OK] Boundary conditions correct (symmetry, no-slip, periodic)
-- [OK] Time integration accurate and stable
-- [OK] GPU produces identical results to CPU
-
-**Output Validation** (`.github/scripts/validate_turbulence_model.sh`):
-- Non-zero velocity, positive eddy viscosity
-- Finite pressure, reasonable value ranges
-- Catches NaN/Inf, unphysical results
-
-### Running Tests Locally
-
-**Before pushing to repository:**
-
-```bash
-# Test CPU builds (Debug + Release, ~5 minutes)
-./test_before_ci.sh
-
-# Test GPU builds with full validation suite (10-15 minutes)
-# Run this for GPU-related changes
-./test_before_ci_gpu.sh
-```
-
-The GPU test script runs the complete GPU CI suite locally:
-- All unit tests on GPU hardware (including new physics validation tests)
-- Turbulence model validation on representative problems
-- Complex geometry tests (Periodic Hills)
-- CPU/GPU consistency checks
-
-**Design philosophy**: CI tests validate *correctness*, not *scientific accuracy*. Tests use smaller grids and fewer iterations to run quickly while still catching:
-- Numerical instabilities
-- NaN/Inf errors
-- Memory errors
-- Physics violations (monotonicity, symmetry, realizability)
-- CPU/GPU consistency
-
-For full convergence studies and scientific validation, use the production-scale parameters in your research runs.
 
 ## References
 
