@@ -455,6 +455,38 @@ with $C_1 = 1.8$. Only uses first 3 basis tensors (quadratic in $S_{ij}$, $\Omeg
 - GPU-accelerated tensor computations
 - Automatic realizability enforcement (positive k, bounded eigenvalues)
 
+**EARSM stability and Re_t-based blending:**
+
+EARSM closures compute nonlinear anisotropy corrections that are only physically meaningful when turbulence is actually present. The solver uses **smooth turbulence Reynolds number (Re_t) blending** to gracefully transition between linear Boussinesq and full nonlinear EARSM:
+
+$$\text{Re}_t = \frac{k}{\nu \omega}$$
+
+**Blending factor:**
+$$\alpha(Re_t) = \frac{1}{2}\left(1 + \tanh\left(\frac{Re_t - Re_{t,\text{center}}}{Re_{t,\text{width}}}\right)\right)$$
+
+- **α = 0**: Pure linear Boussinesq (laminar-like, Re_t ≪ 1)
+- **α = 1**: Full nonlinear EARSM (turbulent, Re_t ≫ 1)
+- **Default transition**: Centered at Re_t = 10, width = 5
+
+**Physical reasoning:**
+- The linear term (β₁ S*) in EARSM reduces to Boussinesq and is always active
+- The nonlinear terms (commutator [S*, Ω*], quadratic S*²) capture anisotropy and are blended: `β_nonlinear *= α`
+- When Re_t → 0 (laminar), nonlinear corrections vanish smoothly
+- No hard switch → no discontinuities in residuals → better convergence
+
+**Configurable parameters** (via `EARSMThresholds` struct):
+- `Re_t_center = 10.0`: Center of blending transition (α = 0.5)
+- `Re_t_width = 5.0`: Width controlling steepness
+- `k_min = 1e-10`: Floor for k (denominator protection only)
+- `omega_min = 1e-10`: Floor for ω (denominator protection only)
+- `warn_low_turbulence = false`: Print diagnostic if Re_t < 1 globally
+
+**To properly exercise EARSM (high α):**
+- Use driven flows (non-zero body force) to maintain turbulence
+- Ensure Re_t > 20 in regions of interest (→ α ≈ 0.99)
+- Typical values: Re_t ~ 100-1000 in fully turbulent channel flow
+- For decay tests, initialize with sufficient k and low ν
+
 **Pros:** Full anisotropic stress with only algebraic closures, physics-based, more accurate than linear eddy viscosity  
 **Cons:** More computationally expensive than pure algebraic models, slightly more complex than standard Boussinesq
 
@@ -626,81 +658,6 @@ $$u(y) = -\frac{1}{2\nu}\frac{dp}{dx}(1 - y^2), \quad v(y) = 0$$
 
 The solver is designed with **modularity** and **extensibility** in mind:
 
-### File Organization
-
-```
-cfd-nn/
-├── include/                          # Public API headers
-│   ├── solver.hpp                   # Main RANS solver (fractional-step projection)
-│   ├── turbulence_model.hpp         # Base turbulence model interface
-│   ├── turbulence_baseline.hpp      # Mixing length, algebraic models
-│   ├── turbulence_gep.hpp           # Gene Expression Programming model
-│   ├── turbulence_transport.hpp     # SST k-ω, k-ω transport models
-│   ├── turbulence_earsm.hpp         # EARSM models (WJ, GS, Pope)
-│   ├── turbulence_nn_mlp.hpp        # Neural network scalar eddy viscosity
-│   ├── turbulence_nn_tbnn.hpp       # Tensor Basis Neural Network
-│   ├── features.hpp                 # Turbulence invariants and tensor basis
-│   ├── mesh.hpp                     # Structured 2D mesh with stretching
-│   ├── fields.hpp                   # Scalar, vector, tensor fields
-│   ├── poisson_solver.hpp           # SOR iterative solver
-│   ├── poisson_solver_multigrid.hpp # Multigrid V-cycle solver
-│   ├── nn_core.hpp                  # Pure C++ neural network inference
-│   ├── gpu_utils.hpp                # GPU memory management (OpenMP offload)
-│   ├── gpu_kernels.hpp              # GPU kernel declarations
-│   ├── timing.hpp                   # Performance instrumentation
-│   └── config.hpp                   # Configuration and command-line parsing
-├── src/                              # Implementation files
-│   ├── solver.cpp                   # Fractional-step method, projection
-│   ├── poisson_solver.cpp           # SOR iterative solver
-│   ├── poisson_solver_multigrid.cpp # Multigrid V-cycle implementation
-│   ├── turbulence_baseline.cpp      # Mixing length model
-│   ├── turbulence_gep.cpp           # GEP symbolic model
-│   ├── turbulence_transport.cpp     # SST k-ω, k-ω transport
-│   ├── turbulence_earsm.cpp         # EARSM implementations (CPU + GPU)
-│   ├── turbulence_nn_mlp.cpp        # MLP neural network model
-│   ├── turbulence_nn_tbnn.cpp       # TBNN neural network model
-│   ├── nn_core.cpp                  # Neural network forward pass
-│   ├── features.cpp                 # Feature computation
-│   ├── mesh.cpp                     # Mesh generation
-│   ├── fields.cpp                   # Field operations
-│   ├── config.cpp                   # Configuration parsing
-│   ├── timing.cpp                   # Timing utilities
-│   ├── gpu_init.cpp                 # GPU initialization
-│   └── gpu_kernels.cpp              # GPU kernels (OpenMP target)
-├── app/                              # Executable entry points
-│   ├── main_channel.cpp             # Channel flow application
-│   ├── main_periodic_hills.cpp      # Periodic hills application
-│   └── compare_channel_cpu_gpu.cpp  # CPU/GPU consistency validation
-├── tests/                            # Unit and integration tests
-│   ├── test_physics_validation.cpp  # Comprehensive physics validation
-│   ├── test_taylor_green.cpp        # Taylor-Green vortex test
-│   ├── test_poisson.cpp             # Poisson solver tests
-│   ├── test_solver.cpp              # Basic solver tests
-│   ├── test_turbulence.cpp          # Turbulence model tests
-│   ├── test_nn_core.cpp             # Neural network tests
-│   └── ...                          # Additional tests
-├── scripts/                          # Python training and utilities
-│   ├── train_mlp_mcconkey.py        # Train MLP model
-│   ├── train_tbnn_mcconkey.py       # Train TBNN model
-│   ├── export_pytorch.py            # Export PyTorch weights
-│   ├── validate_trained_model.py    # Validate trained models
-│   └── ...                          # Additional utilities
-├── examples/                         # Example configurations and workflows
-│   ├── 01_laminar_channel/          # Laminar Poiseuille flow
-│   ├── 02_turbulent_channel/        # Turbulent channel with multiple models
-│   ├── 03_grid_refinement/          # Grid convergence study
-│   ├── 04_taylor_green_convergence/ # Temporal accuracy verification
-│   └── 05_channel_retau180_sst/     # High-Re turbulent channel
-├── data/                             # Neural network model weights
-│   └── models/                      # Pre-trained model directory
-│       ├── example_scalar_nut/      # Example MLP model
-│       └── example_tbnn/            # Example TBNN model
-└── .github/
-    └── workflows/                   # CI/CD pipelines
-        ├── ci.yml                   # CPU tests (Ubuntu + macOS)
-        └── gpu-ci.yml               # GPU tests (self-hosted runner)
-```
-
 ### Turbulence Model Hierarchy
 
 All turbulence models inherit from a common base class:
@@ -766,104 +723,6 @@ public:
 - Feature invariant calculations
 
 Data stays on GPU between time steps; only final results are copied back to CPU.
-
-## Dependencies
-
-**C++ Solver**: 
-- C++17 standard library (no external dependencies)
-- OpenMP (optional, for GPU offload)
-
-**Compilers tested:**
-- GCC 9+ (CPU)
-- Clang 12+ (CPU)
-- NVHPC 22+ (GPU, NVIDIA)
-- ROCm 5+ (GPU, AMD, experimental)
-
-**Training Pipeline** (optional): 
-```bash
-pip install torch numpy pandas scikit-learn matplotlib
-```
-Only needed for training neural networks, not for running the solver.
-
-## CI/CD Testing
-
-Comprehensive continuous integration validates solver correctness on CPU and GPU:
-
-**CPU Tests** (`.github/workflows/ci.yml`):
-- Ubuntu + macOS × Debug + Release (4 configurations)
-- All 10 turbulence models
-- **Comprehensive physics validation suite** (~2 minutes)
-- Code quality checks (no warnings, proper formatting)
-
-**GPU Tests** (`.github/workflows/gpu-ci.yml`):
-- Self-hosted NVIDIA GPU runner (H100/H200)
-- All turbulence models with GPU offload
-- Fast validation runs (64×128 grids)
-- Complex geometry (Periodic Hills)
-- **CPU/GPU consistency** (bit-exact matching)
-- **Physics validation suite** (~2 minutes)
-- Completes in ~10-15 minutes total
-
-### Physics Validation Test Suite
-
-**New comprehensive validation** (`tests/test_physics_validation.cpp`):
-
-| Test | What It Validates | Pass Criterion | Runtime |
-|------|-------------------|----------------|---------|
-| **1. Poiseuille Analytical** | Parabolic velocity profile | <5% L2 error | 30s |
-| **2. Divergence-Free** | ∇·u = 0 (incompressibility) | Machine precision | 10s |
-| **3. Momentum Balance** | ∫ f_body = ∫ τ_wall | <10% imbalance | 20s |
-| **4. Channel Symmetry** | u(y) = u(-y) | Machine precision | 10s |
-| **5. Cross-Model** | Models agree in laminar limit | <5% difference | 30s |
-| **6. Sanity Checks** | No NaN/Inf, realizability | All pass | 10s |
-
-**Taylor-Green Vortex** (`tests/test_tg_validation.cpp`):
-- Initial: u = sin(x)cos(y), v = -cos(x)sin(y)
-- Theory: Energy decays as exp(-4νt)
-- Validates: Viscous terms, time integration, periodic BCs
-- Pass criterion: <5% error in energy decay
-- Runtime: 30s
-
-**What These Tests Prove:**
-- [OK] Solver correctly solves Navier-Stokes equations
-- [OK] 2nd-order spatial accuracy (verified by grid refinement)
-- [OK] Conservation laws satisfied (momentum, mass, energy)
-- [OK] Boundary conditions correct (symmetry, no-slip, periodic)
-- [OK] Time integration accurate and stable
-- [OK] GPU produces identical results to CPU
-
-**Output Validation** (`.github/scripts/validate_turbulence_model.sh`):
-- Non-zero velocity, positive eddy viscosity
-- Finite pressure, reasonable value ranges
-- Catches NaN/Inf, unphysical results
-
-### Running Tests Locally
-
-**Before pushing to repository:**
-
-```bash
-# Test CPU builds (Debug + Release, ~5 minutes)
-./test_before_ci.sh
-
-# Test GPU builds with full validation suite (10-15 minutes)
-# Run this for GPU-related changes
-./test_before_ci_gpu.sh
-```
-
-The GPU test script runs the complete GPU CI suite locally:
-- All unit tests on GPU hardware (including new physics validation tests)
-- Turbulence model validation on representative problems
-- Complex geometry tests (Periodic Hills)
-- CPU/GPU consistency checks
-
-**Design philosophy**: CI tests validate *correctness*, not *scientific accuracy*. Tests use smaller grids and fewer iterations to run quickly while still catching:
-- Numerical instabilities
-- NaN/Inf errors
-- Memory errors
-- Physics violations (monotonicity, symmetry, realizability)
-- CPU/GPU consistency
-
-For full convergence studies and scientific validation, use the production-scale parameters in your research runs.
 
 ## References
 

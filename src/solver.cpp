@@ -1815,6 +1815,11 @@ double RANSSolver::step() {
     
     double max_change = (max_du > max_dv) ? max_du : max_dv;
 
+    // NaN/Inf GUARD: Check for numerical stability issues
+    // Do this after turbulence update but before next iteration starts
+    check_for_nan_inf(step_count_);
+    ++step_count_;
+
     return max_change;
 }
 
@@ -2025,10 +2030,36 @@ double RANSSolver::bulk_velocity() const {
     double sum = 0.0;
     int count = 0;
     
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            sum += velocity_.u(i, j);
-            ++count;
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_) {
+        // GPU path: compute sum on device, only transfer scalar
+        const size_t u_total_size = velocity_.u_total_size();
+        const int u_stride = Nx + 2*Ng + 1;
+        
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: velocity_u_ptr_[0:u_total_size]) \
+            reduction(+:sum)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int ii = i + Ng;
+                int jj = j + Ng;
+                sum += velocity_u_ptr_[jj * u_stride + ii];
+            }
+        }
+        count = Nx * Ny;
+    } else
+#endif
+    {
+        // CPU fallback
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                sum += velocity_.u(i, j);
+                ++count;
+            }
         }
     }
     
@@ -2041,16 +2072,39 @@ double RANSSolver::wall_shear_stress() const {
     double sum = 0.0;
     int count = 0;
     
-    int j = mesh_->j_begin();  // First interior row
-    double y_cell = mesh_->y(j);
-    double y_wall = mesh_->y_min;
-    double dist = y_cell - y_wall;
+    const int Nx = mesh_->Nx;
+    const int Ng = mesh_->Nghost;
+    const int j_wall = Ng;  // First interior row
+    const double y_cell = mesh_->y(j_wall);
+    const double y_wall = mesh_->y_min;
+    const double dist = y_cell - y_wall;
     
-    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-        // u at wall is 0 (no-slip)
-        double dudy = velocity_.u(i, j) / dist;
-        sum += dudy;
-        ++count;
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_) {
+        // GPU path: compute sum on device, only transfer scalar
+        const size_t u_total_size = velocity_.u_total_size();
+        const int u_stride = Nx + 2*Ng + 1;
+        
+        #pragma omp target teams distribute parallel for \
+            map(present: velocity_u_ptr_[0:u_total_size]) \
+            reduction(+:sum)
+        for (int i = 0; i < Nx; ++i) {
+            int ii = i + Ng;
+            // u at wall is 0 (no-slip), so dudy = u[j_wall] / dist
+            double dudy = velocity_u_ptr_[j_wall * u_stride + ii] / dist;
+            sum += dudy;
+        }
+        count = Nx;
+    } else
+#endif
+    {
+        // CPU fallback
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            // u at wall is 0 (no-slip)
+            double dudy = velocity_.u(i, j_wall) / dist;
+            sum += dudy;
+            ++count;
+        }
     }
     
     double dudy_avg = sum / count;
@@ -2066,6 +2120,130 @@ double RANSSolver::Re_tau() const {
     double u_tau = friction_velocity();
     double delta = (mesh_->y_max - mesh_->y_min) / 2.0;
     return u_tau * delta / config_.nu;
+}
+
+// ============================================================================
+// NaN/Inf Guard: Abort immediately on non-finite values
+// ============================================================================
+
+void RANSSolver::check_for_nan_inf(int step) const {
+    if (!config_.turb_guard_enabled) {
+        return;  // Guard disabled in config
+    }
+    
+    // Only check every guard_interval steps (performance)
+    if (step % config_.turb_guard_interval != 0) {
+        return;
+    }
+    
+    bool all_finite = true;
+    const bool has_transport = turb_model_ && turb_model_->uses_transport_equations();
+    
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: Do NaN/Inf check entirely on device, only transfer 1 scalar
+    if (gpu_ready_) {
+        int has_bad = 0;
+        
+        const size_t u_total = velocity_.u_total_size();
+        const size_t v_total = velocity_.v_total_size();
+        const size_t field_total = field_total_size_;
+        
+        // Check u-velocity (x-faces)
+        #pragma omp target teams distribute parallel for \
+            map(present: velocity_u_ptr_[0:u_total]) reduction(|: has_bad)
+        for (size_t idx = 0; idx < u_total; ++idx) {
+            const double x = velocity_u_ptr_[idx];
+            // Use manual NaN/Inf check (x != x for NaN, or x-x != 0 for Inf)
+            if (x != x || (x - x) != 0.0) has_bad = 1;
+        }
+        
+        // Check v-velocity (y-faces)
+        #pragma omp target teams distribute parallel for \
+            map(present: velocity_v_ptr_[0:v_total]) reduction(|: has_bad)
+        for (size_t idx = 0; idx < v_total; ++idx) {
+            const double x = velocity_v_ptr_[idx];
+            if (x != x || (x - x) != 0.0) has_bad = 1;
+        }
+        
+        // Check pressure and eddy viscosity (cell-centered)
+        #pragma omp target teams distribute parallel for \
+            map(present: pressure_ptr_[0:field_total], nu_t_ptr_[0:field_total]) \
+            reduction(|: has_bad)
+        for (size_t idx = 0; idx < field_total; ++idx) {
+            const double p = pressure_ptr_[idx];
+            const double nut = nu_t_ptr_[idx];
+            if (p != p || (p - p) != 0.0 || nut != nut || (nut - nut) != 0.0) has_bad = 1;
+        }
+        
+        // Check transport variables if turbulence model uses them
+        if (has_transport) {
+            #pragma omp target teams distribute parallel for \
+                map(present: k_ptr_[0:field_total], omega_ptr_[0:field_total]) \
+                reduction(|: has_bad)
+            for (size_t idx = 0; idx < field_total; ++idx) {
+                const double k = k_ptr_[idx];
+                const double w = omega_ptr_[idx];
+                if (k != k || (k - k) != 0.0 || w != w || (w - w) != 0.0) has_bad = 1;
+            }
+        }
+        
+        all_finite = (has_bad == 0);
+    } else
+#endif
+    {
+        // CPU path: Check host-side fields directly (no GPU sync needed)
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                // Check velocity, pressure, nu_t
+                double u = 0.5 * (velocity_.u(i, j) + velocity_.u(i+1, j));
+                double v = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
+                double p = pressure_(i, j);
+                double nu_t_val = nu_t_(i, j);
+                
+                if (!std::isfinite(u) || !std::isfinite(v) || 
+                    !std::isfinite(p) || !std::isfinite(nu_t_val)) {
+                    all_finite = false;
+                    break;
+                }
+                
+                // Check transport variables if applicable
+                if (has_transport) {
+                    double k_val = k_(i, j);
+                    double omega_val = omega_(i, j);
+                    
+                    if (!std::isfinite(k_val) || !std::isfinite(omega_val)) {
+                        all_finite = false;
+                        break;
+                    }
+                }
+            }
+            if (!all_finite) break;
+        }
+    }
+    
+    // Abort immediately on non-finite values
+    if (!all_finite) {
+        std::cerr << "\n========================================\n";
+        std::cerr << "NUMERICAL STABILITY GUARD: NaN/Inf DETECTED\n";
+        std::cerr << "========================================\n";
+        std::cerr << "Step: " << step << "\n";
+        std::cerr << "\nOne or more fields contain NaN or Inf:\n";
+        std::cerr << "  - Velocity (u, v)\n";
+        std::cerr << "  - Pressure (p)\n";
+        std::cerr << "  - Eddy viscosity (nu_t)\n";
+        if (has_transport) {
+            std::cerr << "  - Transport variables (k, omega)\n";
+        }
+        std::cerr << "\nThis indicates numerical instability.\n";
+        std::cerr << "Aborting to prevent garbage propagation.\n";
+        std::cerr << "\nPossible causes:\n";
+        std::cerr << "  - Time step too large (reduce dt or enable adaptive_dt)\n";
+        std::cerr << "  - Turbulence model incompatible with flow regime\n";
+        std::cerr << "  - Mesh resolution insufficient\n";
+        std::cerr << "  - Boundary conditions inconsistent\n";
+        std::cerr << "========================================\n";
+        throw std::runtime_error("NaN/Inf detected in solution fields");
+    }
 }
 
 void RANSSolver::print_velocity_profile(double x_loc) const {
@@ -2196,6 +2374,10 @@ double RANSSolver::compute_adaptive_dt() const {
 }
 
 void RANSSolver::write_vtk(const std::string& filename) const {
+    // NaN/Inf GUARD: Check before writing output
+    // Catch NaNs before they're written to files
+    check_for_nan_inf(step_count_);
+    
 #ifdef USE_GPU_OFFLOAD
     // Download solution fields from GPU for I/O (only what's needed!)
     const_cast<RANSSolver*>(this)->sync_solution_from_gpu();
@@ -2335,18 +2517,25 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: diff_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
-    // k and omega are NOT mapped here - turbulence models manage their own GPU copies
+    
+    // Transport equation fields (k, omega) - needed for EARSM/SST models
+    // These are initialized by RANSSolver::initialize() before GPU buffers are set up,
+    // so we upload them with map(to:). They'll be updated by transport models on GPU.
+    #pragma omp target enter data map(to: k_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: omega_ptr_[0:field_total_size_])
     
     // Reynolds stress tensor components (alloc - will be computed by EARSM/TBNN on GPU)
     #pragma omp target enter data map(alloc: tau_xx_ptr_[0:field_total_size_])
     #pragma omp target enter data map(alloc: tau_xy_ptr_[0:field_total_size_])
     #pragma omp target enter data map(alloc: tau_yy_ptr_[0:field_total_size_])
     
-    // Gradient scratch buffers for turbulence models (alloc, not to - computed on GPU)
-    #pragma omp target enter data map(alloc: dudx_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: dudy_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: dvdx_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: dvdy_ptr_[0:field_total_size_])
+    // Gradient scratch buffers for turbulence models (to, not alloc - need zero init)
+    // These must be initialized to zero to prevent NaN propagation in EARSM models
+    // on the first timestep before compute_gradients_from_mac_gpu runs
+    #pragma omp target enter data map(to: dudx_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: dudy_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: dvdx_ptr_[0:field_total_size_])
+    #pragma omp target enter data map(to: dvdy_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: wall_distance_ptr_[0:field_total_size_])  // Precomputed, upload once
     
     // Allocate device-resident "old velocity" buffers for residual computation
@@ -2411,6 +2600,10 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: dvdy_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: wall_distance_ptr_[0:field_total_size_])
     
+    // Delete transport fields
+    #pragma omp target exit data map(delete: k_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: omega_ptr_[0:field_total_size_])
+    
     // Delete Reynolds stress tensor buffers
     #pragma omp target exit data map(delete: tau_xx_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_xy_ptr_[0:field_total_size_])
@@ -2431,7 +2624,13 @@ void RANSSolver::sync_to_gpu() {
     #pragma omp target update to(velocity_v_ptr_[0:v_total_size])
     #pragma omp target update to(pressure_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-    // k and omega are managed by turbulence model independently
+    
+    // Upload k and omega if turbulence model uses transport equations
+    // These are initialized by RANSSolver::initialize() after GPU buffers are allocated
+    if (turb_model_ && turb_model_->uses_transport_equations()) {
+        #pragma omp target update to(k_ptr_[0:field_total_size_])
+        #pragma omp target update to(omega_ptr_[0:field_total_size_])
+    }
 }
 
 void RANSSolver::sync_from_gpu() {

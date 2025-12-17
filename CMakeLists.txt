@@ -130,6 +130,10 @@ target_link_libraries(periodic_hills nn_cfd_core)
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
 target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 
+# Profiling driver (limited steps for nsys analysis)
+add_executable(profile_solver app/profile_solver.cpp)
+target_link_libraries(profile_solver nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -201,6 +205,11 @@ if(BUILD_TESTS)
     add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
     target_link_libraries(test_perturbed_channel nn_cfd_core)
     add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
+    
+    # NaN/Inf guard test - verifies abort-on-NaN behavior
+    add_executable(test_turbulence_guard tests/test_turbulence_guard.cpp)
+    target_link_libraries(test_turbulence_guard nn_cfd_core)
+    add_test(NAME NanInfGuardTest COMMAND test_turbulence_guard)
 endif()
 
 # Installation

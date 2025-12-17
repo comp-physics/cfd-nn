@@ -132,6 +132,62 @@ void MultigridPoissonSolver::apply_bc(int level) {
             }
         }
         
+        // Re-apply periodic BCs to fix corner ghost cells
+        // When both directions have periodic BCs applied sequentially, corner values
+        // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
+        const bool x_periodic = (bc_x_lo == 2) && (bc_x_hi == 2);
+        const bool y_periodic = (bc_y_lo == 2) && (bc_y_hi == 2);
+        
+        if (x_periodic || y_periodic) {
+            // Re-apply x-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int j = 0; j < Ny + 2; ++j) {
+                int idx = j * stride;
+                
+                // Left boundary (i=0)
+                if (bc_x_lo == 2) { // Periodic
+                    u_ptr[idx] = u_ptr[idx + Nx];
+                } else if (bc_x_lo == 1) { // Neumann
+                    u_ptr[idx] = u_ptr[idx + Ng];
+                } else { // Dirichlet
+                    u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
+                }
+                
+                // Right boundary (i=Nx+1)
+                if (bc_x_hi == 2) { // Periodic
+                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
+                } else if (bc_x_hi == 1) { // Neumann
+                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
+                } else { // Dirichlet
+                    u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
+                }
+            }
+            
+            // Re-apply y-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int i = 0; i < Nx + 2; ++i) {
+                // Bottom boundary (j=0)
+                if (bc_y_lo == 2) { // Periodic
+                    u_ptr[i] = u_ptr[Ny * stride + i];
+                } else if (bc_y_lo == 1) { // Neumann
+                    u_ptr[i] = u_ptr[Ng * stride + i];
+                } else { // Dirichlet
+                    u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
+                }
+                
+                // Top boundary (j=Ny+1)
+                if (bc_y_hi == 2) { // Periodic
+                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
+                } else if (bc_y_hi == 1) { // Neumann
+                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet
+                    u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                }
+            }
+        }
+        
         return;
     }
 #endif
@@ -206,6 +262,86 @@ void MultigridPoissonSolver::apply_bc(int level) {
             case PoissonBC::Periodic:
                 grid.u(i, j_ghost) = grid.u(i, Ng);
                 break;
+        }
+    }
+    
+    // Re-apply periodic BCs to fix corner ghost cells
+    // When both directions have periodic BCs applied sequentially, corner values
+    // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
+    const bool x_periodic = (bc_x_lo_ == PoissonBC::Periodic) && (bc_x_hi_ == PoissonBC::Periodic);
+    const bool y_periodic = (bc_y_lo_ == PoissonBC::Periodic) && (bc_y_hi_ == PoissonBC::Periodic);
+    
+    if (x_periodic || y_periodic) {
+        // Re-apply x-direction boundaries
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            // Left boundary
+            int i_ghost = 0;
+            int i_interior = Ng;
+            int i_periodic = Nx;
+            
+            switch (bc_x_lo_) {
+                case PoissonBC::Periodic:
+                    grid.u(i_ghost, j) = grid.u(i_periodic, j);
+                    break;
+                case PoissonBC::Neumann:
+                    grid.u(i_ghost, j) = grid.u(i_interior, j);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
+                    break;
+            }
+            
+            // Right boundary
+            i_ghost = Nx + Ng;
+            i_interior = Nx + Ng - 1;
+            i_periodic = Ng;
+            
+            switch (bc_x_hi_) {
+                case PoissonBC::Periodic:
+                    grid.u(i_ghost, j) = grid.u(i_periodic, j);
+                    break;
+                case PoissonBC::Neumann:
+                    grid.u(i_ghost, j) = grid.u(i_interior, j);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
+                    break;
+            }
+        }
+        
+        // Re-apply y-direction boundaries
+        for (int i = 0; i < Nx + 2*Ng; ++i) {
+            // Bottom boundary
+            int j_ghost = 0;
+            int j_interior = Ng;
+            
+            switch (bc_y_lo_) {
+                case PoissonBC::Neumann:
+                    grid.u(i, j_ghost) = grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Periodic:
+                    grid.u(i, j_ghost) = grid.u(i, Ny);
+                    break;
+            }
+            
+            // Top boundary
+            j_ghost = Ny + Ng;
+            j_interior = Ny + Ng - 1;
+            
+            switch (bc_y_hi_) {
+                case PoissonBC::Neumann:
+                    grid.u(i, j_ghost) = grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Dirichlet:
+                    grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
+                    break;
+                case PoissonBC::Periodic:
+                    grid.u(i, j_ghost) = grid.u(i, Ng);
+                    break;
+            }
         }
     }
 }

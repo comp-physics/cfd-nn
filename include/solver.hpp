@@ -183,9 +183,13 @@ private:
     
     // State
     int iter_ = 0;
+    int step_count_ = 0;  // Track current step for guard
     double current_dt_;
     
     // Internal methods
+    void check_for_nan_inf(int step) const;
+    
+    // Original internal methods
     void apply_velocity_bc();
     void compute_convective_term(const VectorField& vel, VectorField& conv);
     void compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, VectorField& diff);

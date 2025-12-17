@@ -78,6 +78,22 @@ struct GSConstants {
     double eta_max = 10.0;
 };
 
+/// EARSM blending parameters
+/// Controls smooth transition between linear Boussinesq and full nonlinear EARSM
+/// based on turbulence Reynolds number Re_t = k/(ν·ω)
+struct EARSMThresholds {
+    // Smooth blending based on turbulence Reynolds number
+    double Re_t_center = 10.0;  ///< Center of blending transition (α=0.5 at this Re_t)
+    double Re_t_width = 5.0;    ///< Width of transition (controls steepness)
+    
+    // Optional: hard floors for extreme cases (denominator protection)
+    double k_min = 1e-10;       ///< Minimum k for regularization
+    double omega_min = 1e-10;   ///< Minimum omega for regularization
+    
+    // Diagnostics
+    bool warn_low_turbulence = false; ///< Warn if Re_t < 1 globally (essentially laminar)
+};
+
 // ============================================================================
 // EARSM Closure Base Class
 // ============================================================================
@@ -112,6 +128,14 @@ public:
     /// Get EARSM type
     virtual EARSMType type() const = 0;
     
+    /// Set EARSM stability thresholds
+    void set_thresholds(const EARSMThresholds& thresholds) { 
+        thresholds_ = thresholds; 
+    }
+    
+    /// Get current thresholds
+    const EARSMThresholds& thresholds() const { return thresholds_; }
+    
 protected:
     /// Compute G coefficients given invariants
     /// @param eta   Normalized strain invariant: η = (k/ε) × |S|
@@ -127,6 +151,9 @@ protected:
     std::vector<Features> features_;
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis_;
     bool initialized_ = false;
+    
+    // EARSM stability thresholds
+    EARSMThresholds thresholds_;
     
     void ensure_initialized(const Mesh& mesh);
     

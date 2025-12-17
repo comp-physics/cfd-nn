@@ -265,14 +265,16 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
         size_t wall_size = wall_dist_flat_.size();
         size_t work_size = work_flat_.size();
         
-        // Map buffers to GPU - use single pragma with multiple arrays (like NN models)
+        // Map buffers to GPU - use 'to' for k/omega to upload initial values
+        // k and omega are initialized by RANSSolver::initialize() before this is called
+        // so we MUST upload them. Other arrays are computed on GPU, so use alloc.
         #pragma omp target enter data \
-            map(alloc: k_ptr[0:k_size]) \
-            map(alloc: omega_ptr[0:omega_size]) \
+            map(to: k_ptr[0:k_size]) \
+            map(to: omega_ptr[0:omega_size]) \
             map(alloc: nu_t_ptr[0:nu_t_size]) \
             map(alloc: u_ptr[0:u_size]) \
             map(alloc: v_ptr[0:v_size]) \
-            map(alloc: wall_ptr[0:wall_size]) \
+            map(to: wall_ptr[0:wall_size]) \
             map(alloc: work_ptr[0:work_size])
         
         buffers_on_gpu_ = true;  // Mark as mapped (separate from gpu_ready_)

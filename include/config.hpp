@@ -90,6 +90,10 @@ struct Config {
     int poisson_max_iter = 10000;
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     
+    // Turbulence guard (abort on NaN/Inf)
+    bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks
+    int turb_guard_interval = 5;            ///< Check every N steps (performance)
+    
     /// Load configuration from file
     void load(const std::string& filename);
     

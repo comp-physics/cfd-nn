@@ -118,4 +118,4 @@ nsys*
 
 logs/
 *.nsys-rep
-
+*.slurm

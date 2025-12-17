@@ -80,14 +80,14 @@ void test_laminar_poiseuille() {
         std::cout << "FAILED: Poiseuille solution error = " << error*100 << "% (limit: 5%)\n";
         std::cout << "        u_centerline = " << u_centerline << ", u_analytical = " << u_max_analytical << "\n";
         std::cout << "        residual = " << residual << ", iters = " << iters << "\n";
+        std::exit(1);
     }
-    assert(error < 0.05 && "Poiseuille solution error too large!");
     
     // Accept any reasonable convergence progress (don't require machine precision)
     if (residual >= 1e-4) {
         std::cout << "FAILED: Poor convergence, residual = " << residual << " (limit: 1e-4)\n";
+        std::exit(1);
     }
-    assert(residual < 1e-4 && "Solver did not show reasonable convergence!");
     
     std::cout << "PASSED (error=" << error*100 << "%, iters=" << iters << ")\n";
 }
@@ -127,8 +127,8 @@ void test_convergence() {
     if (!good_convergence) {
         std::cout << "FAILED: residual = " << std::scientific << residual 
                   << " (limit: 1e-4 for good progress), iters = " << iters << "\n";
+        std::exit(1);
     }
-    assert(good_convergence && "Solver did not show good convergence!");
     
     std::cout << "PASSED (residual=" << std::scientific << residual 
               << ", iters=" << iters << ")\n";
@@ -195,8 +195,8 @@ void test_divergence_free() {
     if (max_div >= 1e-10) {
         std::cout << "FAILED: max_div = " << std::scientific << max_div << " (limit: 1e-10)\n";
         std::cout << "        This indicates a bug in the staggered projection!\n";
+        std::exit(1);
     }
-    assert(max_div < 1e-10 && "Divergence too large for staggered grid!");
     
     std::cout << "PASSED (max_div=" << std::scientific << max_div 
               << ", rms_div=" << rms_div << ")\n";
@@ -248,8 +248,8 @@ void test_mass_conservation() {
         if (flux_diff >= 1e-10) {
             std::cout << "FAILED: Mass flux error = " << std::scientific << flux_diff 
                       << " at step " << step << "\n";
+            std::exit(1);
         }
-        assert(flux_diff < 1e-10 && "Mass not conserved through periodic boundaries!");
     }
     
     std::cout << "PASSED (max_flux_error=" << std::scientific << max_flux_error << ")\n";
@@ -315,7 +315,7 @@ void test_momentum_balance() {
         std::cout << "        Momentum balance L2 error = " << rel_l2_error * 100 
                   << "% (limit: 5%), iters = " << iters << "\n";
         std::cout << "        residual = " << residual << "\n";
-        assert(false && "Momentum balance L2 error too large!");
+        std::exit(1);
     }
     
     std::cout << "PASSED\n";
@@ -348,7 +348,10 @@ void test_energy_dissipation() {
     initialize_poiseuille_profile(solver, mesh, config.dp_dx, config.nu, 0.9);
     
     auto [residual, iters] = solver.solve_steady();
-    assert(residual < 5e-4 && "Solver did not converge to reasonable residual!");  // Physics test, not convergence test
+    if (residual >= 5e-4) {
+        std::cout << "FAILED: Solver did not converge (residual = " << residual << " >= 5e-4)\n";
+        std::exit(1);
+    }
     
     // Compute bulk velocity
     double bulk_u = solver.bulk_velocity();
@@ -382,7 +385,7 @@ void test_energy_dissipation() {
                   << "% (limit: 5%), iters = " << iters << "\n";
         std::cout << "        power_in = " << power_in << ", dissipation = " << dissipation << "\n";
         std::cout << "        residual = " << residual << "\n";
-        assert(false && "Energy balance not satisfied!");
+        std::exit(1);
     }
     
     std::cout << "PASSED\n";
@@ -457,7 +460,7 @@ void test_single_timestep_accuracy() {
         std::cout << "        Single-step error = " << rel_l2_error * 100 
                   << "% (limit: 0.1%)\n";
         std::cout << "        This suggests a discretization bug!\n";
-        assert(false && "Single timestep accuracy test failed!");
+        std::exit(1);
     }
     
     std::cout << "PASSED (error=" << std::scientific << std::setprecision(2) 
