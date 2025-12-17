@@ -15,11 +15,13 @@ Makefile
 *.cmake
 !CMakeLists.txt
 
-# Executables
+# Executables (in build directories only, not source files)
 channel
 periodic_hills
 compare_channel_cpu_gpu
-test_*
+profile_solver
+/test_*
+build*/test_*
 
 # Python
 venv/
