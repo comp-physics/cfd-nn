@@ -47,11 +47,11 @@ mkdir -p output
 
 echo ""
 echo "==================================================================="
-echo "  1. End-to-end lockstep CPU vs GPU (single binary)"
+echo "  1. CPU-only vs GPU-offload build consistency (two binaries)"
 echo "==================================================================="
 echo ""
-echo "This runs CPU-forced then GPU turbulence in same binary and compares final fields."
-./compare_channel_cpu_gpu --Nx 64 --Ny 128 --max_iter 200 --model baseline
+echo "Build a CPU-only reference binary and compare against the GPU-offload binary."
+../.github/scripts/compare_cpu_gpu_builds.sh "$WORKDIR"
 
 echo ""
 echo "==================================================================="

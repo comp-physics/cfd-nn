@@ -641,7 +641,6 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     
     // Zero coarse grid solution
     auto& coarse = *levels_[level + 1];
-    const int Ng = 1;
     
 #ifdef USE_GPU_OFFLOAD
     assert(gpu_ready_ && "GPU must be initialized");
@@ -654,6 +653,7 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
         u_coarse[idx] = 0.0;
     }
 #else
+    const int Ng = 1;
     for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
         for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
             coarse.u(i, j) = 0.0;

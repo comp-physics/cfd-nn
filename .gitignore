@@ -121,3 +121,5 @@ nsys*
 logs/
 *.nsys-rep
 *.slurm
+.cache/
+compile_commands.json

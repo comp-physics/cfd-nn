@@ -1,6 +1,10 @@
-/// Single-binary CPU vs GPU lockstep comparison
-/// Runs identical solver configuration with CPU-forced and GPU turbulence paths
-/// Compares final fields to isolate discrepancies
+/// (Deprecated) Single-binary CPU vs GPU lockstep comparison
+/// Historically attempted to run "CPU-forced" vs "GPU" turbulence paths in one binary.
+/// The project now enforces a simpler model:
+///   - CPU-only build (USE_GPU_OFFLOAD=OFF) runs on CPU
+///   - GPU-offload build (USE_GPU_OFFLOAD=ON) runs on GPU
+/// Cross-platform consistency should be validated by comparing outputs between the two builds,
+/// e.g. via `.github/scripts/compare_cpu_gpu_builds.sh`.
 
 #include "mesh.hpp"
 #include "fields.hpp"
@@ -212,9 +216,12 @@ int main(int argc, char** argv) {
     
     double H = (config.y_max - config.y_min) / 2.0;
     
-    // ========== Run CPU version ==========
-    setenv("NNCFD_FORCE_CPU_TURB", "1", 1);
-    std::cout << "=== Running with CPU turbulence (forced) ===" << std::endl;
+    std::cout << "NOTE: Single-binary CPU-forced turbulence is no longer supported.\n"
+              << "      This tool now runs the same configuration twice and compares fields.\n"
+              << "      For true CPU-vs-GPU validation, compare two separate builds.\n\n";
+    
+    // ========== Run A ==========
+    std::cout << "=== Running case A ===" << std::endl;
     
     RANSSolver solver_cpu(mesh, config);
     {
@@ -250,9 +257,8 @@ int main(int argc, char** argv) {
         std::cout << "  Bulk velocity: " << std::fixed << solver_cpu.bulk_velocity() << "\n\n";
     }
     
-    // ========== Run GPU version ==========
-    unsetenv("NNCFD_FORCE_CPU_TURB");
-    std::cout << "=== Running with GPU turbulence ===" << std::endl;
+    // ========== Run B ==========
+    std::cout << "=== Running case B ===" << std::endl;
     
     RANSSolver solver_gpu(mesh, config);
     {

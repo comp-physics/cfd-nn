@@ -870,8 +870,8 @@ void RANSSolver::apply_velocity_bc() {
 
     double* u_ptr = v.u_face;
     double* v_ptr = v.v_face;
-    const size_t u_total_size = velocity_.u_total_size();
-    const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
 
     // Apply u BCs in x-direction
     const int n_u_x_bc = u_total_Ny * Ng;
@@ -967,8 +967,8 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int v_stride = v.v_stride;
     const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
 
-    const size_t u_total_size = velocity_.u_total_size();
-    const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
 
     const double* u_ptr      = v.u_face;
     const double* v_ptr      = v.v_face;
@@ -1024,9 +1024,9 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     const int v_stride = v.v_stride;
     const int nu_stride = v.cell_stride;
 
-    const size_t u_total_size = velocity_.u_total_size();
-    const size_t v_total_size = velocity_.v_total_size();
-    const size_t nu_total_size = field_total_size_;
+    [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t nu_total_size = field_total_size_;
 
     const double* u_ptr      = v.u_face;
     const double* v_ptr      = v.v_face;
@@ -1081,9 +1081,9 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     const int v_stride = vel_ptrs.v_stride;
 
     const int n_cells = Nx * Ny;
-    const size_t u_total_size = velocity_.u_total_size();
-    const size_t v_total_size = velocity_.v_total_size();
-    const size_t div_total_size = field_total_size_;
+    [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t div_total_size = field_total_size_;
 
     const double* u_ptr = vel_ptrs.u;
     const double* v_ptr = vel_ptrs.v;
@@ -1165,9 +1165,9 @@ void RANSSolver::correct_velocity() {
                             (velocity_bc_.y_hi == VelocityBC::Periodic);
 
     const int n_cells = Nx * Ny;
-    const size_t u_total_size = velocity_.u_total_size();
-    const size_t v_total_size = velocity_.v_total_size();
-    const size_t p_total_size = field_total_size_;
+    [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t p_total_size = field_total_size_;
 
     const double* u_star_ptr = v.u_star_face;
     const double* v_star_ptr = v.v_star_face;
@@ -1473,8 +1473,8 @@ double RANSSolver::step() {
     const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) && 
                             (velocity_bc_.y_hi == VelocityBC::Periodic);
     
-    const size_t u_total_size_pred = velocity_.u_total_size();
-    const size_t v_total_size_pred = velocity_.v_total_size();
+    [[maybe_unused]] const size_t u_total_size_pred = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size_pred = velocity_.v_total_size();
     
     const double* u_ptr = v.u_face;
     const double* v_ptr = v.v_face;
@@ -1770,8 +1770,8 @@ double RANSSolver::step() {
     // Return max velocity change as convergence criterion (unified view-based)
     auto v_res = get_solver_view();
     
-    const size_t u_total_size_res = velocity_.u_total_size();
-    const size_t v_total_size_res = velocity_.v_total_size();
+    [[maybe_unused]] const size_t u_total_size_res = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size_res = velocity_.v_total_size();
     const double* u_new_ptr = v_res.u_face;
     const double* v_new_ptr = v_res.v_face;
     const double* u_old_ptr = v_res.u_old_face;
@@ -2030,9 +2030,9 @@ double RANSSolver::bulk_velocity() const {
     double sum = 0.0;
     int count = 0;
     
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Ny = mesh_->Ny;
+    [[maybe_unused]] const int Ng = mesh_->Nghost;
     
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_) {
@@ -2072,7 +2072,7 @@ double RANSSolver::wall_shear_stress() const {
     double sum = 0.0;
     int count = 0;
     
-    const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
     const int Ng = mesh_->Nghost;
     const int j_wall = Ng;  // First interior row
     const double y_cell = mesh_->y(j_wall);
@@ -2154,7 +2154,7 @@ void RANSSolver::check_for_nan_inf(int step) const {
         for (size_t idx = 0; idx < u_total; ++idx) {
             const double x = velocity_u_ptr_[idx];
             // Use manual NaN/Inf check (x != x for NaN, or x-x != 0 for Inf)
-            if (x != x || (x - x) != 0.0) has_bad = 1;
+            has_bad |= (x != x || (x - x) != 0.0) ? 1 : 0;
         }
         
         // Check v-velocity (y-faces)
@@ -2162,7 +2162,7 @@ void RANSSolver::check_for_nan_inf(int step) const {
             map(present: velocity_v_ptr_[0:v_total]) reduction(|: has_bad)
         for (size_t idx = 0; idx < v_total; ++idx) {
             const double x = velocity_v_ptr_[idx];
-            if (x != x || (x - x) != 0.0) has_bad = 1;
+            has_bad |= (x != x || (x - x) != 0.0) ? 1 : 0;
         }
         
         // Check pressure and eddy viscosity (cell-centered)
@@ -2172,7 +2172,7 @@ void RANSSolver::check_for_nan_inf(int step) const {
         for (size_t idx = 0; idx < field_total; ++idx) {
             const double p = pressure_ptr_[idx];
             const double nut = nu_t_ptr_[idx];
-            if (p != p || (p - p) != 0.0 || nut != nut || (nut - nut) != 0.0) has_bad = 1;
+            has_bad |= (p != p || (p - p) != 0.0 || nut != nut || (nut - nut) != 0.0) ? 1 : 0;
         }
         
         // Check transport variables if turbulence model uses them
@@ -2183,7 +2183,7 @@ void RANSSolver::check_for_nan_inf(int step) const {
             for (size_t idx = 0; idx < field_total; ++idx) {
                 const double k = k_ptr_[idx];
                 const double w = omega_ptr_[idx];
-                if (k != k || (k - k) != 0.0 || w != w || (w - w) != 0.0) has_bad = 1;
+                has_bad |= (k != k || (k - k) != 0.0 || w != w || (w - w) != 0.0) ? 1 : 0;
             }
         }
         
@@ -2289,9 +2289,9 @@ void RANSSolver::write_fields(const std::string& prefix) const {
 }
 
 double RANSSolver::compute_adaptive_dt() const {
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
+    [[maybe_unused]] const int Nx = mesh_->Nx;
+    [[maybe_unused]] const int Ny = mesh_->Ny;
+    [[maybe_unused]] const int Ng = mesh_->Nghost;
     const double nu = config_.nu;
     
 #ifdef USE_GPU_OFFLOAD

@@ -260,9 +260,10 @@ void test_komega_transport() {
     // Sync from GPU and check validity
     solver.sync_from_gpu();
     
-    const ScalarField& k = solver.k();
-    const ScalarField& omega = solver.omega();
-    const ScalarField& nu_t = solver.nu_t();
+    // These are used only in assertions below; in Release builds assertions are compiled out.
+    [[maybe_unused]] const ScalarField& k = solver.k();
+    [[maybe_unused]] const ScalarField& omega = solver.omega();
+    [[maybe_unused]] const ScalarField& nu_t = solver.nu_t();
     
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {

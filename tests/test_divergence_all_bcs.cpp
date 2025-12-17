@@ -310,13 +310,11 @@ VectorField create_divergence_free_field(
         double y = mesh.y(j);
         double y_norm = (y - mesh.y_min) / Ly;  // Normalize to [0,1]
         
-        double fy, dfy_dy;
+        double dfy_dy;
         if (y_periodic) {
-            fy = std::sin(2.0 * M_PI * y_norm);
             dfy_dy = (2.0 * M_PI / Ly) * std::cos(2.0 * M_PI * y_norm);
         } else {
             double s = std::sin(M_PI * y_norm);
-            fy = s * s;
             dfy_dy = (2.0 * M_PI / Ly) * s * std::cos(M_PI * y_norm);
         }
         

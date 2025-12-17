@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 project(nn_cfd VERSION 0.1.0 LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(CMAKE_EXPORT_COMPILE_COMMANDS)
+  add_custom_target(clangd_compile_commands ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            ${CMAKE_SOURCE_DIR}/compile_commands.json
+    BYPRODUCTS ${CMAKE_SOURCE_DIR}/compile_commands.json
+    COMMENT "Copy compile_commands.json to source dir for clangd"
+  )
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -90,6 +101,9 @@ add_library(nn_cfd_core ${LIB_SOURCES})
 if(USE_GPU_OFFLOAD)
     target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
+    # Propagate USE_GPU_OFFLOAD to all targets that link this library
+    # This ensures tests compile with the same GPU settings as the library
+    target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
