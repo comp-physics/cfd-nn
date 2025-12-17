@@ -93,8 +93,9 @@ void test_harness_sanity() {
     [[maybe_unused]] auto cmp1 = compare_fields(mesh, f1, f2);
     assert(cmp1.max_abs_diff == 0.0);
     
-    // Perturb one cell
+    // Intentionally inject a mismatch to verify the comparator works
     f2(mesh.i_begin() + 1, mesh.j_begin() + 1) = 2.0;
+    std::cout << "(injecting intentional mismatch for validation)... ";
     [[maybe_unused]] auto cmp2 = compare_fields(mesh, f1, f2);
     assert(cmp2.max_abs_diff > 0.0);
     assert(cmp2.max_abs_diff == 1.0);
@@ -306,7 +307,7 @@ void test_mixing_length_consistency() {
     }
 }
 
-// Test 2: GEP model CPU vs GPU (if GPU path exists)
+// Test 2: GEP model CPU vs GPU
 void test_gep_consistency() {
     std::cout << "\n=== Testing TurbulenceGEP CPU vs GPU ===" << std::endl;
     
@@ -317,28 +318,157 @@ void test_gep_consistency() {
         return;
     }
     
-    // Check if GEP has GPU implementation
-    Mesh mesh;
-    mesh.init_uniform(64, 64, 0.0, 2.0, 0.0, 1.0, 1);
-    
-    VectorField vel(mesh);
-    create_test_velocity_field(mesh, vel, 0);
-    
-    ScalarField k(mesh), omega(mesh), nu_t(mesh);
-    
-    TurbulenceGEP model;
-    model.set_nu(0.001);
-    model.set_delta(0.5);
-    
-    // For now, GEP might not have GPU path - just run and check it doesn't crash
-    model.update(mesh, vel, k, omega, nu_t);
-    
-    std::cout << "  GEP model executed (GPU path may or may not exist)\n";
-    std::cout << "  TODO: Add explicit CPU/GPU comparison when GPU path is implemented\n";
-    std::cout << "SKIPPED (explicit CPU/GPU compare not yet implemented)\n";
+    // Force offload to fail if no GPU available
+    omp_set_default_device(0);
+    if (omp_get_num_devices() == 0) {
+        std::cout << "SKIPPED (no GPU devices after setting default)\n";
+        return;
+    }
 #else
     std::cout << "SKIPPED (GPU offload not enabled)\n";
+    return;
 #endif
+    
+    // Test multiple grid sizes
+    struct TestCase { int nx, ny; int seed; };
+    std::vector<TestCase> cases = {
+        {64, 64, 0},
+        {48, 96, 1},
+        {128, 128, 2}
+    };
+    
+    bool all_passed = true;
+    double worst_abs = 0.0, worst_rel = 0.0;
+    
+    for (const auto& tc : cases) {
+        std::cout << "\n  Grid: " << tc.nx << "x" << tc.ny << ", seed=" << tc.seed << "\n";
+        
+        Mesh mesh;
+        mesh.init_uniform(tc.nx, tc.ny, 0.0, 2.0, 0.0, 1.0, 1);
+        
+        VectorField velocity(mesh);
+        create_test_velocity_field(mesh, velocity, tc.seed);
+        
+        ScalarField k(mesh), omega(mesh);
+        ScalarField nu_t_gpu(mesh), nu_t_cpu(mesh);
+        
+        // Verify field addresses are different
+        assert(nu_t_gpu.data().data() != nu_t_cpu.data().data());
+        
+#ifdef USE_GPU_OFFLOAD
+        // GPU path - create device view
+        const int total_cells = mesh.total_cells();
+        const int u_total = velocity.u_total_size();
+        const int v_total = velocity.v_total_size();
+        
+        double* u_ptr = velocity.u_data().data();
+        double* v_ptr = velocity.v_data().data();
+        double* nu_t_ptr = nu_t_gpu.data().data();
+        
+        // Gradient scratch buffers
+        std::vector<double> dudx_data(total_cells, 0.0);
+        std::vector<double> dudy_data(total_cells, 0.0);
+        std::vector<double> dvdx_data(total_cells, 0.0);
+        std::vector<double> dvdy_data(total_cells, 0.0);
+        std::vector<double> wall_dist_data(total_cells, 0.0);
+        
+        // Precompute wall distance
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                int idx = mesh.index(i, j);
+                wall_dist_data[idx] = mesh.wall_distance(i, j);
+            }
+        }
+        
+        double* dudx_ptr = dudx_data.data();
+        double* dudy_ptr = dudy_data.data();
+        double* dvdx_ptr = dvdx_data.data();
+        double* dvdy_ptr = dvdy_data.data();
+        double* wall_dist_ptr = wall_dist_data.data();
+        
+        // Map to GPU
+        #pragma omp target enter data map(to: u_ptr[0:u_total])
+        #pragma omp target enter data map(to: v_ptr[0:v_total])
+        #pragma omp target enter data map(to: dudx_ptr[0:total_cells])
+        #pragma omp target enter data map(to: dudy_ptr[0:total_cells])
+        #pragma omp target enter data map(to: dvdx_ptr[0:total_cells])
+        #pragma omp target enter data map(to: dvdy_ptr[0:total_cells])
+        #pragma omp target enter data map(to: wall_dist_ptr[0:total_cells])
+        #pragma omp target enter data map(to: nu_t_ptr[0:total_cells])
+        
+        // Create device view
+        TurbulenceDeviceView device_view;
+        device_view.u_face = u_ptr;
+        device_view.v_face = v_ptr;
+        device_view.dudx = dudx_ptr;
+        device_view.dudy = dudy_ptr;
+        device_view.dvdx = dvdx_ptr;
+        device_view.dvdy = dvdy_ptr;
+        device_view.wall_distance = wall_dist_ptr;
+        device_view.nu_t = nu_t_ptr;
+        device_view.Nx = mesh.Nx;
+        device_view.Ny = mesh.Ny;
+        device_view.Ng = mesh.Nghost;
+        device_view.dx = mesh.dx;
+        device_view.dy = mesh.dy;
+        device_view.u_stride = mesh.Nx + 2*mesh.Nghost + 1;
+        device_view.v_stride = mesh.Nx + 2*mesh.Nghost;
+        device_view.cell_stride = mesh.total_Nx();
+        
+        // GPU execution
+        TurbulenceGEP model_gpu;
+        model_gpu.set_nu(0.001);
+        model_gpu.set_delta(0.5);
+        model_gpu.update(mesh, velocity, k, omega, nu_t_gpu, nullptr, &device_view);
+        
+        // Download result
+        #pragma omp target update from(nu_t_ptr[0:total_cells])
+        
+        // Clean up GPU memory
+        #pragma omp target exit data map(delete: u_ptr[0:u_total])
+        #pragma omp target exit data map(delete: v_ptr[0:v_total])
+        #pragma omp target exit data map(delete: dudx_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dudy_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dvdx_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: dvdy_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: wall_dist_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
+#endif
+        
+        // CPU execution
+        TurbulenceGEP model_cpu;
+        model_cpu.set_nu(0.001);
+        model_cpu.set_delta(0.5);
+        model_cpu.update(mesh, velocity, k, omega, nu_t_cpu, nullptr, nullptr);
+        
+        // Compare
+        auto result = compare_fields(mesh, nu_t_cpu, nu_t_gpu, "nu_t");
+        
+        worst_abs = std::max(worst_abs, result.max_abs_diff);
+        worst_rel = std::max(worst_rel, result.max_rel_diff);
+        
+        const double tol_abs = 1e-12;
+        const double tol_rel = 1e-10;
+        
+        if (result.max_abs_diff > tol_abs && result.max_rel_diff > tol_rel) {
+            std::cout << "    FAILED\n";
+            std::cout << "      (abs_tol=" << tol_abs << ", rel_tol=" << tol_rel << ")\n";
+            all_passed = false;
+        } else {
+            std::cout << "    PASSED\n";
+        }
+    }
+    
+    std::cout << "\n  Overall worst differences across all cases:\n";
+    std::cout << "    Max abs: " << std::scientific << worst_abs << "\n";
+    std::cout << "    Max rel: " << worst_rel << "\n";
+    
+    if (all_passed) {
+        std::cout << "\n[PASS] TurbulenceGEP CPU/GPU consistency: PASSED\n";
+    } else {
+        std::cout << "\n[FAIL] TurbulenceGEP CPU/GPU consistency: FAILED\n";
+        assert(false);
+    }
 }
 
 // Test 3: NN-MLP model CPU vs GPU

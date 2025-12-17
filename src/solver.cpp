@@ -1367,6 +1367,11 @@ double RANSSolver::step() {
         if (device_view.is_valid()) {
             device_view_ptr = &device_view;
         }
+        
+        // GPU simulation: enforce device_view validity (no CPU fallback allowed)
+        if (gpu_ready_ && (!device_view_ptr || !device_view_ptr->is_valid())) {
+            throw std::runtime_error("GPU simulation requires valid TurbulenceDeviceView - CPU fallback forbidden");
+        }
 #endif
         
         turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
