@@ -37,7 +37,7 @@ void TurbulenceGEP::cleanup_gpu_buffers() {
 void TurbulenceGEP::ensure_initialized(const Mesh& mesh) {
     if (!initialized_) {
         feature_computer_ = FeatureComputer(mesh);
-        feature_computer_.set_reference(nu_, u_ref_, delta_);
+        feature_computer_.set_reference(nu_, delta_, u_ref_);
         initialized_ = true;
     }
 }
@@ -128,7 +128,7 @@ void TurbulenceGEP::update(const Mesh& mesh,
     TIMED_SCOPE("gep_update");
     
     ensure_initialized(mesh);
-    feature_computer_.set_reference(nu_, u_ref_, delta_);
+    feature_computer_.set_reference(nu_, delta_, u_ref_);
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path using device_view (like Baseline/EARSM)
