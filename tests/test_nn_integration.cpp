@@ -206,9 +206,9 @@ void test_nn_tbnn_solver_integration() {
 void test_nn_repeated_updates() {
     std::cout << "Testing repeated NN updates... ";
     
-    std::string model_path = "data/models/example_tbnn";
+    std::string model_path = "data/models/tbnn_channel_caseholdout";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/example_tbnn";
+        model_path = "../data/models/tbnn_channel_caseholdout";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
@@ -258,9 +258,9 @@ void test_nn_repeated_updates() {
 void test_nn_different_grid_sizes() {
     std::cout << "Testing NN with different grid sizes... ";
     
-    std::string model_path = "data/models/example_tbnn";
+    std::string model_path = "data/models/tbnn_channel_caseholdout";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/example_tbnn";
+        model_path = "../data/models/tbnn_channel_caseholdout";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;

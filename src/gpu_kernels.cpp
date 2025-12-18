@@ -123,6 +123,126 @@ void compute_gradients_from_mac_gpu(
 }
 
 // ============================================================================
+// GPU Kernel: Compute scalar MLP features
+// ============================================================================
+void compute_mlp_scalar_features_gpu(
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    const double* wall_distance,
+    const double* u_face, const double* v_face,
+    double* features,
+    int Nx, int Ny, int Ng,
+    int cell_stride, int u_stride, int v_stride,
+    int total_cells, int u_total, int v_total,
+    double nu, double delta, double u_ref)
+{
+#ifdef USE_GPU_OFFLOAD
+    const double C_mu = 0.09;
+    
+    #pragma omp target teams distribute parallel for collapse(2)
+    for (int jj = 0; jj < Ny; ++jj) {
+        for (int ii = 0; ii < Nx; ++ii) {
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int idx_cell = j * cell_stride + i;
+            const int idx_out = jj * Nx + ii;  // Interior cell index for output
+            
+            // Get gradients
+            double dudx_v = dudx[idx_cell];
+            double dudy_v = dudy[idx_cell];
+            double dvdx_v = dvdx[idx_cell];
+            double dvdy_v = dvdy[idx_cell];
+            
+            // Strain and rotation magnitudes
+            double Sxx = dudx_v;
+            double Syy = dvdy_v;
+            double Sxy = 0.5 * (dudy_v + dvdx_v);
+            double Oxy = 0.5 * (dudy_v - dvdx_v);
+            
+            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
+            
+            // Get k, omega
+            double k_val = k[idx_cell];
+            double omega_val = omega[idx_cell];
+            double eps = C_mu * k_val * omega_val;
+            
+            // Velocity magnitude (from staggered grid)
+            double u_avg = 0.5 * (u_face[j * u_stride + i] + u_face[j * u_stride + (i+1)]);
+            double v_avg = 0.5 * (v_face[j * v_stride + i] + v_face[(j+1) * v_stride + i]);
+            double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
+            
+            // Wall distance (interior-only array)
+            double y_wall = wall_distance[idx_out];
+            
+            // Features (6 values):
+            // 0: Normalized strain rate magnitude
+            // 1: Normalized rotation rate magnitude  
+            // 2: Normalized wall distance
+            // 3: Strain-rotation ratio
+            // 4: Local Reynolds number
+            // 5: Normalized velocity magnitude
+            int feat_base = idx_out * 6;
+            features[feat_base + 0] = S_mag * delta / (u_ref + 1e-10);
+            features[feat_base + 1] = Omega_mag * delta / (u_ref + 1e-10);
+            features[feat_base + 2] = y_wall / delta;
+            features[feat_base + 3] = Omega_mag / (S_mag + 1e-10);
+            features[feat_base + 4] = S_mag * delta * delta / (nu + 1e-10);
+            features[feat_base + 5] = u_mag / (u_ref + 1e-10);
+        }
+    }
+#else
+    (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
+    (void)k; (void)omega; (void)wall_distance;
+    (void)u_face; (void)v_face; (void)features;
+    (void)Nx; (void)Ny; (void)Ng;
+    (void)cell_stride; (void)u_stride; (void)v_stride;
+    (void)total_cells; (void)u_total; (void)v_total;
+    (void)nu; (void)delta; (void)u_ref;
+#endif
+}
+
+// ============================================================================
+// GPU Kernel: Postprocess MLP outputs to ghosted field
+// ============================================================================
+void postprocess_mlp_outputs_gpu(
+    const double* nn_outputs,
+    double* nu_t_field,
+    int Nx, int Ny, int Ng,
+    int stride,
+    double nu_t_max)
+{
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for collapse(2)
+    for (int jj = 0; jj < Ny; ++jj) {
+        for (int ii = 0; ii < Nx; ++ii) {
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int idx_in = jj * Nx + ii;
+            const int idx_out = j * stride + i;
+            
+            // Get NN prediction
+            double nu_t_val = nn_outputs[idx_in];
+            
+            // Apply realizability and clipping
+            if (nu_t_val != nu_t_val || nu_t_val < 0.0) {  // NaN or negative
+                nu_t_val = 0.0;
+            }
+            if (nu_t_val > nu_t_max) {
+                nu_t_val = nu_t_max;
+            }
+            
+            nu_t_field[idx_out] = nu_t_val;
+        }
+    }
+#else
+    (void)nn_outputs; (void)nu_t_field;
+    (void)Nx; (void)Ny; (void)Ng; (void)stride; (void)nu_t_max;
+#endif
+}
+
+// ============================================================================
 // GPU Kernel: Compute TBNN features and tensor basis
 // ============================================================================
 void compute_tbnn_features_gpu(
@@ -132,19 +252,26 @@ void compute_tbnn_features_gpu(
     const double* wall_distance,
     double* features,
     double* basis,
-    int n_cells,
+    int Nx, int Ny, int Ng,
+    int cell_stride, int total_cells,
     double nu, double delta)
 {
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
-    #pragma omp target teams distribute parallel for
-    for (int idx = 0; idx < n_cells; ++idx) {
-        // Get gradients
-        double dudx_v = dudx[idx];
-        double dudy_v = dudy[idx];
-        double dvdx_v = dvdx[idx];
-        double dvdy_v = dvdy[idx];
+    #pragma omp target teams distribute parallel for collapse(2)
+    for (int jj = 0; jj < Ny; ++jj) {
+        for (int ii = 0; ii < Nx; ++ii) {
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int idx_cell = j * cell_stride + i;
+            const int idx_out = jj * Nx + ii;  // Interior cell index for output
+            
+            // Get gradients
+            double dudx_v = dudx[idx_cell];
+            double dudy_v = dudy[idx_cell];
+            double dvdx_v = dvdx[idx_cell];
+            double dvdy_v = dvdy[idx_cell];
         
         // Strain rate tensor components: S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
         double Sxx = dudx_v;
@@ -159,8 +286,8 @@ void compute_tbnn_features_gpu(
         double Omega_mag = sqrt(2.0 * Oxy * Oxy);
         
         // Get k, omega, epsilon
-        double k_val = k[idx];
-        double omega_val = omega[idx];
+        double k_val = k[idx_cell];
+        double omega_val = omega[idx_cell];
         double eps = C_mu * k_val * omega_val;
         
         // Safe values
@@ -181,15 +308,15 @@ void compute_tbnn_features_gpu(
         double Oxy_n = Oxy * tau;
         
         // ==================== Features (5 values) ====================
-        int feat_base = idx * 5;
+        int feat_base = idx_out * 5;
         features[feat_base + 0] = S_norm * S_norm;           // ~tr(S_norm^2)
         features[feat_base + 1] = Omega_norm * Omega_norm;   // ~tr(Omega_norm^2)
         features[feat_base + 2] = Sxx_n*Sxx_n + Syy_n*Syy_n + 2.0*Sxy_n*Sxy_n;  // tr(S^2)
         features[feat_base + 3] = 2.0 * Oxy_n * Oxy_n;       // tr(Omega^2)
-        features[feat_base + 4] = wall_distance[idx] / delta; // Normalized wall distance
+        features[feat_base + 4] = wall_distance[idx_out] / delta; // Normalized wall distance
         
         // ==================== Tensor Basis (4 tensors × 3 components) ====================
-        int basis_base = idx * 12;
+        int basis_base = idx_out * 12;
         
         // T^(1) = S (normalized)
         basis[basis_base + 0] = Sxx_n;  // T1_xx
@@ -215,6 +342,7 @@ void compute_tbnn_features_gpu(
         basis[basis_base + 9]  = 0.0;   // T4_xx
         basis[basis_base + 10] = 0.0;   // T4_xy
         basis[basis_base + 11] = 0.0;   // T4_yy
+        }
     }
     
     (void)nu;  // Not used in current implementation
@@ -222,7 +350,9 @@ void compute_tbnn_features_gpu(
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
     (void)k; (void)omega; (void)wall_distance;
     (void)features; (void)basis;
-    (void)n_cells; (void)nu; (void)delta;
+    (void)Nx; (void)Ny; (void)Ng;
+    (void)cell_stride; (void)total_cells;
+    (void)nu; (void)delta;
 #endif
 }
 

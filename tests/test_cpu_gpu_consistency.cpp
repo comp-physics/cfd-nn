@@ -15,12 +15,19 @@
 #include <cassert>
 #include <iomanip>
 #include <random>
+#include <fstream>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #endif
 
 using namespace nncfd;
+
+// Helper to check if a file exists
+bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
 
 // Utility: compare two scalar fields
 struct FieldComparison {
@@ -503,6 +510,17 @@ void test_nn_mlp_consistency() {
 #endif
     
     try {
+        // Try to locate model directory (works from repo root or build dir)
+        std::string model_path = "data/models/tbnn_channel_caseholdout";
+        if (!file_exists(model_path + "/layer0_W.txt")) {
+            model_path = "../data/models/tbnn_channel_caseholdout";
+        }
+        
+        if (!file_exists(model_path + "/layer0_W.txt")) {
+            std::cout << "SKIPPED (model not found)\n";
+            return;
+        }
+        
         Mesh mesh;
         mesh.init_uniform(32, 64, 0.0, 2.0, 0.0, 1.0, 1);
         
@@ -516,20 +534,21 @@ void test_nn_mlp_consistency() {
         // CPU version
         TurbulenceNNMLP model_cpu;
         model_cpu.set_nu(0.001);
-        model_cpu.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
+        model_cpu.load(model_path, model_path);
         model_cpu.update(mesh, vel, k, omega, nu_t_cpu);
         
         // GPU version (or second CPU instance in CPU-only builds)
         TurbulenceNNMLP model_gpu;
         model_gpu.set_nu(0.001);
-        model_gpu.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
+        model_gpu.load(model_path, model_path);
         
         if (has_gpu) {
-            model_gpu.upload_to_gpu();
+            model_gpu.initialize_gpu_buffers(mesh);
             
+            // In GPU builds, GPU must be ready (no fallback)
             if (!model_gpu.is_gpu_ready()) {
-                std::cout << "SKIPPED (GPU upload failed)\n";
-                return;
+                std::cerr << "FAILED: GPU build requires GPU execution, but GPU not ready!\n";
+                assert(false);
             }
         }
         

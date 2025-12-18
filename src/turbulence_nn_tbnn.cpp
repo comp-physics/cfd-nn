@@ -72,20 +72,24 @@ void TurbulenceNNTBNN::allocate_gpu_buffers(int n_cells) {
     
     // Allocate CPU buffers
     features_flat_.resize(n_cells * feature_dim);
+    basis_flat_.resize(n_cells * 12);  // 4 basis tensors × 3 components
     outputs_flat_.resize(n_cells * output_dim);
     workspace_.resize(workspace_size);
     
     // Map to GPU only if we have valid data
-    if (!features_flat_.empty() && !outputs_flat_.empty() && !workspace_.empty()) {
+    if (!features_flat_.empty() && !basis_flat_.empty() && !outputs_flat_.empty() && !workspace_.empty()) {
         double* feat_ptr = features_flat_.data();
+        double* basis_ptr = basis_flat_.data();
         double* out_ptr = outputs_flat_.data();
         double* work_ptr = workspace_.data();
         size_t feat_size = features_flat_.size();
+        size_t basis_size = basis_flat_.size();
         size_t out_size = outputs_flat_.size();
         size_t work_size = workspace_.size();
         
         #pragma omp target enter data \
             map(alloc: feat_ptr[0:feat_size]) \
+            map(alloc: basis_ptr[0:basis_size]) \
             map(alloc: out_ptr[0:out_size]) \
             map(alloc: work_ptr[0:work_size])
         
@@ -172,19 +176,22 @@ void TurbulenceNNTBNN::free_gpu_buffers() {
     // Only free GPU buffers if they were actually mapped to GPU
     if (buffers_on_gpu_) {
         // Check vectors are non-empty before unmapping
-        if (!features_flat_.empty() && !outputs_flat_.empty() && !workspace_.empty()) {
+        if (!features_flat_.empty() && !basis_flat_.empty() && !outputs_flat_.empty() && !workspace_.empty()) {
             // Set flag FIRST to prevent re-entry
             buffers_on_gpu_ = false;
             
             double* feat_ptr = features_flat_.data();
+            double* basis_ptr = basis_flat_.data();
             double* out_ptr = outputs_flat_.data();
             double* work_ptr = workspace_.data();
             size_t feat_size = features_flat_.size();
+            size_t basis_size = basis_flat_.size();
             size_t out_size = outputs_flat_.size();
             size_t work_size = workspace_.size();
             
             #pragma omp target exit data \
                 map(delete: feat_ptr[0:feat_size]) \
+                map(delete: basis_ptr[0:basis_size]) \
                 map(delete: out_ptr[0:out_size]) \
                 map(delete: work_ptr[0:work_size])
         } else {
@@ -193,6 +200,7 @@ void TurbulenceNNTBNN::free_gpu_buffers() {
     }
 #endif
     features_flat_.clear();
+    basis_flat_.clear();
     outputs_flat_.clear();
     workspace_.clear();
 }
@@ -637,8 +645,6 @@ void TurbulenceNNTBNN::update(
     ScalarField& nu_t,
     TensorField* tau_ij,
     const TurbulenceDeviceView* device_view) {
-    (void)device_view;  // Not yet implemented for NN-TBNN
-    
     TIMED_SCOPE("nn_tbnn_update");
     
     ensure_initialized(mesh);
@@ -675,142 +681,109 @@ void TurbulenceNNTBNN::update(
         }
     }
     
-#ifdef USE_GPU_OFFLOAD
-    // NOTE: Full GPU pipeline has numerical issues - using proven partial GPU approach
-    // TODO: Debug full pipeline workspace/data issues
-    // if (full_gpu_ready_) {
-    //     update_full_gpu(mesh, velocity, k_local, omega_local, nu_t, tau_ij);
-    //     return;
-    // }
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int n_cells = Nx * Ny;
+    const int Ng = mesh.Nghost;
     
-    // GPU path with CPU feature computation (proven stable and fast)
-    if (gpu_ready_) {
-        // Compute features and tensor basis (CPU)
-        {
-            TIMED_SCOPE("nn_tbnn_features");
-            feature_computer_.compute_tbnn_features(velocity, k_local, omega_local, 
-                                                    features_, basis_);
-        }
-        
-        int n_cells = mesh.Nx * mesh.Ny;
-        int feature_dim = mlp_.input_dim();
-        int output_dim = mlp_.output_dim();
-        
-        TIMED_SCOPE("nn_tbnn_inference_gpu");
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: require device_view and gpu_ready (no fallback)
+    if (!device_view || !gpu_ready_) {
+        throw std::runtime_error("NN-TBNN GPU pipeline requires device_view and GPU buffers initialized");
+    }
+    
+    {
+        TIMED_SCOPE("nn_tbnn_full_gpu");
         
         // Ensure GPU buffers are allocated
         allocate_gpu_buffers(n_cells);
         
-        // Flatten features for GPU (CPU side)
+        const int total_cells = (Nx + 2*Ng) * (Nx + 2*Ng);
+        const int u_total = velocity.u_total_size();
+        const int v_total = velocity.v_total_size();
+        const int cell_stride = Nx + 2*Ng;
+        const int u_stride = Nx + 2*Ng + 1;
+        const int v_stride = Nx + 2*Ng;
+        
+        // Step 1: Compute gradients on GPU
         {
-            TIMED_SCOPE("nn_tbnn_flatten");
-            for (int idx = 0; idx < n_cells; ++idx) {
-                for (int f = 0; f < feature_dim; ++f) {
-                    features_flat_[idx * feature_dim + f] = features_[idx].values[f];
-                }
-            }
+            TIMED_SCOPE("nn_tbnn_gradients_gpu");
+            gpu_kernels::compute_gradients_from_mac_gpu(
+                device_view->u_face, device_view->v_face,
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                Nx, Ny, Ng,
+                mesh.dx, mesh.dy,
+                u_stride, v_stride, cell_stride,
+                u_total, v_total, total_cells
+            );
         }
         
-        // Upload features to GPU
+        // Step 2: Compute TBNN features + basis on GPU
         {
-            TIMED_SCOPE("nn_tbnn_upload");
-            double* feat_ptr = features_flat_.data();
-            size_t feat_size = features_flat_.size();
-            #pragma omp target update to(feat_ptr[0:feat_size])
+            TIMED_SCOPE("nn_tbnn_features_gpu");
+            double* feat_ptr = features_flat_.data();  // n_cells * 5
+            double* basis_ptr = basis_flat_.data();    // n_cells * 12
+            
+            gpu_kernels::compute_tbnn_features_gpu(
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                device_view->k, device_view->omega,
+                device_view->wall_distance,
+                feat_ptr, basis_ptr,
+                Nx, Ny, Ng,
+                cell_stride, total_cells,
+                nu_, delta_
+            );
         }
         
-        // Run batched NN inference on GPU
+        // Step 3: Run NN inference on GPU
         {
-            TIMED_SCOPE("nn_tbnn_kernel");
+            TIMED_SCOPE("nn_tbnn_inference_gpu");
             double* feat_ptr = features_flat_.data();
             double* out_ptr = outputs_flat_.data();
             double* work_ptr = workspace_.data();
             mlp_.forward_batch_gpu(feat_ptr, out_ptr, n_cells, work_ptr);
         }
         
-        // Download outputs from GPU
+        // Step 4: Postprocess on GPU (anisotropy -> nu_t)
         {
-            TIMED_SCOPE("nn_tbnn_download");
+            TIMED_SCOPE("nn_tbnn_postprocess_gpu");
             double* out_ptr = outputs_flat_.data();
-            size_t out_size = outputs_flat_.size();
-            #pragma omp target update from(out_ptr[0:out_size])
-        }
-        
-        // Post-process: construct anisotropy and compute nu_t (CPU)
-        {
-            TIMED_SCOPE("nn_tbnn_postprocess");
-            int idx = 0;
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    // Extract G coefficients from NN output
-                    std::array<double, TensorBasis::NUM_BASIS> G;
-                    for (int n = 0; n < TensorBasis::NUM_BASIS; ++n) {
-                        G[n] = (n < output_dim) ? outputs_flat_[idx * output_dim + n] : 0.0;
-                    }
-                    
-                    // Construct anisotropy tensor
-                    double b_xx, b_xy, b_yy;
-                    TensorBasis::construct_anisotropy(G, basis_[idx], b_xx, b_xy, b_yy);
-                    
-                    // Convert to Reynolds stresses if requested
-                    if (tau_ij) {
-                        double k_val = k_local(i, j);
-                        double tau_xx, tau_xy, tau_yy;
-                        TensorBasis::anisotropy_to_reynolds_stress(b_xx, b_xy, b_yy, k_val,
-                                                                  tau_xx, tau_xy, tau_yy);
-                        tau_ij->xx(i, j) = tau_xx;
-                        tau_ij->xy(i, j) = tau_xy;
-                        tau_ij->yy(i, j) = tau_yy;
-                    }
-                    
-                    // Compute equivalent eddy viscosity (MAC-aware gradients)
-                    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
-                    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
-                    VelocityGradient grad;
-                    grad.dudx = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
-                    grad.dudy = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
-                    grad.dvdx = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
-                    grad.dvdy = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
-                    
-                    double Sxy = grad.Sxy();
-                    double k_val = k_local(i, j);
-                    
-                    if (std::abs(Sxy) > 1e-10) {
-                        nu_t(i, j) = std::abs(-b_xy * k_val / Sxy);
-                    } else {
-                        double S_mag = grad.S_mag();
-                        if (S_mag > 1e-10) {
-                            double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                            nu_t(i, j) = k_val * b_mag / S_mag;
-                        } else {
-                            nu_t(i, j) = 0.0;
-                        }
-                    }
-                    
-                    // Ensure positivity and clip to reasonable bounds
-                    nu_t(i, j) = std::max(0.0, std::min(nu_t(i, j), 10.0 * nu_));
-                    
-                    if (std::isnan(nu_t(i, j)) || std::isinf(nu_t(i, j))) {
-                        nu_t(i, j) = 0.0;
-                    }
-                    
-                    ++idx;
-                }
-            }
+            double* basis_ptr = basis_flat_.data();
+            double* k_ptr = device_view->k;
+            double* dudx_ptr = device_view->dudx;
+            double* dudy_ptr = device_view->dudy;
+            double* dvdx_ptr = device_view->dvdx;
+            double* dvdy_ptr = device_view->dvdy;
+            double* nu_t_ptr = nu_t.data().data();
+            double* tau_xx_ptr = tau_ij ? tau_ij->xx_data().data() : nullptr;
+            double* tau_xy_ptr = tau_ij ? tau_ij->xy_data().data() : nullptr;
+            double* tau_yy_ptr = tau_ij ? tau_ij->yy_data().data() : nullptr;
+            
+            gpu_kernels::postprocess_nn_outputs_gpu(
+                out_ptr, basis_ptr,
+                k_ptr, dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+                nu_t_ptr,
+                tau_xx_ptr, tau_xy_ptr, tau_yy_ptr,
+                n_cells, mlp_.output_dim(),
+                nu_
+            );
         }
         return;
     }
-#endif
-    
-    // CPU fallback path: sequential inference
+#else
+    // CPU path (only for CPU builds)
     {
-        TIMED_SCOPE("nn_tbnn_inference_cpu");
-        
         // Compute features and tensor basis
+        TIMED_SCOPE("nn_tbnn_features");
         feature_computer_.compute_tbnn_features(velocity, k_local, omega_local, 
                                                 features_, basis_);
-        
-        std::vector<double> buffer1, buffer2;
+    }
+    
+    // CPU-only sequential inference
+    {
+        TIMED_SCOPE("nn_tbnn_inference_cpu");
         
         int idx = 0;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -874,6 +847,7 @@ void TurbulenceNNTBNN::update(
             }
         }
     }
+#endif  // USE_GPU_OFFLOAD
 }
 
 } // namespace nncfd

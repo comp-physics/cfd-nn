@@ -316,11 +316,11 @@ void Config::finalize() {
         if (has_preset) {
             if (!has_weights) nn_weights_path = "data/models/" + nn_preset;
             if (!has_scaling) nn_scaling_path = "data/models/" + nn_preset;
+        } else {
+            // Mirror weights/scaling if only one provided (common usage, only when no preset)
+            if (has_weights && !has_scaling) nn_scaling_path = nn_weights_path;
+            if (!has_weights && has_scaling) nn_weights_path = nn_scaling_path;
         }
-        
-        // Mirror weights/scaling if only one provided (common usage)
-        if (has_weights && !has_scaling) nn_scaling_path = nn_weights_path;
-        if (!has_weights && has_scaling) nn_weights_path = nn_scaling_path;
     }
     
     // Reynolds number coupling for channel flow

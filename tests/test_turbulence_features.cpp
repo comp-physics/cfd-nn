@@ -53,6 +53,9 @@ void test_earsm_ret_blending() {
     int i = mesh.Nx/2;
     int j = mesh.Ny/2;
     
+    [[maybe_unused]] double b_xy_low = 0.0;
+    [[maybe_unused]] double b_xy_high = 0.0;
+    
     // Case 1: Low k → Low Re_t → nonlinear terms should fade
     {
         ScalarField k_low(mesh, 0.0001);  // Very low TKE
@@ -63,9 +66,9 @@ void test_earsm_ret_blending() {
         pope_model->compute_nu_t(mesh, vel, k_low, omega_low, nu_t_low, &tau_low);
         
         // Compute anisotropy: b_xy = tau_xy / (2*k)
-        double tau_xy_low = tau_low.xy(i, j);
-        double k_val_low = k_low(i, j);
-        [[maybe_unused]] double b_xy_low = tau_xy_low / (2.0 * k_val_low);
+        const double tau_xy_low_val = tau_low.xy(i, j);
+        const double k_val_low = k_low(i, j);
+        b_xy_low = tau_xy_low_val / (2.0 * k_val_low);
         
         // At low Re_t, anisotropy should be small (approaching linear Boussinesq)
         assert(std::isfinite(b_xy_low));
@@ -81,9 +84,9 @@ void test_earsm_ret_blending() {
         
         pope_model->compute_nu_t(mesh, vel, k_high, omega_high, nu_t_high, &tau_high);
         
-        double tau_xy_high = tau_high.xy(i, j);
-        double k_val_high = k_high(i, j);
-        [[maybe_unused]] double b_xy_high = tau_xy_high / (2.0 * k_val_high);
+        const double tau_xy_high_val = tau_high.xy(i, j);
+        const double k_val_high = k_high(i, j);
+        b_xy_high = tau_xy_high_val / (2.0 * k_val_high);
         
         assert(std::isfinite(b_xy_high));
         assert(std::abs(b_xy_high) < 10.0);
@@ -91,8 +94,8 @@ void test_earsm_ret_blending() {
     
     // The key test: anisotropy should DIFFER between low/high Re_t
     // (If it doesn't, nonlinear terms aren't engaging)
-    // NOTE: We can't easily predict the sign/magnitude, but they should be different
     // This test verifies the blending mechanism is active
+    assert(std::abs(b_xy_low - b_xy_high) > 1e-6);
     
     std::cout << "PASSED (Re_t blending active)\n";
 }

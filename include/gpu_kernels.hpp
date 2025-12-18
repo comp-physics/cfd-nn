@@ -56,27 +56,61 @@ void compute_gradients_from_mac_gpu(
 );
 
 // ============================================================================
-// GPU Kernel: Compute TBNN features and tensor basis for all cells
+// GPU Kernel: Compute scalar MLP features for all cells
 // ============================================================================
 // Input: gradients (dudx, dudy, dvdx, dvdy), k, omega, wall_distance
-// Output: features (5 per cell), basis (4*3 = 12 per cell)
+// Output: features (6 per cell): [S_norm, Omega_norm, y_norm, Omega/S, Re_local, |u|_norm]
+// ============================================================================
+void compute_mlp_scalar_features_gpu(
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    const double* wall_distance,
+    const double* u_face, const double* v_face,  // For |u| computation
+    double* features,                      // Output: n_cells * 6
+    int Nx, int Ny, int Ng,
+    int cell_stride, int u_stride, int v_stride,
+    int total_cells, int u_total, int v_total,
+    double nu, double delta, double u_ref
+);
+
+// ============================================================================
+// GPU Kernel: Compute TBNN features and tensor basis for all cells
+// ============================================================================
+// Input: gradients (dudx, dudy, dvdx, dvdy) with ghosts, k, omega, wall_distance
+// Output: features (5 per cell), basis (4*3 = 12 per cell) - interior only
 // ============================================================================
 void compute_tbnn_features_gpu(
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     const double* wall_distance,
-    double* features,                      // Output: n_cells * 5
-    double* basis,                         // Output: n_cells * 12 (4 basis tensors, 3 components each)
-    int n_cells,
+    double* features,                      // Output: Nx*Ny * 5
+    double* basis,                         // Output: Nx*Ny * 12 (4 basis tensors, 3 components each)
+    int Nx, int Ny, int Ng,
+    int cell_stride, int total_cells,
     double nu, double delta
 );
 
 // ============================================================================
-// GPU Kernel: Postprocess NN outputs to compute nu_t
+// GPU Kernel: Postprocess MLP outputs (scalar nu_t) to ghosted field
+// ============================================================================
+// Input: NN outputs (scalar nu_t predictions)
+// Output: nu_t field with ghost cells, applying clipping and realizability
+// ============================================================================
+void postprocess_mlp_outputs_gpu(
+    const double* nn_outputs,              // Input: n_cells * 1 (interior only)
+    double* nu_t_field,                    // Output: (Nx+2Ng)*(Ny+2Ng) with ghosts
+    int Nx, int Ny, int Ng,
+    int stride,                            // Row stride = Nx+2Ng
+    double nu_t_max                        // Maximum eddy viscosity
+);
+
+// ============================================================================
+// GPU Kernel: Postprocess TBNN outputs to compute nu_t and tau_ij
 // ============================================================================
 // Input: NN outputs (G coefficients), basis tensors, k, gradients
-// Output: nu_t, optionally tau_ij
+// Output: nu_t (with ghosts), optionally tau_ij (with ghosts)
 // ============================================================================
 void postprocess_nn_outputs_gpu(
     const double* nn_outputs,              // Input: n_cells * output_dim

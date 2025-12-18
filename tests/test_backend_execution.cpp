@@ -185,21 +185,23 @@ void test_turbulence_nn_mlp() {
     
     try {
         // Load trained TBNN weights
-        model.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
+        model.load("data/models/tbnn_channel_caseholdout", "data/models/tbnn_channel_caseholdout");
         
 #ifdef USE_GPU_OFFLOAD
         int num_devices = omp_get_num_devices();
         if (num_devices > 0) {
-            // Upload to GPU
-            model.upload_to_gpu();
+            // Initialize GPU buffers (includes weight upload)
+            model.initialize_gpu_buffers(mesh);
             
+            // In GPU builds, GPU must be ready (no fallback allowed)
             if (!model.is_gpu_ready()) {
-                std::cout << "WARNING (GPU not ready, using CPU fallback)\n";
+                std::cerr << "FAILED: GPU build requires GPU execution, but GPU not ready!\n";
+                assert(false);
             }
         }
 #endif
         
-        // Run update (will use GPU if available and ready, else CPU)
+        // Run update (will use GPU in GPU builds, CPU in CPU builds)
         model.update(mesh, vel, k, omega, nu_t);
         
         // Verify results
@@ -210,11 +212,7 @@ void test_turbulence_nn_mlp() {
         }
         
 #ifdef USE_GPU_OFFLOAD
-        if (model.is_gpu_ready()) {
-            std::cout << "PASSED (GPU path executed)\n";
-        } else {
-            std::cout << "PASSED (CPU path executed)\n";
-        }
+        std::cout << "PASSED (GPU path executed)\n";
 #else
         std::cout << "PASSED (CPU path executed)\n";
 #endif
@@ -240,21 +238,23 @@ void test_turbulence_nn_tbnn() {
     
     try {
         // Load trained TBNN weights
-        model.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
+        model.load("data/models/tbnn_channel_caseholdout", "data/models/tbnn_channel_caseholdout");
         
 #ifdef USE_GPU_OFFLOAD
         int num_devices = omp_get_num_devices();
         if (num_devices > 0) {
-            // Upload to GPU
-            model.upload_to_gpu();
+            // Initialize GPU buffers (includes weight upload)
+            model.initialize_gpu_buffers(mesh);
             
+            // In GPU builds, GPU must be ready (no fallback allowed)
             if (!model.is_gpu_ready()) {
-                std::cout << "WARNING (GPU not ready, using CPU fallback)\n";
+                std::cerr << "FAILED: GPU build requires GPU execution, but GPU not ready!\n";
+                assert(false);
             }
         }
 #endif
         
-        // Run update
+        // Run update (will use GPU in GPU builds, CPU in CPU builds)
         model.update(mesh, vel, k, omega, nu_t);
         
         // Verify results
@@ -265,11 +265,7 @@ void test_turbulence_nn_tbnn() {
         }
         
 #ifdef USE_GPU_OFFLOAD
-        if (model.is_gpu_ready()) {
-            std::cout << "PASSED (GPU path executed)\n";
-        } else {
-            std::cout << "PASSED (CPU path executed)\n";
-        }
+        std::cout << "PASSED (GPU path executed)\n";
 #else
         std::cout << "PASSED (CPU path executed)\n";
 #endif
