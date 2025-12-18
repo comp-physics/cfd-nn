@@ -288,17 +288,39 @@ void Config::parse_args(int argc, char** argv) {
 }
 
 void Config::finalize() {
-    // Map nn_preset to weights/scaling paths if provided
-    // Convention: data/models/<preset>/ contains the weights
-    if (!nn_preset.empty()) {
-        // Check if weights_path was explicitly set via --weights
-        // If not, use the preset path
-        if (nn_weights_path == "data/") {
-            nn_weights_path = "data/models/" + nn_preset;
+    // Validate NN model configuration - require explicit model selection
+    const bool using_nn = 
+        (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN);
+    
+    if (using_nn) {
+        const bool has_preset = !nn_preset.empty();
+        const bool has_weights = !nn_weights_path.empty();
+        const bool has_scaling = !nn_scaling_path.empty();
+        
+        // Require either preset OR explicit paths
+        if (!has_preset && !has_weights && !has_scaling) {
+            std::cerr << "ERROR: NN turbulence model selected but no model specified.\n"
+                      << "Please provide either:\n"
+                      << "  --nn_preset <NAME>            (loads from data/models/<NAME>/)\n"
+                      << "or:\n"
+                      << "  --weights <DIR> --scaling <DIR>\n"
+                      << "\nAvailable presets:\n"
+                      << "  - tbnn_channel_caseholdout\n"
+                      << "  - tbnn_phll_caseholdout\n"
+                      << "  - example_tbnn (demo only)\n"
+                      << "  - example_scalar_nut (demo only)\n";
+            std::exit(1);
         }
-        if (nn_scaling_path == "data/") {
-            nn_scaling_path = "data/models/" + nn_preset;
+        
+        // Map preset to paths if not explicitly overridden
+        if (has_preset) {
+            if (!has_weights) nn_weights_path = "data/models/" + nn_preset;
+            if (!has_scaling) nn_scaling_path = "data/models/" + nn_preset;
         }
+        
+        // Mirror weights/scaling if only one provided (common usage)
+        if (has_weights && !has_scaling) nn_scaling_path = nn_weights_path;
+        if (!has_weights && has_scaling) nn_weights_path = nn_scaling_path;
     }
     
     // Reynolds number coupling for channel flow

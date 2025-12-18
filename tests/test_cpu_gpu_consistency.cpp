@@ -496,13 +496,13 @@ void test_nn_mlp_consistency() {
         // CPU version
         TurbulenceNNMLP model_cpu;
         model_cpu.set_nu(0.001);
-        model_cpu.load("../data/models/example_scalar_nut", "../data");
+        model_cpu.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
         model_cpu.update(mesh, vel, k, omega, nu_t_cpu);
         
         // GPU version
         TurbulenceNNMLP model_gpu;
         model_gpu.set_nu(0.001);
-        model_gpu.load("../data/models/example_scalar_nut", "../data");
+        model_gpu.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
         model_gpu.upload_to_gpu();
         
         if (!model_gpu.is_gpu_ready()) {

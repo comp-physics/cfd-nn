@@ -134,8 +134,8 @@ void test_turbulence_nn_mlp_gpu() {
     model.set_nu(0.001);
     
     try {
-        // Try to load example weights
-        model.load("../data/models/example_scalar_nut", "../data");
+        // Load trained TBNN weights
+        model.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
         
         // Upload to GPU - THIS IS THE KEY STEP!
         model.upload_to_gpu();
@@ -191,8 +191,8 @@ void test_turbulence_nn_tbnn_gpu() {
     model.set_nu(0.001);
     
     try {
-        // Try to load example weights
-        model.load("../data/models/example_tbnn", "../data");
+        // Load trained TBNN weights
+        model.load("../data/models/tbnn_channel_caseholdout", "../data/models/tbnn_channel_caseholdout");
         
         // Upload to GPU - THIS IS THE KEY STEP!
         model.upload_to_gpu();

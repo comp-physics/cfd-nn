@@ -237,7 +237,11 @@ bool test_single_model(TurbulenceModelType model_type, const std::string& model_
     // Attach turbulence model if not laminar
     bool has_transport = false;
     if (model_type != TurbulenceModelType::None) {
-        auto turb_model = create_turbulence_model(model_type, "data/models/example_scalar_nut/", "data/models/example_scalar_nut/");
+        // Use trained TBNN model for both NN types (works for MLP interface too)
+        std::string model_path = (model_type == TurbulenceModelType::NNTBNN || model_type == TurbulenceModelType::NNMLP) 
+            ? "data/models/tbnn_channel_caseholdout/"
+            : "";
+        auto turb_model = create_turbulence_model(model_type, model_path, model_path);
         if (turb_model) {
             has_transport = turb_model->uses_transport_equations();
             solver.set_turbulence_model(std::move(turb_model));

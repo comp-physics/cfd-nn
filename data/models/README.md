@@ -1,34 +1,105 @@
 # Neural Network Turbulence Model Zoo
 
-This directory contains pre-trained neural network models from published research that can be used with the RANS solver.
+This directory contains trained neural network turbulence models and example models for the RANS solver.
 
 ## Directory Structure
 
 Each model has its own subdirectory:
 ```
 data/models/
-+-- ling_tbnn_2016/          # TBNN for anisotropy (Ling et al. JFM 2016)
-+-- example_scalar_nut/      # Example scalar eddy viscosity model
-+-- ...                      # Additional published models
++-- tbnn_channel_caseholdout/   # Trained TBNN for channel flow
++-- tbnn_phll_caseholdout/      # Trained TBNN for periodic hills
 ```
 
-Each model directory should contain:
-- `layer*.txt` - Neural network weight files
+Each model directory contains:
+- `layer*.txt` - Neural network weight files (W = weights, b = biases)
 - `input_means.txt` - Feature normalization means
 - `input_stds.txt` - Feature normalization standard deviations
-- `metadata.json` - Model metadata and documentation
+- `metadata.json` - Model metadata (architecture, training details, reference)
+- `USAGE.md` (optional) - Detailed usage guide for that specific model
 
 ## Using a Model
 
-To use a preset model with the solver:
+**All NN models require explicit selection** via `--nn_preset` or `--weights/--scaling`:
 
 ```bash
-# Use TBNN model
-./channel --model nn_tbnn --nn_preset ling_tbnn_2016
+# Use trained TBNN model for channel flow
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
 
-# Use scalar eddy viscosity model
-./channel --model nn_mlp --nn_preset example_scalar_nut
+# Use trained TBNN model for periodic hills
+./periodic_hills --model nn_tbnn --nn_preset tbnn_phll_caseholdout
+
+# Or specify paths directly
+./channel --model nn_tbnn --weights data/models/tbnn_channel_caseholdout --scaling data/models/tbnn_channel_caseholdout
 ```
+
+## Available Trained Models
+
+### tbnn_channel_caseholdout
+**Type:** TBNN (Tensor Basis Neural Network)  
+**Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)  
+**Training Data:** McConkey et al. (2021) channel flow dataset with case-holdout validation  
+
+**Best For:** Turbulent channel flows, wall-bounded flows, canonical channel simulations
+
+**Features:** 5 Ling et al. (2016) invariants from normalized strain/rotation tensors  
+**Usage:**
+```bash
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
+```
+
+**Training Details:**
+- Framework: PyTorch
+- Optimizer: Adam with ReduceLROnPlateau
+- Learning rate: 1e-3
+- Epochs: 500
+- Batch size: 1024
+- Best validation loss: 0.0152
+- Total parameters: 8,964
+- Training time: ~3 minutes on Tesla V100
+
+**Reference:** Ling, J., Kurzawski, A., & Templeton, J. (2016). Reynolds averaged turbulence modelling using deep neural networks with embedded invariance. *Journal of Fluid Mechanics*, 807, 155-166.
+
+---
+
+### tbnn_phll_caseholdout
+**Type:** TBNN (Tensor Basis Neural Network)  
+**Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)  
+**Training Data:** McConkey et al. (2021) periodic hills dataset with case-holdout validation  
+**Training Split:** 
+- Train: case_0p5, case_0p8, case_1p5
+- Val: case_1p0
+- Test: case_1p2
+
+**Features:** 5 Ling et al. (2016) invariants from normalized strain/rotation tensors  
+**Usage:**
+```bash
+./channel --model nn_tbnn --nn_preset tbnn_phll_caseholdout
+```
+
+**Best For:** Separated flows, periodic hills geometry, complex recirculation zones
+
+**Training Details:**
+- Framework: PyTorch
+- Optimizer: Adam with ReduceLROnPlateau
+- Learning rate: 1e-3
+- Epochs: 200
+- Batch size: 8192
+- Best validation loss: 0.0093
+- Total parameters: 8,964
+
+**Reference:** Ling, J., Kurzawski, A., & Templeton, J. (2016). Reynolds averaged turbulence modelling using deep neural networks with embedded invariance. *Journal of Fluid Mechanics*, 807, 155-166.
+
+---
+
+### Model Selection Guide
+
+| Model | Training Data | Best For | Val Loss | Training Time |
+|-------|---------------|----------|----------|---------------|
+| `tbnn_channel_caseholdout` | Channel flow | Channel simulations, wall-bounded flows | 0.0152 | 3 min |
+| `tbnn_phll_caseholdout` | Periodic hills | Separated flows, recirculation | 0.0093 | 6 min |
+
+**Recommendation:** Use `tbnn_channel_caseholdout` for canonical channel flows and `tbnn_phll_caseholdout` for flows with separation and recirculation.
 
 ## Published Models
 

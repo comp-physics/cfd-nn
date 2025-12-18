@@ -68,10 +68,10 @@ struct Config {
     double nu_t_max = 1.0;      ///< Maximum eddy viscosity (clipping)
     double blend_alpha = 1.0;   ///< Blending factor for NN (0=baseline, 1=NN)
     
-    // NN model paths
-    std::string nn_weights_path = "data/";
-    std::string nn_scaling_path = "data/";
-    std::string nn_preset;      ///< Optional preset model name (e.g., "ling_tbnn_2016")
+    // NN model paths (must be explicitly specified - no legacy fallback)
+    std::string nn_weights_path;
+    std::string nn_scaling_path;
+    std::string nn_preset;      ///< Preset model name (e.g., "tbnn_channel_caseholdout")
     
     // Output
     std::string output_dir = "output/";

@@ -1,105 +1,33 @@
-# Neural Network Weights Directory
+# Data Directory
 
-This directory contains neural network weights and scaling parameters for the NN-based turbulence models.
+This directory contains data assets for the CFD-NN project.
 
-**Organization:**
-- Root directory (`data/`): Legacy example weights (kept for backward compatibility)
-- `models/` subdirectory: Organized model storage with metadata (recommended)
-  - `models/example_scalar_nut/` - Example MLP scalar eddy viscosity model
-  - `models/example_tbnn/` - Example TBNN tensor basis model
+## Neural Network Models
 
-To use a model from the `models/` directory, use `--nn_preset <model_name>` (e.g., `--nn_preset example_tbnn`).
+**All neural network turbulence model weights are stored in `data/models/`.**
 
-## File Format
+See `data/models/README.md` for:
+- Available trained models
+- How to use models with `--nn_preset`
+- Training your own models
+- Model architecture details
 
-### For `nn_mlp` model (scalar eddy viscosity)
+### Quick Start
 
-```
-layer0_W.txt    # Weight matrix for layer 0 (space-separated, row-major)
-layer0_b.txt    # Bias vector for layer 0 (one value per line)
-layer1_W.txt    # Weight matrix for layer 1
-layer1_b.txt    # Bias vector for layer 1
-...
-input_means.txt # Input feature means (one per line)
-input_stds.txt  # Input feature standard deviations (one per line)
-```
+```bash
+# Use trained TBNN model for channel flow
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
 
-### For `nn_tbnn` model (TBNN anisotropy)
+# Use trained TBNN model for periodic hills
+./periodic_hills --model nn_tbnn --nn_preset tbnn_phll_caseholdout
 
-Same format as above, but the output dimension should match the number of tensor basis functions (typically 4 for 2D).
-
-## Exporting Weights from Python
-
-### PyTorch Example
-
-```python
-import torch
-import numpy as np
-
-# Load your trained model
-model = torch.load('model.pth')
-model.eval()
-
-# Export each layer
-for i, layer in enumerate(model.layers):
-    W = layer.weight.detach().cpu().numpy()  # Shape: (out_features, in_features)
-    b = layer.bias.detach().cpu().numpy()    # Shape: (out_features,)
-    
-    # Save in space-separated format
-    np.savetxt(f'layer{i}_W.txt', W, fmt='%.16e')
-    np.savetxt(f'layer{i}_b.txt', b, fmt='%.16e')
-
-# Export input scaling (if used during training)
-np.savetxt('input_means.txt', feature_means, fmt='%.16e')
-np.savetxt('input_stds.txt', feature_stds, fmt='%.16e')
+# Use example/demo models (random weights - for testing only)
+./channel --model nn_tbnn --nn_preset example_tbnn
+./channel --model nn_mlp --nn_preset example_scalar_nut
 ```
 
-### TensorFlow/Keras Example
+**Note:** NN models now require explicit selection via `--nn_preset` or `--weights/--scaling`. There are no default/fallback weights.
 
-```python
-import tensorflow as tf
-import numpy as np
+## Legacy Note
 
-# Load your trained model
-model = tf.keras.models.load_model('model.h5')
-
-# Export each dense layer
-layer_idx = 0
-for layer in model.layers:
-    if isinstance(layer, tf.keras.layers.Dense):
-        W, b = layer.get_weights()  # W shape: (in_features, out_features)
-        W = W.T  # Transpose to match C++ convention (out, in)
-        
-        np.savetxt(f'layer{layer_idx}_W.txt', W, fmt='%.16e')
-        np.savetxt(f'layer{layer_idx}_b.txt', b, fmt='%.16e')
-        layer_idx += 1
-```
-
-## Example File Contents
-
-**layer0_W.txt** (3 inputs, 2 outputs):
-```
-1.234567e-01 -2.345678e-01  3.456789e-01
-4.567890e-01  5.678901e-01 -6.789012e-01
-```
-
-**layer0_b.txt**:
-```
-7.890123e-02
--8.901234e-02
-```
-
-## Feature Ordering
-
-Features should match the order expected by the C++ code. For scalar `nu_t` model:
-
-0. Normalized strain rate magnitude
-1. Normalized rotation rate magnitude  
-2. Normalized wall distance
-3. Strain-rotation ratio
-4. Local Reynolds number
-5. Normalized velocity magnitude
-
-For TBNN model, features include tensor invariants as defined in `features.cpp`.
-
-
+Older versions of this project stored example weight files directly in `data/` (e.g., `layer0_W.txt`, `input_means.txt`). These legacy files have been removed. All NN models now live in organized subdirectories under `data/models/`.

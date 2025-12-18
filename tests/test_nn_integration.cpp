@@ -47,11 +47,12 @@ bool is_velocity_valid(const VectorField& vel, const Mesh& mesh) {
 void test_nn_mlp_validity() {
     std::cout << "Testing NN-MLP model validity... ";
     
-    // Check if example model exists (use example_scalar_nut which is an MLP model)
-    std::string model_path = "data/models/example_scalar_nut";
+    // Use trained TBNN model (we don't have a trained MLP-only model)
+    // TBNN can still compute nu_t, so this tests the NN infrastructure
+    std::string model_path = "data/models/tbnn_channel_caseholdout";
     if (!file_exists(model_path + "/layer0_W.txt")) {
         // Try from build directory
-        model_path = "../data/models/example_scalar_nut";
+        model_path = "../data/models/tbnn_channel_caseholdout";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
@@ -104,11 +105,11 @@ void test_nn_mlp_validity() {
 void test_nn_tbnn_validity() {
     std::cout << "Testing NN-TBNN model validity... ";
     
-    // Check if example model exists
-    std::string model_path = "data/models/example_tbnn";
+    // Use trained TBNN model
+    std::string model_path = "data/models/tbnn_channel_caseholdout";
     if (!file_exists(model_path + "/layer0_W.txt")) {
         // Try from build directory
-        model_path = "../data/models/example_tbnn";
+        model_path = "../data/models/tbnn_channel_caseholdout";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
@@ -158,10 +159,10 @@ void test_nn_tbnn_validity() {
 void test_nn_tbnn_solver_integration() {
     std::cout << "Testing NN-TBNN solver integration... ";
     
-    // Check if example model exists
-    std::string model_path = "data/models/example_tbnn";
+    // Use trained TBNN model
+    std::string model_path = "data/models/tbnn_channel_caseholdout";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/example_tbnn";
+        model_path = "../data/models/tbnn_channel_caseholdout";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             std::cout << "SKIPPED (model not found)\n";
             return;
