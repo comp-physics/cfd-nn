@@ -175,6 +175,15 @@ void TurbulenceNNMLP::update(
         throw std::runtime_error("NN-MLP GPU pipeline requires device_view and GPU buffers initialized");
     }
     
+    // Validate device_view has all required buffers
+    if (!device_view->u_face || !device_view->v_face ||
+        !device_view->k || !device_view->omega ||
+        !device_view->dudx || !device_view->dudy || !device_view->dvdx || !device_view->dvdy ||
+        !device_view->wall_distance ||
+        !device_view->nu_t) {
+        throw std::runtime_error("NN-MLP GPU pipeline: device_view missing required buffers");
+    }
+    
     {  // GPU pipeline scope
     
     // Ensure GPU buffers are allocated

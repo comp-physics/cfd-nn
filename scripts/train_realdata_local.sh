@@ -185,19 +185,8 @@ if [[ "${SKIP_DOWNLOAD}" == "0" ]]; then
     fi
 
     echo "Unzipping ${ZIP_FILE} -> ${DATA_DIR}"
-    if command -v unzip >/dev/null 2>&1; then
-      unzip -q "${ZIP_FILE}" -d "${DATA_DIR}"
-    else
-      # Fallback: pure-python unzip
-      python - <<PY
-import zipfile
-zip_path = r"${ZIP_FILE}"
-out_dir = r"${DATA_DIR}"
-with zipfile.ZipFile(zip_path, "r") as z:
-    z.extractall(out_dir)
-print("Extracted", zip_path, "to", out_dir)
-PY
-    fi
+    # Use safe extraction with Zip Slip protection
+    python "${REPO_ROOT}/scripts/safe_extract.py" "${ZIP_FILE}" "${DATA_DIR}"
   fi
 else
   echo ""

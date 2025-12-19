@@ -693,6 +693,18 @@ void TurbulenceNNTBNN::update(
         throw std::runtime_error("NN-TBNN GPU pipeline requires device_view and GPU buffers initialized");
     }
     
+    // Validate device_view has all required buffers
+    if (!device_view->u_face || !device_view->v_face ||
+        !device_view->k || !device_view->omega ||
+        !device_view->dudx || !device_view->dudy || !device_view->dvdx || !device_view->dvdy ||
+        !device_view->wall_distance ||
+        !device_view->nu_t) {
+        throw std::runtime_error("NN-TBNN GPU pipeline: device_view missing required buffers");
+    }
+    if (tau_ij && (!device_view->tau_xx || !device_view->tau_xy || !device_view->tau_yy)) {
+        throw std::runtime_error("NN-TBNN GPU pipeline: tau_ij requested but tau buffers not provided in device_view");
+    }
+    
     {
         TIMED_SCOPE("nn_tbnn_full_gpu");
         
@@ -757,10 +769,12 @@ void TurbulenceNNTBNN::update(
             double* dudy_ptr = device_view->dudy;
             double* dvdx_ptr = device_view->dvdx;
             double* dvdy_ptr = device_view->dvdy;
-            double* nu_t_ptr = nu_t.data().data();
-            double* tau_xx_ptr = tau_ij ? tau_ij->xx_data().data() : nullptr;
-            double* tau_xy_ptr = tau_ij ? tau_ij->xy_data().data() : nullptr;
-            double* tau_yy_ptr = tau_ij ? tau_ij->yy_data().data() : nullptr;
+            
+            // IMPORTANT: write results to device-mapped buffers (host pointers are not valid on device)
+            double* nu_t_ptr = device_view->nu_t;
+            double* tau_xx_ptr = device_view->tau_xx;
+            double* tau_xy_ptr = device_view->tau_xy;
+            double* tau_yy_ptr = device_view->tau_yy;
             
             gpu_kernels::postprocess_nn_outputs_gpu(
                 out_ptr, basis_ptr,

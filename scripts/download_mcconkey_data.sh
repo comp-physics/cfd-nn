@@ -53,7 +53,9 @@ if [[ -z "${ZIP_FILE}" ]]; then
 fi
 
 echo "Unzipping ${ZIP_FILE} -> ${OUTPUT_DIR}"
-unzip -q "${ZIP_FILE}" -d "${OUTPUT_DIR}"
+# Use safe extraction with Zip Slip protection
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "${SCRIPT_DIR}/safe_extract.py" "${ZIP_FILE}" "${OUTPUT_DIR}"
 
 echo ""
 echo "=========================================="
