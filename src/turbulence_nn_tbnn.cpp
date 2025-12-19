@@ -698,12 +698,12 @@ void TurbulenceNNTBNN::update(
         // Ensure GPU buffers are allocated
         allocate_gpu_buffers(n_cells);
         
-        const int total_cells = (Nx + 2*Ng) * (Nx + 2*Ng);
+        const int total_cells = mesh.total_cells();  // (Nx+2Ng)*(Ny+2Ng) - was incorrectly using Nx twice
         const int u_total = velocity.u_total_size();
         const int v_total = velocity.v_total_size();
-        const int cell_stride = Nx + 2*Ng;
-        const int u_stride = Nx + 2*Ng + 1;
-        const int v_stride = Nx + 2*Ng;
+        const int cell_stride = mesh.total_Nx();
+        const int u_stride = velocity.u_stride();
+        const int v_stride = velocity.v_stride();
         
         // Step 1: Compute gradients on GPU
         {

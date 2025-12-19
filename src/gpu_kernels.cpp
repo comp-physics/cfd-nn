@@ -160,7 +160,8 @@ void compute_mlp_scalar_features_gpu(
             double Sxy = 0.5 * (dudy_v + dvdx_v);
             double Oxy = 0.5 * (dudy_v - dvdx_v);
             
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            // Frobenius norm (matches CPU VelocityGradient::S_mag())
+            double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
             double Omega_mag = sqrt(2.0 * Oxy * Oxy);
             
             // Get k, omega
@@ -173,8 +174,8 @@ void compute_mlp_scalar_features_gpu(
             double v_avg = 0.5 * (v_face[j * v_stride + i] + v_face[(j+1) * v_stride + i]);
             double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
             
-            // Wall distance (interior-only array)
-            double y_wall = wall_distance[idx_out];
+            // Wall distance (cell-centered; same indexing space as gradients)
+            double y_wall = wall_distance[idx_cell];
             
             // Features (6 values):
             // 0: Normalized strain rate magnitude
@@ -281,8 +282,8 @@ void compute_tbnn_features_gpu(
         // Rotation tensor: Omega_ij = 0.5 * (du_i/dx_j - du_j/dx_i)
         double Oxy = 0.5 * (dudy_v - dvdx_v);
         
-        // Magnitudes
-        double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+        // Magnitudes (Frobenius norm - matches CPU VelocityGradient)
+        double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
         double Omega_mag = sqrt(2.0 * Oxy * Oxy);
         
         // Get k, omega, epsilon
@@ -313,7 +314,7 @@ void compute_tbnn_features_gpu(
         features[feat_base + 1] = Omega_norm * Omega_norm;   // ~tr(Omega_norm^2)
         features[feat_base + 2] = Sxx_n*Sxx_n + Syy_n*Syy_n + 2.0*Sxy_n*Sxy_n;  // tr(S^2)
         features[feat_base + 3] = 2.0 * Oxy_n * Oxy_n;       // tr(Omega^2)
-        features[feat_base + 4] = wall_distance[idx_out] / delta; // Normalized wall distance
+        features[feat_base + 4] = wall_distance[idx_cell] / delta; // Normalized wall distance
         
         // ==================== Tensor Basis (4 tensors × 3 components) ====================
         int basis_base = idx_out * 12;
