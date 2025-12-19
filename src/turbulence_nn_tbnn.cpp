@@ -43,11 +43,10 @@ void TurbulenceNNTBNN::initialize_gpu_buffers(const Mesh& mesh) {
     const int n_cells = mesh.Nx * mesh.Ny;
     upload_to_gpu();  // Upload MLP weights if not already done
     allocate_gpu_buffers(n_cells);
-    allocate_full_gpu_buffers(mesh);
+    gpu_ready_ = (mlp_.is_on_gpu() && buffers_on_gpu_);  // Set gpu_ready after successful allocation
 #else
     (void)mesh;
     gpu_ready_ = false;
-    full_gpu_ready_ = false;
 #endif
 }
 
@@ -646,6 +645,8 @@ void TurbulenceNNTBNN::update(
     TensorField* tau_ij,
     const TurbulenceDeviceView* device_view) {
     TIMED_SCOPE("nn_tbnn_update");
+    
+    (void)device_view;  // avoid -Wunused-parameter in CPU builds
     
     ensure_initialized(mesh);
     feature_computer_.set_reference(nu_, delta_, u_ref_);

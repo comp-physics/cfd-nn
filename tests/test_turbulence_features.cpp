@@ -27,77 +27,95 @@ using namespace nncfd;
 
 void test_earsm_ret_blending() {
     std::cout << "Testing EARSM Re_t-based blending... ";
-    
-    // Setup: shear flow with fixed omega, varying k to sweep Re_t
+
     Mesh mesh;
     mesh.init_uniform(16, 16, 0.0, 2.0, -1.0, 1.0);
-    
-    const double gamma = 2.0;  // Shear rate
+
     const double nu = 0.01;
     const double omega_fixed = 10.0;
-    
-    // Create shear flow: u = γy, v = 0
+
+    // Use a flow where commutator term contributes to b_xy:
+    // u = a*x + gamma*y
+    // v = -a*y
+    // This gives Sxx=a, Syy=-a, Sxy=gamma/2, Oxy=gamma/2, so comm_xy != 0.
+    const double a = 1.0;
+    const double gamma = 2.0;
+
     VectorField vel(mesh);
     for (int j = 0; j < mesh.total_Ny(); ++j) {
         for (int i = 0; i < mesh.total_Nx(); ++i) {
-            vel.u(i, j) = gamma * mesh.y(j);
-            vel.v(i, j) = 0.0;
+            vel.u(i, j) = a * mesh.x(i) + gamma * mesh.y(j);
+            vel.v(i, j) = -a * mesh.y(j);
         }
     }
-    
-    // Test Pope EARSM (simplest model with guaranteed nonlinear terms)
+
     auto pope_model = std::make_unique<PopeQuadraticEARSM>();
     pope_model->set_nu(nu);
     pope_model->set_delta(1.0);
-    
-    int i = mesh.Nx/2;
-    int j = mesh.Ny/2;
-    
-    [[maybe_unused]] double b_xy_low = 0.0;
-    [[maybe_unused]] double b_xy_high = 0.0;
-    
-    // Case 1: Low k → Low Re_t → nonlinear terms should fade
+
+    const int i = mesh.Nx / 2;
+    const int j = mesh.Ny / 2;
+
+    auto alpha_from = [&](double k_val) {
+        const double Re_t = k_val / (nu * omega_fixed);
+        return 0.5 * (1.0 + std::tanh((Re_t - 10.0) / 5.0));
+    };
+
+    double b_xy_low = 0.0;
+    double b_xy_high = 0.0;
+
+    // Choose k so alpha sweeps near 0 -> near 1
+    const double k_low_val = 1e-6;  // Re_t = 1e-5 -> alpha ~ 0
+    const double k_high_val = 10.0; // Re_t = 100 -> alpha ~ 1
+
+    const double alpha_low = alpha_from(k_low_val);
+    const double alpha_high = alpha_from(k_high_val);
+
+    // Sanity: ensure we actually hit distinct blending regimes
+    assert(alpha_low < 0.1);
+    assert(alpha_high > 0.9);
+
+    // Low Re_t
     {
-        ScalarField k_low(mesh, 0.0001);  // Very low TKE
+        ScalarField k_low(mesh, k_low_val);
         ScalarField omega_low(mesh, omega_fixed);
         ScalarField nu_t_low(mesh);
         TensorField tau_low(mesh);
-        
+
         pope_model->compute_nu_t(mesh, vel, k_low, omega_low, nu_t_low, &tau_low);
-        
-        // Compute anisotropy: b_xy = tau_xy / (2*k)
-        const double tau_xy_low_val = tau_low.xy(i, j);
-        const double k_val_low = k_low(i, j);
-        b_xy_low = tau_xy_low_val / (2.0 * k_val_low);
-        
-        // At low Re_t, anisotropy should be small (approaching linear Boussinesq)
+
+        const double tau_xy = tau_low.xy(i, j);
+        const double k_val = k_low(i, j);
+        b_xy_low = -tau_xy / (2.0 * k_val);  // tau_xy = -2k*b_xy
+
         assert(std::isfinite(b_xy_low));
-        assert(std::abs(b_xy_low) < 10.0);  // Reasonable bound
+        assert(std::abs(b_xy_low) < 10.0);
     }
-    
-    // Case 2: High k → High Re_t → nonlinear terms should engage
+
+    // High Re_t
     {
-        ScalarField k_high(mesh, 1.0);  // High TKE
+        ScalarField k_high(mesh, k_high_val);
         ScalarField omega_high(mesh, omega_fixed);
         ScalarField nu_t_high(mesh);
         TensorField tau_high(mesh);
-        
+
         pope_model->compute_nu_t(mesh, vel, k_high, omega_high, nu_t_high, &tau_high);
-        
-        const double tau_xy_high_val = tau_high.xy(i, j);
-        const double k_val_high = k_high(i, j);
-        b_xy_high = tau_xy_high_val / (2.0 * k_val_high);
-        
+
+        const double tau_xy = tau_high.xy(i, j);
+        const double k_val = k_high(i, j);
+        b_xy_high = -tau_xy / (2.0 * k_val);
+
         assert(std::isfinite(b_xy_high));
         assert(std::abs(b_xy_high) < 10.0);
     }
-    
-    // The key test: anisotropy should DIFFER between low/high Re_t
-    // (If it doesn't, nonlinear terms aren't engaging)
-    // This test verifies the blending mechanism is active
+
+    // Now the blending MUST matter (commutator contribution is nonzero in this flow)
     assert(std::abs(b_xy_low - b_xy_high) > 1e-6);
-    
-    std::cout << "PASSED (Re_t blending active)\n";
+
+    std::cout << "PASSED (alpha_low=" << alpha_low
+              << ", alpha_high=" << alpha_high
+              << ", b_xy_low=" << b_xy_low
+              << ", b_xy_high=" << b_xy_high << ")\n";
 }
 
 void test_baseline_responds_to_shear() {
