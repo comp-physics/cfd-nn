@@ -684,8 +684,8 @@ void TurbulenceNNTBNN::update(
     
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
-    const int n_cells = Nx * Ny;
-    const int Ng = mesh.Nghost;
+    [[maybe_unused]] const int n_cells = Nx * Ny;
+    [[maybe_unused]] const int Ng = mesh.Nghost;
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: require device_view and gpu_ready (no fallback)

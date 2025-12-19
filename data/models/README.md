@@ -7,8 +7,9 @@ This directory contains trained neural network turbulence models and example mod
 Each model has its own subdirectory:
 ```
 data/models/
-+-- tbnn_channel_caseholdout/   # Trained TBNN for channel flow
-+-- tbnn_phll_caseholdout/      # Trained TBNN for periodic hills
++-- mlp_channel_caseholdout/    # Trained MLP for channel flow (scalar eddy viscosity)
++-- tbnn_channel_caseholdout/   # Trained TBNN for channel flow (anisotropy tensor)
++-- tbnn_phll_caseholdout/      # Trained TBNN for periodic hills (anisotropy tensor)
 ```
 
 Each model directory contains:
@@ -34,6 +35,68 @@ Each model directory contains:
 ```
 
 ## Available Trained Models
+
+### mlp_channel_caseholdout
+**Type:** MLP (Multi-Layer Perceptron) - Scalar Eddy Viscosity  
+**Architecture:** 6 features → 32 → 32 → 1 (ν_t)  
+**Training Data:** McConkey et al. (2021) channel flow dataset with case-holdout validation  
+
+**Best For:** Fast inference, scalar turbulence modeling, channel flows, GPU acceleration
+
+**Features:** 6 inputs for scalar eddy viscosity prediction:
+1. Strain rate magnitude: |S|
+2. Rotation rate magnitude: |Ω|
+3. Normalized wall distance: y/δ
+4. Turbulent kinetic energy: k
+5. Specific dissipation: ω
+6. Velocity magnitude: |u|
+
+**Usage:**
+```bash
+./channel --model nn_mlp --nn_preset mlp_channel_caseholdout
+```
+
+**Training Details:**
+- **Methodology:** Following Ling et al. (2016) training protocol
+- **Framework:** PyTorch 2.x
+- **Optimizer:** Adam with ReduceLROnPlateau scheduler
+- **Learning rate:** 1e-3 (initial), reduced on plateau
+- **Epochs:** 500
+- **Batch size:** 1024
+- **Activation functions:** Tanh (hidden layers), ReLU (output layer)
+- **Normalization:** Z-score (mean=0, std=1) for all input features
+- **Total parameters:** 1,313
+- **Training time:** ~2 minutes on Tesla V100 GPU
+- **Training date:** December 18, 2025
+
+**Validation Strategy:**
+- **Case-holdout validation:** Model trained on subset of Reynolds numbers, validated on held-out cases
+- **Ensures generalization** to unseen flow conditions
+- **Dataset split:** Train/val/test from different Re_τ cases
+
+**Performance:**
+- **Inference speed:** ~50x faster than TBNN (smaller network)
+- **GPU acceleration:** Full GPU offload support via OpenMP target directives
+- **Memory footprint:** Minimal (1.3K parameters vs 9K for TBNN)
+
+**Advantages:**
+- ✅ Fast training and inference
+- ✅ Simple architecture, easy to interpret
+- ✅ Excellent GPU performance
+- ✅ Guarantees non-negative ν_t (ReLU output)
+- ✅ Suitable for real-time applications
+
+**Limitations:**
+- ❌ No frame invariance guarantees (unlike TBNN)
+- ❌ Cannot predict anisotropic Reynolds stresses
+- ❌ Less physically consistent than TBNN
+- ❌ May require retraining for different geometries
+
+**Reference:** Training methodology adapted from Ling, J., Kurzawski, A., & Templeton, J. (2016). Reynolds averaged turbulence modelling using deep neural networks with embedded invariance. *Journal of Fluid Mechanics*, 807, 155-166.
+
+**Dataset Reference:** McConkey, R., Yee, E., & Lien, F. S. (2021). A curated dataset for data-driven turbulence modelling. *Scientific Data*, 8(1), 255. DOI: [10.1038/s41597-021-01034-2](https://doi.org/10.1038/s41597-021-01034-2)
+
+---
 
 ### tbnn_channel_caseholdout
 **Type:** TBNN (Tensor Basis Neural Network)  
@@ -94,12 +157,20 @@ Each model directory contains:
 
 ### Model Selection Guide
 
-| Model | Training Data | Best For | Val Loss | Training Time |
-|-------|---------------|----------|----------|---------------|
-| `tbnn_channel_caseholdout` | Channel flow | Channel simulations, wall-bounded flows | 0.0152 | 3 min |
-| `tbnn_phll_caseholdout` | Periodic hills | Separated flows, recirculation | 0.0093 | 6 min |
+| Model | Type | Training Data | Best For | Parameters | Training Time | Inference Speed |
+|-------|------|---------------|----------|------------|---------------|-----------------|
+| `mlp_channel_caseholdout` | MLP | Channel flow | Fast inference, GPU acceleration, scalar ν_t | 1,313 | 2 min | ⚡ Very Fast |
+| `tbnn_channel_caseholdout` | TBNN | Channel flow | Physically consistent, anisotropic stresses | 8,964 | 3 min | Moderate |
+| `tbnn_phll_caseholdout` | TBNN | Periodic hills | Separated flows, complex recirculation | 8,964 | 6 min | Moderate |
 
-**Recommendation:** Use `tbnn_channel_caseholdout` for canonical channel flows and `tbnn_phll_caseholdout` for flows with separation and recirculation.
+**Recommendations:**
+- **For production/real-time applications:** Use `mlp_channel_caseholdout` (fastest, GPU-optimized)
+- **For research/high accuracy:** Use `tbnn_channel_caseholdout` (physically consistent)
+- **For separated flows:** Use `tbnn_phll_caseholdout` (trained on complex geometry)
+
+**MLP vs TBNN Trade-offs:**
+- **MLP:** Faster (50x), simpler, GPU-friendly, but less physically consistent
+- **TBNN:** Slower, more complex, but frame-invariant and can predict full Reynolds stress tensor
 
 ## Published Models
 

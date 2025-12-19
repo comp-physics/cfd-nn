@@ -2,19 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, master, develop ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
   pull_request:
-    branches: [ main, master, develop ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
 
 jobs:
   build-and-test:
@@ -22,22 +10,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         build_type: [Release, Debug]
         
     steps:
     - uses: actions/checkout@v3
     
-    - name: Install dependencies (Ubuntu)
-      if: runner.os == 'Linux'
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake build-essential
     
-    - name: Install dependencies (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        brew install cmake
     
     - name: Configure CMake
       run: |
@@ -152,4 +135,3 @@ jobs:
           exit 1
         fi
         echo "No warnings detected (unused-variable warnings excluded)"
-

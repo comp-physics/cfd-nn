@@ -510,10 +510,10 @@ void test_nn_mlp_consistency() {
 #endif
     
     try {
-        // Try to locate model directory (works from repo root or build dir)
-        std::string model_path = "data/models/tbnn_channel_caseholdout";
+        // Try to locate MLP model directory (works from repo root or build dir)
+        std::string model_path = "data/models/mlp_channel_caseholdout";
         if (!file_exists(model_path + "/layer0_W.txt")) {
-            model_path = "../data/models/tbnn_channel_caseholdout";
+            model_path = "../data/models/mlp_channel_caseholdout";
         }
         
         if (!file_exists(model_path + "/layer0_W.txt")) {

@@ -27,7 +27,3 @@ See `data/models/README.md` for:
 ```
 
 **Note:** NN models now require explicit selection via `--nn_preset` or `--weights/--scaling`. There are no default/fallback weights.
-
-## Legacy Note
-
-Older versions of this project stored example weight files directly in `data/` (e.g., `layer0_W.txt`, `input_means.txt`). These legacy files have been removed. All NN models now live in organized subdirectories under `data/models/`.

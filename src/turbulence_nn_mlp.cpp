@@ -166,8 +166,8 @@ void TurbulenceNNMLP::update(
     
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
-    const int Ng = mesh.Nghost;
-    const int n_cells = Nx * Ny;
+    [[maybe_unused]] const int Ng = mesh.Nghost;
+    [[maybe_unused]] const int n_cells = Nx * Ny;
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: require device_view and gpu_ready (no fallback)

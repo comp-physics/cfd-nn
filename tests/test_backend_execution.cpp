@@ -203,14 +203,7 @@ void test_mlp_execution() {
 void test_turbulence_nn_mlp() {
     std::cout << "Testing TurbulenceNNMLP execution... ";
     
-    // NOTE: We currently only have TBNN checkpoints (5 inputs -> 4 outputs)
-    // NN-MLP expects a different architecture (6 inputs -> 1 output)
-    // Skip this test until we have a real trained MLP checkpoint
-    std::cout << "SKIPPED (no trained MLP checkpoint available)\n";
-    return;
-    
-    // TODO: When mlp_channel_caseholdout/ is added, uncomment and use it:
-    /*
+    // Test with trained MLP model from data/models/mlp_channel_caseholdout
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
     
@@ -248,6 +241,7 @@ void test_turbulence_nn_mlp() {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 assert(std::isfinite(nu_t(i, j)));
+                assert(nu_t(i, j) >= 0.0);  // Eddy viscosity must be non-negative
             }
         }
         
@@ -258,9 +252,8 @@ void test_turbulence_nn_mlp() {
 #endif
         
     } catch (const std::exception& e) {
-        std::cout << "SKIPPED (model files not found)\n";
+        std::cout << "SKIPPED (model files not found: " << e.what() << ")\n";
     }
-    */
 }
 
 void test_turbulence_nn_tbnn() {
