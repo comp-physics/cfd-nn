@@ -53,15 +53,16 @@ void test_nn_mlp_validity() {
     std::cout << "SKIPPED (no trained MLP checkpoint available; only TBNN checkpoints exist)\n";
     return;
     
-    // TODO: When mlp_channel_caseholdout/ is added, use it here:
-    // std::string model_path = "data/models/mlp_channel_caseholdout";
-    // if (!file_exists(model_path + "/layer0_W.txt")) {
-    //     model_path = "../data/models/mlp_channel_caseholdout";
-    //     if (!file_exists(model_path + "/layer0_W.txt")) {
-    //         std::cout << "SKIPPED (model not found)\n";
-    //         return;
-    //     }
-    // }
+    // TODO: When mlp_channel_caseholdout/ is added, uncomment and use:
+    /*
+    std::string model_path = "data/models/mlp_channel_caseholdout";
+    if (!file_exists(model_path + "/layer0_W.txt")) {
+        model_path = "../data/models/mlp_channel_caseholdout";
+        if (!file_exists(model_path + "/layer0_W.txt")) {
+            std::cout << "SKIPPED (model not found)\n";
+            return;
+        }
+    }
     
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 4.0, -1.0, 1.0);
@@ -103,6 +104,7 @@ void test_nn_mlp_validity() {
     } catch (const std::exception& e) {
         std::cout << "SKIPPED (" << e.what() << ")\n";
     }
+    */
 }
 
 // Test 2: NN-TBNN model produces valid output

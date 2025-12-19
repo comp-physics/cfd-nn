@@ -260,6 +260,7 @@ void test_turbulence_nn_mlp() {
     } catch (const std::exception& e) {
         std::cout << "SKIPPED (model files not found)\n";
     }
+    */
 }
 
 void test_turbulence_nn_tbnn() {
