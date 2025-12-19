@@ -57,12 +57,14 @@ void test_pure_shear_flow() {
     // Rotation: Oxy=γ/2
     assert(std::abs(grad.Oxy() - gamma/2.0) < 1e-10);
     
-    // Magnitudes for pure shear:
-    // |S| = |gamma|, |Omega| = |gamma| / sqrt(2)
+    // Magnitudes for pure shear (Frobenius norm):
+    // |S| = |Omega| = |gamma| / sqrt(2)
     double S_mag = grad.S_mag();
     double Omega_mag = grad.Omega_mag();
-    assert(std::abs(S_mag - std::abs(gamma)) < 1e-10);
+    assert(std::abs(S_mag - (std::abs(gamma) / std::sqrt(2.0))) < 1e-10);
     assert(std::abs(Omega_mag - (std::abs(gamma) / std::sqrt(2.0))) < 1e-10);
+    // For pure shear: Omega/S = 1
+    assert(std::abs(S_mag - Omega_mag) < 1e-10);
     
     std::cout << "PASSED (|S|=" << S_mag << ", |Ω|=" << Omega_mag << ")\n";
 }

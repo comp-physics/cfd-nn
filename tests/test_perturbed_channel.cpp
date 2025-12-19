@@ -17,8 +17,39 @@
 #include <vector>
 #include <string>
 #include <cassert>
+#include <fstream>
 
 using namespace nncfd;
+
+//=============================================================================
+// Path resolution helpers for NN models
+//=============================================================================
+static bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
+static std::string resolve_model_dir(const std::string& p) {
+    // Strip trailing slashes
+    std::string path = p;
+    while (!path.empty() && path.back() == '/') {
+        path.pop_back();
+    }
+    
+    // Try relative to current directory (when running from repo root)
+    if (file_exists(path + "/layer0_W.txt")) {
+        return path;
+    }
+    
+    // Try relative to build directory (when running from build/)
+    if (file_exists("../" + path + "/layer0_W.txt")) {
+        return "../" + path;
+    }
+    
+    throw std::runtime_error(
+        "NN model files not found. Tried: " + path + " and ../" + path
+    );
+}
 
 //=============================================================================
 // Divergence-free initialization: streamfunction approach
@@ -238,9 +269,10 @@ bool test_single_model(TurbulenceModelType model_type, const std::string& model_
     bool has_transport = false;
     if (model_type != TurbulenceModelType::None) {
         // Use trained TBNN model for both NN types (works for MLP interface too)
-        std::string model_path = (model_type == TurbulenceModelType::NNTBNN || model_type == TurbulenceModelType::NNMLP) 
-            ? "data/models/tbnn_channel_caseholdout/"
-            : "";
+        std::string model_path = "";
+        if (model_type == TurbulenceModelType::NNTBNN || model_type == TurbulenceModelType::NNMLP) {
+            model_path = resolve_model_dir("data/models/tbnn_channel_caseholdout");
+        }
         auto turb_model = create_turbulence_model(model_type, model_path, model_path);
         if (turb_model) {
             has_transport = turb_model->uses_transport_equations();

@@ -12,12 +12,43 @@
 #include "turbulence_nn_tbnn.hpp"
 #include <iostream>
 #include <cassert>
+#include <fstream>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #endif
 
 using namespace nncfd;
+
+//=============================================================================
+// Path resolution helpers for NN models
+//=============================================================================
+static bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
+static std::string resolve_model_dir(const std::string& p) {
+    // Strip trailing slashes
+    std::string path = p;
+    while (!path.empty() && path.back() == '/') {
+        path.pop_back();
+    }
+    
+    // Try relative to current directory (when running from repo root)
+    if (file_exists(path + "/layer0_W.txt")) {
+        return path;
+    }
+    
+    // Try relative to build directory (when running from build/)
+    if (file_exists("../" + path + "/layer0_W.txt")) {
+        return "../" + path;
+    }
+    
+    throw std::runtime_error(
+        "NN model files not found. Tried: " + path + " and ../" + path
+    );
+}
 
 void test_backend_available() {
     std::cout << "Testing backend availability... ";
@@ -185,7 +216,8 @@ void test_turbulence_nn_mlp() {
     
     try {
         // Load trained TBNN weights
-        model.load("data/models/tbnn_channel_caseholdout", "data/models/tbnn_channel_caseholdout");
+        std::string model_path = resolve_model_dir("data/models/tbnn_channel_caseholdout");
+        model.load(model_path, model_path);
         
 #ifdef USE_GPU_OFFLOAD
         int num_devices = omp_get_num_devices();
@@ -238,7 +270,8 @@ void test_turbulence_nn_tbnn() {
     
     try {
         // Load trained TBNN weights
-        model.load("data/models/tbnn_channel_caseholdout", "data/models/tbnn_channel_caseholdout");
+        std::string model_path = resolve_model_dir("data/models/tbnn_channel_caseholdout");
+        model.load(model_path, model_path);
         
 #ifdef USE_GPU_OFFLOAD
         int num_devices = omp_get_num_devices();

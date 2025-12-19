@@ -537,22 +537,118 @@ void test_nn_mlp_consistency() {
         model_cpu.load(model_path, model_path);
         model_cpu.update(mesh, vel, k, omega, nu_t_cpu);
         
-        // GPU version (or second CPU instance in CPU-only builds)
-        TurbulenceNNMLP model_gpu;
-        model_gpu.set_nu(0.001);
-        model_gpu.load(model_path, model_path);
-        
-        if (has_gpu) {
+#ifdef USE_GPU_OFFLOAD
+        if (!has_gpu) {
+            // No GPU - compare CPU to itself (sanity check)
+            TurbulenceNNMLP model_cpu2;
+            model_cpu2.set_nu(0.001);
+            model_cpu2.load(model_path, model_path);
+            model_cpu2.update(mesh, vel, k, omega, nu_t_gpu);
+        } else {
+            // GPU version - need to create device view
+            TurbulenceNNMLP model_gpu;
+            model_gpu.set_nu(0.001);
+            model_gpu.load(model_path, model_path);
             model_gpu.initialize_gpu_buffers(mesh);
             
-            // In GPU builds, GPU must be ready (no fallback)
             if (!model_gpu.is_gpu_ready()) {
                 std::cerr << "FAILED: GPU build requires GPU execution, but GPU not ready!\n";
                 assert(false);
             }
+            
+            // Create device view with all required buffers
+            const int total_cells = mesh.total_cells();
+            [[maybe_unused]] const int u_total = vel.u_total_size();
+            [[maybe_unused]] const int v_total = vel.v_total_size();
+            const int Nx = mesh.Nx;
+            const int Ny = mesh.Ny;
+            const int Ng = mesh.Nghost;
+            
+            // Allocate scratch buffers
+            std::vector<double> dudx_data(total_cells, 0.0);
+            std::vector<double> dudy_data(total_cells, 0.0);
+            std::vector<double> dvdx_data(total_cells, 0.0);
+            std::vector<double> dvdy_data(total_cells, 0.0);
+            std::vector<double> wall_dist_data(total_cells, 0.0);
+            
+            // Precompute wall distance
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    wall_dist_data[mesh.index(i, j)] = mesh.wall_distance(i, j);
+                }
+            }
+            
+            // Get pointers
+            double* u_ptr = vel.u_data().data();
+            double* v_ptr = vel.v_data().data();
+            double* k_ptr = k.data().data();
+            double* omega_ptr = omega.data().data();
+            double* nu_t_ptr = nu_t_gpu.data().data();
+            double* dudx_ptr = dudx_data.data();
+            double* dudy_ptr = dudy_data.data();
+            double* dvdx_ptr = dvdx_data.data();
+            double* dvdy_ptr = dvdy_data.data();
+            double* wall_dist_ptr = wall_dist_data.data();
+            
+            // Map to GPU
+            #pragma omp target enter data map(to: u_ptr[0:u_total])
+            #pragma omp target enter data map(to: v_ptr[0:v_total])
+            #pragma omp target enter data map(to: k_ptr[0:total_cells])
+            #pragma omp target enter data map(to: omega_ptr[0:total_cells])
+            #pragma omp target enter data map(alloc: nu_t_ptr[0:total_cells])
+            #pragma omp target enter data map(alloc: dudx_ptr[0:total_cells])
+            #pragma omp target enter data map(alloc: dudy_ptr[0:total_cells])
+            #pragma omp target enter data map(alloc: dvdx_ptr[0:total_cells])
+            #pragma omp target enter data map(alloc: dvdy_ptr[0:total_cells])
+            #pragma omp target enter data map(to: wall_dist_ptr[0:total_cells])
+            
+            // Create device view
+            TurbulenceDeviceView device_view;
+            device_view.u_face = u_ptr;
+            device_view.v_face = v_ptr;
+            device_view.u_stride = vel.u_stride();
+            device_view.v_stride = vel.v_stride();
+            device_view.k = k_ptr;
+            device_view.omega = omega_ptr;
+            device_view.nu_t = nu_t_ptr;
+            device_view.cell_stride = Nx + 2*Ng;
+            device_view.dudx = dudx_ptr;
+            device_view.dudy = dudy_ptr;
+            device_view.dvdx = dvdx_ptr;
+            device_view.dvdy = dvdy_ptr;
+            device_view.wall_distance = wall_dist_ptr;
+            device_view.Nx = Nx;
+            device_view.Ny = Ny;
+            device_view.Ng = Ng;
+            device_view.dx = mesh.dx;
+            device_view.dy = mesh.dy;
+            device_view.delta = 1.0;
+            
+            // Run GPU update
+            model_gpu.update(mesh, vel, k, omega, nu_t_gpu, nullptr, &device_view);
+            
+            // Download result
+            #pragma omp target update from(nu_t_ptr[0:total_cells])
+            
+            // Clean up GPU memory
+            #pragma omp target exit data map(delete: u_ptr[0:u_total])
+            #pragma omp target exit data map(delete: v_ptr[0:v_total])
+            #pragma omp target exit data map(delete: k_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: omega_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: dudx_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: dudy_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: dvdx_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: dvdy_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: wall_dist_ptr[0:total_cells])
         }
-        
-        model_gpu.update(mesh, vel, k, omega, nu_t_gpu);
+#else
+        // CPU-only build - compare CPU to itself (sanity check)
+        TurbulenceNNMLP model_cpu2;
+        model_cpu2.set_nu(0.001);
+        model_cpu2.load(model_path, model_path);
+        model_cpu2.update(mesh, vel, k, omega, nu_t_gpu);
+#endif
         
         // Compare
         auto cmp = compare_fields(mesh, nu_t_cpu, nu_t_gpu, "nu_t");
