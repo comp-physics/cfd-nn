@@ -77,9 +77,25 @@ void test_time_history() {
 #ifdef USE_GPU_OFFLOAD
     int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
-        std::cout << "SKIPPED (no GPU devices)\n";
-        return;
+        std::cerr << "ERROR: USE_GPU_OFFLOAD enabled but no GPU devices found.\n";
+        std::cerr << "       This test requires GPU hardware when built with GPU offload.\n";
+        std::exit(1);
     }
+    
+    // Verify GPU is accessible
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    {
+        on_device = !omp_is_initial_device();
+    }
+    
+    if (!on_device) {
+        std::cerr << "ERROR: USE_GPU_OFFLOAD enabled but target region ran on host.\n";
+        std::cerr << "       GPU is not accessible. Check OMP_TARGET_OFFLOAD settings.\n";
+        std::exit(1);
+    }
+    
+    std::cout << "GPU accessible: YES\n";
 #else
     std::cout << "SKIPPED (GPU offload not enabled)\n";
     return;

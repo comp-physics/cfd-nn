@@ -291,8 +291,9 @@ int main() {
     std::cout << "\nGPU devices available: " << num_devices << "\n";
     
     if (num_devices == 0) {
-        std::cout << "No GPU devices found. Tests skipped.\n";
-        return 0;
+        std::cerr << "\nERROR: USE_GPU_OFFLOAD enabled but no GPU devices found.\n";
+        std::cerr << "       This test requires GPU hardware when built with GPU offload.\n";
+        return 1;
     }
     
     // Verify GPU is accessible
@@ -303,8 +304,9 @@ int main() {
     }
     
     if (!on_device) {
-        std::cout << "GPU not accessible. Tests skipped.\n";
-        return 0;
+        std::cerr << "\nERROR: USE_GPU_OFFLOAD enabled but target region ran on host.\n";
+        std::cerr << "       GPU is not accessible. Check OMP_TARGET_OFFLOAD settings.\n";
+        return 1;
     }
     
     std::cout << "GPU accessible: YES\n";
