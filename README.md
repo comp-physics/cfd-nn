@@ -55,8 +55,9 @@ make -j4
 # EARSM (Wallin-Johansson)
 ./channel --model earsm_wj --adaptive_dt
 
-# Neural network model
-./channel --model nn_tbnn --nn_preset test_tbnn --adaptive_dt
+# Neural network models
+./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --adaptive_dt  # Fast, GPU-optimized
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout --adaptive_dt  # Physically consistent
 
 # Periodic hills
 ./periodic_hills --Nx 64 --Ny 96 --model baseline --adaptive_dt

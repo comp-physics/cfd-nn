@@ -517,7 +517,23 @@ void test_cpu_gpu_consistency() {
     std::cout << "SKIPPED: GPU offload not enabled\n";
     return;
 #else
-    std::cout << "Verify: GPU results match CPU exactly\n\n";
+    // Strict GPU validation: if USE_GPU_OFFLOAD is enabled, GPU must be accessible
+    if (omp_get_num_devices() == 0) {
+        throw std::runtime_error("USE_GPU_OFFLOAD enabled but no GPU devices found");
+    }
+    
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    {
+        on_device = !omp_is_initial_device();
+    }
+    
+    if (!on_device) {
+        throw std::runtime_error("USE_GPU_OFFLOAD enabled but target region ran on host (GPU not accessible)");
+    }
+    
+    std::cout << "Verify: GPU results match CPU exactly\n";
+    std::cout << "GPU accessible: YES\n\n";
     
     // This test is already comprehensive in test_solver_cpu_gpu.cpp
     // Here we do a simple sanity check

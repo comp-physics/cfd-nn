@@ -186,13 +186,13 @@ if(BUILD_TESTS)
     target_link_libraries(test_nn_integration nn_cfd_core)
     add_test(NAME NNIntegrationTest COMMAND test_nn_integration)
     
-    add_executable(test_gpu_execution tests/test_gpu_execution.cpp)
-    target_link_libraries(test_gpu_execution nn_cfd_core)
-    add_test(NAME GPUExecutionTest COMMAND test_gpu_execution)
+    add_executable(test_backend_execution tests/test_backend_execution.cpp)
+    target_link_libraries(test_backend_execution nn_cfd_core)
+    add_test(NAME BackendExecutionTest COMMAND test_backend_execution)
     
     add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
     target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
-    add_test(NAME CPUGPUConsistencyTest COMMAND test_cpu_gpu_consistency)
+    add_test(NAME ConsistencyTest COMMAND test_cpu_gpu_consistency)
     
     add_executable(test_solver_cpu_gpu tests/test_solver_cpu_gpu.cpp)
     target_link_libraries(test_solver_cpu_gpu nn_cfd_core)
@@ -224,6 +224,11 @@ if(BUILD_TESTS)
     add_executable(test_turbulence_guard tests/test_turbulence_guard.cpp)
     target_link_libraries(test_turbulence_guard nn_cfd_core)
     add_test(NAME NanInfGuardTest COMMAND test_turbulence_guard)
+    
+    # Turbulence feature tests - analytic validation of features, invariants, and model response
+    add_executable(test_turbulence_features tests/test_turbulence_features.cpp)
+    target_link_libraries(test_turbulence_features nn_cfd_core)
+    add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
 endif()
 
 # Installation

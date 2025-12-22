@@ -86,12 +86,12 @@ model_comparison.*
 # Logs
 *.log
 
-# Keep example models but ignore trained models
+# NN Models: commit curated models, ignore transient training runs
+# Keep: curated models (*_caseholdout), README
+# Ignore: job-id suffixed directories (e.g., tbnn_channel_2996744)
+data/models/*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 data/models/test_*
-data/models/*_real
-data/models/tbnn_*
-data/models/mlp_*
-!data/models/example_*
+!data/models/*_caseholdout/
 !data/models/README.md
 
 # Temp files

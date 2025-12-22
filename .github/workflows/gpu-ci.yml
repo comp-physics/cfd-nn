@@ -1,12 +1,7 @@
 name: GPU CI
 
 on:
-  pull_request:
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
+  push:
 
 jobs:
   gpu-tests:

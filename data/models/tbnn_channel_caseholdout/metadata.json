@@ -1,0 +1,53 @@
+{
+  "name": "tbnn_mcconkey",
+  "type": "nn_tbnn",
+  "description": "TBNN trained on McConkey et al. (2021) dataset",
+  "architecture": {
+    "layers": [
+      5,
+      64,
+      64,
+      64,
+      4
+    ],
+    "activations": [
+      "tanh",
+      "tanh",
+      "tanh",
+      "linear"
+    ],
+    "total_parameters": 8964
+  },
+  "features": {
+    "type": "tbnn_ling2016_2d",
+    "inputs": [
+      "lambda_1",
+      "lambda_2",
+      "eta_1",
+      "eta_2",
+      "y_norm"
+    ],
+    "normalization": "z-score",
+    "description": "5 invariants from normalized strain and rotation tensors"
+  },
+  "reference": {
+    "title": "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance",
+    "authors": "Ling, J., Kurzawski, A., & Templeton, J.",
+    "journal": "Journal of Fluid Mechanics",
+    "year": 2016,
+    "doi": "10.1017/jfm.2016.615"
+  },
+  "dataset": {
+    "source": "McConkey et al. (2021) - Scientific Data",
+    "doi": "10.1038/s41597-021-01034-2",
+    "url": "https://www.kaggle.com/datasets/ryleymcconkey/ml-turbulence-dataset"
+  },
+  "training": {
+    "framework": "PyTorch",
+    "optimizer": "Adam",
+    "learning_rate": "1e-3 with ReduceLROnPlateau"
+  },
+  "usage": {
+    "command": "./channel --model nn_tbnn --nn_preset tbnn_mcconkey"
+  }
+}

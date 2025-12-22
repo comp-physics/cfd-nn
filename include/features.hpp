@@ -32,12 +32,12 @@ struct VelocityGradient {
     /// Rotation tensor Omega_ij = 0.5 * (du_i/dx_j - du_j/dx_i)
     double Oxy() const { return 0.5 * (dudy - dvdx); }
     
-    /// Strain rate magnitude |S| = sqrt(2 * S_ij * S_ij)
+    /// Strain rate magnitude |S| = sqrt(S_ij * S_ij) (Frobenius norm)
     double S_mag() const {
-        return std::sqrt(2.0 * (Sxx()*Sxx() + Syy()*Syy() + 2.0*Sxy()*Sxy()));
+        return std::sqrt(Sxx()*Sxx() + Syy()*Syy() + 2.0*Sxy()*Sxy());
     }
     
-    /// Rotation rate magnitude |Omega|
+    /// Rotation rate magnitude |Omega| = sqrt(Omega_ij * Omega_ij)
     double Omega_mag() const {
         return std::sqrt(2.0 * Oxy() * Oxy());
     }

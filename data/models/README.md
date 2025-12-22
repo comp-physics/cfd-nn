@@ -1,34 +1,176 @@
 # Neural Network Turbulence Model Zoo
 
-This directory contains pre-trained neural network models from published research that can be used with the RANS solver.
+This directory contains trained neural network turbulence models and example models for the RANS solver.
 
 ## Directory Structure
 
 Each model has its own subdirectory:
 ```
 data/models/
-+-- ling_tbnn_2016/          # TBNN for anisotropy (Ling et al. JFM 2016)
-+-- example_scalar_nut/      # Example scalar eddy viscosity model
-+-- ...                      # Additional published models
++-- mlp_channel_caseholdout/    # Trained MLP for channel flow (scalar eddy viscosity)
++-- tbnn_channel_caseholdout/   # Trained TBNN for channel flow (anisotropy tensor)
++-- tbnn_phll_caseholdout/      # Trained TBNN for periodic hills (anisotropy tensor)
 ```
 
-Each model directory should contain:
-- `layer*.txt` - Neural network weight files
+Each model directory contains:
+- `layer*.txt` - Neural network weight files (W = weights, b = biases)
 - `input_means.txt` - Feature normalization means
 - `input_stds.txt` - Feature normalization standard deviations
-- `metadata.json` - Model metadata and documentation
+- `metadata.json` - Model metadata (architecture, training details, reference)
+- `USAGE.md` (optional) - Detailed usage guide for that specific model
 
 ## Using a Model
 
-To use a preset model with the solver:
+**All NN models require explicit selection** via `--nn_preset` or `--weights/--scaling`:
 
 ```bash
-# Use TBNN model
-./channel --model nn_tbnn --nn_preset ling_tbnn_2016
+# Use trained TBNN model for channel flow
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
 
-# Use scalar eddy viscosity model
-./channel --model nn_mlp --nn_preset example_scalar_nut
+# Use trained TBNN model for periodic hills
+./periodic_hills --model nn_tbnn --nn_preset tbnn_phll_caseholdout
+
+# Or specify paths directly
+./channel --model nn_tbnn --weights data/models/tbnn_channel_caseholdout --scaling data/models/tbnn_channel_caseholdout
 ```
+
+## Available Trained Models
+
+### mlp_channel_caseholdout
+**Type:** MLP (Multi-Layer Perceptron) - Scalar Eddy Viscosity  
+**Architecture:** 6 features → 32 → 32 → 1 (ν_t)  
+**Training Data:** McConkey et al. (2021) channel flow dataset with case-holdout validation  
+
+**Best For:** Fast inference, scalar turbulence modeling, channel flows, GPU acceleration
+
+**Features:** 6 inputs for scalar eddy viscosity prediction:
+1. Strain rate magnitude: |S|
+2. Rotation rate magnitude: |Ω|
+3. Normalized wall distance: y/δ
+4. Turbulent kinetic energy: k
+5. Specific dissipation: ω
+6. Velocity magnitude: |u|
+
+**Usage:**
+```bash
+./channel --model nn_mlp --nn_preset mlp_channel_caseholdout
+```
+
+**Training Details:**
+- **Methodology:** Following Ling et al. (2016) training protocol
+- **Framework:** PyTorch 2.x
+- **Optimizer:** Adam with ReduceLROnPlateau scheduler
+- **Learning rate:** 1e-3 (initial), reduced on plateau
+- **Epochs:** 500
+- **Batch size:** 1024
+- **Activation functions:** Tanh (hidden layers), ReLU (output layer)
+- **Normalization:** Z-score (mean=0, std=1) for all input features
+- **Total parameters:** 1,313
+- **Training time:** ~2 minutes on Tesla V100 GPU
+- **Training date:** December 18, 2025
+
+**Validation Strategy:**
+- **Case-holdout validation:** Model trained on subset of Reynolds numbers, validated on held-out cases
+- **Ensures generalization** to unseen flow conditions
+- **Dataset split:** Train/val/test from different Re_τ cases
+
+**Performance:**
+- **Inference speed:** ~50x faster than TBNN (smaller network)
+- **GPU acceleration:** Full GPU offload support via OpenMP target directives
+- **Memory footprint:** Minimal (1.3K parameters vs 9K for TBNN)
+
+**Advantages:**
+- ✅ Fast training and inference
+- ✅ Simple architecture, easy to interpret
+- ✅ Excellent GPU performance
+- ✅ Guarantees non-negative ν_t (ReLU output)
+- ✅ Suitable for real-time applications
+
+**Limitations:**
+- ❌ No frame invariance guarantees (unlike TBNN)
+- ❌ Cannot predict anisotropic Reynolds stresses
+- ❌ Less physically consistent than TBNN
+- ❌ May require retraining for different geometries
+
+**Reference:** Training methodology adapted from Ling, J., Kurzawski, A., & Templeton, J. (2016). Reynolds averaged turbulence modelling using deep neural networks with embedded invariance. *Journal of Fluid Mechanics*, 807, 155-166.
+
+**Dataset Reference:** McConkey, R., Yee, E., & Lien, F. S. (2021). A curated dataset for data-driven turbulence modelling. *Scientific Data*, 8(1), 255. DOI: [10.1038/s41597-021-01034-2](https://doi.org/10.1038/s41597-021-01034-2)
+
+---
+
+### tbnn_channel_caseholdout
+**Type:** TBNN (Tensor Basis Neural Network)  
+**Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)  
+**Training Data:** McConkey et al. (2021) channel flow dataset with case-holdout validation  
+
+**Best For:** Turbulent channel flows, wall-bounded flows, canonical channel simulations
+
+**Features:** 5 Ling et al. (2016) invariants from normalized strain/rotation tensors  
+**Usage:**
+```bash
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
+```
+
+**Training Details:**
+- Framework: PyTorch
+- Optimizer: Adam with ReduceLROnPlateau
+- Learning rate: 1e-3
+- Epochs: 500
+- Batch size: 1024
+- Best validation loss: 0.0152
+- Total parameters: 8,964
+- Training time: ~3 minutes on Tesla V100
+
+**Reference:** Ling, J., Kurzawski, A., & Templeton, J. (2016). Reynolds averaged turbulence modelling using deep neural networks with embedded invariance. *Journal of Fluid Mechanics*, 807, 155-166.
+
+---
+
+### tbnn_phll_caseholdout
+**Type:** TBNN (Tensor Basis Neural Network)  
+**Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)  
+**Training Data:** McConkey et al. (2021) periodic hills dataset with case-holdout validation  
+**Training Split:** 
+- Train: case_0p5, case_0p8, case_1p5
+- Val: case_1p0
+- Test: case_1p2
+
+**Features:** 5 Ling et al. (2016) invariants from normalized strain/rotation tensors  
+**Usage:**
+```bash
+./channel --model nn_tbnn --nn_preset tbnn_phll_caseholdout
+```
+
+**Best For:** Separated flows, periodic hills geometry, complex recirculation zones
+
+**Training Details:**
+- Framework: PyTorch
+- Optimizer: Adam with ReduceLROnPlateau
+- Learning rate: 1e-3
+- Epochs: 200
+- Batch size: 8192
+- Best validation loss: 0.0093
+- Total parameters: 8,964
+
+**Reference:** Ling, J., Kurzawski, A., & Templeton, J. (2016). Reynolds averaged turbulence modelling using deep neural networks with embedded invariance. *Journal of Fluid Mechanics*, 807, 155-166.
+
+---
+
+### Model Selection Guide
+
+| Model | Type | Training Data | Best For | Parameters | Training Time | Inference Speed |
+|-------|------|---------------|----------|------------|---------------|-----------------|
+| `mlp_channel_caseholdout` | MLP | Channel flow | Fast inference, GPU acceleration, scalar ν_t | 1,313 | 2 min | ⚡ Very Fast |
+| `tbnn_channel_caseholdout` | TBNN | Channel flow | Physically consistent, anisotropic stresses | 8,964 | 3 min | Moderate |
+| `tbnn_phll_caseholdout` | TBNN | Periodic hills | Separated flows, complex recirculation | 8,964 | 6 min | Moderate |
+
+**Recommendations:**
+- **For production/real-time applications:** Use `mlp_channel_caseholdout` (fastest, GPU-optimized)
+- **For research/high accuracy:** Use `tbnn_channel_caseholdout` (physically consistent)
+- **For separated flows:** Use `tbnn_phll_caseholdout` (trained on complex geometry)
+
+**MLP vs TBNN Trade-offs:**
+- **MLP:** Faster (50x), simpler, GPU-friendly, but less physically consistent
+- **TBNN:** Slower, more complex, but frame-invariant and can predict full Reynolds stress tensor
 
 ## Published Models
 

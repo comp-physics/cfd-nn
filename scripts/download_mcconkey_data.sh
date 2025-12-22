@@ -20,25 +20,9 @@ echo "McConkey Dataset Downloader"
 echo "=========================================="
 echo ""
 
-# Check if kaggle is installed
-if ! command -v kaggle &> /dev/null; then
-    echo "ERROR: Kaggle CLI not found."
-    echo ""
-    echo "Please install it with:"
-    echo "  pip install kaggle"
-    echo ""
-    echo "Then setup your API credentials:"
-    echo "  1. Go to https://www.kaggle.com/settings"
-    echo "  2. Click 'Create New API Token'"
-    echo "  3. Save kaggle.json to ~/.kaggle/"
-    echo "  4. chmod 600 ~/.kaggle/kaggle.json"
-    echo ""
-    exit 1
-fi
-
 # Check if API credentials exist
 if [ ! -f ~/.kaggle/kaggle.json ]; then
-    echo "ERROR: Kaggle API credentials not found."
+    echo "ERROR: Kaggle API credentials not found at ~/.kaggle/kaggle.json"
     echo ""
     echo "Setup instructions:"
     echo "  1. Go to https://www.kaggle.com/settings"
@@ -53,8 +37,25 @@ echo "Downloading dataset: $DATASET_NAME"
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
-# Download dataset
-kaggle datasets download -d "$DATASET_NAME" -p "$OUTPUT_DIR" --unzip
+# Download dataset using Kaggle CLI
+# Note: some Kaggle versions do NOT support `python -m kaggle` (no __main__).
+export KAGGLE_CONFIG_DIR="${HOME}/.kaggle"
+
+ZIP_DIR="${OUTPUT_DIR}/_kaggle_zip"
+mkdir -p "${ZIP_DIR}"
+
+kaggle datasets download -d "$DATASET_NAME" -p "$ZIP_DIR"
+
+ZIP_FILE="$(ls -1t "${ZIP_DIR}"/*.zip 2>/dev/null | head -n 1 || true)"
+if [[ -z "${ZIP_FILE}" ]]; then
+    echo "ERROR: Kaggle download completed but no .zip was found in ${ZIP_DIR}" >&2
+    exit 1
+fi
+
+echo "Unzipping ${ZIP_FILE} -> ${OUTPUT_DIR}"
+# Use safe extraction with Zip Slip protection
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "${SCRIPT_DIR}/safe_extract.py" "${ZIP_FILE}" "${OUTPUT_DIR}"
 
 echo ""
 echo "=========================================="

@@ -76,10 +76,11 @@ private:
     std::vector<Features> features_;
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis_;
     
-    // Flattened buffers for GPU batching (legacy path)
-    std::vector<double> features_flat_;
-    std::vector<double> outputs_flat_;
-    std::vector<double> workspace_;
+    // Flattened buffers for GPU batching
+    std::vector<double> features_flat_;  // n_cells * 5 (TBNN scalar features)
+    std::vector<double> basis_flat_;     // n_cells * 12 (4 basis tensors, 3 components each)
+    std::vector<double> outputs_flat_;   // n_cells * output_dim (G coefficients)
+    std::vector<double> workspace_;      // NN inference workspace
     
     // Full GPU pipeline buffers
     std::vector<double> u_flat_;           // Velocity u (with ghost cells)

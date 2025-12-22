@@ -520,14 +520,69 @@ void MLP::load_weights(const std::string& dir) {
 void MLP::load_scaling(const std::string& means_file, const std::string& stds_file) {
     input_means_ = load_vector(means_file);
     input_stds_ = load_vector(stds_file);
-    has_scaling_ = true;
     
-    // Replace zero stds with 1 to avoid division by zero
+    // Validate normalization statistics
+    bool has_invalid = false;
+    std::vector<std::string> errors;
+    
+    // Check for inf/nan in means
+    for (size_t i = 0; i < input_means_.size(); ++i) {
+        if (!std::isfinite(input_means_[i])) {
+            errors.push_back("input_means[" + std::to_string(i) + "] = " + 
+                           std::to_string(input_means_[i]) + " (not finite)");
+            has_invalid = true;
+        }
+        // Warn about extreme values (likely errors)
+        if (std::abs(input_means_[i]) > 1e10) {
+            std::cerr << "[WARNING] input_means[" << i << "] = " << input_means_[i] 
+                     << " is extremely large (possible error)" << std::endl;
+        }
+    }
+    
+    // Check for inf/nan/zero/negative in stds
+    for (size_t i = 0; i < input_stds_.size(); ++i) {
+        if (!std::isfinite(input_stds_[i])) {
+            errors.push_back("input_stds[" + std::to_string(i) + "] = " + 
+                           std::to_string(input_stds_[i]) + " (not finite)");
+            has_invalid = true;
+        } else if (input_stds_[i] <= 0.0) {
+            errors.push_back("input_stds[" + std::to_string(i) + "] = " + 
+                           std::to_string(input_stds_[i]) + " (must be positive)");
+            has_invalid = true;
+        } else if (input_stds_[i] > 1e10) {
+            std::cerr << "[WARNING] input_stds[" << i << "] = " << input_stds_[i] 
+                     << " is extremely large (possible error)" << std::endl;
+        }
+    }
+    
+    // Check size mismatch
+    if (input_means_.size() != input_stds_.size()) {
+        errors.push_back("Size mismatch: " + std::to_string(input_means_.size()) + 
+                        " means vs " + std::to_string(input_stds_.size()) + " stds");
+        has_invalid = true;
+    }
+    
+    if (has_invalid) {
+        std::string error_msg = "Invalid normalization statistics:\n";
+        for (const auto& err : errors) {
+            error_msg += "  - " + err + "\n";
+        }
+        error_msg += "\nNormalization files:\n";
+        error_msg += "  means: " + means_file + "\n";
+        error_msg += "  stds:  " + stds_file + "\n";
+        error_msg += "\nPlease fix using: python scripts/fix_normalization_stats.py --model <model_dir>";
+        throw std::runtime_error(error_msg);
+    }
+    
+    // Replace very small stds with 1 to avoid division by zero
+    // (This is a safety fallback - validation above should catch true errors)
     for (auto& s : input_stds_) {
         if (std::abs(s) < 1e-10) {
             s = 1.0;
         }
     }
+    
+    has_scaling_ = true;
 }
 
 void MLP::scale_input(std::vector<double>& x) const {
@@ -561,8 +616,19 @@ std::vector<double> load_vector(const std::string& filename) {
     
     std::vector<double> result;
     double val;
+    size_t idx = 0;
     while (file >> val) {
+        // Validate: fail fast on NaN/Inf
+        if (!std::isfinite(val)) {
+            throw std::runtime_error(
+                "Invalid value in " + filename + " at index " + std::to_string(idx) + 
+                ": " + std::to_string(val) + " (NaN or Inf)\n" +
+                "Neural network weights/biases must be finite values.\n" +
+                "This indicates a corrupted model file or training failure."
+            );
+        }
         result.push_back(val);
+        ++idx;
     }
     
     return result;
@@ -576,15 +642,30 @@ std::vector<double> load_matrix(const std::string& filename, int& rows, int& col
     
     std::vector<std::vector<double>> data;
     std::string line;
+    int line_num = 0;
     
     while (std::getline(file, line)) {
+        ++line_num;
         if (line.empty() || line[0] == '#') continue;
         
         std::istringstream iss(line);
         std::vector<double> row;
         double val;
+        int col_num = 0;
         while (iss >> val) {
+            // Validate: fail fast on NaN/Inf
+            if (!std::isfinite(val)) {
+                throw std::runtime_error(
+                    "Invalid value in " + filename + 
+                    " at line " + std::to_string(line_num) + 
+                    ", column " + std::to_string(col_num) + 
+                    ": " + std::to_string(val) + " (NaN or Inf)\n" +
+                    "Neural network weights must be finite values.\n" +
+                    "This indicates a corrupted model file or training failure."
+                );
+            }
             row.push_back(val);
+            ++col_num;
         }
         if (!row.empty()) {
             data.push_back(row);

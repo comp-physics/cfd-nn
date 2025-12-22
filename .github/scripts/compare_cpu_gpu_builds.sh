@@ -25,23 +25,55 @@ echo "=== Building (CPU-only reference) ==="
 make -j8
 
 echo ""
-echo "--- Running test_cpu_gpu_consistency (CPU-only build) ---"
-echo "This test will skip GPU-specific tests and run CPU validation only."
-./test_cpu_gpu_consistency || {
-    echo "[INFO] CPU-only build completed (GPU tests skipped as expected)"
+echo "--- Step 1: Generate CPU reference outputs ---"
+rm -rf cpu_gpu_comparison
+mkdir -p cpu_gpu_comparison
+./test_cpu_gpu_consistency --dump-prefix cpu_gpu_comparison/cpu_ref || {
+    echo "[FAIL] CPU reference generation failed!"
+    exit 1
+}
+./test_solver_cpu_gpu --dump-prefix cpu_gpu_comparison/cpu_ref || {
+    echo "[FAIL] Solver CPU reference generation failed!"
+    exit 1
+}
+./test_time_history_consistency --dump-prefix cpu_gpu_comparison/cpu_ref || {
+    echo "[FAIL] Time-history CPU reference generation failed!"
+    exit 1
 }
 
-# Now run with the GPU-offload build
-cd "$WORKDIR/build_ci_gpu_correctness"
-
 echo ""
-echo "--- Running test_cpu_gpu_consistency (GPU-offload build) ---"
-echo "This test compares CPU and GPU execution paths within the same binary."
-./test_cpu_gpu_consistency || {
-    echo "[FAIL] GPU consistency test failed!"
+echo "--- Step 2: Run GPU and compare against CPU reference ---"
+if [ ! -d "$WORKDIR/build_ci_gpu_correctness" ]; then
+    echo "[INFO] build_ci_gpu_correctness not found; creating GPU-offload build..."
+    rm -rf "$WORKDIR/build_ci_gpu_correctness"
+    mkdir -p "$WORKDIR/build_ci_gpu_correctness"
+    cd "$WORKDIR/build_ci_gpu_correctness"
+
+    echo "=== CMake Configuration (GPU-offload) ==="
+    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
+    echo ""
+    echo "=== Building (GPU-offload) ==="
+    make -j8
+else
+    cd "$WORKDIR/build_ci_gpu_correctness"
+    echo "=== Building (GPU-offload incremental) ==="
+    make -j8
+fi
+
+./test_cpu_gpu_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
+    echo "[FAIL] GPU vs CPU comparison failed!"
+    exit 1
+}
+./test_solver_cpu_gpu --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
+    echo "[FAIL] Solver GPU vs CPU comparison failed!"
+    exit 1
+}
+./test_time_history_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
+    echo "[FAIL] Time-history GPU vs CPU comparison failed!"
     exit 1
 }
 
 echo ""
 echo "[PASS] CPU-only vs GPU-offload comparison completed successfully"
+echo "      GPU results match CPU reference within tolerance"
 

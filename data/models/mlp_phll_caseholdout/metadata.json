@@ -1,0 +1,38 @@
+{
+  "name": "mlp_mcconkey",
+  "type": "nn_mlp",
+  "description": "MLP for scalar eddy viscosity trained on McConkey dataset",
+  "architecture": {
+    "layers": [
+      6,
+      32,
+      32,
+      1
+    ],
+    "activations": [
+      "tanh",
+      "tanh",
+      "relu"
+    ],
+    "total_parameters": 1313
+  },
+  "features": {
+    "type": "scalar_nut_v1",
+    "inputs": [
+      "S_mag",
+      "Omega_mag",
+      "y_norm",
+      "k",
+      "omega",
+      "u_mag"
+    ],
+    "normalization": "z-score"
+  },
+  "dataset": {
+    "source": "McConkey et al. (2021)",
+    "doi": "10.1038/s41597-021-01034-2"
+  },
+  "usage": {
+    "command": "./channel --model nn_mlp --nn_preset mlp_mcconkey"
+  }
+}
