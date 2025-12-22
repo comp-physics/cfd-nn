@@ -140,7 +140,14 @@ void compute_mlp_scalar_features_gpu(
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
-    #pragma omp target teams distribute parallel for collapse(2)
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by solver/turbulence model
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: dudx[0:total_cells], dudy[0:total_cells], \
+                     dvdx[0:total_cells], dvdy[0:total_cells], \
+                     k[0:total_cells], omega[0:total_cells], \
+                     wall_distance[0:total_cells], \
+                     u_face[0:u_total], v_face[0:v_total], \
+                     features[0:(Nx*Ny*6)])
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
             const int i = ii + Ng;
@@ -215,7 +222,11 @@ void postprocess_mlp_outputs_gpu(
     double nu_t_max)
 {
 #ifdef USE_GPU_OFFLOAD
-    #pragma omp target teams distribute parallel for collapse(2)
+    const int total_field_size = (Nx + 2*Ng) * (Ny + 2*Ng);
+    
+    // CRITICAL: map(present:...) indicates these arrays are already mapped
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: nn_outputs[0:(Nx*Ny)], nu_t_field[0:total_field_size])
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
             const int i = ii + Ng;
@@ -260,7 +271,13 @@ void compute_tbnn_features_gpu(
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
-    #pragma omp target teams distribute parallel for collapse(2)
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by solver/turbulence model
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: dudx[0:total_cells], dudy[0:total_cells], \
+                     dvdx[0:total_cells], dvdy[0:total_cells], \
+                     k[0:total_cells], omega[0:total_cells], \
+                     wall_distance[0:total_cells], \
+                     features[0:(Nx*Ny*5)], basis[0:(Nx*Ny*12)])
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
             const int i = ii + Ng;
@@ -375,7 +392,12 @@ void postprocess_nn_outputs_gpu(
     const int NUM_BASIS = 4;
     const bool compute_tau = (tau_xx != nullptr);
     
-    #pragma omp target teams distribute parallel for
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by turbulence model
+    // Note: tau arrays may be nullptr, but map clause is safe (runtime ignores null pointers)
+    #pragma omp target teams distribute parallel for \
+        map(present: nn_outputs[0:(n_cells*output_dim)], basis[0:(n_cells*12)], \
+                     k[0:n_cells], dudx[0:n_cells], dudy[0:n_cells], \
+                     dvdx[0:n_cells], dvdy[0:n_cells], nu_t[0:n_cells])
     for (int idx = 0; idx < n_cells; ++idx) {
         // Extract G coefficients from NN output
         double G[4] = {0.0, 0.0, 0.0, 0.0};

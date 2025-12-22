@@ -380,6 +380,8 @@ void test_nn_tbnn_solver_integration() {
     
     try {
         RANSSolver solver(mesh, config);
+        solver.set_body_force(-config.dp_dx, 0.0);  // Required for driven channel flow
+        solver.initialize_uniform(0.1, 0.0);         // Initialize velocity field
         
         // Run several iterations
         for (int iter = 0; iter < 20; ++iter) {
@@ -677,6 +679,10 @@ void test_nn_different_grid_sizes() {
 }
 
 int main() {
+    // Force unbuffered output for SLURM/batch environments
+    std::cout.setf(std::ios::unitbuf);
+    std::cerr.setf(std::ios::unitbuf);
+    
     std::cout << "=== NN Integration Tests ===\n\n";
     
     test_nn_mlp_validity();
