@@ -250,8 +250,10 @@ void test_nn_tbnn_validity() {
         
         model.initialize_gpu_buffers(mesh);
         
-        // Create device buffers
+        // Create device buffers with correct sizes
         const int total_cells = mesh.total_cells();
+        const int u_total = vel.u_total_size();
+        const int v_total = vel.v_total_size();
         double* u_ptr = vel.u_data().data();
         double* v_ptr = vel.v_data().data();
         double* k_ptr = k.data().data();
@@ -279,7 +281,7 @@ void test_nn_tbnn_validity() {
         double* dvdy_ptr = dvdy.data();
         double* wall_dist_ptr = wall_dist.data();
         
-        #pragma omp target enter data map(to: u_ptr[0:total_cells], v_ptr[0:total_cells])
+        #pragma omp target enter data map(to: u_ptr[0:u_total], v_ptr[0:v_total])
         #pragma omp target enter data map(to: k_ptr[0:total_cells], omega_ptr[0:total_cells])
         #pragma omp target enter data map(to: nu_t_ptr[0:total_cells])
         #pragma omp target enter data map(to: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells])
@@ -289,6 +291,8 @@ void test_nn_tbnn_validity() {
         TurbulenceDeviceView device_view;
         device_view.u_face = u_ptr;
         device_view.v_face = v_ptr;
+        device_view.k = k_ptr;                    // REQUIRED for NN-TBNN
+        device_view.omega = omega_ptr;            // REQUIRED for NN-TBNN
         device_view.u_stride = vel.u_stride();
         device_view.v_stride = vel.v_stride();
         device_view.nu_t = nu_t_ptr;
@@ -314,7 +318,7 @@ void test_nn_tbnn_validity() {
         
         #pragma omp target update from(nu_t_ptr[0:total_cells])
         
-        #pragma omp target exit data map(delete: u_ptr[0:total_cells], v_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: u_ptr[0:u_total], v_ptr[0:v_total])
         #pragma omp target exit data map(delete: k_ptr[0:total_cells], omega_ptr[0:total_cells])
         #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
         #pragma omp target exit data map(delete: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells])
@@ -444,6 +448,8 @@ void test_nn_repeated_updates() {
         model.initialize_gpu_buffers(mesh);
         
         const int total_cells = mesh.total_cells();
+        const int u_total = vel.u_total_size();
+        const int v_total = vel.v_total_size();
         double* u_ptr = vel.u_data().data();
         double* v_ptr = vel.v_data().data();
         double* k_ptr = k.data().data();
@@ -471,7 +477,7 @@ void test_nn_repeated_updates() {
         double* dvdy_ptr = dvdy.data();
         double* wall_dist_ptr = wall_dist.data();
         
-        #pragma omp target enter data map(to: u_ptr[0:total_cells], v_ptr[0:total_cells])
+        #pragma omp target enter data map(to: u_ptr[0:u_total], v_ptr[0:v_total])
         #pragma omp target enter data map(to: k_ptr[0:total_cells], omega_ptr[0:total_cells])
         #pragma omp target enter data map(to: nu_t_ptr[0:total_cells])
         #pragma omp target enter data map(to: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells])
@@ -481,6 +487,8 @@ void test_nn_repeated_updates() {
         TurbulenceDeviceView device_view;
         device_view.u_face = u_ptr;
         device_view.v_face = v_ptr;
+        device_view.k = k_ptr;                    // REQUIRED for NN-TBNN
+        device_view.omega = omega_ptr;            // REQUIRED for NN-TBNN
         device_view.u_stride = vel.u_stride();
         device_view.v_stride = vel.v_stride();
         device_view.nu_t = nu_t_ptr;
@@ -510,7 +518,7 @@ void test_nn_repeated_updates() {
         
         #pragma omp target update from(nu_t_ptr[0:total_cells])
         
-        #pragma omp target exit data map(delete: u_ptr[0:total_cells], v_ptr[0:total_cells])
+        #pragma omp target exit data map(delete: u_ptr[0:u_total], v_ptr[0:v_total])
         #pragma omp target exit data map(delete: k_ptr[0:total_cells], omega_ptr[0:total_cells])
         #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
         #pragma omp target exit data map(delete: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells])
@@ -593,6 +601,8 @@ void test_nn_different_grid_sizes() {
             model.initialize_gpu_buffers(mesh);
             
             const int total_cells = mesh.total_cells();
+            const int u_total = vel.u_total_size();
+            const int v_total = vel.v_total_size();
             double* u_ptr = vel.u_data().data();
             double* v_ptr = vel.v_data().data();
             double* k_ptr = k.data().data();
@@ -613,7 +623,7 @@ void test_nn_different_grid_sizes() {
                 }
             }
             
-            #pragma omp target enter data map(to: u_ptr[0:total_cells], v_ptr[0:total_cells])
+            #pragma omp target enter data map(to: u_ptr[0:u_total], v_ptr[0:v_total])
             #pragma omp target enter data map(to: k_ptr[0:total_cells], omega_ptr[0:total_cells])
             #pragma omp target enter data map(to: nu_t_ptr[0:total_cells])
             #pragma omp target enter data map(to: dudx[0:total_cells], dudy[0:total_cells])
@@ -623,6 +633,8 @@ void test_nn_different_grid_sizes() {
             TurbulenceDeviceView device_view;
             device_view.u_face = u_ptr;
             device_view.v_face = v_ptr;
+            device_view.k = k_ptr;                    // REQUIRED for NN-TBNN
+            device_view.omega = omega_ptr;            // REQUIRED for NN-TBNN
             device_view.u_stride = vel.u_stride();
             device_view.v_stride = vel.v_stride();
             device_view.nu_t = nu_t_ptr;
@@ -643,7 +655,7 @@ void test_nn_different_grid_sizes() {
             
             #pragma omp target update from(nu_t_ptr[0:total_cells])
             
-            #pragma omp target exit data map(delete: u_ptr[0:total_cells], v_ptr[0:total_cells])
+            #pragma omp target exit data map(delete: u_ptr[0:u_total], v_ptr[0:v_total])
             #pragma omp target exit data map(delete: k_ptr[0:total_cells], omega_ptr[0:total_cells])
             #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
             #pragma omp target exit data map(delete: dudx[0:total_cells], dudy[0:total_cells])
