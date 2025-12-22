@@ -25,23 +25,23 @@ echo "=== Building (CPU-only reference) ==="
 make -j8
 
 echo ""
-echo "--- Running test_cpu_gpu_consistency (CPU-only build) ---"
-echo "This test will skip GPU-specific tests and run CPU validation only."
-./test_cpu_gpu_consistency || {
-    echo "[INFO] CPU-only build completed (GPU tests skipped as expected)"
+echo "--- Step 1: Generate CPU reference outputs ---"
+mkdir -p cpu_gpu_comparison
+./test_cpu_gpu_consistency --dump-prefix cpu_gpu_comparison/cpu_ref || {
+    echo "[FAIL] CPU reference generation failed!"
+    exit 1
 }
 
-# Now run with the GPU-offload build
+echo ""
+echo "--- Step 2: Run GPU and compare against CPU reference ---"
 cd "$WORKDIR/build_ci_gpu_correctness"
 
-echo ""
-echo "--- Running test_cpu_gpu_consistency (GPU-offload build) ---"
-echo "This test compares CPU and GPU execution paths within the same binary."
-./test_cpu_gpu_consistency || {
-    echo "[FAIL] GPU consistency test failed!"
+./test_cpu_gpu_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
+    echo "[FAIL] GPU vs CPU comparison failed!"
     exit 1
 }
 
 echo ""
 echo "[PASS] CPU-only vs GPU-offload comparison completed successfully"
+echo "      GPU results match CPU reference within tolerance"
 

@@ -170,7 +170,7 @@ void TurbulenceNNMLP::update(
     [[maybe_unused]] const int n_cells = Nx * Ny;
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: require device_view and gpu_ready (no fallback)
+    // GPU path: require device_view and gpu_ready (no CPU fallback)
     if (!device_view || !gpu_ready_) {
         throw std::runtime_error("NN-MLP GPU pipeline requires device_view and GPU buffers initialized");
     }
@@ -188,69 +188,69 @@ void TurbulenceNNMLP::update(
     
     // Ensure GPU buffers are allocated
     allocate_gpu_buffers(n_cells);
-    
-    const int total_cells = (Nx + 2*Ng) * (Ny + 2*Ng);
-    const int u_total = velocity.u_total_size();
-    const int v_total = velocity.v_total_size();
-    const int cell_stride = Nx + 2*Ng;
-    const int u_stride = Nx + 2*Ng + 1;
-    const int v_stride = Nx + 2*Ng;
-    
-    // Step 1: Compute gradients on GPU (using solver-owned buffers)
-    {
-        TIMED_SCOPE("nn_mlp_gradients_gpu");
-        gpu_kernels::compute_gradients_from_mac_gpu(
-            device_view->u_face, device_view->v_face,
-            device_view->dudx, device_view->dudy,
-            device_view->dvdx, device_view->dvdy,
-            Nx, Ny, Ng,
-            mesh.dx, mesh.dy,
-            u_stride, v_stride, cell_stride,
-            u_total, v_total, total_cells
-        );
-    }
-    
-    // Step 2: Compute features on GPU
-    {
-        TIMED_SCOPE("nn_mlp_features_gpu");
-        double* feat_ptr = features_flat_.data();
-        gpu_kernels::compute_mlp_scalar_features_gpu(
-            device_view->dudx, device_view->dudy,
-            device_view->dvdx, device_view->dvdy,
-            device_view->k, device_view->omega,
-            device_view->wall_distance,
-            device_view->u_face, device_view->v_face,
-            feat_ptr,  // Output: n_cells * 6 (already on GPU)
-            Nx, Ny, Ng,
-            cell_stride, u_stride, v_stride,
-            total_cells, u_total, v_total,
-            nu_, delta_, u_ref_
-        );
-    }
-    
-    // Step 3: Run NN inference on GPU
-    {
-        TIMED_SCOPE("nn_mlp_inference_gpu");
-        double* feat_ptr = features_flat_.data();
-        double* out_ptr = outputs_flat_.data();
-        double* work_ptr = workspace_.data();
-        mlp_.forward_batch_gpu(feat_ptr, out_ptr, n_cells, work_ptr);
-    }
-    
-    // Step 4: Postprocess outputs and write to nu_t field on GPU
-    {
-        TIMED_SCOPE("nn_mlp_postprocess_gpu");
-        double* out_ptr = outputs_flat_.data();
-        double* nu_t_ptr = nu_t.data().data();
         
-        gpu_kernels::postprocess_mlp_outputs_gpu(
-            out_ptr,      // NN outputs (n_cells * 1)
-            nu_t_ptr,     // nu_t field with ghosts
-            Nx, Ny, Ng,
-            cell_stride,
-            nu_t_max_
-        );
-    }
+        const int total_cells = (Nx + 2*Ng) * (Ny + 2*Ng);
+        const int u_total = velocity.u_total_size();
+        const int v_total = velocity.v_total_size();
+        const int cell_stride = Nx + 2*Ng;
+        const int u_stride = Nx + 2*Ng + 1;
+        const int v_stride = Nx + 2*Ng;
+        
+        // Step 1: Compute gradients on GPU (using solver-owned buffers)
+        {
+            TIMED_SCOPE("nn_mlp_gradients_gpu");
+            gpu_kernels::compute_gradients_from_mac_gpu(
+                device_view->u_face, device_view->v_face,
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                Nx, Ny, Ng,
+                mesh.dx, mesh.dy,
+                u_stride, v_stride, cell_stride,
+                u_total, v_total, total_cells
+            );
+        }
+        
+        // Step 2: Compute features on GPU
+        {
+            TIMED_SCOPE("nn_mlp_features_gpu");
+            double* feat_ptr = features_flat_.data();
+            gpu_kernels::compute_mlp_scalar_features_gpu(
+                device_view->dudx, device_view->dudy,
+                device_view->dvdx, device_view->dvdy,
+                device_view->k, device_view->omega,
+                device_view->wall_distance,
+                device_view->u_face, device_view->v_face,
+                feat_ptr,  // Output: n_cells * 6 (already on GPU)
+                Nx, Ny, Ng,
+                cell_stride, u_stride, v_stride,
+                total_cells, u_total, v_total,
+                nu_, delta_, u_ref_
+            );
+        }
+        
+        // Step 3: Run NN inference on GPU
+        {
+            TIMED_SCOPE("nn_mlp_inference_gpu");
+            double* feat_ptr = features_flat_.data();
+            double* out_ptr = outputs_flat_.data();
+            double* work_ptr = workspace_.data();
+            mlp_.forward_batch_gpu(feat_ptr, out_ptr, n_cells, work_ptr);
+        }
+        
+        // Step 4: Postprocess outputs and write to nu_t field on GPU
+        {
+            TIMED_SCOPE("nn_mlp_postprocess_gpu");
+            double* out_ptr = outputs_flat_.data();
+            double* nu_t_ptr = nu_t.data().data();
+            
+            gpu_kernels::postprocess_mlp_outputs_gpu(
+                out_ptr,      // NN outputs (n_cells * 1)
+                nu_t_ptr,     // nu_t field with ghosts
+                Nx, Ny, Ng,
+                cell_stride,
+                nu_t_max_
+            );
+        }
     }  // End GPU pipeline scope
     
 #else

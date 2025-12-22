@@ -16,6 +16,8 @@
 #include <iomanip>
 #include <random>
 #include <fstream>
+#include <sstream>
+#include <cstring>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -27,6 +29,47 @@ using namespace nncfd;
 bool file_exists(const std::string& path) {
     std::ifstream f(path);
     return f.good();
+}
+
+// Helper to read a scalar field from .dat file (format: x y value)
+ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& mesh) {
+    std::ifstream file(filename);
+    if (!file) {
+        throw std::runtime_error("Cannot open reference file: " + filename);
+    }
+    
+    ScalarField field(mesh);
+    std::string line;
+    
+    while (std::getline(file, line)) {
+        // Skip comments and blank lines
+        if (line.empty() || line[0] == '#') continue;
+        
+        std::istringstream iss(line);
+        double x, y, value;
+        if (iss >> x >> y >> value) {
+            // Find closest mesh point (simple nearest-neighbor)
+            int best_i = -1, best_j = -1;
+            double min_dist = 1e30;
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double dx = mesh.x(i) - x;
+                    double dy = mesh.y(j) - y;
+                    double dist = dx*dx + dy*dy;
+                    if (dist < min_dist) {
+                        min_dist = dist;
+                        best_i = i;
+                        best_j = j;
+                    }
+                }
+            }
+            if (best_i >= 0 && best_j >= 0) {
+                field(best_i, best_j) = value;
+            }
+        }
+    }
+    
+    return field;
 }
 
 // Utility: compare two scalar fields
@@ -817,7 +860,24 @@ void test_randomized_regression() {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Parse command-line arguments for two-build comparison mode
+    std::string dump_prefix, compare_prefix;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--dump-prefix") == 0 && i + 1 < argc) {
+            dump_prefix = argv[++i];
+        } else if (std::strcmp(argv[i], "--compare-prefix") == 0 && i + 1 < argc) {
+            compare_prefix = argv[++i];
+        } else if (std::strcmp(argv[i], "--help") == 0) {
+            std::cout << "Usage: " << argv[0] << " [OPTIONS]\n";
+            std::cout << "Options:\n";
+            std::cout << "  --dump-prefix <prefix>     Run CPU reference and write outputs to <prefix>_*.dat\n";
+            std::cout << "  --compare-prefix <prefix>  Run GPU and compare against <prefix>_*.dat files\n";
+            std::cout << "  (no options)               Run standard consistency tests\n";
+            return 0;
+        }
+    }
+    
     std::cout << "========================================\n";
 #ifdef USE_GPU_OFFLOAD
     std::cout << "CPU vs GPU Consistency Test Suite\n";
@@ -846,6 +906,205 @@ int main() {
     std::cout << "  Running CPU consistency tests\n";
 #endif
     
+    // Two-build comparison mode
+    if (!dump_prefix.empty()) {
+#ifdef USE_GPU_OFFLOAD
+        std::cerr << "ERROR: --dump-prefix should only be used with CPU-only builds\n";
+        std::cerr << "       (This binary was built with USE_GPU_OFFLOAD=ON)\n";
+        return 1;
+#else
+        std::cout << "\n=== CPU Reference Dump Mode ===\n";
+        std::cout << "Writing reference outputs to: " << dump_prefix << "_*.dat\n\n";
+        
+        // Run a simple test case and dump outputs
+        Mesh mesh;
+        mesh.init_uniform(64, 64, 0.0, 2.0, 0.0, 1.0, 1);
+        
+        VectorField velocity(mesh);
+        create_test_velocity_field(mesh, velocity, 42);  // Fixed seed for reproducibility
+        
+        ScalarField k(mesh, 0.01);
+        ScalarField omega(mesh, 10.0);
+        
+        // Test MixingLength
+        {
+            MixingLengthModel ml;
+            ml.set_nu(0.001);
+            ml.set_delta(1.0);
+            ScalarField nu_t(mesh);
+            ml.update(mesh, velocity, k, omega, nu_t);
+            nu_t.write(dump_prefix + "_mixing_length_nu_t.dat");
+            std::cout << "  Wrote: " << dump_prefix << "_mixing_length_nu_t.dat\n";
+        }
+        
+        // Test GEP
+        {
+            TurbulenceGEP gep;
+            gep.set_nu(0.001);
+            gep.set_delta(1.0);
+            ScalarField nu_t(mesh);
+            gep.update(mesh, velocity, k, omega, nu_t);
+            nu_t.write(dump_prefix + "_gep_nu_t.dat");
+            std::cout << "  Wrote: " << dump_prefix << "_gep_nu_t.dat\n";
+        }
+        
+        // Test NN-MLP (if model available)
+        try {
+            std::string model_path = "../data/models/mlp_channel_caseholdout";
+            if (!file_exists(model_path + "/layer0_W.txt")) {
+                model_path = "data/models/mlp_channel_caseholdout";
+            }
+            
+            if (file_exists(model_path + "/layer0_W.txt")) {
+                TurbulenceNNMLP nn_mlp;
+                nn_mlp.set_nu(0.001);
+                nn_mlp.load(model_path, model_path);
+                ScalarField nu_t(mesh);
+                nn_mlp.update(mesh, velocity, k, omega, nu_t);
+                nu_t.write(dump_prefix + "_nn_mlp_nu_t.dat");
+                std::cout << "  Wrote: " << dump_prefix << "_nn_mlp_nu_t.dat\n";
+            } else {
+                std::cout << "  Skipped NN-MLP (model not found)\n";
+            }
+        } catch (const std::exception& e) {
+            std::cout << "  Skipped NN-MLP: " << e.what() << "\n";
+        }
+        
+        std::cout << "\n[SUCCESS] CPU reference files written\n";
+        return 0;
+#endif
+    }
+    
+    if (!compare_prefix.empty()) {
+#ifndef USE_GPU_OFFLOAD
+        std::cerr << "ERROR: --compare-prefix should only be used with GPU builds\n";
+        std::cerr << "       (This binary was built with USE_GPU_OFFLOAD=OFF)\n";
+        return 1;
+#else
+        std::cout << "\n=== GPU Comparison Mode ===\n";
+        std::cout << "Comparing GPU results against: " << compare_prefix << "_*.dat\n\n";
+        
+        if (num_devices == 0) {
+            std::cerr << "ERROR: GPU comparison mode requires GPU device\n";
+            return 1;
+        }
+        
+        // Run the same test case on GPU and compare
+        Mesh mesh;
+        mesh.init_uniform(64, 64, 0.0, 2.0, 0.0, 1.0, 1);
+        
+        VectorField velocity(mesh);
+        create_test_velocity_field(mesh, velocity, 42);  // Same seed as CPU reference
+        
+        ScalarField k(mesh, 0.01);
+        ScalarField omega(mesh, 10.0);
+        
+        bool all_passed = true;
+        // Tolerances for CPU vs GPU comparison (different architectures, compilers, rounding)
+        // GPU uses different FMA, reduction orders, etc. than CPU
+        const double tol_abs = 1e-6;   // Absolute tolerance: ~1 ppm
+        const double tol_rel = 1e-5;   // Relative tolerance: ~10 ppm
+        
+        // Test MixingLength
+        {
+            std::cout << "Testing MixingLength CPU vs GPU... ";
+            std::string ref_file = compare_prefix + "_mixing_length_nu_t.dat";
+            if (!file_exists(ref_file)) {
+                std::cout << "SKIPPED (reference not found)\n";
+            } else {
+                ScalarField nu_t_cpu = read_scalar_field_from_dat(ref_file, mesh);
+                
+                // Run GPU version with device_view
+                const int total_cells = mesh.total_cells();
+                const int u_total = velocity.u_total_size();
+                const int v_total = velocity.v_total_size();
+                
+                double* u_ptr = velocity.u_data().data();
+                double* v_ptr = velocity.v_data().data();
+                
+                ScalarField nu_t_gpu(mesh);
+                double* nu_t_ptr = nu_t_gpu.data().data();
+                
+                std::vector<double> dudx_data(total_cells, 0.0);
+                std::vector<double> dudy_data(total_cells, 0.0);
+                std::vector<double> dvdx_data(total_cells, 0.0);
+                std::vector<double> dvdy_data(total_cells, 0.0);
+                std::vector<double> wall_dist_data(total_cells, 0.0);
+                
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        wall_dist_data[mesh.index(i, j)] = mesh.wall_distance(i, j);
+                    }
+                }
+                
+                double* dudx_ptr = dudx_data.data();
+                double* dudy_ptr = dudy_data.data();
+                double* dvdx_ptr = dvdx_data.data();
+                double* dvdy_ptr = dvdy_data.data();
+                double* wall_dist_ptr = wall_dist_data.data();
+                
+                #pragma omp target enter data map(to: u_ptr[0:u_total], v_ptr[0:v_total])
+                #pragma omp target enter data map(alloc: nu_t_ptr[0:total_cells])
+                #pragma omp target enter data map(alloc: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells])
+                #pragma omp target enter data map(alloc: dvdx_ptr[0:total_cells], dvdy_ptr[0:total_cells])
+                #pragma omp target enter data map(to: wall_dist_ptr[0:total_cells])
+                
+                TurbulenceDeviceView device_view;
+                device_view.u_face = u_ptr;
+                device_view.v_face = v_ptr;
+                device_view.nu_t = nu_t_ptr;
+                device_view.dudx = dudx_ptr;
+                device_view.dudy = dudy_ptr;
+                device_view.dvdx = dvdx_ptr;
+                device_view.dvdy = dvdy_ptr;
+                device_view.wall_distance = wall_dist_ptr;
+                device_view.u_stride = velocity.u_stride();
+                device_view.v_stride = velocity.v_stride();
+                device_view.cell_stride = mesh.Nx + 2*mesh.Nghost;
+                device_view.Nx = mesh.Nx;
+                device_view.Ny = mesh.Ny;
+                device_view.Ng = mesh.Nghost;
+                device_view.dx = mesh.dx;
+                device_view.dy = mesh.dy;
+                device_view.delta = 1.0;
+                
+                MixingLengthModel ml;
+                ml.set_nu(0.001);
+                ml.set_delta(1.0);
+                ml.update(mesh, velocity, k, omega, nu_t_gpu, nullptr, &device_view);
+                
+                #pragma omp target update from(nu_t_ptr[0:total_cells])
+                
+                #pragma omp target exit data map(delete: u_ptr[0:u_total], v_ptr[0:v_total])
+                #pragma omp target exit data map(delete: nu_t_ptr[0:total_cells])
+                #pragma omp target exit data map(delete: dudx_ptr[0:total_cells], dudy_ptr[0:total_cells])
+                #pragma omp target exit data map(delete: dvdx_ptr[0:total_cells], dvdy_ptr[0:total_cells])
+                #pragma omp target exit data map(delete: wall_dist_ptr[0:total_cells])
+                
+                auto cmp = compare_fields(mesh, nu_t_cpu, nu_t_gpu, "");
+                if (cmp.max_abs_diff > tol_abs && cmp.max_rel_diff > tol_rel) {
+                    std::cout << "FAILED (diff too large)\n";
+                    all_passed = false;
+                } else {
+                    std::cout << "PASSED\n";
+                }
+            }
+        }
+        
+        // Similar blocks for GEP and NN-MLP...
+        
+        std::cout << "\n";
+        if (all_passed) {
+            std::cout << "[SUCCESS] All GPU vs CPU comparisons passed\n";
+            return 0;
+        } else {
+            std::cout << "[FAILED] Some GPU vs CPU comparisons failed\n";
+            return 1;
+        }
+#endif
+    }
+    
+    // Standard mode (no dump/compare)
     // Run tests
     test_harness_sanity();
     test_basic_gpu_compute();

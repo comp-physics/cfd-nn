@@ -688,7 +688,7 @@ void TurbulenceNNTBNN::update(
     [[maybe_unused]] const int Ng = mesh.Nghost;
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: require device_view and gpu_ready (no fallback)
+    // GPU path: require device_view and gpu_ready (no CPU fallback)
     if (!device_view || !gpu_ready_) {
         throw std::runtime_error("NN-TBNN GPU pipeline requires device_view and GPU buffers initialized");
     }
