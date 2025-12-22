@@ -399,9 +399,9 @@ void test_gradient_computation_backend() {
         dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
         mesh.Nx, mesh.Ny, mesh.Nghost,
         mesh.dx, mesh.dy,
-        mesh.Nx + 2*mesh.Nghost + 1,  // u_stride
-        mesh.Nx + 2*mesh.Nghost,       // v_stride
-        mesh.total_Nx(),                // cell_stride
+        vel.u_stride(),        // u_stride
+        vel.v_stride(),        // v_stride
+        mesh.total_Nx(),       // cell_stride
         u_total, v_total, total_cells
     );
     

@@ -222,7 +222,7 @@ void postprocess_mlp_outputs_gpu(
     double nu_t_max)
 {
 #ifdef USE_GPU_OFFLOAD
-    const int total_field_size = (Nx + 2*Ng) * (Ny + 2*Ng);
+    const int total_field_size = stride * (Ny + 2*Ng);
     
     // CRITICAL: map(present:...) indicates these arrays are already mapped
     #pragma omp target teams distribute parallel for collapse(2) \
@@ -436,12 +436,12 @@ void postprocess_nn_outputs_gpu(
                 if (fabs(Sxy) > 1e-10) {
                     nu_t_val = fabs(-b_xy * k_val / Sxy);
                 } else {
-                    // Fallback: use strain magnitude
+                    // Fallback: use strain magnitude (Frobenius norm)
                     const double dudx_v = dudx[idx_cell];
                     const double dvdy_v = dvdy[idx_cell];
                     const double Sxx = dudx_v;
                     const double Syy = dvdy_v;
-                    const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+                    const double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
                     if (S_mag > 1e-10) {
                         const double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
                         nu_t_val = k_val * b_mag / S_mag;
@@ -508,12 +508,12 @@ void postprocess_nn_outputs_gpu(
                 if (fabs(Sxy) > 1e-10) {
                     nu_t_val = fabs(-b_xy * k_val / Sxy);
                 } else {
-                    // Fallback: use strain magnitude
+                    // Fallback: use strain magnitude (Frobenius norm)
                     const double dudx_v = dudx[idx_cell];
                     const double dvdy_v = dvdy[idx_cell];
                     const double Sxx = dudx_v;
                     const double Syy = dvdy_v;
-                    const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+                    const double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
                     if (S_mag > 1e-10) {
                         const double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
                         nu_t_val = k_val * b_mag / S_mag;

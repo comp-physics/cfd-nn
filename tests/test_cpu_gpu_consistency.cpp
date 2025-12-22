@@ -44,6 +44,12 @@ ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& 
     std::string line;
     int num_set = 0;
     
+    // Direct indexing for uniform mesh (much faster than nearest-neighbor)
+    const double x0 = mesh.x(mesh.i_begin());
+    const double y0 = mesh.y(mesh.j_begin());
+    const double inv_dx = 1.0 / mesh.dx;
+    const double inv_dy = 1.0 / mesh.dy;
+    
     while (std::getline(file, line)) {
         // Skip comments and blank lines
         if (line.empty() || line[0] == '#') continue;
@@ -52,28 +58,28 @@ ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& 
         double x, y, value;
         if (!(iss >> x >> y >> value)) continue;
         
-        // Find closest mesh point (simple nearest-neighbor)
-        int best_i = -1, best_j = -1;
-        double min_dist = 1e30;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                const double dx = mesh.x(i) - x;
-                const double dy = mesh.y(j) - y;
-                const double dist = dx*dx + dy*dy;
-                if (dist < min_dist) {
-                    min_dist = dist;
-                    best_i = i;
-                    best_j = j;
-                }
-            }
+        // Direct index calculation for uniform mesh
+        const int i = mesh.i_begin() + static_cast<int>(std::llround((x - x0) * inv_dx));
+        const int j = mesh.j_begin() + static_cast<int>(std::llround((y - y0) * inv_dy));
+        
+        // Check bounds
+        if (i < mesh.i_begin() || i >= mesh.i_end() || j < mesh.j_begin() || j >= mesh.j_end()) {
+            continue; // out-of-domain line
         }
-        if (best_i >= 0 && best_j >= 0) {
-            // Count only if this cell wasn't already set
-            if (!std::isfinite(field(best_i, best_j))) {
-                ++num_set;
-            }
-            field(best_i, best_j) = value;
+        
+        // Optional sanity: ensure the file point matches the chosen cell center
+        // Use a tolerance that accounts for typical printf/iostream rounding
+        const double dx_err = std::abs(mesh.x(i) - x);
+        const double dy_err = std::abs(mesh.y(j) - y);
+        if (dx_err > 0.01 * mesh.dx || dy_err > 0.01 * mesh.dy) {
+            continue;
         }
+        
+        // Count only if this cell wasn't already set
+        if (!std::isfinite(field(i, j))) {
+            ++num_set;
+        }
+        field(i, j) = value;
     }
     
     // Verify all interior cells were populated

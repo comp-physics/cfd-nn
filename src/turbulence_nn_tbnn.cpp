@@ -71,7 +71,7 @@ void TurbulenceNNTBNN::allocate_gpu_buffers(int n_cells) {
     
     // Allocate CPU buffers
     features_flat_.resize(n_cells * feature_dim);
-    basis_flat_.resize(n_cells * 12);  // 4 basis tensors × 3 components
+    basis_flat_.resize(n_cells * TensorBasis::NUM_BASIS * 3);  // NUM_BASIS tensors × 3 components
     outputs_flat_.resize(n_cells * output_dim);
     workspace_.resize(workspace_size);
     
