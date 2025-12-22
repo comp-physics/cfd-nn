@@ -18,6 +18,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <limits>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -38,8 +39,10 @@ ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& 
         throw std::runtime_error("Cannot open reference file: " + filename);
     }
     
-    ScalarField field(mesh);
+    // Initialize with NaN to detect unpopulated cells
+    ScalarField field(mesh, std::numeric_limits<double>::quiet_NaN());
     std::string line;
+    int num_set = 0;
     
     while (std::getline(file, line)) {
         // Skip comments and blank lines
@@ -47,26 +50,37 @@ ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& 
         
         std::istringstream iss(line);
         double x, y, value;
-        if (iss >> x >> y >> value) {
-            // Find closest mesh point (simple nearest-neighbor)
-            int best_i = -1, best_j = -1;
-            double min_dist = 1e30;
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double dx = mesh.x(i) - x;
-                    double dy = mesh.y(j) - y;
-                    double dist = dx*dx + dy*dy;
-                    if (dist < min_dist) {
-                        min_dist = dist;
-                        best_i = i;
-                        best_j = j;
-                    }
+        if (!(iss >> x >> y >> value)) continue;
+        
+        // Find closest mesh point (simple nearest-neighbor)
+        int best_i = -1, best_j = -1;
+        double min_dist = 1e30;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                const double dx = mesh.x(i) - x;
+                const double dy = mesh.y(j) - y;
+                const double dist = dx*dx + dy*dy;
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    best_i = i;
+                    best_j = j;
                 }
             }
-            if (best_i >= 0 && best_j >= 0) {
-                field(best_i, best_j) = value;
-            }
         }
+        if (best_i >= 0 && best_j >= 0) {
+            // Count only if this cell wasn't already set
+            if (!std::isfinite(field(best_i, best_j))) {
+                ++num_set;
+            }
+            field(best_i, best_j) = value;
+        }
+    }
+    
+    // Verify all interior cells were populated
+    const int expected = (mesh.i_end() - mesh.i_begin()) * (mesh.j_end() - mesh.j_begin());
+    if (num_set != expected) {
+        throw std::runtime_error("Reference file did not populate all interior cells: " +
+                                 std::to_string(num_set) + "/" + std::to_string(expected));
     }
     
     return field;

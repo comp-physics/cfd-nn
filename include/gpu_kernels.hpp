@@ -113,14 +113,16 @@ void postprocess_mlp_outputs_gpu(
 // Output: nu_t (with ghosts), optionally tau_ij (with ghosts)
 // ============================================================================
 void postprocess_nn_outputs_gpu(
-    const double* nn_outputs,              // Input: n_cells * output_dim
-    const double* basis,                   // Input: n_cells * 12
-    const double* k,                       // Input: n_cells
+    const double* nn_outputs,              // Input: Nx*Ny * output_dim (interior only)
+    const double* basis,                   // Input: Nx*Ny * 12 (interior only)
+    const double* k,                       // Input: total_cells (with ghosts)
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
-    double* nu_t,                          // Output: n_cells
+    double* nu_t,                          // Output: total_cells (with ghosts)
     double* tau_xx, double* tau_xy, double* tau_yy,  // Optional output (can be nullptr)
-    int n_cells, int output_dim,
+    int Nx, int Ny, int Ng,
+    int cell_stride, int total_cells,
+    int output_dim,
     double nu_ref                          // Reference viscosity for clipping
 );
 

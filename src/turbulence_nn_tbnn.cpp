@@ -781,7 +781,9 @@ void TurbulenceNNTBNN::update(
                 k_ptr, dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
                 nu_t_ptr,
                 tau_xx_ptr, tau_xy_ptr, tau_yy_ptr,
-                n_cells, mlp_.output_dim(),
+                Nx, Ny, Ng,
+                cell_stride, total_cells,
+                mlp_.output_dim(),
                 nu_
             );
         }

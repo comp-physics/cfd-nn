@@ -241,11 +241,10 @@ void TurbulenceNNMLP::update(
         {
             TIMED_SCOPE("nn_mlp_postprocess_gpu");
             double* out_ptr = outputs_flat_.data();
-            double* nu_t_ptr = nu_t.data().data();
             
             gpu_kernels::postprocess_mlp_outputs_gpu(
-                out_ptr,      // NN outputs (n_cells * 1)
-                nu_t_ptr,     // nu_t field with ghosts
+                out_ptr,             // NN outputs (n_cells * 1)
+                device_view->nu_t,   // nu_t field on device (with ghosts)
                 Nx, Ny, Ng,
                 cell_stride,
                 nu_t_max_
