@@ -142,7 +142,7 @@ void compare_snapshots(const TimeSnapshot& cpu, const TimeSnapshot& gpu, int ste
 static std::vector<std::pair<int, TimeSnapshot>> run_time_history_and_collect() {
     // Small grid for speed
     Mesh mesh;
-    mesh.init_uniform(32, 64, 0.0, 2.0, 0.0, 1.0, 1);
+    mesh.init_uniform(nx: 32, 64, 0.0, 2.0, 0.0, 1.0, 1);
 
     Config config;
     config.nu = 0.001;

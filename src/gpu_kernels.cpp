@@ -10,48 +10,6 @@ namespace nncfd {
 namespace gpu_kernels {
 
 // ============================================================================
-// GPU Kernel: Compute velocity gradients
-// ============================================================================
-void compute_velocity_gradients_gpu(
-    const double* u, const double* v,
-    double* dudx, double* dudy,
-    double* dvdx, double* dvdy,
-    int Nx, int Ny,
-    double dx, double dy)
-{
-#ifdef USE_GPU_OFFLOAD
-    const int stride = Nx + 2;  // Total width including ghost cells
-    const double inv_2dx = 1.0 / (2.0 * dx);
-    const double inv_2dy = 1.0 / (2.0 * dy);
-    
-    #pragma omp target teams distribute parallel for collapse(2)
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            // Interior index (0-based for output arrays)
-            int idx_out = j * Nx + i;
-            
-            // Full mesh index (1-based for input arrays with ghost cells)
-            int ii = i + 1;
-            int jj = j + 1;
-            int idx_ip = jj * stride + (ii + 1);
-            int idx_im = jj * stride + (ii - 1);
-            int idx_jp = (jj + 1) * stride + ii;
-            int idx_jm = (jj - 1) * stride + ii;
-            
-            // Central differences
-            dudx[idx_out] = (u[idx_ip] - u[idx_im]) * inv_2dx;
-            dudy[idx_out] = (u[idx_jp] - u[idx_jm]) * inv_2dy;
-            dvdx[idx_out] = (v[idx_ip] - v[idx_im]) * inv_2dx;
-            dvdy[idx_out] = (v[idx_jp] - v[idx_jm]) * inv_2dy;
-        }
-    }
-#else
-    (void)u; (void)v; (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)Nx; (void)Ny; (void)dx; (void)dy;
-#endif
-}
-
-// ============================================================================
 // GPU Kernel: Compute cell-centered gradients from staggered MAC grid
 // ============================================================================
 void compute_gradients_from_mac_gpu(
