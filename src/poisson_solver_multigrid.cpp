@@ -359,6 +359,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: red-black Gauss-Seidel on persistent device arrays
+    // Optimized to avoid warp divergence by using strided loops (same as CPU path)
     if (gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
@@ -366,37 +367,33 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
         const double* f_ptr = f_ptrs_[level];
         
         for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j even)
+            // Red sweep (i + j even) - no branch, no modulo in inner loop
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
             for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    // Only update red points (i + j even)
-                    if ((i + j) % 2 == 0) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                     - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                    }
+                int i_start = Ng + ((Ng + j) % 2);
+                for (int i = i_start; i < Nx + Ng; i += 2) {
+                    int idx = j * stride + i;
+                    double u_old = u_ptr[idx];
+                    double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                 + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                 - f_ptr[idx]) / coeff;
+                    u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
                 }
             }
             
-            // Black sweep (i + j odd)
+            // Black sweep (i + j odd) - no branch, no modulo in inner loop
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
             for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    // Only update black points (i + j odd)
-                    if ((i + j) % 2 == 1) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                     - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                    }
+                int i_start = Ng + ((Ng + j + 1) % 2);
+                for (int i = i_start; i < Nx + Ng; i += 2) {
+                    int idx = j * stride + i;
+                    double u_old = u_ptr[idx];
+                    double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                 + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                 - f_ptr[idx]) / coeff;
+                    u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
                 }
             }
         }
@@ -625,12 +622,13 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
 
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     if (level == static_cast<int>(levels_.size()) - 1) {
-        // Coarsest level - solve directly with more iterations
-        solve_coarsest(100);
+        // Coarsest level - solve directly
+        // Reduced from 100 to 40 iterations for better performance
+        solve_coarsest(40);
         return;
     }
     
-    // Pre-smoothing (more iterations for better convergence)
+    // Pre-smoothing
     smooth(level, nu1, 1.8);
     
     // Compute residual
@@ -791,14 +789,14 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     apply_bc(0);
     
     // Perform V-cycles until converged
-    // Multigrid should converge in 3-10 cycles for well-conditioned problems
-    // But we allow more cycles (cfg.max_iter / 100) to handle difficult cases
-    // A V-cycle is roughly equivalent to 100 SOR iterations
-    const int max_cycles = std::max(10, cfg.max_iter / 100);
+    // Interpret cfg.max_iter as "max Poisson iterations per solve".
+    // For multigrid, one V-cycle is one iteration, so cfg.max_iter directly
+    // bounds the number of cycles. If cfg.max_iter <= 0, fall back to 10.
+    const int max_cycles = (cfg.max_iter > 0) ? cfg.max_iter : 10;
     
     int cycle = 0;
     for (; cycle < max_cycles; ++cycle) {
-        vcycle(0, 3, 3);  // More smoothing iterations per cycle
+        vcycle(0, 2, 2);  // Reduced from (3,3) to (2,2) for better performance
         
         // Check convergence after each cycle
         residual_ = compute_max_residual(0);
@@ -866,7 +864,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     apply_bc(0);
     
     // Perform V-cycles until converged (all operations already on device)
-    const int max_cycles = std::max(10, cfg.max_iter / 100);
+    // Interpret cfg.max_iter as "max Poisson iterations per solve".
+    // For multigrid, one V-cycle is one iteration, so cfg.max_iter directly
+    // bounds the number of cycles. If cfg.max_iter <= 0, fall back to 10.
+    const int max_cycles = (cfg.max_iter > 0) ? cfg.max_iter : 10;
     
     // Configurable residual monitoring interval (check every N cycles)
     // Only copy residual back to CPU when checking (reduces DtoH transfers)
@@ -875,7 +876,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     
     int cycle = 0;
     for (; cycle < max_cycles; ++cycle) {
-        vcycle(0, 3, 3);
+        vcycle(0, 2, 2);  // Reduced from (3,3) to (2,2) for better performance
         
         // Only check convergence every 'check_interval' cycles (or on last cycle)
         bool should_check = (cycle % check_interval == 0) || (cycle == max_cycles - 1);

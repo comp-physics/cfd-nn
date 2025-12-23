@@ -201,6 +201,10 @@ void Config::parse_args(int argc, char** argv) {
             max_iter = std::stoi(argv[++i]);
         } else if (arg == "--tol" && i + 1 < argc) {
             tol = std::stod(argv[++i]);
+        } else if (arg == "--poisson_tol" && i + 1 < argc) {
+            poisson_tol = std::stod(argv[++i]);
+        } else if (arg == "--poisson_max_iter" && i + 1 < argc) {
+            poisson_max_iter = std::stoi(argv[++i]);
         } else if (arg == "--model" && i + 1 < argc) {
             std::string model = argv[++i];
             if (model == "none" || model == "laminar") {
@@ -272,8 +276,10 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --nu V            Kinematic viscosity\n"
                       << "  --dp_dx D         Pressure gradient (driving force)\n"
                       << "  --dt T            Time step\n"
-                      << "  --max_iter N      Maximum iterations\n"
-                      << "  --tol T           Convergence tolerance\n"
+                      << "  --max_iter N      Maximum outer iterations (time steps)\n"
+                      << "  --tol T           Convergence tolerance for steady solve\n"
+                      << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
+                      << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"
