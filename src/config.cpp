@@ -122,6 +122,14 @@ void Config::load(const std::string& filename) {
         convective_scheme = ConvectiveScheme::Central;
     }
     
+    // Simulation mode
+    auto mode_str = get_string("simulation_mode", "steady");
+    if (mode_str == "unsteady") {
+        simulation_mode = SimulationMode::Unsteady;
+    } else {
+        simulation_mode = SimulationMode::Steady;
+    }
+    
     // Turbulence
     auto model_str = get_string("turb_model", "none");
     if (model_str == "baseline") {
@@ -247,6 +255,13 @@ void Config::parse_args(int argc, char** argv) {
             } else {
                 convective_scheme = ConvectiveScheme::Central;
             }
+        } else if (arg == "--simulation_mode" && i + 1 < argc) {
+            std::string mode = argv[++i];
+            if (mode == "unsteady") {
+                simulation_mode = SimulationMode::Unsteady;
+            } else {
+                simulation_mode = SimulationMode::Steady;
+            }
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -274,6 +289,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
                       << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
+                      << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"

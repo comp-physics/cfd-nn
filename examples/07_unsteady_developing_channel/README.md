@@ -44,8 +44,10 @@ cd examples/07_unsteady_developing_channel
 # From build directory
 cd ../../build
 
-./developing_channel --config ../examples/07_unsteady_developing_channel/laminar.cfg
+./channel --config ../examples/07_unsteady_developing_channel/laminar.cfg
 ```
+
+**Note**: The `channel` executable supports both steady and unsteady modes. The `simulation_mode = unsteady` setting in the config file switches to time-accurate integration.
 
 ## Configuration Files
 
@@ -153,7 +155,7 @@ Without turbulence modeling:
 
 ### Change Initial Amplitude
 
-Edit `developing_channel.cpp`:
+Edit `app/main_channel.cpp` (in the unsteady mode section):
 ```cpp
 solver.initialize(create_perturbed_channel_field(mesh, 1e-2));  // Larger perturbation
 ```

@@ -148,10 +148,6 @@ target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 add_executable(profile_solver app/profile_solver.cpp)
 target_link_libraries(profile_solver nn_cfd_core)
 
-# Unsteady developing channel (time-accurate, no RANS)
-add_executable(developing_channel app/developing_channel.cpp)
-target_link_libraries(developing_channel nn_cfd_core)
-
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)

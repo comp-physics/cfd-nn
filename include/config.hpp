@@ -30,6 +30,12 @@ enum class ConvectiveScheme {
     Upwind
 };
 
+/// Simulation mode selection
+enum class SimulationMode {
+    Steady,     ///< Solve to steady state (convergence-based)
+    Unsteady    ///< Time-accurate integration (fixed number of steps)
+};
+
 /// Simulation configuration
 struct Config {
     // Domain and mesh
@@ -62,6 +68,9 @@ struct Config {
     
     // Numerical schemes
     ConvectiveScheme convective_scheme = ConvectiveScheme::Central;
+    
+    // Simulation mode
+    SimulationMode simulation_mode = SimulationMode::Steady;
     
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;

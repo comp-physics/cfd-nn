@@ -15,8 +15,8 @@ echo ""
 # Build directory
 BUILD_DIR="../../build"
 
-if [ ! -f "$BUILD_DIR/developing_channel" ]; then
-    echo "Error: developing_channel executable not found in $BUILD_DIR"
+if [ ! -f "$BUILD_DIR/channel" ]; then
+    echo "Error: channel executable not found in $BUILD_DIR"
     echo "Please build the project first:"
     echo "  mkdir -p build && cd build"
     echo "  cmake .. && make -j4"
@@ -30,7 +30,7 @@ mkdir -p output
 echo "======================================"
 echo "Running unsteady simulation..."
 echo "======================================"
-$BUILD_DIR/developing_channel --config laminar.cfg
+$BUILD_DIR/channel --config laminar.cfg
 
 echo ""
 echo "======================================"
@@ -43,7 +43,7 @@ echo "To visualize time evolution:"
 echo "  paraview output/developing_channel_*.vtk"
 echo ""
 echo "To run high-resolution version:"
-echo "  $BUILD_DIR/developing_channel --config laminar_fine.cfg"
+echo "  $BUILD_DIR/channel --config laminar_fine.cfg"
 echo ""
 
 
