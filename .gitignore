@@ -16,10 +16,14 @@ Makefile
 !CMakeLists.txt
 
 # Executables (in build directories only, not source files)
-channel
-periodic_hills
-compare_channel_cpu_gpu
-profile_solver
+/build/channel
+/build/periodic_hills
+/build/compare_channel_cpu_gpu
+/build/profile_solver
+build*/channel
+build*/periodic_hills
+build*/compare_channel_cpu_gpu
+build*/profile_solver
 /test_*
 build*/test_*
 
