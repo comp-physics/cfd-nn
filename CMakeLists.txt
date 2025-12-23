@@ -121,15 +121,28 @@ if(GPU_PROFILE_TRANSFERS)
 endif()
 
 if(GPU_PROFILE_KERNELS)
-    target_compile_definitions(nn_cfd_core PRIVATE GPU_PROFILE_KERNELS)
+    target_compile_definitions(nn_cfd_core PUBLIC GPU_PROFILE_KERNELS)
     message(STATUS "GPU kernel profiling with NVTX ENABLED")
+    
+    # Add NVTX include paths for NVHPC compiler
+    if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
+        # NVHPC stores NVTX headers in include-stdpar
+        get_filename_component(NVHPC_ROOT ${CMAKE_CXX_COMPILER} DIRECTORY)
+        get_filename_component(NVHPC_ROOT ${NVHPC_ROOT} DIRECTORY)
+        set(NVTX_INCLUDE_DIR "${NVHPC_ROOT}/compilers/include-stdpar")
+        if(EXISTS "${NVTX_INCLUDE_DIR}/nvtx3/nvToolsExt.h")
+            target_include_directories(nn_cfd_core PUBLIC ${NVTX_INCLUDE_DIR})
+            message(STATUS "  NVTX headers found: ${NVTX_INCLUDE_DIR}")
+        endif()
+    endif()
+    
     # Try to find NVTX library (optional)
     find_library(NVTX_LIB NAMES nvtx3 nvToolsExt PATHS ENV LD_LIBRARY_PATH)
     if(NVTX_LIB)
         target_link_libraries(nn_cfd_core ${NVTX_LIB})
         message(STATUS "  NVTX library found: ${NVTX_LIB}")
     else()
-        message(STATUS "  NVTX library not found - will use lightweight markers only")
+        message(STATUS "  NVTX library not found - using header-only implementation")
     endif()
 endif()
 
@@ -147,6 +160,10 @@ target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 # Profiling driver (limited steps for nsys analysis)
 add_executable(profile_solver app/profile_solver.cpp)
 target_link_libraries(profile_solver nn_cfd_core)
+
+# Poisson warm-start profiling (3 V-cycles, 50 steps)
+add_executable(profile_poisson_warmstart app/profile_poisson_warmstart.cpp)
+target_link_libraries(profile_poisson_warmstart nn_cfd_core)
 
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
