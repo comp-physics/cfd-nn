@@ -24,7 +24,7 @@
         #define NVTX_PUSH(name) nvtxRangePushA(name)
         #define NVTX_POP() nvtxRangePop()
     #else
-        #warning "GPU_PROFILE_KERNELS enabled but NVTX headers not found"
+        // NVTX headers not found - use no-op markers
         #define NVTX_PUSH(name) do {} while(0)
         #define NVTX_POP() do {} while(0)
     #endif
@@ -36,6 +36,8 @@
 using namespace nncfd;
 
 int main(int argc, char** argv) {
+    (void)argc;  // Unused
+    (void)argv;  // Unused
     std::cout << "========================================\n";
     std::cout << "Poisson Warm-Start Profiling\n";
     std::cout << "========================================\n\n";
