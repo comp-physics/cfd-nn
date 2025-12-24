@@ -96,7 +96,7 @@ struct Config {
     
     // Poisson solver
     double poisson_tol = 1e-6;
-    int poisson_max_iter = 10000;
+    int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve (reduced from 10000 for performance)
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     
     // Turbulence guard (abort on NaN/Inf)

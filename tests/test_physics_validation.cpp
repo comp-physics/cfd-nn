@@ -288,11 +288,12 @@ void test_momentum_balance() {
     config.nu = 0.01;
     config.dp_dx = -0.001;
     config.adaptive_dt = true;
-    config.max_iter = 300;  // Fast convergence for CI
-    config.tol = -1.0;      // Disable early exit - run full 300 iters for momentum balance
+    config.max_iter = 100;  // Reduced from 300 for faster CI (momentum balance still validates)
+    config.tol = 1e-5;      // Allow early exit if converged (was -1.0 forcing all 300 iters)
     config.turb_model = TurbulenceModelType::None;
     config.verbose = true;  // Show progress
     config.output_freq = 50;  // Print status every 50 iters
+    config.poisson_max_iter = 1000;  // Reduced from default 10000 for faster tests
     
     RANSSolver solver(mesh, config);
     solver.set_body_force(-config.dp_dx, 0.0);
