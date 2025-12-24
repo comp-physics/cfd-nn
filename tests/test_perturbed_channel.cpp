@@ -18,8 +18,32 @@
 #include <string>
 #include <cassert>
 #include <fstream>
+#include <limits>
+
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
 
 using namespace nncfd;
+
+//=============================================================================
+// GPU requirement check: no CPU fallbacks in GPU builds
+//=============================================================================
+static void require_gpu_or_throw() {
+#ifdef USE_GPU_OFFLOAD
+    if (omp_get_num_devices() == 0) {
+        throw std::runtime_error("USE_GPU_OFFLOAD enabled but no GPU devices found");
+    }
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    {
+        on_device = !omp_is_initial_device();
+    }
+    if (!on_device) {
+        throw std::runtime_error("USE_GPU_OFFLOAD enabled but target region ran on host (GPU not accessible)");
+    }
+#endif
+}
 
 //=============================================================================
 // Path resolution helpers for NN models
@@ -114,6 +138,120 @@ struct DiagnosticStats {
 };
 
 DiagnosticStats compute_diagnostics(const RANSSolver& solver, const Mesh& mesh, bool has_transport) {
+#ifdef USE_GPU_OFFLOAD
+    // GPU-only build: compute diagnostics entirely on device, no CPU fallback.
+    // This avoids expensive sync_from_gpu() and host-side sweeps.
+    DiagnosticStats stats = {};
+    const auto v = solver.get_solver_view();
+
+    const int Nx = v.Nx, Ny = v.Ny, Ng = v.Ng;
+    const int u_stride = v.u_stride;
+    const int v_stride = v.v_stride;
+    const int cell_stride = v.cell_stride;
+
+    const size_t u_total = size_t(Nx + 2*Ng + 1) * size_t(Ny + 2*Ng);
+    const size_t v_total = size_t(Nx + 2*Ng)     * size_t(Ny + 2*Ng + 1);
+    const size_t c_total = size_t(Nx + 2*Ng)     * size_t(Ny + 2*Ng);
+
+    double max_div = 0.0;
+    double sum_div2 = 0.0;
+    double KE = 0.0;
+
+    double min_nu_t = std::numeric_limits<double>::infinity();
+    double max_nu_t = -std::numeric_limits<double>::infinity();
+    double sum_nu_t = 0.0;
+
+    int has_bad = 0;
+
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: v.u_face[0:u_total], v.v_face[0:v_total], v.p[0:c_total], v.nu_t[0:c_total]) \
+        reduction(max:max_div, max_nu_t) reduction(min:min_nu_t) \
+        reduction(+:sum_div2, KE, sum_nu_t) reduction(|:has_bad)
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i < Nx; ++i) {
+            const int ii = i + Ng;
+            const int jj = j + Ng;
+
+            const int u0 = ii     + jj * u_stride;
+            const int u1 = (ii+1) + jj * u_stride;
+            const int v0 = ii + jj     * v_stride;
+            const int v1 = ii + (jj+1) * v_stride;
+
+            const int c  = ii + jj * cell_stride;
+
+            const double dudx = (v.u_face[u1] - v.u_face[u0]) / v.dx;
+            const double dvdy = (v.v_face[v1] - v.v_face[v0]) / v.dy;
+            const double div  = dudx + dvdy;
+
+            const double abs_div = (div < 0.0) ? -div : div;
+            if (abs_div > max_div) max_div = abs_div;
+            sum_div2 += div * div;
+
+            const double uc = 0.5 * (v.u_face[u0] + v.u_face[u1]);
+            const double vc = 0.5 * (v.v_face[v0] + v.v_face[v1]);
+            KE += 0.5 * (uc*uc + vc*vc) * v.dx * v.dy;
+
+            const double nt = v.nu_t[c];
+            if (nt < min_nu_t) min_nu_t = nt;
+            if (nt > max_nu_t) max_nu_t = nt;
+            sum_nu_t += nt;
+
+            const double p = v.p[c];
+            has_bad |= (uc != uc || (uc-uc) != 0.0 ||
+                        vc != vc || (vc-vc) != 0.0 ||
+                        p  != p  || (p -p ) != 0.0 ||
+                        nt != nt || (nt-nt) != 0.0) ? 1 : 0;
+        }
+    }
+
+    stats.max_div = max_div;
+    stats.rms_div = std::sqrt(sum_div2 / double(Nx * Ny));
+    stats.KE = KE;
+    stats.min_nu_t = min_nu_t;
+    stats.max_nu_t = max_nu_t;
+    stats.mean_nu_t = sum_nu_t / double(Nx * Ny);
+    stats.all_finite = (has_bad == 0);
+
+    if (has_transport) {
+        const auto tv = solver.get_device_view();
+        double min_k = std::numeric_limits<double>::infinity();
+        double max_k = -std::numeric_limits<double>::infinity();
+        double min_omega = std::numeric_limits<double>::infinity();
+        double max_omega = -std::numeric_limits<double>::infinity();
+        int has_bad2 = 0;
+
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: tv.k[0:c_total], tv.omega[0:c_total]) \
+            reduction(min:min_k, min_omega) reduction(max:max_k, max_omega) \
+            reduction(|:has_bad2)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                const int ii = i + Ng;
+                const int jj = j + Ng;
+                const int c  = ii + jj * cell_stride;
+
+                const double k  = tv.k[c];
+                const double om = tv.omega[c];
+
+                if (k < min_k) min_k = k;
+                if (k > max_k) max_k = k;
+                if (om < min_omega) min_omega = om;
+                if (om > max_omega) max_omega = om;
+
+                has_bad2 |= (k != k || (k-k) != 0.0 || om != om || (om-om) != 0.0) ? 1 : 0;
+            }
+        }
+
+        stats.min_k = min_k;
+        stats.max_k = max_k;
+        stats.min_omega = min_omega;
+        stats.max_omega = max_omega;
+        stats.all_finite = stats.all_finite && (has_bad2 == 0);
+    }
+
+    return stats;
+#else
+    // CPU-only build: use host-side diagnostics (original implementation)
     DiagnosticStats stats = {};
     
     const VectorField& vel = solver.velocity();
@@ -213,6 +351,7 @@ DiagnosticStats compute_diagnostics(const RANSSolver& solver, const Mesh& mesh, 
     }
     
     return stats;
+#endif
 }
 
 //=============================================================================
@@ -236,10 +375,10 @@ bool test_single_model(TurbulenceModelType model_type, const std::string& model_
     config.turb_model = model_type;
     config.verbose = false;
     
-    // CRITICAL: Tighten Poisson tolerance to achieve machine-epsilon divergence
-    // Default 1e-6 is too coarse for algebraic models with small nu_t
-    config.poisson_tol = 1e-10;
-    config.poisson_max_iter = 5000;  // Allow more iterations for tight tolerance
+    // CI/GPU speed: 1e-8 is sufficient for divergence thresholds (1e-6 most models, 1e-5 NN)
+    // The absolute floor in solver.cpp (1e-10) prevents over-solving near steady state
+    config.poisson_tol = 1e-8;
+    config.poisson_max_iter = 1000;  // Reduced from 5000 for faster GPU CI
     
     // CRITICAL FIX FOR NN-MLP: Use adaptive dt to prevent blowup
     // NN-MLP can produce very large nu_t (O(1)), violating diffusive stability
@@ -313,8 +452,7 @@ bool test_single_model(TurbulenceModelType model_type, const std::string& model_
     }
     std::cout << "done\n";
     
-    // Final diagnostics
-    solver.sync_from_gpu();
+    // Final diagnostics (GPU-resident, no sync needed)
     auto stats1 = compute_diagnostics(solver, mesh, has_transport);
     
     std::cout << "\nFinal state (t=" << 100 * config.dt << "):\n";
@@ -442,8 +580,8 @@ bool test_earsm_realistic_turbulence() {
         config.dt = 1e-4;   // Smaller timestep for stability
         config.turb_model = model_type;
         config.verbose = false;  // Don't spam warnings during test
-        config.poisson_tol = 1e-10;
-        config.poisson_max_iter = 5000;
+        config.poisson_tol = 1e-8;
+        config.poisson_max_iter = 1000;
         
         RANSSolver solver(mesh, config);
         
@@ -586,6 +724,15 @@ int main() {
     std::cout << "Coverage: All models except EARSM (Pope), which\n";
     std::cout << "is validated separately in sustained turbulent flow.\n";
     std::cout << "========================================================\n";
+    
+    // GPU build must have GPU available (no CPU fallback)
+    try {
+        require_gpu_or_throw();
+    } catch (const std::exception& e) {
+        std::cerr << "\n[FATAL] " << e.what() << "\n";
+        std::cerr << "This test requires GPU offload to be functional.\n";
+        return 1;
+    }
     
     struct ModelTest {
         TurbulenceModelType type;
