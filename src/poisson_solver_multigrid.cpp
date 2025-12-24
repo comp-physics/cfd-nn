@@ -132,62 +132,6 @@ void MultigridPoissonSolver::apply_bc(int level) {
             }
         }
         
-        // Re-apply periodic BCs to fix corner ghost cells
-        // When both directions have periodic BCs applied sequentially, corner values
-        // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
-        const bool x_periodic = (bc_x_lo == 2) && (bc_x_hi == 2);
-        const bool y_periodic = (bc_y_lo == 2) && (bc_y_hi == 2);
-        
-        if (x_periodic || y_periodic) {
-            // Re-apply x-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int j = 0; j < Ny + 2; ++j) {
-                int idx = j * stride;
-                
-                // Left boundary (i=0)
-                if (bc_x_lo == 2) { // Periodic
-                    u_ptr[idx] = u_ptr[idx + Nx];
-                } else if (bc_x_lo == 1) { // Neumann
-                    u_ptr[idx] = u_ptr[idx + Ng];
-                } else { // Dirichlet
-                    u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
-                }
-                
-                // Right boundary (i=Nx+1)
-                if (bc_x_hi == 2) { // Periodic
-                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
-                } else if (bc_x_hi == 1) { // Neumann
-                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
-                } else { // Dirichlet
-                    u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
-                }
-            }
-            
-            // Re-apply y-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int i = 0; i < Nx + 2; ++i) {
-                // Bottom boundary (j=0)
-                if (bc_y_lo == 2) { // Periodic
-                    u_ptr[i] = u_ptr[Ny * stride + i];
-                } else if (bc_y_lo == 1) { // Neumann
-                    u_ptr[i] = u_ptr[Ng * stride + i];
-                } else { // Dirichlet
-                    u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
-                }
-                
-                // Top boundary (j=Ny+1)
-                if (bc_y_hi == 2) { // Periodic
-                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
-                } else if (bc_y_hi == 1) { // Neumann
-                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
-                } else { // Dirichlet
-                    u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
-                }
-            }
-        }
-        
         return;
     }
 #endif
@@ -367,33 +311,35 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
         const double* f_ptr = f_ptrs_[level];
         
         for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j even) - no branch, no modulo in inner loop
+            // Red sweep (i + j even) - uniform loop with parity check
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
             for (int j = Ng; j < Ny + Ng; ++j) {
-                int i_start = Ng + ((Ng + j) % 2);
-                for (int i = i_start; i < Nx + Ng; i += 2) {
-                    int idx = j * stride + i;
-                    double u_old = u_ptr[idx];
-                    double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                 + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                 - f_ptr[idx]) / coeff;
-                    u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if (((i + j) & 1) == 0) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
+                    }
                 }
             }
             
-            // Black sweep (i + j odd) - no branch, no modulo in inner loop
+            // Black sweep (i + j odd) - uniform loop with parity check
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
             for (int j = Ng; j < Ny + Ng; ++j) {
-                int i_start = Ng + ((Ng + j + 1) % 2);
-                for (int i = i_start; i < Nx + Ng; i += 2) {
-                    int idx = j * stride + i;
-                    double u_old = u_ptr[idx];
-                    double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                 + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                 - f_ptr[idx]) / coeff;
-                    u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if (((i + j) & 1) == 1) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
+                    }
                 }
             }
         }

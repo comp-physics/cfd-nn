@@ -165,6 +165,10 @@ target_link_libraries(profile_solver nn_cfd_core)
 add_executable(profile_poisson_warmstart app/profile_poisson_warmstart.cpp)
 target_link_libraries(profile_poisson_warmstart nn_cfd_core)
 
+# Large-scale grid profiling (2000x2000, 10 steps, 30 V-cycles)
+add_executable(profile_large_grid app/profile_large_grid.cpp)
+target_link_libraries(profile_large_grid nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
