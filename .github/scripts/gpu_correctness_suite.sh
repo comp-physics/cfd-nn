@@ -81,11 +81,11 @@ echo "==================================================================="
 echo ""
 
 echo "--- Testing SST k-omega ---"
-../.github/scripts/test_turbulence_model_gpu.sh sst "SST k-omega" 64 128 500 output/gpu_validation/sst
+../.github/scripts/test_turbulence_model_gpu.sh sst "SST k-omega" 64 128 500 output/gpu_validation/sst 0.001
 
 echo ""
 echo "--- Testing k-omega (Wilcox) ---"
-../.github/scripts/test_turbulence_model_gpu.sh komega "k-omega (Wilcox)" 64 128 500 output/gpu_validation/komega
+../.github/scripts/test_turbulence_model_gpu.sh komega "k-omega (Wilcox)" 64 128 500 output/gpu_validation/komega 0.001
 
 echo ""
 echo "==================================================================="

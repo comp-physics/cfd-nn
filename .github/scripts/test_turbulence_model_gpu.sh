@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test a single turbulence model on GPU with validation
 # 
-# Usage: test_turbulence_model_gpu.sh <model> <name> <Nx> <Ny> <max_iter> <output_prefix>
+# Usage: test_turbulence_model_gpu.sh <model> <name> <Nx> <Ny> <max_iter> <output_prefix> [min_vel_tolerance]
 
 set -e
 
@@ -11,6 +11,7 @@ NX="${3:-256}"
 NY="${4:-512}"
 MAX_ITER="${5:-20}"
 OUTPUT_PREFIX="${6:-output/test}"
+MIN_VEL_TOL="${7:-}"
 
 echo "========================================"
 echo "Testing: $NAME"
@@ -21,8 +22,7 @@ echo "========================================"
 echo ""
 
 # Create output directory
-OUTPUT_DIR="$(dirname $OUTPUT_PREFIX)"
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_PREFIX"
 
 # Run the model
 echo "Running simulation..."
@@ -35,7 +35,11 @@ echo ""
 
 # Validate output
 SCRIPT_DIR="$(dirname "$0")"
-"$SCRIPT_DIR/validate_turbulence_model.sh" "$NAME" "$OUTPUT_DIR"
+if [ -n "$MIN_VEL_TOL" ]; then
+    "$SCRIPT_DIR/validate_turbulence_model.sh" "$NAME" "$OUTPUT_PREFIX" "$MIN_VEL_TOL"
+else
+    "$SCRIPT_DIR/validate_turbulence_model.sh" "$NAME" "$OUTPUT_PREFIX"
+fi
 
 echo "[OK] $NAME validated successfully"
 echo ""
