@@ -310,6 +310,14 @@ void Config::parse_args(int argc, char** argv) {
 }
 
 void Config::finalize() {
+    // Ensure output_dir ends with a path separator so it behaves as a directory
+    if (!output_dir.empty()) {
+        char back = output_dir.back();
+        if (back != '/' && back != '\\') {
+            output_dir.push_back('/');
+        }
+    }
+    
     // Validate NN model configuration - require explicit model selection
     const bool using_nn = 
         (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN);
