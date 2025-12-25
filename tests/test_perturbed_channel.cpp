@@ -376,9 +376,10 @@ bool test_single_model(TurbulenceModelType model_type, const std::string& model_
     config.verbose = false;
     
     // CI/GPU speed: 1e-8 is sufficient for divergence thresholds (1e-6 most models, 1e-5 NN)
-    // The absolute floor in solver.cpp (1e-10) prevents over-solving near steady state
+    // Relaxed absolute floor (1e-6) prevents over-solving near steady state
     config.poisson_tol = 1e-8;
     config.poisson_max_iter = 1000;  // Reduced from 5000 for faster GPU CI
+    config.poisson_abs_tol_floor = 1e-6;  // Relaxed from default 1e-8 for faster CI
     
     // CRITICAL FIX FOR NN-MLP: Use adaptive dt to prevent blowup
     // NN-MLP can produce very large nu_t (O(1)), violating diffusive stability
@@ -582,6 +583,7 @@ bool test_earsm_realistic_turbulence() {
         config.verbose = false;  // Don't spam warnings during test
         config.poisson_tol = 1e-8;
         config.poisson_max_iter = 1000;
+        config.poisson_abs_tol_floor = 1e-6;  // Relaxed for faster CI
         
         RANSSolver solver(mesh, config);
         

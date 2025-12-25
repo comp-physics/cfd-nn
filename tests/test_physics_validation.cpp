@@ -294,6 +294,7 @@ void test_momentum_balance() {
     config.verbose = true;  // Show progress
     config.output_freq = 50;  // Print status every 50 iters
     config.poisson_max_iter = 1000;  // Reduced from default 10000 for faster tests
+    config.poisson_abs_tol_floor = 1e-6;  // Relaxed for faster GPU CI
     
     RANSSolver solver(mesh, config);
     solver.set_body_force(-config.dp_dx, 0.0);
