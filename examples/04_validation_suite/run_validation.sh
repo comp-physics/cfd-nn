@@ -50,7 +50,7 @@ for case_config in "${cases[@]}"; do
     echo "=========================================="
     
     ./channel --config "$EXAMPLE_DIR/$cfg" \
-              --output_dir "$OUTPUT_DIR/$case" \
+              --output "$OUTPUT_DIR/$case" \
         || echo "WARNING: $case may not have fully converged"
     
     echo "[OK] $case complete"

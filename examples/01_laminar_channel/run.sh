@@ -36,7 +36,7 @@ echo ""
 
 cd "$BUILD_DIR"
 ./channel --config "$EXAMPLE_DIR/poiseuille.cfg" \
-          --output_dir "$OUTPUT_DIR"
+          --output "$OUTPUT_DIR"
 
 echo ""
 echo "=============================================="

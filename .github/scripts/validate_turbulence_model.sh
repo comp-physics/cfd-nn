@@ -27,10 +27,10 @@ echo ""
 
 VALIDATION_FAILED=0
 
-# Find the final VTK file
-FINAL_VTK=$(ls -1 ${OUTPUT_DIR}/*_final.vtk 2>/dev/null | head -1)
-if [ ! -f "$FINAL_VTK" ]; then
-    echo "ERROR: No final VTK file found in $OUTPUT_DIR"
+# Find the final VTK file (search subdirectories for new output layout)
+FINAL_VTK=$(find "${OUTPUT_DIR}" -maxdepth 2 -type f -name '*_final.vtk' 2>/dev/null | head -1)
+if [ -z "$FINAL_VTK" ] || [ ! -f "$FINAL_VTK" ]; then
+    echo "ERROR: No final VTK file found in ${OUTPUT_DIR} (searched up to depth 2 for '*_final.vtk')"
     exit 1
 fi
 
@@ -139,19 +139,20 @@ else
     echo "  [OK] Pressure field is finite"
 fi
 
-# Check data files if they exist
-if [ -f "${OUTPUT_DIR}/channel_velocity.dat" ]; then
+# Check data files if they exist (in same directory as VTK file)
+VTK_DIR=$(dirname "$FINAL_VTK")
+if [ -f "${VTK_DIR}/channel_velocity.dat" ]; then
     echo "Checking data files..."
     
-    if grep -q "nan\|inf" "${OUTPUT_DIR}/channel_velocity.dat"; then
+    if grep -q "nan\|inf" "${VTK_DIR}/channel_velocity.dat"; then
         echo "  [FAIL] NaN/Inf in velocity data file!"
         VALIDATION_FAILED=1
     else
         echo "  [OK] Velocity data file valid"
     fi
     
-    if [ -f "${OUTPUT_DIR}/channel_nu_t.dat" ]; then
-        if grep -q "nan\|inf" "${OUTPUT_DIR}/channel_nu_t.dat"; then
+    if [ -f "${VTK_DIR}/channel_nu_t.dat" ]; then
+        if grep -q "nan\|inf" "${VTK_DIR}/channel_nu_t.dat"; then
             echo "  [FAIL] NaN/Inf in nu_t data file!"
             VALIDATION_FAILED=1
         else

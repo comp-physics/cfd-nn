@@ -113,23 +113,24 @@ def main():
     # Read data for each model
     data = {}
     for name, dir_name in models.items():
-        vtk_file = output_dir / dir_name / "velocity_final.vtk"
-        if vtk_file.exists():
-            try:
-                y, u, Nx, Ny = read_vtk_data(vtk_file)
-                y_plus, u_plus, u_tau = compute_wall_units(y, u, nu)
-                data[name] = {
-                    'y_plus': y_plus,
-                    'u_plus': u_plus,
-                    'u_tau': u_tau,
-                    'y': y,
-                    'u': u
-                }
-                print(f"[OK] Loaded: {name:12s} u_tau = {u_tau:.4f}")
-            except Exception as e:
-                print(f"[FAIL] Failed: {name:12s} ({e})")
-        else:
-            print(f"[FAIL] Missing: {name:12s} (file not found)")
+        vtk_file = output_dir / dir_name / "channel_final.vtk"
+        if not vtk_file.exists():
+            print(f"[FAIL] Missing: {name:12s} (file not found at {vtk_file})")
+            continue
+
+        try:
+            y, u, Nx, Ny = read_vtk_data(vtk_file)
+            y_plus, u_plus, u_tau = compute_wall_units(y, u, nu)
+            data[name] = {
+                'y_plus': y_plus,
+                'u_plus': u_plus,
+                'u_tau': u_tau,
+                'y': y,
+                'u': u
+            }
+            print(f"[OK] Loaded: {name:12s} u_tau = {u_tau:.4f}")
+        except Exception as e:
+            print(f"[FAIL] Failed: {name:12s} ({e})")
     
     if not data:
         print("\nERROR: No simulation data found!")

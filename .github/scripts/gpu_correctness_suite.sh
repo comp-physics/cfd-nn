@@ -81,11 +81,11 @@ echo "==================================================================="
 echo ""
 
 echo "--- Testing SST k-omega ---"
-../.github/scripts/test_turbulence_model_gpu.sh sst "SST k-omega" 64 128 500 output/gpu_validation/sst
+../.github/scripts/test_turbulence_model_gpu.sh sst "SST k-omega" 64 128 500 output/gpu_validation/sst 0.001
 
 echo ""
 echo "--- Testing k-omega (Wilcox) ---"
-../.github/scripts/test_turbulence_model_gpu.sh komega "k-omega (Wilcox)" 64 128 500 output/gpu_validation/komega
+../.github/scripts/test_turbulence_model_gpu.sh komega "k-omega (Wilcox)" 64 128 500 output/gpu_validation/komega 0.001
 
 echo ""
 echo "==================================================================="
@@ -94,15 +94,15 @@ echo "==================================================================="
 echo ""
 
 echo "--- Testing Wallin-Johansson EARSM ---"
-../.github/scripts/test_turbulence_model_gpu.sh earsm_wj "Wallin-Johansson EARSM" 256 512 1000 output/gpu_validation/earsm_wj
+../.github/scripts/test_turbulence_model_gpu.sh earsm_wj "Wallin-Johansson EARSM" 256 512 1000 output/gpu_validation/earsm_wj 0.001
 
 echo ""
 echo "--- Testing Gatski-Speziale EARSM ---"
-../.github/scripts/test_turbulence_model_gpu.sh earsm_gs "Gatski-Speziale EARSM" 256 512 1000 output/gpu_validation/earsm_gs
+../.github/scripts/test_turbulence_model_gpu.sh earsm_gs "Gatski-Speziale EARSM" 256 512 1000 output/gpu_validation/earsm_gs 0.001
 
 echo ""
 echo "--- Testing Pope Quadratic EARSM ---"
-../.github/scripts/test_turbulence_model_gpu.sh earsm_pope "Pope Quadratic EARSM" 256 512 1000 output/gpu_validation/earsm_pope
+../.github/scripts/test_turbulence_model_gpu.sh earsm_pope "Pope Quadratic EARSM" 256 512 1000 output/gpu_validation/earsm_pope 0.001
 
 echo ""
 echo "==================================================================="

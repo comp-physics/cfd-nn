@@ -104,17 +104,17 @@ cd ../../build
 
 # Laminar cases (fast)
 ./channel --config ../examples/04_validation_suite/poiseuille_re100.cfg \
-          --output_dir ../examples/04_validation_suite/output/poiseuille_re100
+          --output ../examples/04_validation_suite/output/poiseuille_re100
 
 ./channel --config ../examples/04_validation_suite/poiseuille_re1000.cfg \
-          --output_dir ../examples/04_validation_suite/output/poiseuille_re1000
+          --output ../examples/04_validation_suite/output/poiseuille_re1000
 
 # Turbulent cases (slower)
 ./channel --config ../examples/04_validation_suite/channel_re180.cfg \
-          --output_dir ../examples/04_validation_suite/output/channel_re180
+          --output ../examples/04_validation_suite/output/channel_re180
 
 ./channel --config ../examples/04_validation_suite/channel_re395.cfg \
-          --output_dir ../examples/04_validation_suite/output/channel_re395
+          --output ../examples/04_validation_suite/output/channel_re395
 ```
 
 ## Success Criteria

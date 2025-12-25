@@ -31,8 +31,11 @@ def poiseuille_analytical(y, dp_dx, nu, H):
 def read_simulation_data(output_dir):
     """Read simulation results from output directory."""
     
-    # Try to find the final velocity file
-    vtk_files = sorted(Path(output_dir).glob("velocity_*.vtk"))
+    # Try to find the final velocity file (both legacy and new naming conventions)
+    vtk_files = sorted(
+        list(Path(output_dir).glob("velocity_*.vtk")) +
+        list(Path(output_dir).glob("channel_*.vtk"))
+    )
     
     if not vtk_files:
         print(f"ERROR: No VTK files found in {output_dir}")
@@ -41,29 +44,52 @@ def read_simulation_data(output_dir):
     final_file = vtk_files[-1]
     print(f"Reading: {final_file}")
     
-    # Simple VTK ASCII parser (assumes structured grid format from solver)
+    # Simple VTK ASCII parser (handles both STRUCTURED_POINTS and explicit POINTS)
     with open(final_file, 'r') as f:
         lines = f.readlines()
     
-    # Parse grid dimensions
+    # Parse grid dimensions and format
+    Nx, Ny = None, None
+    origin = None
+    spacing = None
+    n_points = None
+    point_data_start = None
+    vector_data_start = None
+    
     for i, line in enumerate(lines):
         if 'DIMENSIONS' in line:
             dims = [int(x) for x in line.split()[1:4]]
             Nx, Ny = dims[0], dims[1]
             print(f"Grid: {Nx} x {Ny}")
         
-        if 'POINTS' in line:
+        if 'ORIGIN' in line:
+            origin = [float(x) for x in line.split()[1:4]]
+        
+        if 'SPACING' in line:
+            spacing = [float(x) for x in line.split()[1:4]]
+        
+        if 'POINTS' in line and 'STRUCTURED_POINTS' not in line:
             n_points = int(line.split()[1])
             point_data_start = i + 1
         
         if 'POINT_DATA' in line:
+            n_points = int(line.split()[1])
             vector_data_start = i + 2  # Skip VECTORS line
     
-    # Read coordinates
-    coords = []
-    for i in range(point_data_start, point_data_start + n_points):
-        coords.append([float(x) for x in lines[i].split()])
-    coords = np.array(coords)
+    # Generate coordinates based on format
+    if origin is not None and spacing is not None:
+        # STRUCTURED_POINTS format
+        y_coords = np.zeros((Ny, Nx))
+        for j in range(Ny):
+            for i in range(Nx):
+                y_coords[j, i] = origin[1] + j * spacing[1]
+    else:
+        # Explicit POINTS format
+        coords = []
+        for i in range(point_data_start, point_data_start + n_points):
+            coords.append([float(x) for x in lines[i].split()])
+        coords = np.array(coords)
+        y_coords = coords[:, 1].reshape(Ny, Nx)
     
     # Read velocity vectors
     velocity = []
@@ -72,7 +98,6 @@ def read_simulation_data(output_dir):
     velocity = np.array(velocity)
     
     # Reshape to 2D grid
-    y_coords = coords[:, 1].reshape(Ny, Nx)
     u_velocity = velocity[:, 0].reshape(Ny, Nx)
     
     return y_coords, u_velocity, Nx, Ny
