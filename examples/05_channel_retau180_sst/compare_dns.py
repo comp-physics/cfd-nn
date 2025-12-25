@@ -10,6 +10,8 @@ Reference: JFM 399, 263-291 (1999)
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import argparse
+import sys
 
 def load_velocity_profile(filename):
     """Load velocity profile from solver output"""
@@ -128,99 +130,170 @@ def plot_comparison(y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns,
     plt.close()
 
 def compute_errors(y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns):
-    """Compute error metrics by interpolating DNS data to simulation points"""
+    """Compute error metrics by interpolating DNS data to simulation points.
+
+    Returns (mean_relative_error_percent, max_relative_error_percent),
+    or (None, None) if no overlap with DNS data.
+    """
     # Interpolate DNS data to simulation y+ locations
-    u_plus_dns_interp = np.interp(y_plus_sim, y_plus_dns, u_plus_dns, 
-                                   left=np.nan, right=np.nan)
-    
+    u_plus_dns_interp = np.interp(
+        y_plus_sim, y_plus_dns, u_plus_dns, left=np.nan, right=np.nan
+    )
+
     # Only compare where we have DNS data
     valid = ~np.isnan(u_plus_dns_interp)
-    
+
     if np.sum(valid) == 0:
         print("Warning: No overlapping data points for error calculation")
-        return
-    
+        return None, None
+
     # Compute errors
     error = u_plus_sim[valid] - u_plus_dns_interp[valid]
-    rel_error = error / u_plus_dns_interp[valid] * 100
-    
-    print("\n" + "="*60)
+    rel_error = error / u_plus_dns_interp[valid] * 100.0
+
+    print("\n" + "=" * 60)
     print("ERROR METRICS")
-    print("="*60)
+    print("=" * 60)
     print(f"Number of comparison points: {np.sum(valid)}")
     print(f"Mean absolute error:         {np.mean(np.abs(error)):.4f} (wall units)")
     print(f"RMS error:                   {np.sqrt(np.mean(error**2)):.4f} (wall units)")
     print(f"Max absolute error:          {np.max(np.abs(error)):.4f} (wall units)")
     print(f"Mean relative error:         {np.mean(np.abs(rel_error)):.2f}%")
     print(f"Max relative error:          {np.max(np.abs(rel_error)):.2f}%")
-    print("="*60)
+    print("=" * 60)
+
+    mean_rel = float(np.mean(np.abs(rel_error)))
+    max_rel = float(np.max(np.abs(rel_error)))
+    return mean_rel, max_rel
+
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Compare channel Re_tau=180 simulation to Moser et al. DNS"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Override output directory (default: <case_dir>/output)",
+    )
+    parser.add_argument(
+        "--max_rel_error",
+        type=float,
+        default=25.0,
+        help="Maximum allowed mean relative error in % (default: 25)",
+    )
+    parser.add_argument(
+        "--min_retau",
+        type=float,
+        default=150.0,
+        help="Minimum acceptable Re_tau (default: 150)",
+    )
+    parser.add_argument(
+        "--max_retau",
+        type=float,
+        default=210.0,
+        help="Maximum acceptable Re_tau (default: 210)",
+    )
+    args = parser.parse_args()
+
     # Paths
     case_dir = Path(__file__).parent
-    output_dir = case_dir / 'output'
-    profile_file = output_dir / 'velocity_profile.dat'
-    
-    print("="*60)
+    if args.output_dir is not None:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = case_dir / "output"
+    profile_file = output_dir / "velocity_profile.dat"
+
+    print("=" * 60)
     print("DNS COMPARISON: Re_tau = 180")
-    print("="*60)
-    print(f"Case directory: {case_dir}")
+    print("=" * 60)
+    print(f"Case directory:   {case_dir}")
     print(f"Output directory: {output_dir}")
     print("")
-    
+
     # Check if output exists
     if not profile_file.exists():
         print(f"ERROR: Profile file not found: {profile_file}")
-        print("\nPlease run the simulation first:")
-        print(f"  sbatch {case_dir}/run_h200.sbatch")
-        return
-    
+        print("\nPlease run the simulation first.")
+        sys.exit(1)
+
     # Load simulation results
     print(f"Loading simulation results from: {profile_file}")
     y, u = load_velocity_profile(profile_file)
-    
+
     # Physical parameters (from config)
     nu = 1.0 / 180.0  # = 0.005555...
     rho = 1.0
-    
+
     # Convert to wall units
     y_plus_sim, u_plus_sim, u_tau = compute_wall_units(y, u, nu, rho)
-    
+
     print(f"[OK] Loaded {len(y)} points from simulation")
+    retau = u_tau * 1.0 / nu
     print(f"  Friction velocity u_tau = {u_tau:.6f}")
-    print(f"  Re_tau = u_tau * delta / nu = {u_tau * 1.0 / nu:.2f}")
+    print(f"  Re_tau = u_tau * delta / nu = {retau:.2f}")
     print(f"  Max y+ = {np.max(y_plus_sim):.2f}")
     print("")
-    
+
     # Load DNS data
     print("Loading DNS reference data (Moser et al. 1999)...")
     y_plus_dns, u_plus_dns = load_dns_data_retau180()
     print(f"[OK] Loaded {len(y_plus_dns)} DNS reference points")
     print("")
-    
-    # Create comparison plot
-    plot_file = output_dir / 'velocity_comparison.png'
-    print(f"Creating comparison plot...")
-    plot_comparison(y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns, 
-                   output_file=str(plot_file))
-    
-    # Compute errors
-    compute_errors(y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns)
-    
-    print("\n" + "="*60)
-    print("COMPARISON COMPLETE")
-    print("="*60)
-    print(f"\nResults:")
-    print(f"  - Comparison plot: {plot_file}")
-    print(f"  - Velocity data:   {profile_file}")
-    print("\nReference:")
-    print("  Moser, R.D., Kim, J. & Mansour, N.N. (1999)")
-    print("  Direct numerical simulation of turbulent channel flow")
-    print("  up to Re_tau=590. J. Fluid Mech. 399, 263-291.")
-    print("  https://turbulence.oden.utexas.edu/data/MKM/")
-    print("")
 
-if __name__ == '__main__':
+    # Create comparison plot
+    plot_file = output_dir / "velocity_comparison.png"
+    print("Creating comparison plot...")
+    plot_comparison(
+        y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns, output_file=str(plot_file)
+    )
+
+    # Compute errors and enforce thresholds
+    mean_rel, max_rel = compute_errors(
+        y_plus_sim, u_plus_sim, y_plus_dns, u_plus_dns
+    )
+    if mean_rel is None:
+        sys.exit(1)
+
+    ok = True
+    if not (args.min_retau <= retau <= args.max_retau):
+        print(
+            f"[FAIL] Re_tau={retau:.2f} outside allowed range "
+            f"[{args.min_retau}, {args.max_retau}]"
+        )
+        ok = False
+
+    if mean_rel > args.max_rel_error:
+        print(
+            f"[FAIL] Mean relative error {mean_rel:.2f}% "
+            f"> allowed {args.max_rel_error:.2f}%"
+        )
+        ok = False
+
+    if ok:
+        print("[OK] DNS comparison within specified tolerances.")
+        print("\n" + "=" * 60)
+        print("COMPARISON COMPLETE (PASS)")
+        print("=" * 60)
+        print(f"\nResults:")
+        print(f"  - Comparison plot: {plot_file}")
+        print(f"  - Velocity data:   {profile_file}")
+        print("\nReference:")
+        print("  Moser, R.D., Kim, J. & Mansour, N.N. (1999)")
+        print("  Direct numerical simulation of turbulent channel flow")
+        print("  up to Re_tau=590. J. Fluid Mech. 399, 263-291.")
+        print("  https://turbulence.oden.utexas.edu/data/MKM/")
+        print("")
+        sys.exit(0)
+    else:
+        print("\n" + "=" * 60)
+        print("COMPARISON COMPLETE (FAIL)")
+        print("=" * 60)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
     main()
 
 

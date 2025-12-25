@@ -30,6 +30,12 @@ enum class ConvectiveScheme {
     Upwind
 };
 
+/// Simulation mode selection
+enum class SimulationMode {
+    Steady,     ///< Solve to steady state (convergence-based)
+    Unsteady    ///< Time-accurate integration (fixed number of steps)
+};
+
 /// Simulation configuration
 struct Config {
     // Domain and mesh
@@ -63,6 +69,9 @@ struct Config {
     // Numerical schemes
     ConvectiveScheme convective_scheme = ConvectiveScheme::Central;
     
+    // Simulation mode
+    SimulationMode simulation_mode = SimulationMode::Steady;
+    
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
     double nu_t_max = 1.0;      ///< Maximum eddy viscosity (clipping)
@@ -87,8 +96,9 @@ struct Config {
     
     // Poisson solver
     double poisson_tol = 1e-6;
-    int poisson_max_iter = 10000;
+    int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve (reduced from 10000 for performance)
     double poisson_omega = 1.8; ///< SOR relaxation parameter
+    double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

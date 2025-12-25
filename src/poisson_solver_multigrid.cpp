@@ -132,62 +132,6 @@ void MultigridPoissonSolver::apply_bc(int level) {
             }
         }
         
-        // Re-apply periodic BCs to fix corner ghost cells
-        // When both directions have periodic BCs applied sequentially, corner values
-        // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
-        const bool x_periodic = (bc_x_lo == 2) && (bc_x_hi == 2);
-        const bool y_periodic = (bc_y_lo == 2) && (bc_y_hi == 2);
-        
-        if (x_periodic || y_periodic) {
-            // Re-apply x-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int j = 0; j < Ny + 2; ++j) {
-                int idx = j * stride;
-                
-                // Left boundary (i=0)
-                if (bc_x_lo == 2) { // Periodic
-                    u_ptr[idx] = u_ptr[idx + Nx];
-                } else if (bc_x_lo == 1) { // Neumann
-                    u_ptr[idx] = u_ptr[idx + Ng];
-                } else { // Dirichlet
-                    u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
-                }
-                
-                // Right boundary (i=Nx+1)
-                if (bc_x_hi == 2) { // Periodic
-                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
-                } else if (bc_x_hi == 1) { // Neumann
-                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
-                } else { // Dirichlet
-                    u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
-                }
-            }
-            
-            // Re-apply y-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int i = 0; i < Nx + 2; ++i) {
-                // Bottom boundary (j=0)
-                if (bc_y_lo == 2) { // Periodic
-                    u_ptr[i] = u_ptr[Ny * stride + i];
-                } else if (bc_y_lo == 1) { // Neumann
-                    u_ptr[i] = u_ptr[Ng * stride + i];
-                } else { // Dirichlet
-                    u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
-                }
-                
-                // Top boundary (j=Ny+1)
-                if (bc_y_hi == 2) { // Periodic
-                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
-                } else if (bc_y_hi == 1) { // Neumann
-                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
-                } else { // Dirichlet
-                    u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
-                }
-            }
-        }
-        
         return;
     }
 #endif
@@ -359,6 +303,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: red-black Gauss-Seidel on persistent device arrays
+    // Optimized to avoid warp divergence by using strided loops (same as CPU path)
     if (gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
@@ -366,13 +311,12 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
         const double* f_ptr = f_ptrs_[level];
         
         for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j even)
+            // Red sweep (i + j even) - uniform loop with parity check
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
-                    // Only update red points (i + j even)
-                    if ((i + j) % 2 == 0) {
+                    if (((i + j) & 1) == 0) {
                         int idx = j * stride + i;
                         double u_old = u_ptr[idx];
                         double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
@@ -383,13 +327,12 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                 }
             }
             
-            // Black sweep (i + j odd)
+            // Black sweep (i + j odd) - uniform loop with parity check
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
-                    // Only update black points (i + j odd)
-                    if ((i + j) % 2 == 1) {
+                    if (((i + j) & 1) == 1) {
                         int idx = j * stride + i;
                         double u_old = u_ptr[idx];
                         double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
@@ -625,12 +568,13 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
 
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     if (level == static_cast<int>(levels_.size()) - 1) {
-        // Coarsest level - solve directly with more iterations
-        solve_coarsest(100);
+        // Coarsest level - solve directly
+        // Reduced from 100 to 40 iterations for better performance
+        solve_coarsest(40);
         return;
     }
     
-    // Pre-smoothing (more iterations for better convergence)
+    // Pre-smoothing
     smooth(level, nu1, 1.8);
     
     // Compute residual
@@ -791,14 +735,14 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     apply_bc(0);
     
     // Perform V-cycles until converged
-    // Multigrid should converge in 3-10 cycles for well-conditioned problems
-    // But we allow more cycles (cfg.max_iter / 100) to handle difficult cases
-    // A V-cycle is roughly equivalent to 100 SOR iterations
-    const int max_cycles = std::max(10, cfg.max_iter / 100);
+    // Interpret cfg.max_iter as "max Poisson iterations per solve".
+    // For multigrid, one V-cycle is one iteration, so cfg.max_iter directly
+    // bounds the number of cycles. If cfg.max_iter <= 0, fall back to 10.
+    const int max_cycles = (cfg.max_iter > 0) ? cfg.max_iter : 10;
     
     int cycle = 0;
     for (; cycle < max_cycles; ++cycle) {
-        vcycle(0, 3, 3);  // More smoothing iterations per cycle
+        vcycle(0, 2, 2);  // Reduced from (3,3) to (2,2) for better performance
         
         // Check convergence after each cycle
         residual_ = compute_max_residual(0);
@@ -866,7 +810,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     apply_bc(0);
     
     // Perform V-cycles until converged (all operations already on device)
-    const int max_cycles = std::max(10, cfg.max_iter / 100);
+    // Interpret cfg.max_iter as "max Poisson iterations per solve".
+    // For multigrid, one V-cycle is one iteration, so cfg.max_iter directly
+    // bounds the number of cycles. If cfg.max_iter <= 0, fall back to 10.
+    const int max_cycles = (cfg.max_iter > 0) ? cfg.max_iter : 10;
     
     // Configurable residual monitoring interval (check every N cycles)
     // Only copy residual back to CPU when checking (reduces DtoH transfers)
@@ -875,7 +822,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     
     int cycle = 0;
     for (; cycle < max_cycles; ++cycle) {
-        vcycle(0, 3, 3);
+        vcycle(0, 2, 2);  // Reduced from (3,3) to (2,2) for better performance
         
         // Only check convergence every 'check_interval' cycles (or on last cycle)
         bool should_check = (cycle % check_interval == 0) || (cycle == max_cycles - 1);

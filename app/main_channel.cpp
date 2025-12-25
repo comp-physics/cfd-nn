@@ -115,6 +115,45 @@ void write_profile(const std::string& filename, const Mesh& mesh,
     }
 }
 
+/// Create divergence-free perturbed velocity field via streamfunction
+/// ψ(x,y) = A * sin(kx*x) * sin²(π(y+1)/2)
+/// u = ∂ψ/∂y, v = -∂ψ/∂x guarantees ∇·u = 0 exactly
+/// Wall factor sin²(π(y+1)/2) vanishes at y=±1 (no-slip compatible)
+VectorField create_perturbed_channel_field(const Mesh& mesh, double amplitude = 1e-3) {
+    VectorField vel(mesh);
+    const double kx = 2.0 * M_PI / (mesh.x_max - mesh.x_min);
+
+    // u = dψ/dy at x-faces
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j);
+        double s = std::sin(0.5 * M_PI * (y + 1.0));
+        double c = std::cos(0.5 * M_PI * (y + 1.0));
+        double dpsi_dy_factor = M_PI * s * c;
+
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            // Use face coordinate array (correct for stretched grids)
+            double x = mesh.xf[i];
+            vel.u(i, j) = amplitude * std::sin(kx * x) * dpsi_dy_factor;
+        }
+    }
+
+    // v = -dψ/dx at y-faces
+    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+        // Use face coordinate array (correct for stretched grids)
+        double y = mesh.yf[j];
+        double s = std::sin(0.5 * M_PI * (y + 1.0));
+        double s2 = s * s;
+
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double x = mesh.x(i);
+            double dpsi_dx = amplitude * kx * std::cos(kx * x) * s2;
+            vel.v(i, j) = -dpsi_dx;
+        }
+    }
+
+    return vel;
+}
+
 int main(int argc, char** argv) {
     std::cout << "=== Channel Flow Solver ===\n\n";
     
@@ -216,24 +255,100 @@ int main(int argc, char** argv) {
         }
     }
     
-    // Initialize with small perturbation
-    solver.initialize_uniform(0.1 * u_max_expected, 0.0);
+    // Branch based on simulation mode
+    double final_residual = 0.0;
+    int total_iterations = 0;
     
-    // Solve to steady state with automatic VTK snapshots
-    ScopedTimer total_timer("Total simulation", true);
+    if (config.simulation_mode == SimulationMode::Unsteady) {
+        // ============================================================
+        // UNSTEADY MODE: Time-accurate integration
+        // ============================================================
+        std::cout << "\n=== Running in UNSTEADY mode ===\n";
+        std::cout << "Time steps: " << config.max_iter << "\n";
+        std::cout << "Initial dt: " << config.dt << "\n\n";
+        
+        // Force laminar for unsteady developing flow
+        config.turb_model = TurbulenceModelType::None;
+        
+        // Initialize with divergence-free perturbation
+        solver.initialize(create_perturbed_channel_field(mesh, 1e-3));
+        
+    #ifdef USE_GPU_OFFLOAD
+        solver.sync_to_gpu();
+    #endif
+        
+        const std::string prefix = config.write_fields ? (config.output_dir + "developing_channel") : "";
+        const int snapshot_freq = (config.num_snapshots > 0) ?
+            std::max(1, config.max_iter / config.num_snapshots) : 0;
+        
+        ScopedTimer total_timer("Total simulation", false);
+        
+        int snap_count = 0;
+        for (int step = 1; step <= config.max_iter; ++step) {
+            if (config.adaptive_dt) {
+                (void)solver.compute_adaptive_dt();
+            }
+            double residual = solver.step();
+            
+            if (!prefix.empty() && snapshot_freq > 0 && (step % snapshot_freq == 0)) {
+                ++snap_count;
+                solver.write_vtk(prefix + "_" + std::to_string(snap_count) + ".vtk");
+            }
+            
+            if (config.verbose && (step % config.output_freq == 0)) {
+                std::cout << "Step " << step << " / " << config.max_iter
+                          << ", residual = " << std::scientific << residual << "\n";
+            }
+            
+            if (std::isnan(residual) || std::isinf(residual)) {
+                std::cerr << "ERROR: Solver diverged at step " << step << "\n";
+                return 1;
+            }
+            
+            final_residual = residual;
+        }
+        
+        if (!prefix.empty()) {
+            solver.write_vtk(prefix + "_final.vtk");
+        }
+        
+        total_timer.stop();
+        total_iterations = config.max_iter;
+        
+        std::cout << "\n=== Unsteady simulation complete ===\n";
+        
+    } else {
+        // ============================================================
+        // STEADY MODE: Convergence-based solve
+        // ============================================================
+        std::cout << "\n=== Running in STEADY mode ===\n";
+        std::cout << "Convergence tolerance: " << config.tol << "\n";
+        std::cout << "Max iterations: " << config.max_iter << "\n\n";
+        
+        // Initialize with small perturbation
+        solver.initialize_uniform(0.1 * u_max_expected, 0.0);
+        
+        // Solve to steady state with automatic VTK snapshots
+        ScopedTimer total_timer("Total simulation", false);
 
-    // Benchmark-friendly: allow skipping all file output (snapshots + final fields)
-    const std::string output_prefix = config.write_fields ? (config.output_dir + "channel") : "";
-    const int num_snapshots = config.write_fields ? config.num_snapshots : 0;
-    auto [residual, iterations] = solver.solve_steady_with_snapshots(output_prefix, num_snapshots);
+        // Benchmark-friendly: allow skipping all file output (snapshots + final fields)
+        const std::string output_prefix = config.write_fields ? (config.output_dir + "channel") : "";
+        const int num_snapshots = config.write_fields ? config.num_snapshots : 0;
+        auto [residual, iterations] = solver.solve_steady_with_snapshots(output_prefix, num_snapshots);
+        
+        total_timer.stop();
+        
+        final_residual = residual;
+        total_iterations = iterations;
+    }
     
-    total_timer.stop();
-    
-    // Results
+    // Results (common to both modes)
     std::cout << "\n=== Results ===\n";
-    std::cout << "Final residual: " << std::scientific << residual << "\n";
-    std::cout << "Iterations: " << iterations << "\n";
-    std::cout << "Converged: " << (residual < config.tol ? "YES" : "NO") << "\n";
+    std::cout << "Final residual: " << std::scientific << final_residual << "\n";
+    std::cout << "Iterations/Steps: " << total_iterations << "\n";
+    if (config.simulation_mode == SimulationMode::Steady) {
+        std::cout << "Converged: " << (final_residual < config.tol ? "YES" : "NO") << "\n";
+    }
     std::cout << "Bulk velocity: " << std::fixed << std::setprecision(6) << solver.bulk_velocity() << "\n";
     std::cout << "Wall shear stress: " << solver.wall_shear_stress() << "\n";
     std::cout << "Friction velocity u_tau: " << solver.friction_velocity() << "\n";

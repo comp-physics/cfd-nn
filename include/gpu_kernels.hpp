@@ -8,23 +8,6 @@ namespace nncfd {
 namespace gpu_kernels {
 
 // ============================================================================
-// GPU Kernel: Compute velocity gradients for all cells
-// ============================================================================
-// Input: u, v velocity arrays (flat, size = total_cells)
-// Output: dudx, dudy, dvdx, dvdy gradient arrays (flat, size = n_interior)
-// 
-// Mesh layout: total cells = (Nx+2) * (Ny+2) with ghost cells
-// Interior cells: i in [1, Nx], j in [1, Ny]
-// ============================================================================
-void compute_velocity_gradients_gpu(
-    const double* u, const double* v,      // Input velocity (total_cells)
-    double* dudx, double* dudy,            // Output gradients (n_interior)
-    double* dvdx, double* dvdy,
-    int Nx, int Ny,                        // Interior dimensions
-    double dx, double dy                   // Grid spacing
-);
-
-// ============================================================================
 // GPU Kernel: Compute cell-centered gradients from staggered MAC grid
 // ============================================================================
 // This kernel matches VectorField's staggered layout:

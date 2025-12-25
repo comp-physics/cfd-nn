@@ -1716,7 +1716,9 @@ double RANSSolver::step() {
         
         // Scale tolerance by RHS magnitude (relative convergence)
         // Use max(rhs_rms, 1e-12) to avoid making tolerance too tight for near-zero RHS
-        double effective_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
+        // Also enforce absolute floor to prevent over-solving when near steady state
+        double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
+        double effective_tol = std::max(relative_tol, config_.poisson_abs_tol_floor);
         
         PoissonConfig pcfg;
         pcfg.tol = effective_tol;
