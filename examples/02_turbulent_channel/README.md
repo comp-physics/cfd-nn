@@ -46,23 +46,23 @@ cd ../../build
 
 # No turbulence model
 ./channel --config ../examples/02_turbulent_channel/01_no_model.cfg \
-          --output_dir ../examples/02_turbulent_channel/output/no_model
+          --output ../examples/02_turbulent_channel/output/no_model
 
 # Baseline (mixing length)
 ./channel --config ../examples/02_turbulent_channel/02_baseline.cfg \
-          --output_dir ../examples/02_turbulent_channel/output/baseline
+          --output ../examples/02_turbulent_channel/output/baseline
 
 # GEP
 ./channel --config ../examples/02_turbulent_channel/03_gep.cfg \
-          --output_dir ../examples/02_turbulent_channel/output/gep
+          --output ../examples/02_turbulent_channel/output/gep
 
 # NN-MLP (requires trained weights for real results)
 ./channel --config ../examples/02_turbulent_channel/04_nnmlp.cfg \
-          --output_dir ../examples/02_turbulent_channel/output/nn_mlp
+          --output ../examples/02_turbulent_channel/output/nn_mlp
 
 # NN-TBNN (requires trained weights for real results)
 ./channel --config ../examples/02_turbulent_channel/05_nntbnn.cfg \
-          --output_dir ../examples/02_turbulent_channel/output/nn_tbnn
+          --output ../examples/02_turbulent_channel/output/nn_tbnn
 ```
 
 ## Expected Results

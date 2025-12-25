@@ -84,19 +84,19 @@ cd ../../build
 
 # Coarse grid
 ./channel --config ../examples/03_grid_refinement/coarse_32x64.cfg \
-          --output_dir ../examples/03_grid_refinement/output/coarse
+          --output ../examples/03_grid_refinement/output/coarse
 
 # Medium grid
 ./channel --config ../examples/03_grid_refinement/medium_64x128.cfg \
-          --output_dir ../examples/03_grid_refinement/output/medium
+          --output ../examples/03_grid_refinement/output/medium
 
 # Fine grid
 ./channel --config ../examples/03_grid_refinement/fine_128x256.cfg \
-          --output_dir ../examples/03_grid_refinement/output/fine
+          --output ../examples/03_grid_refinement/output/fine
 
 # Very fine grid
 ./channel --config ../examples/03_grid_refinement/very_fine_256x512.cfg \
-          --output_dir ../examples/03_grid_refinement/output/very_fine
+          --output ../examples/03_grid_refinement/output/very_fine
 ```
 
 ## Expected Results

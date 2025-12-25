@@ -56,7 +56,7 @@ for model_config in "${models[@]}"; do
     echo "=========================================="
     
     ./channel --config "$EXAMPLE_DIR/$cfg" \
-              --output_dir "$OUTPUT_DIR/$model" \
+              --output "$OUTPUT_DIR/$model" \
         || echo "WARNING: $model failed or didn't converge fully"
     
     echo "[OK] $model complete"

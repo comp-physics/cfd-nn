@@ -113,7 +113,10 @@ def main():
     # Read data for each model
     data = {}
     for name, dir_name in models.items():
+        # Try both naming conventions (velocity_final.vtk and channel_final.vtk)
         vtk_file = output_dir / dir_name / "velocity_final.vtk"
+        if not vtk_file.exists():
+            vtk_file = output_dir / dir_name / "channel_final.vtk"
         if vtk_file.exists():
             try:
                 y, u, Nx, Ny = read_vtk_data(vtk_file)

@@ -66,7 +66,7 @@ cd ../../build
 
 # Run simulation
 ./channel --config ../examples/01_laminar_channel/poiseuille.cfg \
-          --output_dir ../examples/01_laminar_channel/output
+          --output ../examples/01_laminar_channel/output
 
 # Analyze results
 cd ../examples/01_laminar_channel

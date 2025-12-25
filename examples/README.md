@@ -19,7 +19,7 @@ Use **one binary per geometry** and select the case via a config file:
   - `./examples/periodic_hills/run.sh hills_baseline`
   - `./examples/periodic_hills/run.sh hills_sst`
 
-Each `run.sh` writes outputs to `examples/<geometry>/output/<case>/` so you don’t need to pass `--output_dir` or remember paths.
+Each `run.sh` writes outputs to `examples/<geometry>/output/<case>/` so you don't need to pass `--output` or remember paths.
 
 You can also pass through overrides after the case name, e.g.:
 
