@@ -180,7 +180,8 @@ VectorField create_perturbed_channel_field(const Mesh& mesh,
                 double w_m = (1.0 / (m * m)) / weight_sum;
                 double A_m = amplitude * std::sqrt(w_m);
                 double phase = 0.5 * m;  // Deterministic phase offset
-                sum_modes += A_m * std::cos(kx * x + phase);
+                // Include kx factor for ∂/∂x derivative: v = -∂ψ/∂x
+                sum_modes += (A_m * kx) * std::cos(kx * x + phase);
             }
 
             double dpsi_dx = sum_modes * s2;

@@ -421,10 +421,10 @@ inline void convective_u_face_kernel_staggered(
     
     if (use_skew) {
         // Skew-symmetric form: 0.5[(u·∇)u + ∂/∂x(½|u|²)] for u-momentum.
-        // This stencil accesses v at (i-2), so with Nghost = 1 the first
-        // interior face (i == 1) would underflow. To avoid out-of-bounds
-        // access we fall back to the advective form for i < 2.
-        if (i >= 2) {
+        // This stencil accesses v at (i-2) and (i+1). To avoid out-of-bounds:
+        //   - West boundary: require i >= 2 (so i-2 >= 0)
+        //   - East boundary: require (i+1) < v_stride (so v_ptr[i+1] is valid)
+        if (i >= 2 && (i + 1) < v_stride) {
             // East face (i+1)
             const double uu_e = u_ptr[j * u_stride + (i+1)];
             const double v_bl_e = v_ptr[j * v_stride + i];
@@ -446,7 +446,7 @@ inline void convective_u_face_kernel_staggered(
             const double dKdx = (K_e - K_w) / (2.0 * dx);
             conv_u_ptr[conv_idx] = 0.5 * (adv_u + dKdx);
         } else {
-            // Near the west boundary: use pure advective form to stay in-bounds.
+            // Near boundaries: fall back to pure advective form to stay in-bounds.
             conv_u_ptr[conv_idx] = adv_u;
         }
     } else {
@@ -459,6 +459,7 @@ inline void convective_v_face_kernel_staggered(
     int i, int j,
     int u_stride, int v_stride, int conv_stride,
     double dx, double dy, int scheme,
+    int Ny, int Ng,  // Needed for boundary checks in skew-symmetric scheme
     const double* u_ptr, const double* v_ptr,
     double* conv_v_ptr)
 {
@@ -502,10 +503,11 @@ inline void convective_v_face_kernel_staggered(
     
     if (use_skew) {
         // Skew-symmetric form: 0.5[(u·∇)v + ∂/∂y(½|u|²)] for v-momentum.
-        // This stencil accesses u at (j-2), so with Nghost = 1 the first
-        // interior row (j == 1) would underflow. To avoid out-of-bounds
-        // access we fall back to the advective form for j < 2.
-        if (j >= 2) {
+        // This stencil accesses u at (j-2) and (j+1). To avoid out-of-bounds:
+        //   - South boundary: require j >= 2 (so j-2 >= 0)
+        //   - North boundary: require (j+1) < (Ny+2*Ng) (so u_ptr[j+1] is valid)
+        const int u_max_j = Ny + 2 * Ng - 1;  // Maximum valid j index for u array
+        if (j >= 2 && (j + 1) <= u_max_j) {
             // North face (j+1)
             const int v_idx_n = (j+1) * v_stride + i;
             const double vv_n = v_ptr[v_idx_n];
@@ -529,7 +531,7 @@ inline void convective_v_face_kernel_staggered(
             const double dKdy = (K_n - K_s) / (2.0 * dy);
             conv_v_ptr[conv_idx] = 0.5 * (adv_v + dKdy);
         } else {
-            // Near the south boundary: use pure advective form to stay in-bounds.
+            // Near boundaries: fall back to pure advective form to stay in-bounds.
             conv_v_ptr[conv_idx] = adv_v;
         }
     } else {
@@ -1070,7 +1072,7 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int n_v_faces = Nx * (Ny + 1);
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
-        firstprivate(dx, dy, u_stride, v_stride, scheme, Nx, Ng)
+        firstprivate(dx, dy, u_stride, v_stride, scheme, Nx, Ny, Ng)
     for (int idx = 0; idx < n_v_faces; ++idx) {
         int i_local = idx % Nx;
         int j_local = idx / Nx;
@@ -1078,7 +1080,7 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
         int j = j_local + Ng;
 
         convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, scheme,
-                                          u_ptr, v_ptr, conv_v_ptr);
+                                          Ny, Ng, u_ptr, v_ptr, conv_v_ptr);
     }
 }
 

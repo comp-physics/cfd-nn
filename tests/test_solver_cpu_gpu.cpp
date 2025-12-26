@@ -482,6 +482,11 @@ void test_taylor_green_cpu_gpu() {
         solver_gpu.step();
     }
     
+    // CRITICAL: Sync GPU results back to host before comparison
+#ifdef USE_GPU_OFFLOAD
+    solver_gpu.sync_from_gpu();
+#endif
+    
     // Compare final state
     compare_velocity(solver_cpu.velocity(), solver_gpu.velocity(), mesh, 
                      "Velocity after 10 steps");
@@ -535,6 +540,11 @@ void test_channel_cpu_gpu() {
         solver_cpu.step();
         solver_gpu.step();
     }
+    
+    // CRITICAL: Sync GPU results back to host before comparison
+#ifdef USE_GPU_OFFLOAD
+    solver_gpu.sync_from_gpu();
+#endif
     
     // Compare
     compare_velocity(solver_cpu.velocity(), solver_gpu.velocity(), mesh,
@@ -606,6 +616,11 @@ void test_taylor_green_skew_symmetric() {
         solver_gpu.step();
     }
     
+    // CRITICAL: Sync GPU results back to host before comparison
+#ifdef USE_GPU_OFFLOAD
+    solver_gpu.sync_from_gpu();
+#endif
+    
     // Compare final state
     compare_velocity(solver_cpu.velocity(), solver_gpu.velocity(), mesh, 
                      "Velocity after 10 steps (skew-symmetric)");
@@ -660,6 +675,11 @@ void test_channel_skew_symmetric() {
         solver_cpu.step();
         solver_gpu.step();
     }
+    
+    // CRITICAL: Sync GPU results back to host before comparison
+#ifdef USE_GPU_OFFLOAD
+    solver_gpu.sync_from_gpu();
+#endif
     
     // Compare
     compare_velocity(solver_cpu.velocity(), solver_gpu.velocity(), mesh,

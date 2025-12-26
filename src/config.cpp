@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <stdexcept>
+#include <cstdlib>
 
 namespace nncfd {
 
@@ -185,6 +187,32 @@ void Config::load(const std::string& filename) {
     finalize();
 }
 
+// Helper function to parse double with error handling
+static double parse_double_arg(const char* arg_name, const char* value) {
+    try {
+        return std::stod(value);
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "ERROR: " << arg_name << ": invalid numeric value '" << value << "'\n";
+        std::exit(1);
+    } catch (const std::out_of_range& e) {
+        std::cerr << "ERROR: " << arg_name << ": value '" << value << "' is out of range\n";
+        std::exit(1);
+    }
+}
+
+// Helper function to parse int with error handling
+static int parse_int_arg(const char* arg_name, const char* value) {
+    try {
+        return std::stoi(value);
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "ERROR: " << arg_name << ": invalid numeric value '" << value << "'\n";
+        std::exit(1);
+    } catch (const std::out_of_range& e) {
+        std::cerr << "ERROR: " << arg_name << ": value '" << value << "' is out of range\n";
+        std::exit(1);
+    }
+}
+
 void Config::parse_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -192,28 +220,28 @@ void Config::parse_args(int argc, char** argv) {
         if (arg == "--config" && i + 1 < argc) {
             load(argv[++i]);
         } else if (arg == "--Nx" && i + 1 < argc) {
-            Nx = std::stoi(argv[++i]);
+            Nx = parse_int_arg("--Nx", argv[++i]);
         } else if (arg == "--Ny" && i + 1 < argc) {
-            Ny = std::stoi(argv[++i]);
+            Ny = parse_int_arg("--Ny", argv[++i]);
         } else if (arg == "--Re" && i + 1 < argc) {
-            Re = std::stod(argv[++i]);
+            Re = parse_double_arg("--Re", argv[++i]);
             Re_specified = true;
         } else if (arg == "--nu" && i + 1 < argc) {
-            nu = std::stod(argv[++i]);
+            nu = parse_double_arg("--nu", argv[++i]);
             nu_specified = true;
         } else if (arg == "--dp_dx" && i + 1 < argc) {
-            dp_dx = std::stod(argv[++i]);
+            dp_dx = parse_double_arg("--dp_dx", argv[++i]);
             dp_dx_specified = true;
         } else if (arg == "--dt" && i + 1 < argc) {
-            dt = std::stod(argv[++i]);
+            dt = parse_double_arg("--dt", argv[++i]);
         } else if (arg == "--max_iter" && i + 1 < argc) {
-            max_iter = std::stoi(argv[++i]);
+            max_iter = parse_int_arg("--max_iter", argv[++i]);
         } else if (arg == "--tol" && i + 1 < argc) {
-            tol = std::stod(argv[++i]);
+            tol = parse_double_arg("--tol", argv[++i]);
         } else if (arg == "--poisson_tol" && i + 1 < argc) {
-            poisson_tol = std::stod(argv[++i]);
+            poisson_tol = parse_double_arg("--poisson_tol", argv[++i]);
         } else if (arg == "--poisson_max_iter" && i + 1 < argc) {
-            poisson_max_iter = std::stoi(argv[++i]);
+            poisson_max_iter = parse_int_arg("--poisson_max_iter", argv[++i]);
         } else if (arg == "--model" && i + 1 < argc) {
             std::string model = argv[++i];
             if (model == "none" || model == "laminar") {
@@ -246,7 +274,7 @@ void Config::parse_args(int argc, char** argv) {
         } else if (arg == "--output" && i + 1 < argc) {
             output_dir = argv[++i];
         } else if (arg == "--num_snapshots" && i + 1 < argc) {
-            num_snapshots = std::stoi(argv[++i]);
+            num_snapshots = parse_int_arg("--num_snapshots", argv[++i]);
         } else if (arg == "--verbose") {
             verbose = true;
         } else if (arg == "--quiet") {
@@ -260,7 +288,7 @@ void Config::parse_args(int argc, char** argv) {
         } else if (arg == "--adaptive_dt") {
             adaptive_dt = true;
         } else if (arg == "--CFL" && i + 1 < argc) {
-            CFL_max = std::stod(argv[++i]);
+            CFL_max = parse_double_arg("--CFL", argv[++i]);
         } else if (arg == "--scheme" && i + 1 < argc) {
             std::string scheme = argv[++i];
             if (scheme == "upwind") {
@@ -279,7 +307,7 @@ void Config::parse_args(int argc, char** argv) {
             }
         } else if (arg == "--perturbation_amplitude" || arg == "--perturb_amp") {
             if (i + 1 < argc) {
-                perturbation_amplitude = std::stod(argv[++i]);
+                perturbation_amplitude = parse_double_arg("--perturbation_amplitude", argv[++i]);
             } else {
                 std::cerr << "ERROR: --perturbation_amplitude requires a value\n";
                 std::exit(1);
