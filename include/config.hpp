@@ -65,6 +65,7 @@ struct Config {
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
     int max_iter = 10000;       ///< Maximum iterations for steady-state convergence
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
+    double perturbation_amplitude = 0.0;  ///< Initial perturbation amplitude for unsteady mode (0 = no perturbation)
     
     // Numerical schemes
     ConvectiveScheme convective_scheme = ConvectiveScheme::Central;

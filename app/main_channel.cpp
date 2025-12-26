@@ -116,24 +116,50 @@ void write_profile(const std::string& filename, const Mesh& mesh,
 }
 
 /// Create divergence-free perturbed velocity field via streamfunction
-/// ψ(x,y) = A * sin(kx*x) * sin²(π(y+1)/2)
+/// Uses multiple streamwise modes for better transition to turbulence
+/// ψ(x,y) = Σ_m A_m * sin(kx_m*x + φ_m) * sin²(π(y+1)/2)
 /// u = ∂ψ/∂y, v = -∂ψ/∂x guarantees ∇·u = 0 exactly
 /// Wall factor sin²(π(y+1)/2) vanishes at y=±1 (no-slip compatible)
-VectorField create_perturbed_channel_field(const Mesh& mesh, double amplitude = 1e-3) {
-    VectorField vel(mesh);
-    const double kx = 2.0 * M_PI / (mesh.x_max - mesh.x_min);
+VectorField create_perturbed_channel_field(const Mesh& mesh,
+                                           double amplitude = 1e-3,
+                                           double u_base = 0.0,
+                                           double v_base = 0.0) {
+    // Start from uniform base flow
+    VectorField vel(mesh, u_base, v_base);
+
+    const double Lx = mesh.x_max - mesh.x_min;
+
+    // Number of streamwise modes (multi-mode for better transition)
+    const int N_modes = 4;
+
+    // Compute weight normalization (1/k^2 spectrum)
+    double weight_sum = 0.0;
+    for (int m = 1; m <= N_modes; ++m) {
+        weight_sum += 1.0 / (m * m);
+    }
 
     // u = dψ/dy at x-faces
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         double y = mesh.y(j);
         double s = std::sin(0.5 * M_PI * (y + 1.0));
         double c = std::cos(0.5 * M_PI * (y + 1.0));
-        double dpsi_dy_factor = M_PI * s * c;
+        double dpsi_dy_factor = M_PI * s * c;  // Wall factor: 0 at y=±1
 
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
             // Use face coordinate array (correct for stretched grids)
             double x = mesh.xf[i];
-            vel.u(i, j) = amplitude * std::sin(kx * x) * dpsi_dy_factor;
+
+            // Sum over multiple modes
+            double sum_modes = 0.0;
+            for (int m = 1; m <= N_modes; ++m) {
+                double kx = m * 2.0 * M_PI / Lx;
+                double w_m = (1.0 / (m * m)) / weight_sum;
+                double A_m = amplitude * std::sqrt(w_m);
+                double phase = 0.5 * m;  // Deterministic phase offset
+                sum_modes += A_m * std::sin(kx * x + phase);
+            }
+
+            vel.u(i, j) += sum_modes * dpsi_dy_factor;
         }
     }
 
@@ -142,12 +168,23 @@ VectorField create_perturbed_channel_field(const Mesh& mesh, double amplitude = 
         // Use face coordinate array (correct for stretched grids)
         double y = mesh.yf[j];
         double s = std::sin(0.5 * M_PI * (y + 1.0));
-        double s2 = s * s;
+        double s2 = s * s;  // Wall factor: 0 at y=±1
 
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double x = mesh.x(i);
-            double dpsi_dx = amplitude * kx * std::cos(kx * x) * s2;
-            vel.v(i, j) = -dpsi_dx;
+
+            // Sum over multiple modes
+            double sum_modes = 0.0;
+            for (int m = 1; m <= N_modes; ++m) {
+                double kx = m * 2.0 * M_PI / Lx;
+                double w_m = (1.0 / (m * m)) / weight_sum;
+                double A_m = amplitude * std::sqrt(w_m);
+                double phase = 0.5 * m;  // Deterministic phase offset
+                sum_modes += A_m * std::cos(kx * x + phase);
+            }
+
+            double dpsi_dx = sum_modes * s2;
+            vel.v(i, j) += -dpsi_dx;
         }
     }
 
@@ -270,8 +307,23 @@ int main(int argc, char** argv) {
         // Force laminar for unsteady developing flow
         config.turb_model = TurbulenceModelType::None;
         
-        // Initialize with divergence-free perturbation
-        solver.initialize(create_perturbed_channel_field(mesh, 1e-3));
+        // Initialize with uniform velocity (zero or small base flow)
+        double u_base = 0.0;  // Start from rest
+        double v_base = 0.0;
+        
+        if (config.perturbation_amplitude > 0.0) {
+            // Create initial field with base flow + multi-mode perturbation
+            VectorField initial_vel = create_perturbed_channel_field(mesh,
+                                                                     config.perturbation_amplitude,
+                                                                     u_base, v_base);
+            
+            // Initialize with combined field (initialize() will enforce BCs)
+            solver.initialize(initial_vel);
+            std::cout << "Added multi-mode perturbation with amplitude: " << config.perturbation_amplitude << "\n";
+        } else {
+            solver.initialize_uniform(u_base, v_base);
+            std::cout << "Starting from uniform flow (no perturbation)\n";
+        }
         
     #ifdef USE_GPU_OFFLOAD
         solver.sync_to_gpu();

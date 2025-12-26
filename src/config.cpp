@@ -53,6 +53,12 @@ std::map<std::string, std::string> parse_config_file(const std::string& filename
         std::string key = trim(line.substr(0, pos));
         std::string value = trim(line.substr(pos + 1));
         
+        // Strip inline comments (everything after '#' that's not inside quotes)
+        auto comment_pos = value.find('#');
+        if (comment_pos != std::string::npos) {
+            value = trim(value.substr(0, comment_pos));
+        }
+        
         result[key] = value;
     }
     
@@ -113,6 +119,7 @@ void Config::load(const std::string& filename) {
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
     max_iter = get_int("max_iter", max_iter);
     tol = get_double("tol", tol);
+    perturbation_amplitude = get_double("perturbation_amplitude", perturbation_amplitude);
     
     // Numerical scheme
     auto scheme_str = get_string("convective_scheme", "central");
@@ -266,6 +273,13 @@ void Config::parse_args(int argc, char** argv) {
             } else {
                 simulation_mode = SimulationMode::Steady;
             }
+        } else if (arg == "--perturbation_amplitude" || arg == "--perturb_amp") {
+            if (i + 1 < argc) {
+                perturbation_amplitude = std::stod(argv[++i]);
+            } else {
+                std::cerr << "ERROR: --perturbation_amplitude requires a value\n";
+                return;
+            }
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -296,6 +310,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
                       << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
+                      << "  --perturbation_amplitude A  Initial perturbation amplitude for unsteady mode (default: 0.0)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"
