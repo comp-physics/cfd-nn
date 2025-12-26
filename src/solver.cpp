@@ -420,27 +420,35 @@ inline void convective_u_face_kernel_staggered(
     const double adv_u = uu * dudx + vv * dudy;
     
     if (use_skew) {
-        // Skew-symmetric form: 0.5[(u·∇)u + ∂/∂x(½|u|²)] for u-momentum
-        // East face (i+1)
-        const double uu_e = u_ptr[j * u_stride + (i+1)];
-        const double v_bl_e = v_ptr[j * v_stride + i];
-        const double v_br_e = v_ptr[j * v_stride + (i+1)];
-        const double v_tl_e = v_ptr[(j+1) * v_stride + i];
-        const double v_tr_e = v_ptr[(j+1) * v_stride + (i+1)];
-        const double vv_e = 0.25 * (v_bl_e + v_br_e + v_tl_e + v_tr_e);
-        const double K_e = 0.5 * (uu_e * uu_e + vv_e * vv_e);
-        
-        // West face (i-1)
-        const double uu_w = u_ptr[j * u_stride + (i-1)];
-        const double v_bl_w = v_ptr[j * v_stride + (i-2)];
-        const double v_br_w = v_ptr[j * v_stride + (i-1)];
-        const double v_tl_w = v_ptr[(j+1) * v_stride + (i-2)];
-        const double v_tr_w = v_ptr[(j+1) * v_stride + (i-1)];
-        const double vv_w = 0.25 * (v_bl_w + v_br_w + v_tl_w + v_tr_w);
-        const double K_w = 0.5 * (uu_w * uu_w + vv_w * vv_w);
-        
-        const double dKdx = (K_e - K_w) / (2.0 * dx);
-        conv_u_ptr[conv_idx] = 0.5 * (adv_u + dKdx);
+        // Skew-symmetric form: 0.5[(u·∇)u + ∂/∂x(½|u|²)] for u-momentum.
+        // This stencil accesses v at (i-2), so with Nghost = 1 the first
+        // interior face (i == 1) would underflow. To avoid out-of-bounds
+        // access we fall back to the advective form for i < 2.
+        if (i >= 2) {
+            // East face (i+1)
+            const double uu_e = u_ptr[j * u_stride + (i+1)];
+            const double v_bl_e = v_ptr[j * v_stride + i];
+            const double v_br_e = v_ptr[j * v_stride + (i+1)];
+            const double v_tl_e = v_ptr[(j+1) * v_stride + i];
+            const double v_tr_e = v_ptr[(j+1) * v_stride + (i+1)];
+            const double vv_e = 0.25 * (v_bl_e + v_br_e + v_tl_e + v_tr_e);
+            const double K_e = 0.5 * (uu_e * uu_e + vv_e * vv_e);
+            
+            // West face (i-1)
+            const double uu_w = u_ptr[j * u_stride + (i-1)];
+            const double v_bl_w = v_ptr[j * v_stride + (i-2)];
+            const double v_br_w = v_ptr[j * v_stride + (i-1)];
+            const double v_tl_w = v_ptr[(j+1) * v_stride + (i-2)];
+            const double v_tr_w = v_ptr[(j+1) * v_stride + (i-1)];
+            const double vv_w = 0.25 * (v_bl_w + v_br_w + v_tl_w + v_tr_w);
+            const double K_w = 0.5 * (uu_w * uu_w + vv_w * vv_w);
+            
+            const double dKdx = (K_e - K_w) / (2.0 * dx);
+            conv_u_ptr[conv_idx] = 0.5 * (adv_u + dKdx);
+        } else {
+            // Near the west boundary: use pure advective form to stay in-bounds.
+            conv_u_ptr[conv_idx] = adv_u;
+        }
     } else {
         conv_u_ptr[conv_idx] = adv_u;
     }
@@ -493,29 +501,37 @@ inline void convective_v_face_kernel_staggered(
     const double adv_v = uu * dvdx + vv * dvdy;
     
     if (use_skew) {
-        // Skew-symmetric form: 0.5[(u·∇)v + ∂/∂y(½|u|²)] for v-momentum
-        // North face (j+1)
-        const int v_idx_n = (j+1) * v_stride + i;
-        const double vv_n = v_ptr[v_idx_n];
-        const double u_bl_n = u_ptr[j * u_stride + i];
-        const double u_br_n = u_ptr[j * u_stride + (i+1)];
-        const double u_tl_n = u_ptr[(j+1) * u_stride + i];
-        const double u_tr_n = u_ptr[(j+1) * u_stride + (i+1)];
-        const double uu_n = 0.25 * (u_bl_n + u_br_n + u_tl_n + u_tr_n);
-        const double K_n = 0.5 * (uu_n * uu_n + vv_n * vv_n);
-        
-        // South face (j-1)
-        const int v_idx_s = (j-1) * v_stride + i;
-        const double vv_s = v_ptr[v_idx_s];
-        const double u_bl_s = u_ptr[(j-2) * u_stride + i];
-        const double u_br_s = u_ptr[(j-2) * u_stride + (i+1)];
-        const double u_tl_s = u_ptr[(j-1) * u_stride + i];
-        const double u_tr_s = u_ptr[(j-1) * u_stride + (i+1)];
-        const double uu_s = 0.25 * (u_bl_s + u_br_s + u_tl_s + u_tr_s);
-        const double K_s = 0.5 * (uu_s * uu_s + vv_s * vv_s);
-        
-        const double dKdy = (K_n - K_s) / (2.0 * dy);
-        conv_v_ptr[conv_idx] = 0.5 * (adv_v + dKdy);
+        // Skew-symmetric form: 0.5[(u·∇)v + ∂/∂y(½|u|²)] for v-momentum.
+        // This stencil accesses u at (j-2), so with Nghost = 1 the first
+        // interior row (j == 1) would underflow. To avoid out-of-bounds
+        // access we fall back to the advective form for j < 2.
+        if (j >= 2) {
+            // North face (j+1)
+            const int v_idx_n = (j+1) * v_stride + i;
+            const double vv_n = v_ptr[v_idx_n];
+            const double u_bl_n = u_ptr[j * u_stride + i];
+            const double u_br_n = u_ptr[j * u_stride + (i+1)];
+            const double u_tl_n = u_ptr[(j+1) * u_stride + i];
+            const double u_tr_n = u_ptr[(j+1) * u_stride + (i+1)];
+            const double uu_n = 0.25 * (u_bl_n + u_br_n + u_tl_n + u_tr_n);
+            const double K_n = 0.5 * (uu_n * uu_n + vv_n * vv_n);
+            
+            // South face (j-1)
+            const int v_idx_s = (j-1) * v_stride + i;
+            const double vv_s = v_ptr[v_idx_s];
+            const double u_bl_s = u_ptr[(j-2) * u_stride + i];
+            const double u_br_s = u_ptr[(j-2) * u_stride + (i+1)];
+            const double u_tl_s = u_ptr[(j-1) * u_stride + i];
+            const double u_tr_s = u_ptr[(j-1) * u_stride + (i+1)];
+            const double uu_s = 0.25 * (u_bl_s + u_br_s + u_tl_s + u_tr_s);
+            const double K_s = 0.5 * (uu_s * uu_s + vv_s * vv_s);
+            
+            const double dKdy = (K_n - K_s) / (2.0 * dy);
+            conv_v_ptr[conv_idx] = 0.5 * (adv_v + dKdy);
+        } else {
+            // Near the south boundary: use pure advective form to stay in-bounds.
+            conv_v_ptr[conv_idx] = adv_v;
+        }
     } else {
         conv_v_ptr[conv_idx] = adv_v;
     }

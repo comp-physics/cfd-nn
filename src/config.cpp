@@ -53,7 +53,7 @@ std::map<std::string, std::string> parse_config_file(const std::string& filename
         std::string key = trim(line.substr(0, pos));
         std::string value = trim(line.substr(pos + 1));
         
-        // Strip inline comments (everything after '#' that's not inside quotes)
+        // Strip inline comments (everything after the first '#')
         auto comment_pos = value.find('#');
         if (comment_pos != std::string::npos) {
             value = trim(value.substr(0, comment_pos));
@@ -282,7 +282,7 @@ void Config::parse_args(int argc, char** argv) {
                 perturbation_amplitude = std::stod(argv[++i]);
             } else {
                 std::cerr << "ERROR: --perturbation_amplitude requires a value\n";
-                return;
+                std::exit(1);
             }
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
@@ -312,7 +312,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
-                      << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
+                      << "  --scheme SCHEME   Convective scheme: central (default), upwind, skew_symmetric\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for unsteady mode (default: 0.0)\n"
                       << "  --verbose/--quiet Print progress\n"
