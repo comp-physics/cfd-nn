@@ -98,6 +98,9 @@ public:
     /// Get current time step
     double current_dt() const { return current_dt_; }
     
+    /// Set current time step (for adaptive time stepping)
+    void set_dt(double dt) { current_dt_ = dt; }
+    
     /// Access fields
     const VectorField& velocity() const { return velocity_; }
     const ScalarField& pressure() const { return pressure_; }

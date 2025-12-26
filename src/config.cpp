@@ -125,6 +125,8 @@ void Config::load(const std::string& filename) {
     auto scheme_str = get_string("convective_scheme", "central");
     if (scheme_str == "upwind") {
         convective_scheme = ConvectiveScheme::Upwind;
+    } else if (scheme_str == "skew" || scheme_str == "skew_symmetric" || scheme_str == "skew-symmetric") {
+        convective_scheme = ConvectiveScheme::SkewSymmetric;
     } else {
         convective_scheme = ConvectiveScheme::Central;
     }
@@ -263,6 +265,8 @@ void Config::parse_args(int argc, char** argv) {
             std::string scheme = argv[++i];
             if (scheme == "upwind") {
                 convective_scheme = ConvectiveScheme::Upwind;
+            } else if (scheme == "skew" || scheme == "skew_symmetric" || scheme == "skew-symmetric") {
+                convective_scheme = ConvectiveScheme::SkewSymmetric;
             } else {
                 convective_scheme = ConvectiveScheme::Central;
             }
@@ -465,7 +469,8 @@ void Config::print() const {
               << "Time stepping: Explicit Euler + Projection\n"
               << "Poisson solver: Multigrid (warm-start enabled)\n"
               << "Convective scheme: " 
-              << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
+              << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : 
+                  (convective_scheme == ConvectiveScheme::SkewSymmetric ? "Skew-Symmetric" : "Central")) << "\n"
               << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     

@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
         int snap_count = 0;
         for (int step = 1; step <= config.max_iter; ++step) {
             if (config.adaptive_dt) {
-                (void)solver.compute_adaptive_dt();
+                solver.set_dt(solver.compute_adaptive_dt());
             }
             double residual = solver.step();
             

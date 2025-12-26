@@ -377,7 +377,7 @@ inline void update_pressure_kernel(
 inline void convective_u_face_kernel_staggered(
     int i, int j,
     int u_stride, int v_stride, int conv_stride,
-    double dx, double dy, bool use_central,
+    double dx, double dy, int scheme,
     const double* u_ptr, const double* v_ptr,
     double* conv_u_ptr)
 {
@@ -390,6 +390,9 @@ inline void convective_u_face_kernel_staggered(
     const double v_tl = v_ptr[(j+1) * v_stride + (i-1)];
     const double v_tr = v_ptr[(j+1) * v_stride + i];
     const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+    
+    const bool use_central = (scheme == 0 || scheme == 2);   // 0: Central, 1: Upwind, 2: SkewSymmetric
+    const bool use_skew    = (scheme == 2);
     
     double dudx, dudy;
     
@@ -414,19 +417,48 @@ inline void convective_u_face_kernel_staggered(
     }
     
     const int conv_idx = j * conv_stride + i;
-    conv_u_ptr[conv_idx] = uu * dudx + vv * dudy;
+    const double adv_u = uu * dudx + vv * dudy;
+    
+    if (use_skew) {
+        // Skew-symmetric form: 0.5[(u·∇)u + ∂/∂x(½|u|²)] for u-momentum
+        // East face (i+1)
+        const double uu_e = u_ptr[j * u_stride + (i+1)];
+        const double v_bl_e = v_ptr[j * v_stride + i];
+        const double v_br_e = v_ptr[j * v_stride + (i+1)];
+        const double v_tl_e = v_ptr[(j+1) * v_stride + i];
+        const double v_tr_e = v_ptr[(j+1) * v_stride + (i+1)];
+        const double vv_e = 0.25 * (v_bl_e + v_br_e + v_tl_e + v_tr_e);
+        const double K_e = 0.5 * (uu_e * uu_e + vv_e * vv_e);
+        
+        // West face (i-1)
+        const double uu_w = u_ptr[j * u_stride + (i-1)];
+        const double v_bl_w = v_ptr[j * v_stride + (i-2)];
+        const double v_br_w = v_ptr[j * v_stride + (i-1)];
+        const double v_tl_w = v_ptr[(j+1) * v_stride + (i-2)];
+        const double v_tr_w = v_ptr[(j+1) * v_stride + (i-1)];
+        const double vv_w = 0.25 * (v_bl_w + v_br_w + v_tl_w + v_tr_w);
+        const double K_w = 0.5 * (uu_w * uu_w + vv_w * vv_w);
+        
+        const double dKdx = (K_e - K_w) / (2.0 * dx);
+        conv_u_ptr[conv_idx] = 0.5 * (adv_u + dKdx);
+    } else {
+        conv_u_ptr[conv_idx] = adv_u;
+    }
 }
 
 // Convection term for v-momentum at y-face (i,j) - staggered grid
 inline void convective_v_face_kernel_staggered(
     int i, int j,
     int u_stride, int v_stride, int conv_stride,
-    double dx, double dy, bool use_central,
+    double dx, double dy, int scheme,
     const double* u_ptr, const double* v_ptr,
     double* conv_v_ptr)
 {
     const int v_idx = j * v_stride + i;
     const double vv = v_ptr[v_idx];
+    
+    const bool use_central = (scheme == 0 || scheme == 2);   // 0: Central, 1: Upwind, 2: SkewSymmetric
+    const bool use_skew    = (scheme == 2);
     
     // Interpolate u to y-face (average 4 surrounding u-faces)
     const double u_bl = u_ptr[(j-1) * u_stride + i];
@@ -458,7 +490,35 @@ inline void convective_v_face_kernel_staggered(
     }
     
     const int conv_idx = j * conv_stride + i;
-    conv_v_ptr[conv_idx] = uu * dvdx + vv * dvdy;
+    const double adv_v = uu * dvdx + vv * dvdy;
+    
+    if (use_skew) {
+        // Skew-symmetric form: 0.5[(u·∇)v + ∂/∂y(½|u|²)] for v-momentum
+        // North face (j+1)
+        const int v_idx_n = (j+1) * v_stride + i;
+        const double vv_n = v_ptr[v_idx_n];
+        const double u_bl_n = u_ptr[j * u_stride + i];
+        const double u_br_n = u_ptr[j * u_stride + (i+1)];
+        const double u_tl_n = u_ptr[(j+1) * u_stride + i];
+        const double u_tr_n = u_ptr[(j+1) * u_stride + (i+1)];
+        const double uu_n = 0.25 * (u_bl_n + u_br_n + u_tl_n + u_tr_n);
+        const double K_n = 0.5 * (uu_n * uu_n + vv_n * vv_n);
+        
+        // South face (j-1)
+        const int v_idx_s = (j-1) * v_stride + i;
+        const double vv_s = v_ptr[v_idx_s];
+        const double u_bl_s = u_ptr[(j-2) * u_stride + i];
+        const double u_br_s = u_ptr[(j-2) * u_stride + (i+1)];
+        const double u_tl_s = u_ptr[(j-1) * u_stride + i];
+        const double u_tr_s = u_ptr[(j-1) * u_stride + (i+1)];
+        const double uu_s = 0.25 * (u_bl_s + u_br_s + u_tl_s + u_tr_s);
+        const double K_s = 0.5 * (uu_s * uu_s + vv_s * vv_s);
+        
+        const double dKdy = (K_n - K_s) / (2.0 * dy);
+        conv_v_ptr[conv_idx] = 0.5 * (adv_v + dKdy);
+    } else {
+        conv_v_ptr[conv_idx] = adv_v;
+    }
 }
 
 
@@ -965,7 +1025,7 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int Ng = v.Ng;
     const int u_stride = v.u_stride;
     const int v_stride = v.v_stride;
-    const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
+    const int scheme = static_cast<int>(config_.convective_scheme);
 
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
@@ -979,14 +1039,14 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int n_u_faces = (Nx + 1) * Ny;
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
-        firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
+        firstprivate(dx, dy, u_stride, v_stride, scheme, Nx, Ng)
     for (int idx = 0; idx < n_u_faces; ++idx) {
         int i_local = idx % (Nx + 1);
         int j_local = idx / (Nx + 1);
         int i = i_local + Ng;
         int j = j_local + Ng;
 
-        convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, use_central,
+        convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, scheme,
                                           u_ptr, v_ptr, conv_u_ptr);
     }
 
@@ -994,14 +1054,14 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int n_v_faces = Nx * (Ny + 1);
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
-        firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
+        firstprivate(dx, dy, u_stride, v_stride, scheme, Nx, Ng)
     for (int idx = 0; idx < n_v_faces; ++idx) {
         int i_local = idx % Nx;
         int j_local = idx / Nx;
         int i = i_local + Ng;
         int j = j_local + Ng;
 
-        convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, use_central,
+        convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, scheme,
                                           u_ptr, v_ptr, conv_v_ptr);
     }
 }
@@ -2394,6 +2454,19 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     }
 #endif
     
+    // Diagnostics: report current dt and CFL whenever we write a VTK file
+    if (config_.adaptive_dt) {
+        // u_max based on cell-centered magnitude (host-side; data just synced above in GPU builds)
+        double u_max = velocity_.max_magnitude();
+        double dx_min = std::min(mesh_->dx, mesh_->dy);
+        double cfl = (u_max > 1e-10) ? (u_max * current_dt_ / dx_min) : 0.0;
+        
+        std::cout << "[VTK] dt = " << std::scientific << std::setprecision(3) << current_dt_
+                  << ", CFL = " << std::fixed << std::setprecision(3) << cfl
+                  << " (CFL_max = " << config_.CFL_max
+                  << "), file = " << filename << "\n";
+    }
+    
     std::ofstream file(filename);
     if (!file) {
         std::cerr << "Error: Cannot open " << filename << " for writing\n";
@@ -2421,6 +2494,24 @@ void RANSSolver::write_vtk(const std::string& filename) const {
             double u_center = velocity_.u_center(i, j);
             double v_center = velocity_.v_center(i, j);
             file << u_center << " " << v_center << " 0\n";
+        }
+    }
+    
+    // u component as scalar field
+    file << "SCALARS u_velocity double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            file << velocity_.u_center(i, j) << "\n";
+        }
+    }
+    
+    // v component as scalar field
+    file << "SCALARS v_velocity double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+            file << velocity_.v_center(i, j) << "\n";
         }
     }
     

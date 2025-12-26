@@ -285,6 +285,66 @@ static std::map<std::string, double> run_all_cases_and_collect_metrics() {
         }
     }
 
+    // Case D: Skew-symmetric scheme test
+    {
+        Config config;
+        config.Nx = 64;
+        config.Ny = 64;
+        config.x_min = 0.0;
+        config.x_max = 2.0 * M_PI;
+        config.y_min = 0.0;
+        config.y_max = 2.0 * M_PI;
+        config.nu = 0.01;
+        config.dt = 0.0001;
+        config.adaptive_dt = false;
+        config.turb_model = TurbulenceModelType::None;
+        config.convective_scheme = ConvectiveScheme::SkewSymmetric;  // Skew-symmetric
+        config.verbose = false;
+
+        Mesh mesh;
+        mesh.init_uniform(config.Nx, config.Ny,
+                          config.x_min, config.x_max,
+                          config.y_min, config.y_max);
+
+        RANSSolver solver(mesh, config);
+        VelocityBC bc;
+        bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = VelocityBC::Periodic;
+        solver.set_velocity_bc(bc);
+
+        VectorField vel_init(mesh);
+        const int Ng = mesh.Nghost;
+        for (int j = Ng; j < Ng + mesh.Ny; ++j) {
+            for (int i = Ng; i <= Ng + mesh.Nx; ++i) {
+                double x = mesh.x_min + (i - Ng) * mesh.dx;
+                double y = mesh.y(j);
+                vel_init.u(i, j) = -std::cos(x) * std::sin(y);
+            }
+        }
+        for (int j = Ng; j <= Ng + mesh.Ny; ++j) {
+            for (int i = Ng; i < Ng + mesh.Nx; ++i) {
+                double x = mesh.x(i);
+                double y = mesh.y_min + (j - Ng) * mesh.dy;
+                vel_init.v(i, j) = std::sin(x) * std::cos(y);
+            }
+        }
+        solver.initialize(vel_init);
+
+        for (int step = 0; step < 10; ++step) {
+            solver.step();
+        }
+
+#ifdef USE_GPU_OFFLOAD
+        solver.sync_from_gpu();
+#endif
+
+        const auto m = compute_metrics(mesh, solver.velocity(), solver.pressure());
+        kv["skew.max_abs_u"] = m.max_abs_u;
+        kv["skew.max_abs_v"] = m.max_abs_v;
+        kv["skew.u_l2"] = m.u_l2;
+        kv["skew.v_l2"] = m.v_l2;
+        kv["skew.p_l2"] = m.p_l2;
+    }
+
     return kv;
 }
 
@@ -485,9 +545,134 @@ void test_channel_cpu_gpu() {
     std::cout << "  [PASS]\n";
 }
 
-/// Test 3: Multiple time steps with different grid sizes
+/// Test 3: Taylor-Green vortex with skew-symmetric scheme
+void test_taylor_green_skew_symmetric() {
+    std::cout << "\n=== Test 3: Taylor-Green Vortex (Skew-Symmetric Scheme) ===" << std::endl;
+    
+    Config config;
+    config.Nx = 64;
+    config.Ny = 64;
+    config.x_min = 0.0;
+    config.x_max = 2.0 * M_PI;
+    config.y_min = 0.0;
+    config.y_max = 2.0 * M_PI;
+    config.nu = 0.01;
+    config.dt = 0.0001;
+    config.adaptive_dt = false;
+    config.turb_model = TurbulenceModelType::None;
+    config.convective_scheme = ConvectiveScheme::SkewSymmetric;  // Use skew-symmetric
+    config.verbose = false;
+    
+    Mesh mesh;
+    mesh.init_uniform(config.Nx, config.Ny, 
+                      config.x_min, config.x_max,
+                      config.y_min, config.y_max);
+    
+    // CPU solver
+    RANSSolver solver_cpu(mesh, config);
+    VelocityBC bc;
+    bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = VelocityBC::Periodic;
+    solver_cpu.set_velocity_bc(bc);
+    
+    // Initialize with Taylor-Green
+    VectorField vel_init(mesh);
+    const int Ng = mesh.Nghost;
+    
+    for (int j = Ng; j < Ng + mesh.Ny; ++j) {
+        for (int i = Ng; i <= Ng + mesh.Nx; ++i) {
+            double x = mesh.x_min + (i - Ng) * mesh.dx;
+            double y = mesh.y(j);
+            vel_init.u(i, j) = -std::cos(x) * std::sin(y);
+        }
+    }
+    for (int j = Ng; j <= Ng + mesh.Ny; ++j) {
+        for (int i = Ng; i < Ng + mesh.Nx; ++i) {
+            double x = mesh.x(i);
+            double y = mesh.y_min + (j - Ng) * mesh.dy;
+            vel_init.v(i, j) = std::sin(x) * std::cos(y);
+        }
+    }
+    solver_cpu.initialize(vel_init);
+    
+    // GPU solver (identical setup)
+    RANSSolver solver_gpu(mesh, config);
+    solver_gpu.set_velocity_bc(bc);
+    solver_gpu.initialize(vel_init);
+    
+    // Run 10 steps on each
+    std::cout << "  Running 10 time steps with skew-symmetric scheme...\n";
+    for (int step = 0; step < 10; ++step) {
+        solver_cpu.step();
+        solver_gpu.step();
+    }
+    
+    // Compare final state
+    compare_velocity(solver_cpu.velocity(), solver_gpu.velocity(), mesh, 
+                     "Velocity after 10 steps (skew-symmetric)");
+    compare_scalar(solver_cpu.pressure(), solver_gpu.pressure(), mesh,
+                   "Pressure after 10 steps (skew-symmetric)");
+    
+    std::cout << "  [PASS]\n";
+}
+
+/// Test 4: Channel flow with skew-symmetric scheme
+void test_channel_skew_symmetric() {
+    std::cout << "\n=== Test 4: Channel Flow (Skew-Symmetric Scheme) ===" << std::endl;
+    
+    Config config;
+    config.Nx = 64;
+    config.Ny = 32;
+    config.x_min = 0.0;
+    config.x_max = 4.0;
+    config.y_min = -1.0;
+    config.y_max = 1.0;
+    config.nu = 0.01;
+    config.dp_dx = -0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.turb_model = TurbulenceModelType::None;
+    config.convective_scheme = ConvectiveScheme::SkewSymmetric;  // Use skew-symmetric
+    config.verbose = false;
+    
+    Mesh mesh;
+    mesh.init_uniform(config.Nx, config.Ny, 
+                      config.x_min, config.x_max,
+                      config.y_min, config.y_max);
+    
+    // CPU solver
+    RANSSolver solver_cpu(mesh, config);
+    VelocityBC bc;
+    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
+    solver_cpu.set_velocity_bc(bc);
+    solver_cpu.set_body_force(-config.dp_dx, 0.0);
+    solver_cpu.initialize_uniform(0.1, 0.0);
+    
+    // GPU solver
+    RANSSolver solver_gpu(mesh, config);
+    solver_gpu.set_velocity_bc(bc);
+    solver_gpu.set_body_force(-config.dp_dx, 0.0);
+    solver_gpu.initialize_uniform(0.1, 0.0);
+    
+    // Run 10 steps
+    std::cout << "  Running 10 time steps with skew-symmetric scheme...\n";
+    for (int step = 0; step < 10; ++step) {
+        solver_cpu.step();
+        solver_gpu.step();
+    }
+    
+    // Compare
+    compare_velocity(solver_cpu.velocity(), solver_gpu.velocity(), mesh,
+                     "Velocity after 10 steps (skew-symmetric)");
+    compare_scalar(solver_cpu.pressure(), solver_gpu.pressure(), mesh,
+                   "Pressure after 10 steps (skew-symmetric)");
+    
+    std::cout << "  [PASS]\n";
+}
+
+/// Test 5: Multiple time steps with different grid sizes (skew-symmetric)
 void test_various_grids() {
-    std::cout << "\n=== Test 3: Various Grid Sizes ===" << std::endl;
+    std::cout << "\n=== Test 5: Various Grid Sizes (Skew-Symmetric) ===" << std::endl;
     
     struct GridSize { int nx, ny; };
     std::vector<GridSize> grids = {
@@ -511,6 +696,7 @@ void test_various_grids() {
         config.dt = 0.0001;
         config.adaptive_dt = false;
         config.turb_model = TurbulenceModelType::None;
+        config.convective_scheme = ConvectiveScheme::SkewSymmetric;  // Test skew-symmetric
         config.verbose = false;
         
         Mesh mesh;
@@ -644,7 +830,9 @@ int main(int argc, char** argv) {
     // Run tests (only compiled in GPU-offload builds to avoid unreachable-code warnings)
     test_taylor_green_cpu_gpu();
     test_channel_cpu_gpu();
-    test_various_grids();
+    test_taylor_green_skew_symmetric();  // Test skew-symmetric scheme
+    test_channel_skew_symmetric();        // Test skew-symmetric scheme
+    test_various_grids();                 // Uses skew-symmetric scheme
 
     std::cout << "\n========================================\n";
     std::cout << "All solver CPU/GPU tests PASSED!\n";

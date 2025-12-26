@@ -26,8 +26,9 @@ enum class TurbulenceModelType {
 
 /// Convective scheme selection
 enum class ConvectiveScheme {
-    Central,
-    Upwind
+    Central,        ///< 2nd-order central differences (advective form)
+    Upwind,         ///< 1st-order upwind (robust, diffusive)
+    SkewSymmetric   ///< 2nd-order central, skew-symmetric (energy-conserving) form
 };
 
 /// Simulation mode selection
