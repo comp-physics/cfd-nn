@@ -817,52 +817,14 @@ int main(int argc, char** argv) {
 #endif
     }
 
-    // Legacy single-binary mode (kept for convenience; not a true CPU-vs-GPU hardware comparison)
-    std::cout << "========================================\n";
-    std::cout << "Solver CPU/GPU Consistency Tests\n";
-    std::cout << "Staggered Grid Implementation\n";
-    std::cout << "========================================\n";
-
-#ifdef USE_GPU_OFFLOAD
-    int num_devices = omp_get_num_devices();
-    std::cout << "\nGPU devices available: " << num_devices << "\n";
-
-    if (num_devices == 0) {
-        std::cerr << "\nERROR: USE_GPU_OFFLOAD enabled but no GPU devices found.\n";
-        std::cerr << "       This test requires GPU hardware when built with GPU offload.\n";
-        return 1;
-    }
-
-    // Verify GPU is accessible
-    int on_device = 0;
-    #pragma omp target map(tofrom: on_device)
-    {
-        on_device = !omp_is_initial_device();
-    }
-
-    if (!on_device) {
-        std::cerr << "\nERROR: USE_GPU_OFFLOAD enabled but target region ran on host.\n";
-        std::cerr << "       GPU is not accessible. Check OMP_TARGET_OFFLOAD settings.\n";
-        return 1;
-    }
-
-    std::cout << "GPU accessible: YES\n";
-    // Run tests (only compiled in GPU-offload builds to avoid unreachable-code warnings)
-    test_taylor_green_cpu_gpu();
-    test_channel_cpu_gpu();
-    test_taylor_green_skew_symmetric();  // Test skew-symmetric scheme
-    test_channel_skew_symmetric();        // Test skew-symmetric scheme
-    test_various_grids();                 // Uses skew-symmetric scheme
-
-    std::cout << "\n========================================\n";
-    std::cout << "All solver CPU/GPU tests PASSED!\n";
-    std::cout << "========================================\n";
-
+    // No legacy single-binary mode: require explicit dump/compare usage.
+    std::cout << "Usage:\n"
+              << "  CPU-only build:    ./test_solver_cpu_gpu --dump-prefix <name>\n"
+              << "  GPU-offload build: ./test_solver_cpu_gpu --compare-prefix <name>\n"
+              << "\n"
+              << "Legacy single-binary CPU/GPU tests have been removed.\n"
+              << "Use the two-build dump/compare workflow for CPU vs GPU validation.\n";
     return 0;
-#else
-    std::cout << "\nGPU offload not enabled. Tests skipped.\n";
-    return 0;
-#endif
 }
 
 
