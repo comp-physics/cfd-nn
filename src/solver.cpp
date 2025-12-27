@@ -3636,6 +3636,14 @@ void RANSSolver::initialize_gpu_buffers() {
     diff_v_ptr_ = diff_.v_data().data();
     rhs_poisson_ptr_ = rhs_poisson_.data().data();
     div_velocity_ptr_ = div_velocity_.data().data();
+
+    // 3D w-velocity fields
+    if (!mesh_->is2D()) {
+        velocity_w_ptr_ = velocity_.w_data().data();
+        velocity_star_w_ptr_ = velocity_star_.w_data().data();
+        conv_w_ptr_ = conv_.w_data().data();
+        diff_w_ptr_ = diff_.w_data().data();
+    }
     // NOTE: k and omega are NOT mapped - turbulence models manage their own GPU copies
     k_ptr_ = k_.data().data();
     omega_ptr_ = omega_.data().data();
@@ -3665,7 +3673,7 @@ void RANSSolver::initialize_gpu_buffers() {
     // Staggered grid: u and v have different sizes
     const size_t u_total_size = velocity_.u_total_size();
     const size_t v_total_size = velocity_.v_total_size();
-    
+
     #pragma omp target enter data map(to: velocity_u_ptr_[0:u_total_size])
     #pragma omp target enter data map(to: velocity_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: velocity_star_u_ptr_[0:u_total_size])
@@ -3680,6 +3688,15 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: diff_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
+
+    // 3D w-velocity fields
+    if (!mesh_->is2D()) {
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target enter data map(to: velocity_w_ptr_[0:w_total_size])
+        #pragma omp target enter data map(to: velocity_star_w_ptr_[0:w_total_size])
+        #pragma omp target enter data map(to: conv_w_ptr_[0:w_total_size])
+        #pragma omp target enter data map(to: diff_w_ptr_[0:w_total_size])
+    }
     
     // Transport equation fields (k, omega) - needed for EARSM/SST models
     // These are initialized by RANSSolver::initialize() before GPU buffers are set up,
@@ -3706,9 +3723,16 @@ void RANSSolver::initialize_gpu_buffers() {
     // This eliminates per-step H→D upload for residual computation
     velocity_old_u_ptr_ = velocity_old_.u_data().data();
     velocity_old_v_ptr_ = velocity_old_.v_data().data();
-    
+
     #pragma omp target enter data map(alloc: velocity_old_u_ptr_[0:u_total_size])
     #pragma omp target enter data map(alloc: velocity_old_v_ptr_[0:v_total_size])
+
+    // 3D old velocity
+    if (!mesh_->is2D()) {
+        velocity_old_w_ptr_ = velocity_old_.w_data().data();
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target enter data map(alloc: velocity_old_w_ptr_[0:w_total_size])
+    }
     
     // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
     if (!gpu::is_pointer_present(velocity_u_ptr_)) {
@@ -3740,8 +3764,14 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(from: velocity_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(from: pressure_ptr_[0:field_total_size_])
     #pragma omp target exit data map(from: nu_t_ptr_[0:field_total_size_])
+
+    // 3D w-velocity results
+    if (!mesh_->is2D()) {
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target exit data map(from: velocity_w_ptr_[0:w_total_size])
+    }
     // k and omega are managed by turbulence model, not unmapped here
-    
+
     // Delete temporary/work arrays without copying back
     #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:u_total_size])
     #pragma omp target exit data map(delete: velocity_star_v_ptr_[0:v_total_size])
@@ -3755,6 +3785,15 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: diff_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(delete: rhs_poisson_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: div_velocity_ptr_[0:field_total_size_])
+
+    // 3D temporary arrays
+    if (!mesh_->is2D()) {
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target exit data map(delete: velocity_star_w_ptr_[0:w_total_size])
+        #pragma omp target exit data map(delete: velocity_old_w_ptr_[0:w_total_size])
+        #pragma omp target exit data map(delete: conv_w_ptr_[0:w_total_size])
+        #pragma omp target exit data map(delete: diff_w_ptr_[0:w_total_size])
+    }
     
     // Delete gradient scratch buffers
     #pragma omp target exit data map(delete: dudx_ptr_[0:field_total_size_])
@@ -3782,12 +3821,18 @@ void RANSSolver::sync_to_gpu() {
     // Staggered grid: u and v have different sizes
     const size_t u_total_size = velocity_.u_total_size();
     const size_t v_total_size = velocity_.v_total_size();
-    
+
     #pragma omp target update to(velocity_u_ptr_[0:u_total_size])
     #pragma omp target update to(velocity_v_ptr_[0:v_total_size])
     #pragma omp target update to(pressure_ptr_[0:field_total_size_])
     #pragma omp target update to(nu_t_ptr_[0:field_total_size_])
-    
+
+    // 3D w-velocity
+    if (!mesh_->is2D()) {
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target update to(velocity_w_ptr_[0:w_total_size])
+    }
+
     // Upload k and omega if turbulence model uses transport equations
     // These are initialized by RANSSolver::initialize() after GPU buffers are allocated
     if (turb_model_ && turb_model_->uses_transport_equations()) {
@@ -3810,11 +3855,17 @@ void RANSSolver::sync_solution_from_gpu() {
     // Staggered grid: u and v have different sizes
     const size_t u_total_size = velocity_.u_total_size();
     const size_t v_total_size = velocity_.v_total_size();
-    
+
     #pragma omp target update from(velocity_u_ptr_[0:u_total_size])
     #pragma omp target update from(velocity_v_ptr_[0:v_total_size])
     #pragma omp target update from(pressure_ptr_[0:field_total_size_])
     #pragma omp target update from(nu_t_ptr_[0:field_total_size_])
+
+    // 3D w-velocity
+    if (!mesh_->is2D()) {
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target update from(velocity_w_ptr_[0:w_total_size])
+    }
 }
 
 void RANSSolver::sync_transport_from_gpu() {
@@ -3885,7 +3936,18 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.v_old_face = velocity_old_v_ptr_;
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
-    
+
+    // 3D velocity fields
+    if (!mesh_->is2D()) {
+        view.w_face = velocity_w_ptr_;
+        view.w_star_face = velocity_star_w_ptr_;
+        view.w_old_face = velocity_old_w_ptr_;
+        view.w_stride = velocity_.w_stride();
+        view.u_plane_stride = velocity_.u_plane_stride();
+        view.v_plane_stride = velocity_.v_plane_stride();
+        view.w_plane_stride = velocity_.w_plane_stride();
+    }
+
     view.p = pressure_ptr_;
     view.p_corr = pressure_corr_ptr_;
     view.nu_t = nu_t_ptr_;
@@ -3893,17 +3955,26 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.rhs = rhs_poisson_ptr_;
     view.div = div_velocity_ptr_;
     view.cell_stride = mesh_->total_Nx();
-    
+    view.cell_plane_stride = mesh_->total_Nx() * mesh_->total_Ny();
+
     view.conv_u = conv_u_ptr_;
     view.conv_v = conv_v_ptr_;
     view.diff_u = diff_u_ptr_;
     view.diff_v = diff_v_ptr_;
-    
+
+    // 3D work arrays
+    if (!mesh_->is2D()) {
+        view.conv_w = conv_w_ptr_;
+        view.diff_w = diff_w_ptr_;
+    }
+
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;
+    view.Nz = mesh_->Nz;
     view.Ng = mesh_->Nghost;
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
+    view.dz = mesh_->dz;
     view.dt = current_dt_;
 #else
     // CPU build: always return host pointers

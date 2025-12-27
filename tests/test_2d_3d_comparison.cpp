@@ -349,6 +349,10 @@ bool test_z_invariant_poiseuille() {
     solver_3d.set_body_force(-config_3d.dp_dx, 0.0, 0.0);
     init_poiseuille_3d(solver_3d, mesh_3d, config_3d.dp_dx, config_3d.nu);
 
+#ifdef USE_GPU_OFFLOAD
+    solver_3d.sync_to_gpu();
+#endif
+
     auto [res_3d, iter_3d] = solver_3d.solve_steady();
     std::cout << "done (iters=" << iter_3d << ", res=" << std::scientific << res_3d << ")\n";
 
@@ -446,6 +450,10 @@ bool test_w_stays_zero() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(-config.dp_dx, 0.0, 0.0);
     init_poiseuille_3d(solver, mesh, config.dp_dx, config.nu);
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
 
     std::cout << "  Running 3D solver (Nz=" << NZ << ")... ";
     auto [res, iter] = solver.solve_steady();
