@@ -29,11 +29,17 @@ class PoissonSolver {
 public:
     explicit PoissonSolver(const Mesh& mesh);
     
-    /// Set boundary conditions for each boundary
+    /// Set boundary conditions for each boundary (2D)
     /// x_lo/x_hi: left/right boundaries
     /// y_lo/y_hi: bottom/top boundaries
     void set_bc(PoissonBC x_lo, PoissonBC x_hi,
                 PoissonBC y_lo, PoissonBC y_hi);
+
+    /// Set boundary conditions for each boundary (3D)
+    /// z_lo/z_hi: front/back boundaries
+    void set_bc(PoissonBC x_lo, PoissonBC x_hi,
+                PoissonBC y_lo, PoissonBC y_hi,
+                PoissonBC z_lo, PoissonBC z_hi);
     
     /// Set Dirichlet boundary value (for Dirichlet BC)
     void set_dirichlet_value(double val) { dirichlet_val_ = val; }
@@ -51,6 +57,8 @@ private:
     PoissonBC bc_x_hi_ = PoissonBC::Periodic;
     PoissonBC bc_y_lo_ = PoissonBC::Neumann;
     PoissonBC bc_y_hi_ = PoissonBC::Neumann;
+    PoissonBC bc_z_lo_ = PoissonBC::Periodic;  // Default periodic for spanwise direction
+    PoissonBC bc_z_hi_ = PoissonBC::Periodic;
     double dirichlet_val_ = 0.0;
     double residual_ = 0.0;
     

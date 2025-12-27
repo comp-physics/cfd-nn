@@ -530,6 +530,390 @@ inline void diffusive_v_face_kernel_staggered(
     diff_v_ptr[diff_idx] = d2v_dx2 + d2v_dy2;
 }
 
+// ============================================================================
+// 3D OPERATOR KERNELS
+// ============================================================================
+
+// 3D Divergence: div(i,j,k) = du/dx + dv/dy + dw/dz
+#pragma omp declare target
+inline void divergence_cell_kernel_staggered_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int div_stride, int div_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* div_ptr)
+{
+    // u at x-faces, v at y-faces, w at z-faces
+    const int u_right = k * u_plane_stride + j * u_stride + (i + 1);
+    const int u_left  = k * u_plane_stride + j * u_stride + i;
+    const int v_top   = k * v_plane_stride + (j + 1) * v_stride + i;
+    const int v_bottom = k * v_plane_stride + j * v_stride + i;
+    const int w_front = (k + 1) * w_plane_stride + j * w_stride + i;
+    const int w_back  = k * w_plane_stride + j * w_stride + i;
+    const int div_idx = k * div_plane_stride + j * div_stride + i;
+
+    double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
+    double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
+    double dwdz = (w_ptr[w_front] - w_ptr[w_back]) / dz;
+    div_ptr[div_idx] = dudx + dvdy + dwdz;
+}
+#pragma omp end declare target
+
+// 3D Velocity correction for u at x-face
+inline void correct_u_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int p_stride, int p_plane_stride,
+    double dx, double dt,
+    const double* u_star_ptr, const double* p_corr_ptr,
+    double* u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const int p_right = k * p_plane_stride + j * p_stride + i;
+    const int p_left  = k * p_plane_stride + j * p_stride + (i - 1);
+
+    double dp_dx = (p_corr_ptr[p_right] - p_corr_ptr[p_left]) / dx;
+    u_ptr[u_idx] = u_star_ptr[u_idx] - dt * dp_dx;
+}
+
+// 3D Velocity correction for v at y-face
+inline void correct_v_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int v_stride, int v_plane_stride,
+    int p_stride, int p_plane_stride,
+    double dy, double dt,
+    const double* v_star_ptr, const double* p_corr_ptr,
+    double* v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const int p_top    = k * p_plane_stride + j * p_stride + i;
+    const int p_bottom = k * p_plane_stride + (j - 1) * p_stride + i;
+
+    double dp_dy = (p_corr_ptr[p_top] - p_corr_ptr[p_bottom]) / dy;
+    v_ptr[v_idx] = v_star_ptr[v_idx] - dt * dp_dy;
+}
+
+// 3D Velocity correction for w at z-face
+inline void correct_w_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int w_stride, int w_plane_stride,
+    int p_stride, int p_plane_stride,
+    double dz, double dt,
+    const double* w_star_ptr, const double* p_corr_ptr,
+    double* w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const int p_front = k * p_plane_stride + j * p_stride + i;
+    const int p_back  = (k - 1) * p_plane_stride + j * p_stride + i;
+
+    double dp_dz = (p_corr_ptr[p_front] - p_corr_ptr[p_back]) / dz;
+    w_ptr[w_idx] = w_star_ptr[w_idx] - dt * dp_dz;
+}
+
+// 3D Convection term for u-momentum at x-face
+inline void convective_u_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz, bool use_central,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Interpolate v to x-face (average 4 surrounding v-faces in x-y plane)
+    const double v_bl = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_br = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[k * v_plane_stride + (j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    // Interpolate w to x-face (average 4 surrounding w-faces in x-z plane)
+    const double w_bl = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_br = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_fl = w_ptr[(k+1) * w_plane_stride + j * w_stride + (i-1)];
+    const double w_fr = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_br + w_fl + w_fr);
+
+    double dudx, dudy, dudz;
+
+    if (use_central) {
+        dudx = (u_ptr[k * u_plane_stride + j * u_stride + (i+1)] -
+                u_ptr[k * u_plane_stride + j * u_stride + (i-1)]) / (2.0 * dx);
+        dudy = (u_ptr[k * u_plane_stride + (j+1) * u_stride + i] -
+                u_ptr[k * u_plane_stride + (j-1) * u_stride + i]) / (2.0 * dy);
+        dudz = (u_ptr[(k+1) * u_plane_stride + j * u_stride + i] -
+                u_ptr[(k-1) * u_plane_stride + j * u_stride + i]) / (2.0 * dz);
+    } else {
+        // Upwind
+        if (uu >= 0) {
+            dudx = (u_ptr[u_idx] - u_ptr[k * u_plane_stride + j * u_stride + (i-1)]) / dx;
+        } else {
+            dudx = (u_ptr[k * u_plane_stride + j * u_stride + (i+1)] - u_ptr[u_idx]) / dx;
+        }
+        if (vv >= 0) {
+            dudy = (u_ptr[u_idx] - u_ptr[k * u_plane_stride + (j-1) * u_stride + i]) / dy;
+        } else {
+            dudy = (u_ptr[k * u_plane_stride + (j+1) * u_stride + i] - u_ptr[u_idx]) / dy;
+        }
+        if (ww >= 0) {
+            dudz = (u_ptr[u_idx] - u_ptr[(k-1) * u_plane_stride + j * u_stride + i]) / dz;
+        } else {
+            dudz = (u_ptr[(k+1) * u_plane_stride + j * u_stride + i] - u_ptr[u_idx]) / dz;
+        }
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_u_ptr[conv_idx] = uu * dudx + vv * dudy + ww * dudz;
+}
+
+// 3D Convection term for v-momentum at y-face
+inline void convective_v_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz, bool use_central,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Interpolate u to y-face (average 4 surrounding u-faces)
+    const double u_bl = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_br = u_ptr[k * u_plane_stride + (j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_tr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    // Interpolate w to y-face (average 4 surrounding w-faces)
+    const double w_bl = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tl = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_bf = w_ptr[(k+1) * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tf = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_tl + w_bf + w_tf);
+
+    double dvdx, dvdy, dvdz;
+
+    if (use_central) {
+        dvdx = (v_ptr[k * v_plane_stride + j * v_stride + (i+1)] -
+                v_ptr[k * v_plane_stride + j * v_stride + (i-1)]) / (2.0 * dx);
+        dvdy = (v_ptr[k * v_plane_stride + (j+1) * v_stride + i] -
+                v_ptr[k * v_plane_stride + (j-1) * v_stride + i]) / (2.0 * dy);
+        dvdz = (v_ptr[(k+1) * v_plane_stride + j * v_stride + i] -
+                v_ptr[(k-1) * v_plane_stride + j * v_stride + i]) / (2.0 * dz);
+    } else {
+        // Upwind
+        if (uu >= 0) {
+            dvdx = (v_ptr[v_idx] - v_ptr[k * v_plane_stride + j * v_stride + (i-1)]) / dx;
+        } else {
+            dvdx = (v_ptr[k * v_plane_stride + j * v_stride + (i+1)] - v_ptr[v_idx]) / dx;
+        }
+        if (vv >= 0) {
+            dvdy = (v_ptr[v_idx] - v_ptr[k * v_plane_stride + (j-1) * v_stride + i]) / dy;
+        } else {
+            dvdy = (v_ptr[k * v_plane_stride + (j+1) * v_stride + i] - v_ptr[v_idx]) / dy;
+        }
+        if (ww >= 0) {
+            dvdz = (v_ptr[v_idx] - v_ptr[(k-1) * v_plane_stride + j * v_stride + i]) / dz;
+        } else {
+            dvdz = (v_ptr[(k+1) * v_plane_stride + j * v_stride + i] - v_ptr[v_idx]) / dz;
+        }
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_v_ptr[conv_idx] = uu * dvdx + vv * dvdy + ww * dvdz;
+}
+
+// 3D Convection term for w-momentum at z-face
+inline void convective_w_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz, bool use_central,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double ww = w_ptr[w_idx];
+
+    // Interpolate u to z-face (average 4 surrounding u-faces)
+    const double u_bl = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+    const double u_br = u_ptr[(k-1) * u_plane_stride + j * u_stride + (i+1)];
+    const double u_fl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_fr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_fl + u_fr);
+
+    // Interpolate v to z-face (average 4 surrounding v-faces)
+    const double v_bl = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[(k-1) * v_plane_stride + (j+1) * v_stride + i];
+    const double v_bf = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tf = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_tl + v_bf + v_tf);
+
+    double dwdx, dwdy, dwdz;
+
+    if (use_central) {
+        dwdx = (w_ptr[k * w_plane_stride + j * w_stride + (i+1)] -
+                w_ptr[k * w_plane_stride + j * w_stride + (i-1)]) / (2.0 * dx);
+        dwdy = (w_ptr[k * w_plane_stride + (j+1) * w_stride + i] -
+                w_ptr[k * w_plane_stride + (j-1) * w_stride + i]) / (2.0 * dy);
+        dwdz = (w_ptr[(k+1) * w_plane_stride + j * w_stride + i] -
+                w_ptr[(k-1) * w_plane_stride + j * w_stride + i]) / (2.0 * dz);
+    } else {
+        // Upwind
+        if (uu >= 0) {
+            dwdx = (w_ptr[w_idx] - w_ptr[k * w_plane_stride + j * w_stride + (i-1)]) / dx;
+        } else {
+            dwdx = (w_ptr[k * w_plane_stride + j * w_stride + (i+1)] - w_ptr[w_idx]) / dx;
+        }
+        if (vv >= 0) {
+            dwdy = (w_ptr[w_idx] - w_ptr[k * w_plane_stride + (j-1) * w_stride + i]) / dy;
+        } else {
+            dwdy = (w_ptr[k * w_plane_stride + (j+1) * w_stride + i] - w_ptr[w_idx]) / dy;
+        }
+        if (ww >= 0) {
+            dwdz = (w_ptr[w_idx] - w_ptr[(k-1) * w_plane_stride + j * w_stride + i]) / dz;
+        } else {
+            dwdz = (w_ptr[(k+1) * w_plane_stride + j * w_stride + i] - w_ptr[w_idx]) / dz;
+        }
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_w_ptr[conv_idx] = uu * dwdx + vv * dwdy + ww * dwdz;
+}
+
+// 3D Diffusion term for u-momentum at x-face
+inline void diffusive_u_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int nu_stride, int nu_plane_stride,
+    int diff_stride, int diff_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* nu_ptr,
+    double* diff_u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double dx2 = dx * dx;
+    const double dy2 = dy * dy;
+    const double dz2 = dz * dz;
+
+    // Viscosity at cell centers adjacent to x-face
+    const double nu_left  = nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)];
+    const double nu_right = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
+    const double nu_avg = 0.5 * (nu_left + nu_right);
+
+    // d2u/dx2
+    const double d2u_dx2 = nu_avg * (u_ptr[k * u_plane_stride + j * u_stride + (i+1)]
+                                   - 2.0 * u_ptr[u_idx]
+                                   + u_ptr[k * u_plane_stride + j * u_stride + (i-1)]) / dx2;
+
+    // d2u/dy2
+    const double d2u_dy2 = nu_avg * (u_ptr[k * u_plane_stride + (j+1) * u_stride + i]
+                                   - 2.0 * u_ptr[u_idx]
+                                   + u_ptr[k * u_plane_stride + (j-1) * u_stride + i]) / dy2;
+
+    // d2u/dz2
+    const double d2u_dz2 = nu_avg * (u_ptr[(k+1) * u_plane_stride + j * u_stride + i]
+                                   - 2.0 * u_ptr[u_idx]
+                                   + u_ptr[(k-1) * u_plane_stride + j * u_stride + i]) / dz2;
+
+    const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
+    diff_u_ptr[diff_idx] = d2u_dx2 + d2u_dy2 + d2u_dz2;
+}
+
+// 3D Diffusion term for v-momentum at y-face
+inline void diffusive_v_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int v_stride, int v_plane_stride,
+    int nu_stride, int nu_plane_stride,
+    int diff_stride, int diff_plane_stride,
+    double dx, double dy, double dz,
+    const double* v_ptr, const double* nu_ptr,
+    double* diff_v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double dx2 = dx * dx;
+    const double dy2 = dy * dy;
+    const double dz2 = dz * dz;
+
+    // Viscosity at cell centers adjacent to y-face
+    const double nu_bottom = nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + i];
+    const double nu_top    = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
+    const double nu_avg = 0.5 * (nu_bottom + nu_top);
+
+    // d2v/dx2
+    const double d2v_dx2 = nu_avg * (v_ptr[k * v_plane_stride + j * v_stride + (i+1)]
+                                   - 2.0 * v_ptr[v_idx]
+                                   + v_ptr[k * v_plane_stride + j * v_stride + (i-1)]) / dx2;
+
+    // d2v/dy2
+    const double d2v_dy2 = nu_avg * (v_ptr[k * v_plane_stride + (j+1) * v_stride + i]
+                                   - 2.0 * v_ptr[v_idx]
+                                   + v_ptr[k * v_plane_stride + (j-1) * v_stride + i]) / dy2;
+
+    // d2v/dz2
+    const double d2v_dz2 = nu_avg * (v_ptr[(k+1) * v_plane_stride + j * v_stride + i]
+                                   - 2.0 * v_ptr[v_idx]
+                                   + v_ptr[(k-1) * v_plane_stride + j * v_stride + i]) / dz2;
+
+    const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
+    diff_v_ptr[diff_idx] = d2v_dx2 + d2v_dy2 + d2v_dz2;
+}
+
+// 3D Diffusion term for w-momentum at z-face
+inline void diffusive_w_face_kernel_staggered_3d(
+    int i, int j, int k,
+    int w_stride, int w_plane_stride,
+    int nu_stride, int nu_plane_stride,
+    int diff_stride, int diff_plane_stride,
+    double dx, double dy, double dz,
+    const double* w_ptr, const double* nu_ptr,
+    double* diff_w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double dx2 = dx * dx;
+    const double dy2 = dy * dy;
+    const double dz2 = dz * dz;
+
+    // Viscosity at cell centers adjacent to z-face
+    const double nu_back  = nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i];
+    const double nu_front = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
+    const double nu_avg = 0.5 * (nu_back + nu_front);
+
+    // d2w/dx2
+    const double d2w_dx2 = nu_avg * (w_ptr[k * w_plane_stride + j * w_stride + (i+1)]
+                                   - 2.0 * w_ptr[w_idx]
+                                   + w_ptr[k * w_plane_stride + j * w_stride + (i-1)]) / dx2;
+
+    // d2w/dy2
+    const double d2w_dy2 = nu_avg * (w_ptr[k * w_plane_stride + (j+1) * w_stride + i]
+                                   - 2.0 * w_ptr[w_idx]
+                                   + w_ptr[k * w_plane_stride + (j-1) * w_stride + i]) / dy2;
+
+    // d2w/dz2
+    const double d2w_dz2 = nu_avg * (w_ptr[(k+1) * w_plane_stride + j * w_stride + i]
+                                   - 2.0 * w_ptr[w_idx]
+                                   + w_ptr[(k-1) * w_plane_stride + j * w_stride + i]) / dz2;
+
+    const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
+    diff_w_ptr[diff_idx] = d2w_dx2 + d2w_dy2 + d2w_dz2;
+}
+
+// ============================================================================
+// END 3D OPERATOR KERNELS
+// ============================================================================
+
 // Poisson boundary condition kernel for x-direction
 inline void apply_poisson_bc_x_cell(
     int j, int g,
@@ -730,9 +1114,10 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
 }
 
-void RANSSolver::set_body_force(double fx, double fy) {
+void RANSSolver::set_body_force(double fx, double fy, double fz) {
     fx_ = fx;
     fy_ = fy;
+    fz_ = fz;
 }
 
 void RANSSolver::initialize(const VectorField& initial_velocity) {
@@ -954,14 +1339,15 @@ void RANSSolver::apply_velocity_bc() {
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
     (void)vel;   // Unused - always operates on velocity_ via view
     (void)conv;  // Unused - always operates on conv_ via view
-    
+
     // Get unified view
     auto v = get_solver_view();
-    
+
     const double dx = v.dx;
     const double dy = v.dy;
     const int Nx = v.Nx;
     const int Ny = v.Ny;
+    const int Nz = v.Nz;
     const int Ng = v.Ng;
     const int u_stride = v.u_stride;
     const int v_stride = v.v_stride;
@@ -969,12 +1355,74 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
 
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
 
     const double* u_ptr      = v.u_face;
     const double* v_ptr      = v.v_face;
     double*       conv_u_ptr = v.conv_u;
     double*       conv_v_ptr = v.conv_v;
 
+    // 3D path
+    if (!mesh_->is2D()) {
+        const double dz = v.dz;
+        const int u_plane_stride = v.u_plane_stride;
+        const int v_plane_stride = v.v_plane_stride;
+        const int w_stride = v.w_stride;
+        const int w_plane_stride = v.w_plane_stride;
+        const double* w_ptr = v.w_face;
+        double*       conv_w_ptr = v.conv_w;
+
+        // Compute u-momentum convection at x-faces (3D)
+        const int n_u_faces = (Nx + 1) * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+
+            convective_u_face_kernel_staggered_3d(i, j, k,
+                u_stride, u_plane_stride, v_stride, v_plane_stride,
+                w_stride, w_plane_stride, u_stride, u_plane_stride,
+                dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_u_ptr);
+        }
+
+        // Compute v-momentum convection at y-faces (3D)
+        const int n_v_faces = Nx * (Ny + 1) * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+
+            convective_v_face_kernel_staggered_3d(i, j, k,
+                u_stride, u_plane_stride, v_stride, v_plane_stride,
+                w_stride, w_plane_stride, v_stride, v_plane_stride,
+                dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_v_ptr);
+        }
+
+        // Compute w-momentum convection at z-faces (3D)
+        const int n_w_faces = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_w_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+
+            convective_w_face_kernel_staggered_3d(i, j, k,
+                u_stride, u_plane_stride, v_stride, v_plane_stride,
+                w_stride, w_plane_stride, w_stride, w_plane_stride,
+                dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_w_ptr);
+        }
+        return;
+    }
+
+    // 2D path
     // Compute u-momentum convection at x-faces
     const int n_u_faces = (Nx + 1) * Ny;
     #pragma omp target teams distribute parallel for \
@@ -1006,19 +1454,20 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     }
 }
 
-void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, 
+void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff,
                                         VectorField& diff) {
     (void)vel;     // Unused - always operates on velocity_ via view
     (void)nu_eff;  // Unused - always operates on nu_eff_ via view
     (void)diff;    // Unused - always operates on diff_ via view
-    
+
     // Get unified view
     auto v = get_solver_view();
-    
+
     const double dx = v.dx;
     const double dy = v.dy;
     const int Nx = v.Nx;
     const int Ny = v.Ny;
+    const int Nz = v.Nz;
     const int Ng = v.Ng;
     const int u_stride = v.u_stride;
     const int v_stride = v.v_stride;
@@ -1026,6 +1475,7 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
 
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
     [[maybe_unused]] const size_t nu_total_size = field_total_size_;
 
     const double* u_ptr      = v.u_face;
@@ -1034,6 +1484,65 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     double*       diff_u_ptr = v.diff_u;
     double*       diff_v_ptr = v.diff_v;
 
+    // 3D path
+    if (!mesh_->is2D()) {
+        const double dz = v.dz;
+        const int u_plane_stride = v.u_plane_stride;
+        const int v_plane_stride = v.v_plane_stride;
+        const int w_stride = v.w_stride;
+        const int w_plane_stride = v.w_plane_stride;
+        const int nu_plane_stride = v.cell_plane_stride;
+        const double* w_ptr = v.w_face;
+        double*       diff_w_ptr = v.diff_w;
+
+        // Compute u-momentum diffusion at x-faces (3D)
+        const int n_u_faces = (Nx + 1) * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, dz, u_stride, u_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+
+            diffusive_u_face_kernel_staggered_3d(i, j, k,
+                u_stride, u_plane_stride, nu_stride, nu_plane_stride, u_stride, u_plane_stride,
+                dx, dy, dz, u_ptr, nu_ptr, diff_u_ptr);
+        }
+
+        // Compute v-momentum diffusion at y-faces (3D)
+        const int n_v_faces = Nx * (Ny + 1) * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, dz, v_stride, v_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+
+            diffusive_v_face_kernel_staggered_3d(i, j, k,
+                v_stride, v_plane_stride, nu_stride, nu_plane_stride, v_stride, v_plane_stride,
+                dx, dy, dz, v_ptr, nu_ptr, diff_v_ptr);
+        }
+
+        // Compute w-momentum diffusion at z-faces (3D)
+        const int n_w_faces = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: w_ptr[0:w_total_size], nu_ptr[0:nu_total_size], diff_w_ptr[0:w_total_size]) \
+            firstprivate(dx, dy, dz, w_stride, w_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_w_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+
+            diffusive_w_face_kernel_staggered_3d(i, j, k,
+                w_stride, w_plane_stride, nu_stride, nu_plane_stride, w_stride, w_plane_stride,
+                dx, dy, dz, w_ptr, nu_ptr, diff_w_ptr);
+        }
+        return;
+    }
+
+    // 2D path
     // Compute u-momentum diffusion at x-faces
     const int n_u_faces = (Nx + 1) * Ny;
     #pragma omp target teams distribute parallel for \
@@ -1067,29 +1576,59 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
 
 void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     (void)div;  // Unused - always operates on div_velocity_ via view
-    
+
     // Get unified view
     auto v = get_solver_view();
     auto vel_ptrs = select_face_velocity(v, which);
-    
+
     const double dx = v.dx;
     const double dy = v.dy;
     const int Nx = v.Nx;
     const int Ny = v.Ny;
+    const int Nz = v.Nz;
+    const int Ng = v.Ng;
     const int div_stride = v.cell_stride;
     const int u_stride = vel_ptrs.u_stride;
     const int v_stride = vel_ptrs.v_stride;
 
-    const int n_cells = Nx * Ny;
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
     [[maybe_unused]] const size_t div_total_size = field_total_size_;
 
     const double* u_ptr = vel_ptrs.u;
     const double* v_ptr = vel_ptrs.v;
     double* div_ptr = v.div;
-    
-    const int Ng = v.Ng;
+
+    // 3D path
+    if (!mesh_->is2D()) {
+        const double dz = v.dz;
+        const int u_plane_stride = vel_ptrs.u_plane_stride;
+        const int v_plane_stride = vel_ptrs.v_plane_stride;
+        const int w_stride = vel_ptrs.w_stride;
+        const int w_plane_stride = vel_ptrs.w_plane_stride;
+        const int div_plane_stride = v.cell_plane_stride;
+        const double* w_ptr = vel_ptrs.w;
+
+        const int n_cells = Nx * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size]) \
+            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int i = idx % Nx + Ng;
+            const int j = (idx / Nx) % Ny + Ng;
+            const int k = idx / (Nx * Ny) + Ng;
+
+            divergence_cell_kernel_staggered_3d(i, j, k,
+                u_stride, u_plane_stride, v_stride, v_plane_stride,
+                w_stride, w_plane_stride, div_stride, div_plane_stride,
+                dx, dy, dz, u_ptr, v_ptr, w_ptr, div_ptr);
+        }
+        return;
+    }
+
+    // 2D path
+    const int n_cells = Nx * Ny;
 
     // Use target data for scalar parameters (NVHPC workaround)
     #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx, Ng)
@@ -1106,7 +1645,7 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
             const int v_top = (j + 1) * v_stride + i;
             const int v_bottom = j * v_stride + i;
             const int div_idx = j * div_stride + i;
-            
+
             const double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
             const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
             div_ptr[div_idx] = dudx + dvdy;
@@ -1145,28 +1684,31 @@ void RANSSolver::compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_d
 
 void RANSSolver::correct_velocity() {
     NVTX_PUSH("correct_velocity");
-    
+
     // Get unified view (device pointers in GPU build, host pointers in CPU build)
     auto v = get_solver_view();
-    
+
     const double dx = v.dx;
     const double dy = v.dy;
     const double dt = v.dt;
     const int Nx = v.Nx;
     const int Ny = v.Ny;
+    const int Nz = v.Nz;
     const int Ng = v.Ng;
     const int u_stride = v.u_stride;
     const int v_stride = v.v_stride;
     const int p_stride = v.cell_stride;
-    
-    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) && 
-                            (velocity_bc_.x_hi == VelocityBC::Periodic);
-    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) && 
-                            (velocity_bc_.y_hi == VelocityBC::Periodic);
 
-    const int n_cells = Nx * Ny;
+    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.x_hi == VelocityBC::Periodic);
+    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.y_hi == VelocityBC::Periodic);
+    const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.z_hi == VelocityBC::Periodic);
+
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
     [[maybe_unused]] const size_t p_total_size = field_total_size_;
 
     const double* u_star_ptr = v.u_star_face;
@@ -1175,6 +1717,140 @@ void RANSSolver::correct_velocity() {
     double*       u_ptr      = v.u_face;
     double*       v_ptr      = v.v_face;
     double*       p_ptr      = v.p;
+
+    // 3D path
+    if (!mesh_->is2D()) {
+        const double dz = v.dz;
+        const int u_plane_stride = v.u_plane_stride;
+        const int v_plane_stride = v.v_plane_stride;
+        const int w_stride = v.w_stride;
+        const int w_plane_stride = v.w_plane_stride;
+        const int p_plane_stride = v.cell_plane_stride;
+        const double* w_star_ptr = v.w_star_face;
+        double*       w_ptr      = v.w_face;
+
+        // Correct u-velocities at x-faces (3D)
+        const int n_u_faces = (Nx + 1) * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], p_corr_ptr[0:p_total_size]) \
+            firstprivate(dx, dt, u_stride, u_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+
+            correct_u_face_kernel_staggered_3d(i, j, k,
+                u_stride, u_plane_stride, p_stride, p_plane_stride,
+                dx, dt, u_star_ptr, p_corr_ptr, u_ptr);
+        }
+
+        // Enforce x-periodicity (3D)
+        if (x_periodic) {
+            const int n_u_periodic = Ny * Nz;
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size]) \
+                firstprivate(u_stride, u_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_periodic; ++idx) {
+                int j = idx % Ny + Ng;
+                int k = idx / Ny + Ng;
+                int i_left = Ng;
+                int i_right = Ng + Nx;
+                int idx_left = k * u_plane_stride + j * u_stride + i_left;
+                int idx_right = k * u_plane_stride + j * u_stride + i_right;
+                double u_avg = 0.5 * (u_ptr[idx_left] + u_ptr[idx_right]);
+                u_ptr[idx_left] = u_avg;
+                u_ptr[idx_right] = u_avg;
+            }
+        }
+
+        // Correct v-velocities at y-faces (3D)
+        const int n_v_faces = Nx * (Ny + 1) * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
+            firstprivate(dy, dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+
+            correct_v_face_kernel_staggered_3d(i, j, k,
+                v_stride, v_plane_stride, p_stride, p_plane_stride,
+                dy, dt, v_star_ptr, p_corr_ptr, v_ptr);
+        }
+
+        // Enforce y-periodicity (3D)
+        if (y_periodic) {
+            const int n_v_periodic = Nx * Nz;
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total_size]) \
+                firstprivate(v_stride, v_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_periodic; ++idx) {
+                int i = idx % Nx + Ng;
+                int k = idx / Nx + Ng;
+                int j_bottom = Ng;
+                int j_top = Ng + Ny;
+                int idx_bottom = k * v_plane_stride + j_bottom * v_stride + i;
+                int idx_top = k * v_plane_stride + j_top * v_stride + i;
+                double v_avg = 0.5 * (v_ptr[idx_bottom] + v_ptr[idx_top]);
+                v_ptr[idx_bottom] = v_avg;
+                v_ptr[idx_top] = v_avg;
+            }
+        }
+
+        // Correct w-velocities at z-faces (3D)
+        const int n_w_faces = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: w_ptr[0:w_total_size], w_star_ptr[0:w_total_size], p_corr_ptr[0:p_total_size]) \
+            firstprivate(dz, dt, w_stride, w_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_w_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+
+            correct_w_face_kernel_staggered_3d(i, j, k,
+                w_stride, w_plane_stride, p_stride, p_plane_stride,
+                dz, dt, w_star_ptr, p_corr_ptr, w_ptr);
+        }
+
+        // Enforce z-periodicity (3D)
+        if (z_periodic) {
+            const int n_w_periodic = Nx * Ny;
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size]) \
+                firstprivate(w_stride, w_plane_stride, Nx, Nz, Ng)
+            for (int idx = 0; idx < n_w_periodic; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = idx / Nx + Ng;
+                int k_front = Ng;
+                int k_back = Ng + Nz;
+                int idx_front = k_front * w_plane_stride + j * w_stride + i;
+                int idx_back = k_back * w_plane_stride + j * w_stride + i;
+                double w_avg = 0.5 * (w_ptr[idx_front] + w_ptr[idx_back]);
+                w_ptr[idx_front] = w_avg;
+                w_ptr[idx_back] = w_avg;
+            }
+        }
+
+        // Update pressure at cell centers (3D)
+        const int n_cells = Nx * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: p_ptr[0:p_total_size], p_corr_ptr[0:p_total_size]) \
+            firstprivate(p_stride, p_plane_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+
+            int p_idx = k * p_plane_stride + j * p_stride + i;
+            p_ptr[p_idx] += p_corr_ptr[p_idx];
+        }
+
+        NVTX_POP();
+        return;
+    }
+
+    // 2D path
+    const int n_cells = Nx * Ny;
 
     // Correct ALL u-velocities at x-faces (including redundant face if periodic)
     const int n_u_faces = (Nx + 1) * Ny;
@@ -1190,7 +1866,7 @@ void RANSSolver::correct_velocity() {
         correct_u_face_kernel_staggered(i, j, u_stride, p_stride, dx, dt,
                                        u_star_ptr, p_corr_ptr, u_ptr);
     }
-    
+
     // Enforce exact x-periodicity: average the left and right edge values
     if (x_periodic) {
         const int n_u_periodic = Ny;
@@ -1221,7 +1897,7 @@ void RANSSolver::correct_velocity() {
         correct_v_face_kernel_staggered(i, j, v_stride, p_stride, dy, dt,
                                        v_star_ptr, p_corr_ptr, v_ptr);
     }
-    
+
     // Enforce exact y-periodicity: average the bottom and top edge values
     if (y_periodic) {
         const int n_v_periodic = Nx;
@@ -1248,7 +1924,7 @@ void RANSSolver::correct_velocity() {
 
         update_pressure_kernel(i, j, p_stride, p_corr_ptr, p_ptr);
     }
-    
+
     NVTX_POP();  // End correct_velocity
 }
 

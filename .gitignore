@@ -127,3 +127,12 @@ logs/
 *.slurm
 .cache/
 compile_commands.json
+
+CLUSTER_QUICKSTART.md
+CLUSTER_TRANSFER_GUIDE.md
+data/models/tbnn_channel_real/
+data/models/tbnn_hills_real/
+generate_channel_npz.py
+generate_phll_npz.py
+mcconkey_npz/
+
