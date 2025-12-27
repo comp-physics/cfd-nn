@@ -185,7 +185,11 @@ if(BUILD_TESTS)
     add_executable(test_solver tests/test_solver.cpp)
     target_link_libraries(test_solver nn_cfd_core)
     add_test(NAME SolverTest COMMAND test_solver)
-    
+
+    add_executable(test_3d_solver tests/test_3d_solver.cpp)
+    target_link_libraries(test_3d_solver nn_cfd_core)
+    add_test(NAME Solver3DTest COMMAND test_3d_solver)
+
     add_executable(test_features tests/test_features.cpp)
     target_link_libraries(test_features nn_cfd_core)
     add_test(NAME FeaturesTest COMMAND test_features)

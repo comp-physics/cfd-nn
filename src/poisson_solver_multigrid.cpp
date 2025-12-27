@@ -43,36 +43,70 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     bc_x_hi_ = x_hi;
     bc_y_lo_ = y_lo;
     bc_y_hi_ = y_hi;
+    // Keep z BCs at default (periodic) for 2D compatibility
+}
+
+void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
+                                     PoissonBC y_lo, PoissonBC y_hi,
+                                     PoissonBC z_lo, PoissonBC z_hi) {
+    bc_x_lo_ = x_lo;
+    bc_x_hi_ = x_hi;
+    bc_y_lo_ = y_lo;
+    bc_y_hi_ = y_hi;
+    bc_z_lo_ = z_lo;
+    bc_z_hi_ = z_hi;
 }
 
 void MultigridPoissonSolver::create_hierarchy() {
     // Create grid hierarchy from fine to coarse
     int Nx = mesh_->Nx;
     int Ny = mesh_->Ny;
+    int Nz = mesh_->Nz;
     double dx = mesh_->dx;
     double dy = mesh_->dy;
-    
+    double dz = mesh_->dz;
+    const bool is_2d = mesh_->is2D();
+
     // Finest level
-    levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy));
-    
-    // Coarsen until we reach ~8x8 grid
-    while (Nx > 8 && Ny > 8) {
-        Nx /= 2;
-        Ny /= 2;
-        dx *= 2.0;
-        dy *= 2.0;
+    if (is_2d) {
         levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy));
+    } else {
+        levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz));
+    }
+
+    // Coarsen until we reach ~8x8(x8) grid
+    if (is_2d) {
+        while (Nx > 8 && Ny > 8) {
+            Nx /= 2;
+            Ny /= 2;
+            dx *= 2.0;
+            dy *= 2.0;
+            levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy));
+        }
+    } else {
+        while (Nx > 8 && Ny > 8 && Nz > 8) {
+            Nx /= 2;
+            Ny /= 2;
+            Nz /= 2;
+            dx *= 2.0;
+            dy *= 2.0;
+            dz *= 2.0;
+            levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz));
+        }
     }
 }
 
 void MultigridPoissonSolver::apply_bc(int level) {
     auto& grid = *levels_[level];
-    int Nx = grid.Nx;
-    int Ny = grid.Ny;
-    int Ng = 1;  // Ghost cells
-    
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int Ng = 1;  // Ghost cells
+    const bool is_2d = grid.is2D();
+
 #ifdef USE_GPU_OFFLOAD
-    if (Nx >= 16 && Ny >= 16) {
+    // GPU path - 2D only for now, 3D falls through to CPU
+    if (is_2d && Nx >= 16 && Ny >= 16) {
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const int stride = Nx + 2;
@@ -135,8 +169,102 @@ void MultigridPoissonSolver::apply_bc(int level) {
         return;
     }
 #endif
-    
-    // CPU path
+
+    // 3D CPU path
+    if (!is_2d) {
+        // x-direction boundaries (for all j, k)
+        for (int k = 0; k < Nz + 2*Ng; ++k) {
+            for (int j = 0; j < Ny + 2*Ng; ++j) {
+                // Left boundary (i=0)
+                switch (bc_x_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.u(0, j, k) = grid.u(Nx, j, k);
+                        break;
+                    case PoissonBC::Neumann:
+                        grid.u(0, j, k) = grid.u(Ng, j, k);
+                        break;
+                    case PoissonBC::Dirichlet:
+                        grid.u(0, j, k) = 2.0 * dirichlet_val_ - grid.u(Ng, j, k);
+                        break;
+                }
+                // Right boundary (i=Nx+1)
+                switch (bc_x_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.u(Nx + Ng, j, k) = grid.u(Ng, j, k);
+                        break;
+                    case PoissonBC::Neumann:
+                        grid.u(Nx + Ng, j, k) = grid.u(Nx + Ng - 1, j, k);
+                        break;
+                    case PoissonBC::Dirichlet:
+                        grid.u(Nx + Ng, j, k) = 2.0 * dirichlet_val_ - grid.u(Nx + Ng - 1, j, k);
+                        break;
+                }
+            }
+        }
+
+        // y-direction boundaries (for all i, k)
+        for (int k = 0; k < Nz + 2*Ng; ++k) {
+            for (int i = 0; i < Nx + 2*Ng; ++i) {
+                // Bottom boundary (j=0)
+                switch (bc_y_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.u(i, 0, k) = grid.u(i, Ny, k);
+                        break;
+                    case PoissonBC::Neumann:
+                        grid.u(i, 0, k) = grid.u(i, Ng, k);
+                        break;
+                    case PoissonBC::Dirichlet:
+                        grid.u(i, 0, k) = 2.0 * dirichlet_val_ - grid.u(i, Ng, k);
+                        break;
+                }
+                // Top boundary (j=Ny+1)
+                switch (bc_y_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.u(i, Ny + Ng, k) = grid.u(i, Ng, k);
+                        break;
+                    case PoissonBC::Neumann:
+                        grid.u(i, Ny + Ng, k) = grid.u(i, Ny + Ng - 1, k);
+                        break;
+                    case PoissonBC::Dirichlet:
+                        grid.u(i, Ny + Ng, k) = 2.0 * dirichlet_val_ - grid.u(i, Ny + Ng - 1, k);
+                        break;
+                }
+            }
+        }
+
+        // z-direction boundaries (for all i, j)
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            for (int i = 0; i < Nx + 2*Ng; ++i) {
+                // Back boundary (k=0)
+                switch (bc_z_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.u(i, j, 0) = grid.u(i, j, Nz);
+                        break;
+                    case PoissonBC::Neumann:
+                        grid.u(i, j, 0) = grid.u(i, j, Ng);
+                        break;
+                    case PoissonBC::Dirichlet:
+                        grid.u(i, j, 0) = 2.0 * dirichlet_val_ - grid.u(i, j, Ng);
+                        break;
+                }
+                // Front boundary (k=Nz+1)
+                switch (bc_z_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.u(i, j, Nz + Ng) = grid.u(i, j, Ng);
+                        break;
+                    case PoissonBC::Neumann:
+                        grid.u(i, j, Nz + Ng) = grid.u(i, j, Nz + Ng - 1);
+                        break;
+                    case PoissonBC::Dirichlet:
+                        grid.u(i, j, Nz + Ng) = 2.0 * dirichlet_val_ - grid.u(i, j, Nz + Ng - 1);
+                        break;
+                }
+            }
+        }
+        return;
+    }
+
+    // 2D CPU path
     // x-direction boundaries
     for (int j = 0; j < Ny + 2*Ng; ++j) {
         // Left boundary
@@ -295,21 +423,25 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     auto& grid = *levels_[level];
     const double dx2 = grid.dx * grid.dx;
     const double dy2 = grid.dy * grid.dy;
-    const double coeff = 2.0 / dx2 + 2.0 / dy2;
-    
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
+    // Diagonal coefficient: 4 neighbors for 2D, 6 neighbors for 3D
+    const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
+                               : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
+
     const int Ng = 1;
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
-    
+    const int Nz = grid.Nz;
+
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: red-black Gauss-Seidel on persistent device arrays
-    // Optimized to avoid warp divergence by using strided loops (same as CPU path)
-    if (gpu::should_use_gpu_path()) {
+    // GPU path: red-black Gauss-Seidel on persistent device arrays (2D only)
+    if (is_2d && gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const double* f_ptr = f_ptrs_[level];
-        
+
         for (int iter = 0; iter < iterations; ++iter) {
             // Red sweep (i + j even) - uniform loop with parity check
             #pragma omp target teams distribute parallel for collapse(2) \
@@ -326,7 +458,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                     }
                 }
             }
-            
+
             // Black sweep (i + j odd) - uniform loop with parity check
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: u_ptr[0:total_size], f_ptr[0:total_size])
@@ -343,15 +475,56 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                 }
             }
         }
-        
+
         // Apply boundary conditions once after all smoothing iterations
         apply_bc(level);
-        
+
         return;
     }
 #endif
-    
-    // CPU path
+
+    // 3D CPU path
+    if (!is_2d) {
+        for (int iter = 0; iter < iterations; ++iter) {
+            // Red sweep (i + j + k even)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if (((i + j + k) & 1) == 0) {
+                            double u_old = grid.u(i, j, k);
+                            double u_gs = ((grid.u(i+1, j, k) + grid.u(i-1, j, k)) / dx2
+                                         + (grid.u(i, j+1, k) + grid.u(i, j-1, k)) / dy2
+                                         + (grid.u(i, j, k+1) + grid.u(i, j, k-1)) / dz2
+                                         - grid.f(i, j, k)) / coeff;
+                            grid.u(i, j, k) = (1.0 - omega) * u_old + omega * u_gs;
+                        }
+                    }
+                }
+            }
+
+            // Black sweep (i + j + k odd)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if (((i + j + k) & 1) == 1) {
+                            double u_old = grid.u(i, j, k);
+                            double u_gs = ((grid.u(i+1, j, k) + grid.u(i-1, j, k)) / dx2
+                                         + (grid.u(i, j+1, k) + grid.u(i, j-1, k)) / dy2
+                                         + (grid.u(i, j, k+1) + grid.u(i, j, k-1)) / dz2
+                                         - grid.f(i, j, k)) / coeff;
+                            grid.u(i, j, k) = (1.0 - omega) * u_old + omega * u_gs;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply boundary conditions once after all smoothing iterations
+        apply_bc(level);
+        return;
+    }
+
+    // 2D CPU path
     for (int iter = 0; iter < iterations; ++iter) {
         // Red sweep (i + j even)
         for (int j = Ng; j < Ny + Ng; ++j) {
@@ -364,7 +537,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
                 grid.u(i, j) = (1.0 - omega) * u_old + omega * u_gs;
             }
         }
-        
+
         // Black sweep (i + j odd)
         for (int j = Ng; j < Ny + Ng; ++j) {
             int start = Ng + ((Ng + j + 1) % 2);
@@ -377,7 +550,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
             }
         }
     }
-    
+
     // Apply boundary conditions once after all smoothing iterations
     apply_bc(level);
 }
@@ -387,14 +560,17 @@ void MultigridPoissonSolver::compute_residual(int level) {
     auto& grid = *levels_[level];
     const double dx2 = grid.dx * grid.dx;
     const double dy2 = grid.dy * grid.dy;
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
 
     const int Ng = 1;
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path with persistent device arrays
-    if (gpu::should_use_gpu_path()) {
+    // GPU path with persistent device arrays (2D only)
+    if (is_2d && gpu::should_use_gpu_path()) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         const double* u_ptr = u_ptrs_[level];
@@ -415,8 +591,23 @@ void MultigridPoissonSolver::compute_residual(int level) {
         return;
     }
 #endif
-    
-    // CPU path
+
+    // 3D CPU path
+    if (!is_2d) {
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    double laplacian = (grid.u(i+1, j, k) - 2.0*grid.u(i, j, k) + grid.u(i-1, j, k)) / dx2
+                                     + (grid.u(i, j+1, k) - 2.0*grid.u(i, j, k) + grid.u(i, j-1, k)) / dy2
+                                     + (grid.u(i, j, k+1) - 2.0*grid.u(i, j, k) + grid.u(i, j, k-1)) / dz2;
+                    grid.r(i, j, k) = grid.f(i, j, k) - laplacian;
+                }
+            }
+        }
+        return;
+    }
+
+    // 2D CPU path
     for (int j = Ng; j < Ny + Ng; ++j) {
         for (int i = Ng; i < Nx + Ng; ++i) {
             double laplacian = (grid.u(i+1, j) - 2.0*grid.u(i, j) + grid.u(i-1, j)) / dx2
@@ -430,21 +621,23 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     // Full-weighting restriction from fine to coarse grid
     auto& fine = *levels_[fine_level];
     auto& coarse = *levels_[fine_level + 1];
-    
+    const bool is_2d = fine.is2D();
+
     const int Ng = 1;
-    
+
 #ifdef USE_GPU_OFFLOAD
-    if (coarse.Nx >= 16 && coarse.Ny >= 16) {
+    // GPU path (2D only)
+    if (is_2d && coarse.Nx >= 16 && coarse.Ny >= 16) {
         const int Nx_c = coarse.Nx;
         const int Ny_c = coarse.Ny;
         const int stride_f = fine.Nx + 2;
         const int stride_c = coarse.Nx + 2;
         const size_t size_f = level_sizes_[fine_level];
         const size_t size_c = level_sizes_[fine_level + 1];
-        
+
         const double* r_fine = r_ptrs_[fine_level];
         double* f_coarse = f_ptrs_[fine_level + 1];
-        
+
         #pragma omp target teams distribute parallel for collapse(2) \
             map(present: r_fine[0:size_f], f_coarse[0:size_c])
         for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
@@ -453,8 +646,8 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
                 int j_f = 2 * (j_c - Ng) + Ng;
                 int idx_c = j_c * stride_c + i_c;
                 int idx_f = j_f * stride_f + i_f;
-                
-                // Full-weighting stencil
+
+                // Full-weighting stencil (2D: 9-point)
                 f_coarse[idx_c] = 0.25 * r_fine[idx_f]
                                 + 0.125 * (r_fine[idx_f-1] + r_fine[idx_f+1]
                                          + r_fine[idx_f-stride_f] + r_fine[idx_f+stride_f])
@@ -465,12 +658,55 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
         return;
     }
 #endif
-    
+
+    // 3D CPU path: 27-point full-weighting stencil
+    if (!is_2d) {
+        for (int k_c = Ng; k_c < coarse.Nz + Ng; ++k_c) {
+            for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
+                for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
+                    int i_f = 2 * (i_c - Ng) + Ng;
+                    int j_f = 2 * (j_c - Ng) + Ng;
+                    int k_f = 2 * (k_c - Ng) + Ng;
+
+                    // 27-point full-weighting stencil
+                    // Center: weight = 1/8, Faces: weight = 1/16, Edges: weight = 1/32, Corners: weight = 1/64
+                    double sum = 0.0;
+
+                    // Center point (weight = 1/8)
+                    sum += 0.125 * fine.r(i_f, j_f, k_f);
+
+                    // 6 face neighbors (weight = 1/16 each)
+                    sum += 0.0625 * (fine.r(i_f-1, j_f, k_f) + fine.r(i_f+1, j_f, k_f)
+                                   + fine.r(i_f, j_f-1, k_f) + fine.r(i_f, j_f+1, k_f)
+                                   + fine.r(i_f, j_f, k_f-1) + fine.r(i_f, j_f, k_f+1));
+
+                    // 12 edge neighbors (weight = 1/32 each)
+                    sum += 0.03125 * (fine.r(i_f-1, j_f-1, k_f) + fine.r(i_f+1, j_f-1, k_f)
+                                    + fine.r(i_f-1, j_f+1, k_f) + fine.r(i_f+1, j_f+1, k_f)
+                                    + fine.r(i_f-1, j_f, k_f-1) + fine.r(i_f+1, j_f, k_f-1)
+                                    + fine.r(i_f-1, j_f, k_f+1) + fine.r(i_f+1, j_f, k_f+1)
+                                    + fine.r(i_f, j_f-1, k_f-1) + fine.r(i_f, j_f+1, k_f-1)
+                                    + fine.r(i_f, j_f-1, k_f+1) + fine.r(i_f, j_f+1, k_f+1));
+
+                    // 8 corner neighbors (weight = 1/64 each)
+                    sum += 0.015625 * (fine.r(i_f-1, j_f-1, k_f-1) + fine.r(i_f+1, j_f-1, k_f-1)
+                                     + fine.r(i_f-1, j_f+1, k_f-1) + fine.r(i_f+1, j_f+1, k_f-1)
+                                     + fine.r(i_f-1, j_f-1, k_f+1) + fine.r(i_f+1, j_f-1, k_f+1)
+                                     + fine.r(i_f-1, j_f+1, k_f+1) + fine.r(i_f+1, j_f+1, k_f+1));
+
+                    coarse.f(i_c, j_c, k_c) = sum;
+                }
+            }
+        }
+        return;
+    }
+
+    // 2D CPU path: 9-point full-weighting stencil
     for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
         for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
             int i_f = 2 * (i_c - Ng) + Ng;
             int j_f = 2 * (j_c - Ng) + Ng;
-            
+
             // Full-weighting stencil
             coarse.f(i_c, j_c) = 0.25 * fine.r(i_f, j_f)
                                + 0.125 * (fine.r(i_f-1, j_f) + fine.r(i_f+1, j_f)
@@ -482,14 +718,16 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
 }
 
 void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
-    // Bilinear interpolation from coarse to fine grid
+    // Bilinear/trilinear interpolation from coarse to fine grid
     auto& coarse = *levels_[coarse_level];
     auto& fine = *levels_[coarse_level - 1];
-    
+    const bool is_2d = fine.is2D();
+
     const int Ng = 1;
-    
+
 #ifdef USE_GPU_OFFLOAD
-    if (fine.Nx >= 32 && fine.Ny >= 32) {
+    // GPU path (2D only)
+    if (is_2d && fine.Nx >= 32 && fine.Ny >= 32) {
         const int Nx_c = coarse.Nx;
         const int Ny_c = coarse.Ny;
         const int Nx_f = fine.Nx;
@@ -498,10 +736,10 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
         const int stride_c = coarse.Nx + 2;
         const size_t size_f = level_sizes_[coarse_level - 1];
         const size_t size_c = level_sizes_[coarse_level];
-        
+
         const double* u_coarse = u_ptrs_[coarse_level];
         double* u_fine = u_ptrs_[coarse_level - 1];
-        
+
         #pragma omp target teams distribute parallel for collapse(2) \
             map(present: u_coarse[0:size_c], u_fine[0:size_f])
         for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
@@ -510,12 +748,12 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
                 int j_f = 2 * (j_c - Ng) + Ng;
                 int idx_c = j_c * stride_c + i_c;
                 int idx_f = j_f * stride_f + i_f;
-                
+
                 double val_c = u_coarse[idx_c];
-                
+
                 // Direct injection to coarse points
                 u_fine[idx_f] += val_c;
-                
+
                 // Interpolate to fine points
                 if (i_f + 1 < Nx_f + Ng) {
                     double val_east = u_coarse[idx_c + 1];
@@ -536,15 +774,69 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
         return;
     }
 #endif
-    
+
+    // 3D CPU path: trilinear interpolation
+    if (!is_2d) {
+        for (int k_c = Ng; k_c < coarse.Nz + Ng; ++k_c) {
+            for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
+                for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
+                    int i_f = 2 * (i_c - Ng) + Ng;
+                    int j_f = 2 * (j_c - Ng) + Ng;
+                    int k_f = 2 * (k_c - Ng) + Ng;
+
+                    double val_c = coarse.u(i_c, j_c, k_c);
+
+                    // Direct injection to coincident point
+                    fine.u(i_f, j_f, k_f) += val_c;
+
+                    // Interpolate to 3 face-midpoints (average of 2 coarse neighbors)
+                    if (i_f + 1 < fine.Nx + Ng) {
+                        fine.u(i_f+1, j_f, k_f) += 0.5 * (val_c + coarse.u(i_c+1, j_c, k_c));
+                    }
+                    if (j_f + 1 < fine.Ny + Ng) {
+                        fine.u(i_f, j_f+1, k_f) += 0.5 * (val_c + coarse.u(i_c, j_c+1, k_c));
+                    }
+                    if (k_f + 1 < fine.Nz + Ng) {
+                        fine.u(i_f, j_f, k_f+1) += 0.5 * (val_c + coarse.u(i_c, j_c, k_c+1));
+                    }
+
+                    // Interpolate to 3 edge-midpoints (average of 4 coarse neighbors)
+                    if (i_f + 1 < fine.Nx + Ng && j_f + 1 < fine.Ny + Ng) {
+                        fine.u(i_f+1, j_f+1, k_f) += 0.25 * (val_c + coarse.u(i_c+1, j_c, k_c)
+                                                           + coarse.u(i_c, j_c+1, k_c) + coarse.u(i_c+1, j_c+1, k_c));
+                    }
+                    if (i_f + 1 < fine.Nx + Ng && k_f + 1 < fine.Nz + Ng) {
+                        fine.u(i_f+1, j_f, k_f+1) += 0.25 * (val_c + coarse.u(i_c+1, j_c, k_c)
+                                                           + coarse.u(i_c, j_c, k_c+1) + coarse.u(i_c+1, j_c, k_c+1));
+                    }
+                    if (j_f + 1 < fine.Ny + Ng && k_f + 1 < fine.Nz + Ng) {
+                        fine.u(i_f, j_f+1, k_f+1) += 0.25 * (val_c + coarse.u(i_c, j_c+1, k_c)
+                                                           + coarse.u(i_c, j_c, k_c+1) + coarse.u(i_c, j_c+1, k_c+1));
+                    }
+
+                    // Interpolate to cell-center (average of 8 coarse neighbors)
+                    if (i_f + 1 < fine.Nx + Ng && j_f + 1 < fine.Ny + Ng && k_f + 1 < fine.Nz + Ng) {
+                        fine.u(i_f+1, j_f+1, k_f+1) += 0.125 * (
+                            val_c + coarse.u(i_c+1, j_c, k_c)
+                            + coarse.u(i_c, j_c+1, k_c) + coarse.u(i_c+1, j_c+1, k_c)
+                            + coarse.u(i_c, j_c, k_c+1) + coarse.u(i_c+1, j_c, k_c+1)
+                            + coarse.u(i_c, j_c+1, k_c+1) + coarse.u(i_c+1, j_c+1, k_c+1));
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // 2D CPU path: bilinear interpolation
     for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
         for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
             int i_f = 2 * (i_c - Ng) + Ng;
             int j_f = 2 * (j_c - Ng) + Ng;
-            
+
             // Direct injection to coarse points
             fine.u(i_f, j_f) += coarse.u(i_c, j_c);
-            
+
             // Interpolate to fine points
             if (i_f + 1 < fine.Nx + Ng) {
                 fine.u(i_f+1, j_f) += 0.5 * (coarse.u(i_c, j_c) + coarse.u(i_c+1, j_c));

@@ -18,9 +18,14 @@ public:
     /// Destructor
     ~MultigridPoissonSolver();
     
-    /// Set boundary conditions
+    /// Set boundary conditions (2D version for backward compatibility)
     void set_bc(PoissonBC x_lo, PoissonBC x_hi,
                 PoissonBC y_lo, PoissonBC y_hi);
+
+    /// Set boundary conditions (3D version)
+    void set_bc(PoissonBC x_lo, PoissonBC x_hi,
+                PoissonBC y_lo, PoissonBC y_hi,
+                PoissonBC z_lo, PoissonBC z_hi);
     
     /// Solve Poisson equation: nabla^2 p = rhs
     /// Returns number of V-cycles performed
@@ -52,21 +57,34 @@ public:
 private:
     /// Grid level in multigrid hierarchy
     struct GridLevel {
-        int Nx, Ny;           // Grid size
-        double dx, dy;        // Grid spacing
-        Mesh mesh;            // Mesh for this level
-        ScalarField u;        // Solution
-        ScalarField f;        // RHS
-        ScalarField r;        // Residual
-        
+        int Nx, Ny, Nz;           // Grid size (Nz=1 for 2D)
+        double dx, dy, dz;        // Grid spacing (dz=1.0 for 2D)
+        Mesh mesh;                // Mesh for this level
+        ScalarField u;            // Solution
+        ScalarField f;            // RHS
+        ScalarField r;            // Residual
+
+        /// 2D constructor (backward compatible)
         GridLevel(int nx, int ny, double dx_, double dy_)
-            : Nx(nx), Ny(ny), dx(dx_), dy(dy_), mesh()
+            : Nx(nx), Ny(ny), Nz(1), dx(dx_), dy(dy_), dz(1.0), mesh()
         {
             mesh.init_uniform(nx, ny, 0.0, nx*dx_, 0.0, ny*dy_);
             u = ScalarField(mesh);
             f = ScalarField(mesh);
             r = ScalarField(mesh);
         }
+
+        /// 3D constructor
+        GridLevel(int nx, int ny, int nz, double dx_, double dy_, double dz_)
+            : Nx(nx), Ny(ny), Nz(nz), dx(dx_), dy(dy_), dz(dz_), mesh()
+        {
+            mesh.init_uniform(nx, ny, nz, 0.0, nx*dx_, 0.0, ny*dy_, 0.0, nz*dz_);
+            u = ScalarField(mesh);
+            f = ScalarField(mesh);
+            r = ScalarField(mesh);
+        }
+
+        bool is2D() const { return Nz == 1; }
     };
     
     const Mesh* mesh_;
@@ -77,6 +95,8 @@ private:
     PoissonBC bc_x_hi_ = PoissonBC::Periodic;
     PoissonBC bc_y_lo_ = PoissonBC::Neumann;
     PoissonBC bc_y_hi_ = PoissonBC::Neumann;
+    PoissonBC bc_z_lo_ = PoissonBC::Periodic;
+    PoissonBC bc_z_hi_ = PoissonBC::Periodic;
     
     double residual_ = 0.0;
     double dirichlet_val_ = 0.0;

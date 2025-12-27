@@ -2225,7 +2225,56 @@ double RANSSolver::step() {
             v_star_ptr[(Ng + Ny) * v_stride_pred + i] = v_avg;
         }
     }
-    
+
+    // 3D: Compute w* at ALL z-faces
+    if (!mesh_->is2D()) {
+        const int Nz = mesh_->Nz;
+        const int w_stride_pred = v.w_stride;
+        const int w_plane_stride_pred = v.w_plane_stride;
+        const double fz = fz_;
+        [[maybe_unused]] const size_t w_total_size_pred = velocity_.w_total_size();
+
+        const double* w_ptr = v.w_face;
+        double* w_star_ptr = v.w_star_face;
+        const double* conv_w_ptr = v.conv_w;
+        const double* diff_w_ptr = v.diff_w;
+
+        const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
+                                (velocity_bc_.z_hi == VelocityBC::Periodic);
+
+        // Compute w* = w + dt * (-conv_w + diff_w + fz)
+        const int n_w_faces_pred = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: w_ptr[0:w_total_size_pred], w_star_ptr[0:w_total_size_pred], \
+                        conv_w_ptr[0:w_total_size_pred], diff_w_ptr[0:w_total_size_pred]) \
+            firstprivate(dt, fz, w_stride_pred, w_plane_stride_pred, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_w_faces_pred; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            int w_idx = k * w_plane_stride_pred + j * w_stride_pred + i;
+
+            w_star_ptr[w_idx] = w_ptr[w_idx] + dt * (-conv_w_ptr[w_idx] + diff_w_ptr[w_idx] + fz);
+        }
+
+        // Enforce exact z-periodicity for w*: average front and back edges
+        if (z_periodic) {
+            const int n_w_periodic = Nx * Ny;
+            #pragma omp target teams distribute parallel for \
+                map(present: w_star_ptr[0:w_total_size_pred]) \
+                firstprivate(w_stride_pred, w_plane_stride_pred, Nx, Nz, Ng)
+            for (int idx = 0; idx < n_w_periodic; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = idx / Nx + Ng;
+                int idx_back = Ng * w_plane_stride_pred + j * w_stride_pred + i;
+                int idx_front = (Ng + Nz) * w_plane_stride_pred + j * w_stride_pred + i;
+                double w_avg = 0.5 * (w_star_ptr[idx_back] + w_star_ptr[idx_front]);
+                w_star_ptr[idx_back] = w_avg;
+                w_star_ptr[idx_front] = w_avg;
+            }
+        }
+    }
+
     // Apply BCs to provisional velocity (needed for divergence calculation)
     // Temporarily swap velocity_ and velocity_star_ to use apply_velocity_bc
     std::swap(velocity_, velocity_star_);
@@ -2235,21 +2284,30 @@ double RANSSolver::step() {
     // Must swap the pointers too to keep them consistent
     std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
     std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+    if (!mesh_->is2D()) {
+        std::swap(velocity_w_ptr_, velocity_star_w_ptr_);
+    }
 #endif
-    
+
     // PHASE 1.5 OPTIMIZATION: Skip redundant BC call for fully periodic domains
     // The inline periodic averaging above already handles periodic BCs correctly
     // Only apply BCs if domain has non-periodic boundaries (which need ghost cell updates)
-    const bool needs_bc_update = !x_periodic || !y_periodic;
+    const bool z_periodic_check = mesh_->is2D() ||
+                                  ((velocity_bc_.z_lo == VelocityBC::Periodic) &&
+                                   (velocity_bc_.z_hi == VelocityBC::Periodic));
+    const bool needs_bc_update = !x_periodic || !y_periodic || !z_periodic_check;
     if (needs_bc_update) {
         apply_velocity_bc();
     }
-    
+
     std::swap(velocity_, velocity_star_);
 #ifdef USE_GPU_OFFLOAD
     // Swap pointers back to restore original mapping
     std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
     std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+    if (!mesh_->is2D()) {
+        std::swap(velocity_w_ptr_, velocity_star_w_ptr_);
+    }
 #endif
     NVTX_POP();  // End predictor_step
     
@@ -3060,7 +3118,7 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     // NaN/Inf GUARD: Check before writing output
     // Catch NaNs before they're written to files
     check_for_nan_inf(step_count_);
-    
+
 #ifdef USE_GPU_OFFLOAD
     // Download solution fields from GPU for I/O (only what's needed!)
     const_cast<RANSSolver*>(this)->sync_solution_from_gpu();
@@ -3069,67 +3127,124 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         const_cast<RANSSolver*>(this)->sync_transport_from_gpu();
     }
 #endif
-    
+
     std::ofstream file(filename);
     if (!file) {
         std::cerr << "Error: Cannot open " << filename << " for writing\n";
         return;
     }
-    
-    int Nx = mesh_->Nx;
-    int Ny = mesh_->Ny;
-    
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const bool is_2d = mesh_->is2D();
+
     // VTK header
     file << "# vtk DataFile Version 3.0\n";
     file << "RANS simulation output\n";
     file << "ASCII\n";
     file << "DATASET STRUCTURED_POINTS\n";
-    file << "DIMENSIONS " << Nx << " " << Ny << " 1\n";
-    file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " 0\n";
-    file << "SPACING " << mesh_->dx << " " << mesh_->dy << " 1\n";
-    file << "POINT_DATA " << Nx * Ny << "\n";
-    
-    // Velocity vector field (interpolated from staggered grid to cell centers)
-    file << "VECTORS velocity double\n";
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            // Staggered grid: interpolate u and v to cell centers
-            double u_center = velocity_.u_center(i, j);
-            double v_center = velocity_.v_center(i, j);
-            file << u_center << " " << v_center << " 0\n";
+
+    if (is_2d) {
+        file << "DIMENSIONS " << Nx << " " << Ny << " 1\n";
+        file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " 0\n";
+        file << "SPACING " << mesh_->dx << " " << mesh_->dy << " 1\n";
+        file << "POINT_DATA " << Nx * Ny << "\n";
+
+        // Velocity vector field (interpolated from staggered grid to cell centers)
+        file << "VECTORS velocity double\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                double u_center = velocity_.u_center(i, j);
+                double v_center = velocity_.v_center(i, j);
+                file << u_center << " " << v_center << " 0\n";
+            }
         }
-    }
-    
-    // Pressure scalar field
-    file << "SCALARS pressure double 1\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            file << pressure_(i, j) << "\n";
-        }
-    }
-    
-    // Velocity magnitude (computed from cell-centered interpolated values)
-    file << "SCALARS velocity_magnitude double 1\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            // Staggered grid: use proper magnitude calculation
-            file << velocity_.magnitude(i, j) << "\n";
-        }
-    }
-    
-    // Eddy viscosity (if turbulence model is active)
-    if (turb_model_) {
-        file << "SCALARS nu_t double 1\n";
+
+        // Pressure scalar field
+        file << "SCALARS pressure double 1\n";
         file << "LOOKUP_TABLE default\n";
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                file << nu_t_(i, j) << "\n";
+                file << pressure_(i, j) << "\n";
+            }
+        }
+
+        // Velocity magnitude
+        file << "SCALARS velocity_magnitude double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << velocity_.magnitude(i, j) << "\n";
+            }
+        }
+
+        // Eddy viscosity (if turbulence model is active)
+        if (turb_model_) {
+            file << "SCALARS nu_t double 1\n";
+            file << "LOOKUP_TABLE default\n";
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << nu_t_(i, j) << "\n";
+                }
+            }
+        }
+    } else {
+        // 3D output
+        file << "DIMENSIONS " << Nx << " " << Ny << " " << Nz << "\n";
+        file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " " << mesh_->z_min << "\n";
+        file << "SPACING " << mesh_->dx << " " << mesh_->dy << " " << mesh_->dz << "\n";
+        file << "POINT_DATA " << Nx * Ny * Nz << "\n";
+
+        // Velocity vector field (interpolated from staggered grid to cell centers)
+        file << "VECTORS velocity double\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    double u_center = velocity_.u_center(i, j, k);
+                    double v_center = velocity_.v_center(i, j, k);
+                    double w_center = velocity_.w_center(i, j, k);
+                    file << u_center << " " << v_center << " " << w_center << "\n";
+                }
+            }
+        }
+
+        // Pressure scalar field
+        file << "SCALARS pressure double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << pressure_(i, j, k) << "\n";
+                }
+            }
+        }
+
+        // Velocity magnitude
+        file << "SCALARS velocity_magnitude double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << velocity_.magnitude(i, j, k) << "\n";
+                }
+            }
+        }
+
+        // Eddy viscosity (if turbulence model is active)
+        if (turb_model_) {
+            file << "SCALARS nu_t double 1\n";
+            file << "LOOKUP_TABLE default\n";
+            for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        file << nu_t_(i, j, k) << "\n";
+                    }
+                }
             }
         }
     }
-    
+
     file.close();
 }
 
@@ -3492,7 +3607,7 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
 SolverDeviceView RANSSolver::get_solver_view() const {
     // CPU build: always return host pointers
     SolverDeviceView view;
-    
+
     view.u_face = const_cast<double*>(velocity_.u_data().data());
     view.v_face = const_cast<double*>(velocity_.v_data().data());
     view.u_star_face = const_cast<double*>(velocity_star_.u_data().data());
@@ -3501,7 +3616,18 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.v_old_face = const_cast<double*>(velocity_old_.v_data().data());
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
-    
+
+    // 3D velocity fields
+    if (!mesh_->is2D()) {
+        view.w_face = const_cast<double*>(velocity_.w_data().data());
+        view.w_star_face = const_cast<double*>(velocity_star_.w_data().data());
+        view.w_old_face = const_cast<double*>(velocity_old_.w_data().data());
+        view.w_stride = velocity_.w_stride();
+        view.u_plane_stride = velocity_.u_plane_stride();
+        view.v_plane_stride = velocity_.v_plane_stride();
+        view.w_plane_stride = velocity_.w_plane_stride();
+    }
+
     view.p = const_cast<double*>(pressure_.data().data());
     view.p_corr = const_cast<double*>(pressure_correction_.data().data());
     view.nu_t = const_cast<double*>(nu_t_.data().data());
@@ -3509,19 +3635,28 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.rhs = const_cast<double*>(rhs_poisson_.data().data());
     view.div = const_cast<double*>(div_velocity_.data().data());
     view.cell_stride = mesh_->total_Nx();
-    
+    view.cell_plane_stride = mesh_->total_Nx() * mesh_->total_Ny();
+
     view.conv_u = const_cast<double*>(conv_.u_data().data());
     view.conv_v = const_cast<double*>(conv_.v_data().data());
     view.diff_u = const_cast<double*>(diff_.u_data().data());
     view.diff_v = const_cast<double*>(diff_.v_data().data());
-    
+
+    // 3D work arrays
+    if (!mesh_->is2D()) {
+        view.conv_w = const_cast<double*>(conv_.w_data().data());
+        view.diff_w = const_cast<double*>(diff_.w_data().data());
+    }
+
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;
+    view.Nz = mesh_->Nz;
     view.Ng = mesh_->Nghost;
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
+    view.dz = mesh_->dz;
     view.dt = current_dt_;
-    
+
     return view;
 }
 #endif
