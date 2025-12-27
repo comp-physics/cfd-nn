@@ -15,7 +15,7 @@ public:
     ScalarField() = default;
     explicit ScalarField(const Mesh& mesh, double init_val = 0.0);
 
-    /// Access by (i, j) - 2D backward compatible
+    /// Access by (i, j) - 2D backward compatible (uses k=0 plane for flat array compatibility)
     double& operator()(int i, int j) { return data_[mesh_->index(i, j)]; }
     double operator()(int i, int j) const { return data_[mesh_->index(i, j)]; }
 
@@ -61,7 +61,7 @@ public:
     VectorField() = default;
     explicit VectorField(const Mesh& mesh, double init_u = 0.0, double init_v = 0.0, double init_w = 0.0);
 
-    /// Access u component at x-face (i+1/2, j) - 2D backward compatible (uses k=0 plane)
+    /// Access u component at x-face (i+1/2, j) - 2D backward compatible (uses k=0 plane for flat array compatibility)
     double& u(int i, int j) { return u_data_[u_index(i, j, 0)]; }
     double u(int i, int j) const { return u_data_[u_index(i, j, 0)]; }
 
@@ -69,7 +69,7 @@ public:
     double& u(int i, int j, int k) { return u_data_[u_index(i, j, k)]; }
     double u(int i, int j, int k) const { return u_data_[u_index(i, j, k)]; }
 
-    /// Access v component at y-face (i, j+1/2) - 2D backward compatible (uses k=0 plane)
+    /// Access v component at y-face (i, j+1/2) - 2D backward compatible (uses k=0 plane for flat array compatibility)
     double& v(int i, int j) { return v_data_[v_index(i, j, 0)]; }
     double v(int i, int j) const { return v_data_[v_index(i, j, 0)]; }
 

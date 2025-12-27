@@ -190,6 +190,10 @@ if(BUILD_TESTS)
     target_link_libraries(test_3d_solver nn_cfd_core)
     add_test(NAME Solver3DTest COMMAND test_3d_solver)
 
+    add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
+    target_link_libraries(test_2d_3d_comparison nn_cfd_core)
+    add_test(NAME Comparison2D3DTest COMMAND test_2d_3d_comparison)
+
     add_executable(test_features tests/test_features.cpp)
     target_link_libraries(test_features nn_cfd_core)
     add_test(NAME FeaturesTest COMMAND test_features)

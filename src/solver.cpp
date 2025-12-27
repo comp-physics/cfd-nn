@@ -1332,7 +1332,246 @@ void RANSSolver::apply_velocity_bc() {
                                   y_hi_periodic, y_hi_noslip, v_ptr);
         }
     }
-    
+
+    // 3D z-direction boundary conditions
+    if (!mesh_->is2D()) {
+        const int Nz = v.Nz;
+        const int u_plane_stride = v.u_plane_stride;
+        const int v_plane_stride = v.v_plane_stride;
+        const int w_stride = v.w_stride;
+        const int w_plane_stride = v.w_plane_stride;
+        double* w_ptr = v.w_face;
+        [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
+
+        const bool z_lo_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic);
+        const bool z_hi_periodic = (velocity_bc_.z_hi == VelocityBC::Periodic);
+        const bool z_lo_noslip = (velocity_bc_.z_lo == VelocityBC::NoSlip);
+        const bool z_hi_noslip = (velocity_bc_.z_hi == VelocityBC::NoSlip);
+
+        // Apply u BCs in z-direction (for all x-faces, all y rows)
+        // Each x-face: (Nx+1) i-values, (Ny) j-values, Ng ghost layers at each z-end
+        const int n_u_z_bc = (Nx + 1 + 2*Ng) * (Ny + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(Ng, Nz, u_stride, u_plane_stride)
+        for (int idx = 0; idx < n_u_z_bc; ++idx) {
+            int i = idx % (Nx + 1 + 2*Ng);
+            int j = (idx / (Nx + 1 + 2*Ng)) % (Ny + 2*Ng);
+            int g = idx / ((Nx + 1 + 2*Ng) * (Ny + 2*Ng));
+            // z-lo ghost: k = Ng-1-g = Ng-1, Ng-2, ... for g=0,1,...
+            // z-hi ghost: k = Ng+Nz+g
+            int k_lo = Ng - 1 - g;
+            int k_hi = Ng + Nz + g;
+            int src_lo = Ng;        // First interior k
+            int src_hi = Ng + Nz - 1;  // Last interior k
+            int idx_lo = k_lo * u_plane_stride + j * u_stride + i;
+            int idx_hi = k_hi * u_plane_stride + j * u_stride + i;
+            int idx_src_lo = src_lo * u_plane_stride + j * u_stride + i;
+            int idx_src_hi = src_hi * u_plane_stride + j * u_stride + i;
+
+            if (z_lo_periodic && z_hi_periodic) {
+                // Periodic: copy from opposite interior boundary
+                u_ptr[idx_lo] = u_ptr[(Ng + Nz - 1 - g) * u_plane_stride + j * u_stride + i];
+                u_ptr[idx_hi] = u_ptr[(Ng + g) * u_plane_stride + j * u_stride + i];
+            } else {
+                if (z_lo_noslip) u_ptr[idx_lo] = -u_ptr[idx_src_lo];
+                if (z_hi_noslip) u_ptr[idx_hi] = -u_ptr[idx_src_hi];
+            }
+        }
+
+        // Apply v BCs in z-direction
+        const int n_v_z_bc = (Nx + 2*Ng) * (Ny + 1 + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(Ng, Nz, v_stride, v_plane_stride)
+        for (int idx = 0; idx < n_v_z_bc; ++idx) {
+            int i = idx % (Nx + 2*Ng);
+            int j = (idx / (Nx + 2*Ng)) % (Ny + 1 + 2*Ng);
+            int g = idx / ((Nx + 2*Ng) * (Ny + 1 + 2*Ng));
+            int k_lo = Ng - 1 - g;
+            int k_hi = Ng + Nz + g;
+            int src_lo = Ng;
+            int src_hi = Ng + Nz - 1;
+            int idx_lo = k_lo * v_plane_stride + j * v_stride + i;
+            int idx_hi = k_hi * v_plane_stride + j * v_stride + i;
+            int idx_src_lo = src_lo * v_plane_stride + j * v_stride + i;
+            int idx_src_hi = src_hi * v_plane_stride + j * v_stride + i;
+
+            if (z_lo_periodic && z_hi_periodic) {
+                v_ptr[idx_lo] = v_ptr[(Ng + Nz - 1 - g) * v_plane_stride + j * v_stride + i];
+                v_ptr[idx_hi] = v_ptr[(Ng + g) * v_plane_stride + j * v_stride + i];
+            } else {
+                if (z_lo_noslip) v_ptr[idx_lo] = -v_ptr[idx_src_lo];
+                if (z_hi_noslip) v_ptr[idx_hi] = -v_ptr[idx_src_hi];
+            }
+        }
+
+        // Apply w BCs in z-direction (w is at z-faces, so different treatment)
+        // For periodic: w at k=Ng and k=Ng+Nz should be same (wrap around)
+        const int n_w_z_bc = (Nx + 2*Ng) * (Ny + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: w_ptr[0:w_total_size]) \
+            firstprivate(Ng, Nz, w_stride, w_plane_stride)
+        for (int idx = 0; idx < n_w_z_bc; ++idx) {
+            int i = idx % (Nx + 2*Ng);
+            int j = (idx / (Nx + 2*Ng)) % (Ny + 2*Ng);
+            int g = idx / ((Nx + 2*Ng) * (Ny + 2*Ng));
+            int k_lo = Ng - 1 - g;
+            int k_hi = Ng + Nz + 1 + g;  // Note: Nz+1 z-faces for w
+            int idx_lo = k_lo * w_plane_stride + j * w_stride + i;
+            int idx_hi = k_hi * w_plane_stride + j * w_stride + i;
+
+            if (z_lo_periodic && z_hi_periodic) {
+                // For w at z-faces with periodic BC:
+                // Ghost at k=Ng-1-g gets value from k=Ng+Nz-1-g (interior near hi)
+                // Ghost at k=Ng+Nz+1+g gets value from k=Ng+1+g (interior near lo)
+                w_ptr[idx_lo] = w_ptr[(Ng + Nz - 1 - g) * w_plane_stride + j * w_stride + i];
+                w_ptr[idx_hi] = w_ptr[(Ng + 1 + g) * w_plane_stride + j * w_stride + i];
+            } else {
+                // For no-slip: w at boundaries should be zero (normal velocity)
+                if (z_lo_noslip) {
+                    // w at k=Ng (first interior z-face) = 0 for solid wall
+                    if (g == 0) {
+                        w_ptr[(Ng) * w_plane_stride + j * w_stride + i] = 0.0;
+                    }
+                    w_ptr[idx_lo] = -w_ptr[(Ng + g + 1) * w_plane_stride + j * w_stride + i];
+                }
+                if (z_hi_noslip) {
+                    // w at k=Ng+Nz (last interior z-face) = 0 for solid wall
+                    if (g == 0) {
+                        w_ptr[(Ng + Nz) * w_plane_stride + j * w_stride + i] = 0.0;
+                    }
+                    w_ptr[idx_hi] = -w_ptr[(Ng + Nz - 1 - g) * w_plane_stride + j * w_stride + i];
+                }
+            }
+        }
+
+        // Apply w BCs in x and y directions
+        // w in x-direction
+        const int n_w_x_bc = (Ny + 2*Ng) * (Nz + 1 + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: w_ptr[0:w_total_size]) \
+            firstprivate(Nx, Ng, w_stride, w_plane_stride, x_lo_periodic, x_lo_noslip, x_hi_periodic, x_hi_noslip)
+        for (int idx = 0; idx < n_w_x_bc; ++idx) {
+            int j = idx % (Ny + 2*Ng);
+            int k = (idx / (Ny + 2*Ng)) % (Nz + 1 + 2*Ng);
+            int g = idx / ((Ny + 2*Ng) * (Nz + 1 + 2*Ng));
+            int i_lo = Ng - 1 - g;
+            int i_hi = Ng + Nx + g;
+            int idx_lo = k * w_plane_stride + j * w_stride + i_lo;
+            int idx_hi = k * w_plane_stride + j * w_stride + i_hi;
+
+            if (x_lo_periodic && x_hi_periodic) {
+                w_ptr[idx_lo] = w_ptr[k * w_plane_stride + j * w_stride + (Ng + Nx - 1 - g)];
+                w_ptr[idx_hi] = w_ptr[k * w_plane_stride + j * w_stride + (Ng + g)];
+            } else {
+                if (x_lo_noslip) w_ptr[idx_lo] = -w_ptr[k * w_plane_stride + j * w_stride + (Ng + g)];
+                if (x_hi_noslip) w_ptr[idx_hi] = -w_ptr[k * w_plane_stride + j * w_stride + (Ng + Nx - 1 - g)];
+            }
+        }
+
+        // w in y-direction
+        const int n_w_y_bc = (Nx + 2*Ng) * (Nz + 1 + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: w_ptr[0:w_total_size]) \
+            firstprivate(Ny, Ng, w_stride, w_plane_stride, y_lo_periodic, y_lo_noslip, y_hi_periodic, y_hi_noslip)
+        for (int idx = 0; idx < n_w_y_bc; ++idx) {
+            int i = idx % (Nx + 2*Ng);
+            int k = (idx / (Nx + 2*Ng)) % (Nz + 1 + 2*Ng);
+            int g = idx / ((Nx + 2*Ng) * (Nz + 1 + 2*Ng));
+            int j_lo = Ng - 1 - g;
+            int j_hi = Ng + Ny + g;
+            int idx_lo = k * w_plane_stride + j_lo * w_stride + i;
+            int idx_hi = k * w_plane_stride + j_hi * w_stride + i;
+
+            if (y_lo_periodic && y_hi_periodic) {
+                w_ptr[idx_lo] = w_ptr[k * w_plane_stride + (Ng + Ny - 1 - g) * w_stride + i];
+                w_ptr[idx_hi] = w_ptr[k * w_plane_stride + (Ng + g) * w_stride + i];
+            } else {
+                if (y_lo_noslip) w_ptr[idx_lo] = -w_ptr[k * w_plane_stride + (Ng + g) * w_stride + i];
+                if (y_hi_noslip) w_ptr[idx_hi] = -w_ptr[k * w_plane_stride + (Ng + Ny - 1 - g) * w_stride + i];
+            }
+        }
+
+        // Also apply x and y BCs for u and v across all k-planes
+        // (The 2D BC code above only handles k=0 plane implicitly via the flat indexing)
+        // For 3D, we need to iterate over ALL k-planes including z-ghost cells
+        // This ensures corners/edges have consistent ghost values
+        for (int kk = 0; kk < Nz + 2*Ng; ++kk) {
+            // u in x-direction for this k-plane
+            for (int jj = 0; jj < Ny + 2*Ng; ++jj) {
+                for (int gg = 0; gg < Ng; ++gg) {
+                    int i_lo = Ng - 1 - gg;
+                    int i_hi = Ng + Nx + 1 + gg;  // u has Nx+1 interior points
+                    int idx_lo = kk * u_plane_stride + jj * u_stride + i_lo;
+                    int idx_hi = kk * u_plane_stride + jj * u_stride + i_hi;
+
+                    if (x_lo_periodic && x_hi_periodic) {
+                        u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
+                        u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
+                    } else {
+                        if (x_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
+                        if (x_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
+                    }
+                }
+            }
+
+            // u in y-direction for this k-plane
+            for (int ii = 0; ii < Nx + 1 + 2*Ng; ++ii) {
+                for (int gg = 0; gg < Ng; ++gg) {
+                    int j_lo = Ng - 1 - gg;
+                    int j_hi = Ng + Ny + gg;
+                    int idx_lo = kk * u_plane_stride + j_lo * u_stride + ii;
+                    int idx_hi = kk * u_plane_stride + j_hi * u_stride + ii;
+
+                    if (y_lo_periodic && y_hi_periodic) {
+                        u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
+                        u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
+                    } else {
+                        if (y_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
+                        if (y_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
+                    }
+                }
+            }
+
+            // v in x-direction for this k-plane
+            for (int jj = 0; jj < Ny + 1 + 2*Ng; ++jj) {
+                for (int gg = 0; gg < Ng; ++gg) {
+                    int i_lo = Ng - 1 - gg;
+                    int i_hi = Ng + Nx + gg;
+                    int idx_lo = kk * v_plane_stride + jj * v_stride + i_lo;
+                    int idx_hi = kk * v_plane_stride + jj * v_stride + i_hi;
+
+                    if (x_lo_periodic && x_hi_periodic) {
+                        v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
+                        v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
+                    } else {
+                        if (x_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
+                        if (x_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
+                    }
+                }
+            }
+
+            // v in y-direction for this k-plane
+            for (int ii = 0; ii < Nx + 2*Ng; ++ii) {
+                for (int gg = 0; gg < Ng; ++gg) {
+                    int j_lo = Ng - 1 - gg;
+                    int j_hi = Ng + Ny + 1 + gg;  // v has Ny+1 interior points
+                    int idx_lo = kk * v_plane_stride + j_lo * v_stride + ii;
+                    int idx_hi = kk * v_plane_stride + j_hi * v_stride + ii;
+
+                    if (y_lo_periodic && y_hi_periodic) {
+                        v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
+                        v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
+                    } else {
+                        if (y_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
+                        if (y_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
+                    }
+                }
+            }
+        }
+    }
+
     NVTX_POP();  // End apply_velocity_bc
 }
 
@@ -1984,14 +2223,40 @@ double RANSSolver::step() {
     }
 #else
     // CPU path: use host-side velocity_old_
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i <= Ng + Nx; ++i) {
-            velocity_old_.u(i, j) = velocity_.u(i, j);
+    if (mesh_->is2D()) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i <= Ng + Nx; ++i) {
+                velocity_old_.u(i, j) = velocity_.u(i, j);
+            }
         }
-    }
-    for (int j = Ng; j <= Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            velocity_old_.v(i, j) = velocity_.v(i, j);
+        for (int j = Ng; j <= Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                velocity_old_.v(i, j) = velocity_.v(i, j);
+            }
+        }
+    } else {
+        // 3D path
+        const int Nz = mesh_->Nz;
+        for (int k = Ng; k < Ng + Nz; ++k) {
+            for (int j = Ng; j < Ng + Ny; ++j) {
+                for (int i = Ng; i <= Ng + Nx; ++i) {
+                    velocity_old_.u(i, j, k) = velocity_.u(i, j, k);
+                }
+            }
+        }
+        for (int k = Ng; k < Ng + Nz; ++k) {
+            for (int j = Ng; j <= Ng + Ny; ++j) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    velocity_old_.v(i, j, k) = velocity_.v(i, j, k);
+                }
+            }
+        }
+        for (int k = Ng; k <= Ng + Nz; ++k) {
+            for (int j = Ng; j < Ng + Ny; ++j) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    velocity_old_.w(i, j, k) = velocity_.w(i, j, k);
+                }
+            }
         }
     }
 #endif
@@ -2165,64 +2430,87 @@ double RANSSolver::step() {
     const double* conv_v_ptr = v.conv_v;
     const double* diff_u_ptr = v.diff_u;
     const double* diff_v_ptr = v.diff_v;
-    
+
+    const int Nz_pred = mesh_->Nz;
+    const int Nz_eff_pred = mesh_->is2D() ? 1 : Nz_pred;
+    const int u_plane_stride_pred = v.u_plane_stride;
+    const int v_plane_stride_pred = v.v_plane_stride;
+
     // Compute u* at ALL x-faces (including redundant if periodic)
-    const int n_u_faces_pred = (Nx + 1) * Ny;
+    const int n_u_faces_pred = (Nx + 1) * Ny * Nz_eff_pred;
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_total_size_pred], u_star_ptr[0:u_total_size_pred], \
                     conv_u_ptr[0:u_total_size_pred], diff_u_ptr[0:u_total_size_pred]) \
-        firstprivate(dt, fx, u_stride_pred, Nx, Ng)
+        firstprivate(dt, fx, u_stride_pred, u_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
     for (int idx = 0; idx < n_u_faces_pred; ++idx) {
         int i_local = idx % (Nx + 1);
-        int j_local = idx / (Nx + 1);
+        int j_local = (idx / (Nx + 1)) % Ny;
+        int k_local = idx / ((Nx + 1) * Ny);
         int i = i_local + Ng;
         int j = j_local + Ng;
-        int u_idx = j * u_stride_pred + i;
-        
+        int k = k_local + Ng;
+        int u_idx = (Nz_eff_pred > 1) ? (k * u_plane_stride_pred + j * u_stride_pred + i)
+                                      : (j * u_stride_pred + i);
+
         u_star_ptr[u_idx] = u_ptr[u_idx] + dt * (-conv_u_ptr[u_idx] + diff_u_ptr[u_idx] + fx);
     }
-    
+
     // Enforce exact x-periodicity for u*: average left and right edges
     if (x_periodic) {
-        const int n_u_periodic = Ny;
+        const int n_u_periodic = Ny * Nz_eff_pred;
         #pragma omp target teams distribute parallel for \
             map(present: u_star_ptr[0:u_total_size_pred]) \
-            firstprivate(u_stride_pred, Nx, Ng)
-        for (int j_local = 0; j_local < n_u_periodic; ++j_local) {
+            firstprivate(u_stride_pred, u_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
+        for (int idx = 0; idx < n_u_periodic; ++idx) {
+            int j_local = idx % Ny;
+            int k_local = idx / Ny;
             int j = j_local + Ng;
-            double u_avg = 0.5 * (u_star_ptr[j * u_stride_pred + Ng] + u_star_ptr[j * u_stride_pred + (Ng + Nx)]);
-            u_star_ptr[j * u_stride_pred + Ng] = u_avg;
-            u_star_ptr[j * u_stride_pred + (Ng + Nx)] = u_avg;
+            int k = k_local + Ng;
+            int base = (Nz_eff_pred > 1) ? (k * u_plane_stride_pred + j * u_stride_pred)
+                                         : (j * u_stride_pred);
+            double u_avg = 0.5 * (u_star_ptr[base + Ng] + u_star_ptr[base + (Ng + Nx)]);
+            u_star_ptr[base + Ng] = u_avg;
+            u_star_ptr[base + (Ng + Nx)] = u_avg;
         }
     }
-    
+
     // Compute v* at ALL y-faces (including redundant if periodic)
-    const int n_v_faces_pred = Nx * (Ny + 1);
+    const int n_v_faces_pred = Nx * (Ny + 1) * Nz_eff_pred;
     #pragma omp target teams distribute parallel for \
         map(present: v_ptr[0:v_total_size_pred], v_star_ptr[0:v_total_size_pred], \
                     conv_v_ptr[0:v_total_size_pred], diff_v_ptr[0:v_total_size_pred]) \
-        firstprivate(dt, fy, v_stride_pred, Nx, Ng)
+        firstprivate(dt, fy, v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
     for (int idx = 0; idx < n_v_faces_pred; ++idx) {
         int i_local = idx % Nx;
-        int j_local = idx / Nx;
+        int j_local = (idx / Nx) % (Ny + 1);
+        int k_local = idx / (Nx * (Ny + 1));
         int i = i_local + Ng;
         int j = j_local + Ng;
-        int v_idx = j * v_stride_pred + i;
-        
+        int k = k_local + Ng;
+        int v_idx = (Nz_eff_pred > 1) ? (k * v_plane_stride_pred + j * v_stride_pred + i)
+                                      : (j * v_stride_pred + i);
+
         v_star_ptr[v_idx] = v_ptr[v_idx] + dt * (-conv_v_ptr[v_idx] + diff_v_ptr[v_idx] + fy);
     }
-    
+
     // Enforce exact y-periodicity for v*: average bottom and top edges
     if (y_periodic) {
-        const int n_v_periodic = Nx;
+        const int n_v_periodic = Nx * Nz_eff_pred;
         #pragma omp target teams distribute parallel for \
             map(present: v_star_ptr[0:v_total_size_pred]) \
-            firstprivate(v_stride_pred, Ny, Ng)
-        for (int i_local = 0; i_local < n_v_periodic; ++i_local) {
+            firstprivate(v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
+        for (int idx = 0; idx < n_v_periodic; ++idx) {
+            int i_local = idx % Nx;
+            int k_local = idx / Nx;
             int i = i_local + Ng;
-            double v_avg = 0.5 * (v_star_ptr[Ng * v_stride_pred + i] + v_star_ptr[(Ng + Ny) * v_stride_pred + i]);
-            v_star_ptr[Ng * v_stride_pred + i] = v_avg;
-            v_star_ptr[(Ng + Ny) * v_stride_pred + i] = v_avg;
+            int k = k_local + Ng;
+            int base_lo = (Nz_eff_pred > 1) ? (k * v_plane_stride_pred + Ng * v_stride_pred + i)
+                                            : (Ng * v_stride_pred + i);
+            int base_hi = (Nz_eff_pred > 1) ? (k * v_plane_stride_pred + (Ng + Ny) * v_stride_pred + i)
+                                            : ((Ng + Ny) * v_stride_pred + i);
+            double v_avg = 0.5 * (v_star_ptr[base_lo] + v_star_ptr[base_hi]);
+            v_star_ptr[base_lo] = v_avg;
+            v_star_ptr[base_hi] = v_avg;
         }
     }
 
@@ -2381,24 +2669,50 @@ double RANSSolver::step() {
     } else
 #endif
     {
-        // CPU fallback path (unchanged)
+        // CPU fallback path
         double sum_div = 0.0;
         int count = 0;
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                double div = div_velocity_(i, j);
-                sum_div += div;
-                ++count;
+
+        if (mesh_->is2D()) {
+            // 2D path
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    double div = div_velocity_(i, j);
+                    sum_div += div;
+                    ++count;
+                }
+            }
+            mean_div = (count > 0) ? sum_div / count : 0.0;
+
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    rhs_poisson_(i, j) = (div_velocity_(i, j) - mean_div) / current_dt_;
+                }
+            }
+        } else {
+            // 3D path
+            const int Nz = mesh_->Nz;
+            const int Ng = mesh_->Nghost;
+            for (int k = Ng; k < Ng + Nz; ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double div = div_velocity_(i, j, k);
+                        sum_div += div;
+                        ++count;
+                    }
+                }
+            }
+            mean_div = (count > 0) ? sum_div / count : 0.0;
+
+            for (int k = Ng; k < Ng + Nz; ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        rhs_poisson_(i, j, k) = (div_velocity_(i, j, k) - mean_div) / current_dt_;
+                    }
+                }
             }
         }
-        mean_div = (count > 0) ? sum_div / count : 0.0;
-        
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                rhs_poisson_(i, j) = (div_velocity_(i, j) - mean_div) / current_dt_;
-            }
-        }
-        
+
         // Warm-start: zero on first iteration
         if (iter_ == 0) {
             pressure_correction_.fill(0.0);
@@ -2437,11 +2751,25 @@ double RANSSolver::step() {
             }
         }
 #else
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                double rhs_val = rhs_poisson_(i, j);
-                rhs_norm_sq += rhs_val * rhs_val;
-                rhs_count++;
+        if (mesh_->is2D()) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    double rhs_val = rhs_poisson_(i, j);
+                    rhs_norm_sq += rhs_val * rhs_val;
+                    rhs_count++;
+                }
+            }
+        } else {
+            const int Nz = mesh_->Nz;
+            const int Ng = mesh_->Nghost;
+            for (int k = Ng; k < Ng + Nz; ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double rhs_val = rhs_poisson_(i, j, k);
+                        rhs_norm_sq += rhs_val * rhs_val;
+                        rhs_count++;
+                    }
+                }
             }
         }
 #endif
@@ -2510,51 +2838,88 @@ double RANSSolver::step() {
     
     // Return max velocity change as convergence criterion (unified view-based)
     auto v_res = get_solver_view();
-    
+
     [[maybe_unused]] const size_t u_total_size_res = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size_res = velocity_.v_total_size();
+    [[maybe_unused]] const size_t w_total_size_res = velocity_.w_total_size();
     const double* u_new_ptr = v_res.u_face;
     const double* v_new_ptr = v_res.v_face;
     const double* u_old_ptr = v_res.u_old_face;
     const double* v_old_ptr = v_res.v_old_face;
     const int u_stride_res = v_res.u_stride;
     const int v_stride_res = v_res.v_stride;
-    
+    const int Nz = mesh_->Nz;
+    const int Nz_eff = mesh_->is2D() ? 1 : Nz;  // Effective Nz for loop bounds
+
     // Compute max |u_new - u_old| via reduction
-    const int n_u_faces_res = (Nx + 1) * Ny;
+    const int n_u_faces_res = (Nx + 1) * Ny * Nz_eff;
+    const int u_plane_stride_res = v_res.u_plane_stride;
     double max_du = 0.0;
     #pragma omp target teams distribute parallel for reduction(max:max_du) \
         map(present: u_new_ptr[0:u_total_size_res], u_old_ptr[0:u_total_size_res]) \
-        map(to: Ng, u_stride_res, Nx)
+        map(to: Ng, u_stride_res, u_plane_stride_res, Nx, Ny, Nz_eff)
     for (int idx = 0; idx < n_u_faces_res; ++idx) {
         int i_local = idx % (Nx + 1);
-        int j_local = idx / (Nx + 1);
+        int j_local = (idx / (Nx + 1)) % Ny;
+        int k_local = idx / ((Nx + 1) * Ny);
         int i = i_local + Ng;
         int j = j_local + Ng;
-        int u_idx = j * u_stride_res + i;
+        int k = k_local + Ng;
+        int u_idx = (Nz_eff > 1) ? (k * u_plane_stride_res + j * u_stride_res + i)
+                                 : (j * u_stride_res + i);
         double du = u_new_ptr[u_idx] - u_old_ptr[u_idx];
         if (du < 0.0) du = -du;
         if (du > max_du) max_du = du;
     }
-    
+
     // Compute max |v_new - v_old| via reduction
-    const int n_v_faces_res = Nx * (Ny + 1);
+    const int n_v_faces_res = Nx * (Ny + 1) * Nz_eff;
+    const int v_plane_stride_res = v_res.v_plane_stride;
     double max_dv = 0.0;
     #pragma omp target teams distribute parallel for reduction(max:max_dv) \
         map(present: v_new_ptr[0:v_total_size_res], v_old_ptr[0:v_total_size_res]) \
-        map(to: Ng, v_stride_res, Nx)
+        map(to: Ng, v_stride_res, v_plane_stride_res, Nx, Ny, Nz_eff)
     for (int idx = 0; idx < n_v_faces_res; ++idx) {
         int i_local = idx % Nx;
-        int j_local = idx / Nx;
+        int j_local = (idx / Nx) % (Ny + 1);
+        int k_local = idx / (Nx * (Ny + 1));
         int i = i_local + Ng;
         int j = j_local + Ng;
-        int v_idx = j * v_stride_res + i;
+        int k = k_local + Ng;
+        int v_idx = (Nz_eff > 1) ? (k * v_plane_stride_res + j * v_stride_res + i)
+                                 : (j * v_stride_res + i);
         double dv = v_new_ptr[v_idx] - v_old_ptr[v_idx];
         if (dv < 0.0) dv = -dv;
         if (dv > max_dv) max_dv = dv;
     }
-    
+
     double max_change = (max_du > max_dv) ? max_du : max_dv;
+
+    // For 3D, also check w component
+    if (!mesh_->is2D()) {
+        const double* w_new_ptr = v_res.w_face;
+        const double* w_old_ptr = v_res.w_old_face;
+        const int w_stride_res = v_res.w_stride;
+        const int w_plane_stride_res = v_res.w_plane_stride;
+        const int n_w_faces_res = Nx * Ny * (Nz + 1);
+        double max_dw = 0.0;
+        #pragma omp target teams distribute parallel for reduction(max:max_dw) \
+            map(present: w_new_ptr[0:w_total_size_res], w_old_ptr[0:w_total_size_res]) \
+            map(to: Ng, w_stride_res, w_plane_stride_res, Nx, Ny, Nz)
+        for (int idx = 0; idx < n_w_faces_res; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = (idx / Nx) % Ny;
+            int k_local = idx / (Nx * Ny);
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            int k = k_local + Ng;
+            int w_idx = k * w_plane_stride_res + j * w_stride_res + i;
+            double dw = w_new_ptr[w_idx] - w_old_ptr[w_idx];
+            if (dw < 0.0) dw = -dw;
+            if (dw > max_dw) max_dw = dw;
+        }
+        if (max_dw > max_change) max_change = max_dw;
+    }
 
     // NaN/Inf GUARD: Check for numerical stability issues
     // Do this after turbulence update but before next iteration starts
