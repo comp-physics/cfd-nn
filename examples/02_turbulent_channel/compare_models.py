@@ -226,7 +226,7 @@ def main():
     # Try to display
     try:
         plt.show()
-    except:
+    except Exception:
         pass
     
     print("="*60)

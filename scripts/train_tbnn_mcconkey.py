@@ -108,9 +108,9 @@ def load_mcconkey_data(data_dir, case='periodic_hills', split='train'):
     
     if not case_dir.exists():
         print(f"\nWARNING: Dataset directory not found: {case_dir}")
-        print(f"Please download the McConkey dataset from:")
-        print(f"https://www.kaggle.com/datasets/ryleymcconkey/ml-turbulence-dataset")
-        print(f"\nGenerating synthetic data for demonstration...")
+        print("Please download the McConkey dataset from:")
+        print("https://www.kaggle.com/datasets/ryleymcconkey/ml-turbulence-dataset")
+        print("\nGenerating synthetic data for demonstration...")
         return generate_synthetic_data(n_samples=10000)
     
     try:
@@ -363,7 +363,7 @@ def export_to_cpp(model, feature_means, feature_stds, output_dir):
     np.savetxt(means_file, feature_means, fmt='%.16e')
     np.savetxt(stds_file, feature_stds, fmt='%.16e')
     
-    print(f"  Saved feature scaling")
+    print("  Saved feature scaling")
     
     # Create metadata
     metadata = {
@@ -408,7 +408,7 @@ def export_to_cpp(model, feature_means, feature_stds, output_dir):
         json.dump(metadata, f, indent=2)
     
     print(f"  Saved metadata: {metadata_file}")
-    print(f"\nExport complete!")
+    print("\nExport complete!")
 
 
 def main():
@@ -474,7 +474,7 @@ def main():
     model = TBNNModel(n_inputs=5, n_basis=4, hidden_layers=args.hidden)
     model = model.to(device)
     
-    print(f"\nModel architecture:")
+    print("\nModel architecture:")
     print(model)
     print(f"\nTotal parameters: {sum(p.numel() for p in model.parameters())}")
     
@@ -486,9 +486,9 @@ def main():
     export_to_cpp(model, feature_means, feature_stds, args.output)
     
     print(f"\n{'='*60}")
-    print(f"Training complete!")
+    print("Training complete!")
     print(f"Model saved to: {args.output}")
-    print(f"\nTo use in solver:")
+    print("\nTo use in solver:")
     print(f"  ./channel --model nn_tbnn --nn_preset {Path(args.output).name}")
     print(f"{'='*60}\n")
 

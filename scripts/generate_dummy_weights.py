@@ -74,7 +74,7 @@ def generate_scaling_params(num_features, output_dir, seed=42):
     np.savetxt(means_file, means, fmt='%.16e')
     np.savetxt(stds_file, stds, fmt='%.16e')
     
-    print(f"\nScaling parameters:")
+    print("\nScaling parameters:")
     print(f"  Saved: {means_file}")
     print(f"  Saved: {stds_file}")
 
@@ -117,7 +117,7 @@ def main():
     print("\n" + "="*60)
     print("Done! Weight files generated successfully.")
     print("="*60)
-    print(f"\nTest with:")
+    print("\nTest with:")
     print(f"  ./channel --model nn_{args.model} --weights {args.output}")
 
 

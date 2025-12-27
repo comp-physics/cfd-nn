@@ -39,10 +39,10 @@ def export_tensorflow_model(model_path, output_dir, feature_stats=None):
     
     # Extract Dense layers
     layer_idx = 0
-    print(f"\nModel architecture:")
+    print("\nModel architecture:")
     model.summary()
     
-    print(f"\nExporting weights...")
+    print("\nExporting weights...")
     
     for layer in model.layers:
         if isinstance(layer, tf.keras.layers.Dense):

@@ -152,7 +152,7 @@ def process_case(df_komega, df_ref, case_pattern, output_file):
         anisotropy[:, 1] = df_ref_case['REF_b_12'].values
         anisotropy[:, 2] = df_ref_case['REF_b_22'].values
     else:
-        print(f"  WARNING: DNS data size mismatch, using RANS as placeholder")
+        print("  WARNING: DNS data size mismatch, using RANS as placeholder")
         # Use RANS anisotropy if DNS not available
         tau = assemble_tensor(df, 'komega_tau')
         k_full = k.reshape(-1, 1, 1)
