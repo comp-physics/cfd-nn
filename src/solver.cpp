@@ -1212,11 +1212,54 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
 void RANSSolver::compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy) {
     double dx = mesh_->dx;
     double dy = mesh_->dy;
+    int Ng = mesh_->Nghost;
+    int Nx = mesh_->Nx;
+    int i_first = mesh_->i_begin();  // Ng
+    int i_last = mesh_->i_end() - 1;  // Ng + Nx - 1
+    int j_first = mesh_->j_begin();  // Ng
+    int j_last = mesh_->j_end() - 1;  // Ng + Ny - 1
+    
+    // Check if x-direction is periodic
+    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) && 
+                            (velocity_bc_.x_hi == VelocityBC::Periodic);
     
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-            dp_dx(i, j) = (pressure_(i+1, j) - pressure_(i-1, j)) / (2.0 * dx);
-            dp_dy(i, j) = (pressure_(i, j+1) - pressure_(i, j-1)) / (2.0 * dy);
+            // dp/dx: handle periodic boundaries specially, otherwise use one-sided at boundaries
+            if (i == i_first) {
+                if (x_periodic) {
+                    // Periodic: use rightmost interior cell as left neighbor
+                    int i_left = Ng + Nx - 1;  // Rightmost interior cell
+                    dp_dx(i, j) = (pressure_(i+1, j) - pressure_(i_left, j)) / (2.0 * dx);
+                } else {
+                    // Forward difference at left boundary
+                    dp_dx(i, j) = (pressure_(i+1, j) - pressure_(i, j)) / dx;
+                }
+            } else if (i == i_last) {
+                if (x_periodic) {
+                    // Periodic: use leftmost interior cell as right neighbor
+                    int i_right = Ng;  // Leftmost interior cell
+                    dp_dx(i, j) = (pressure_(i_right, j) - pressure_(i-1, j)) / (2.0 * dx);
+                } else {
+                    // Backward difference at right boundary
+                    dp_dx(i, j) = (pressure_(i, j) - pressure_(i-1, j)) / dx;
+                }
+            } else {
+                // Central difference in interior
+                dp_dx(i, j) = (pressure_(i+1, j) - pressure_(i-1, j)) / (2.0 * dx);
+            }
+            
+            // dp/dy: use one-sided differences at boundaries, central in interior
+            if (j == j_first) {
+                // Forward difference at bottom boundary
+                dp_dy(i, j) = (pressure_(i, j+1) - pressure_(i, j)) / dy;
+            } else if (j == j_last) {
+                // Backward difference at top boundary
+                dp_dy(i, j) = (pressure_(i, j) - pressure_(i, j-1)) / dy;
+            } else {
+                // Central difference in interior
+                dp_dy(i, j) = (pressure_(i, j+1) - pressure_(i, j-1)) / (2.0 * dy);
+            }
         }
     }
 }
@@ -2539,6 +2582,21 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             file << pressure_(i, j) << "\n";
+        }
+    }
+    
+    // Pressure gradient vector field at cell centers
+    {
+        ScalarField dp_dx(*mesh_);
+        ScalarField dp_dy(*mesh_);
+        // Compute pressure gradient using central differences
+        const_cast<RANSSolver*>(this)->compute_pressure_gradient(dp_dx, dp_dy);
+        
+        file << "VECTORS pressure_gradient double\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << dp_dx(i, j) << " " << dp_dy(i, j) << " 0\n";
+            }
         }
     }
     
