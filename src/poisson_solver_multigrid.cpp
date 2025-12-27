@@ -105,67 +105,167 @@ void MultigridPoissonSolver::apply_bc(int level) {
     const bool is_2d = grid.is2D();
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path - 2D only for now, 3D falls through to CPU
-    if (is_2d && Nx >= 16 && Ny >= 16) {
+    // GPU path - handles both 2D and 3D
+    if (Nx >= 16 && Ny >= 16) {
+        assert(gpu_ready_ && "GPU must be initialized");
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
-        const int stride = Nx + 2;
-        
+        const int stride = Nx + 2*Ng;
+
         // Convert BCs to integers for GPU
         const int bc_x_lo = static_cast<int>(bc_x_lo_);
         const int bc_x_hi = static_cast<int>(bc_x_hi_);
         const int bc_y_lo = static_cast<int>(bc_y_lo_);
         const int bc_y_hi = static_cast<int>(bc_y_hi_);
+        const int bc_z_lo = static_cast<int>(bc_z_lo_);
+        const int bc_z_hi = static_cast<int>(bc_z_hi_);
         const double dval = dirichlet_val_;
-        
-        // x-direction boundaries
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
-        for (int j = 0; j < Ny + 2; ++j) {
-            int idx = j * stride;
-            
-            // Left boundary (i=0)
-            if (bc_x_lo == 2) { // Periodic
-                u_ptr[idx] = u_ptr[idx + Nx];
-            } else if (bc_x_lo == 1) { // Neumann
-                u_ptr[idx] = u_ptr[idx + Ng];
-            } else { // Dirichlet
-                u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
+
+        if (is_2d) {
+            // 2D GPU path
+            // x-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int j = 0; j < Ny + 2; ++j) {
+                int idx = j * stride;
+
+                // Left boundary (i=0)
+                if (bc_x_lo == 2) { // Periodic
+                    u_ptr[idx] = u_ptr[idx + Nx];
+                } else if (bc_x_lo == 1) { // Neumann
+                    u_ptr[idx] = u_ptr[idx + Ng];
+                } else { // Dirichlet
+                    u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
+                }
+
+                // Right boundary (i=Nx+1)
+                if (bc_x_hi == 2) { // Periodic
+                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
+                } else if (bc_x_hi == 1) { // Neumann
+                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
+                } else { // Dirichlet
+                    u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
+                }
             }
-            
-            // Right boundary (i=Nx+1)
-            if (bc_x_hi == 2) { // Periodic
-                u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
-            } else if (bc_x_hi == 1) { // Neumann
-                u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
-            } else { // Dirichlet
-                u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
+
+            // y-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int i = 0; i < Nx + 2; ++i) {
+                // Bottom boundary (j=0)
+                if (bc_y_lo == 2) { // Periodic
+                    u_ptr[i] = u_ptr[Ny * stride + i];
+                } else if (bc_y_lo == 1) { // Neumann
+                    u_ptr[i] = u_ptr[Ng * stride + i];
+                } else { // Dirichlet
+                    u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
+                }
+
+                // Top boundary (j=Ny+1)
+                if (bc_y_hi == 2) { // Periodic
+                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
+                } else if (bc_y_hi == 1) { // Neumann
+                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet
+                    u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                }
+            }
+        } else {
+            // 3D GPU path
+            const int Nz = grid.Nz;
+            const int plane_stride = stride * (Ny + 2*Ng);
+
+            // x-direction boundaries (for all j, k planes)
+            const int n_x_bc = (Nz + 2*Ng) * (Ny + 2*Ng);
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size]) \
+                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, dval)
+            for (int idx = 0; idx < n_x_bc; ++idx) {
+                int j = idx % (Ny + 2*Ng);
+                int k = idx / (Ny + 2*Ng);
+
+                int base_idx = k * plane_stride + j * stride;
+
+                // Left boundary (i=0)
+                if (bc_x_lo == 2) { // Periodic
+                    u_ptr[base_idx] = u_ptr[base_idx + Nx];
+                } else if (bc_x_lo == 1) { // Neumann
+                    u_ptr[base_idx] = u_ptr[base_idx + Ng];
+                } else { // Dirichlet
+                    u_ptr[base_idx] = 2.0 * dval - u_ptr[base_idx + Ng];
+                }
+
+                // Right boundary (i=Nx+1)
+                if (bc_x_hi == 2) { // Periodic
+                    u_ptr[base_idx + Nx + Ng] = u_ptr[base_idx + Ng];
+                } else if (bc_x_hi == 1) { // Neumann
+                    u_ptr[base_idx + Nx + Ng] = u_ptr[base_idx + Nx + Ng - 1];
+                } else { // Dirichlet
+                    u_ptr[base_idx + Nx + Ng] = 2.0 * dval - u_ptr[base_idx + Nx + Ng - 1];
+                }
+            }
+
+            // y-direction boundaries (for all i, k planes)
+            const int n_y_bc = (Nz + 2*Ng) * (Nx + 2*Ng);
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size]) \
+                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_y_lo, bc_y_hi, dval)
+            for (int idx = 0; idx < n_y_bc; ++idx) {
+                int i = idx % (Nx + 2*Ng);
+                int k = idx / (Nx + 2*Ng);
+
+                // Bottom boundary (j=0)
+                int idx_lo = k * plane_stride + i;
+                if (bc_y_lo == 2) { // Periodic
+                    u_ptr[idx_lo] = u_ptr[k * plane_stride + Ny * stride + i];
+                } else if (bc_y_lo == 1) { // Neumann
+                    u_ptr[idx_lo] = u_ptr[k * plane_stride + Ng * stride + i];
+                } else { // Dirichlet
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
+                }
+
+                // Top boundary (j=Ny+1)
+                int idx_hi = k * plane_stride + (Ny + Ng) * stride + i;
+                if (bc_y_hi == 2) { // Periodic
+                    u_ptr[idx_hi] = u_ptr[k * plane_stride + Ng * stride + i];
+                } else if (bc_y_hi == 1) { // Neumann
+                    u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                }
+            }
+
+            // z-direction boundaries (for all i, j planes)
+            const int n_z_bc = (Ny + 2*Ng) * (Nx + 2*Ng);
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size]) \
+                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_z_lo, bc_z_hi, dval)
+            for (int idx = 0; idx < n_z_bc; ++idx) {
+                int i = idx % (Nx + 2*Ng);
+                int j = idx / (Nx + 2*Ng);
+
+                // Back boundary (k=0)
+                int idx_lo = j * stride + i;
+                if (bc_z_lo == 2) { // Periodic
+                    u_ptr[idx_lo] = u_ptr[Nz * plane_stride + j * stride + i];
+                } else if (bc_z_lo == 1) { // Neumann
+                    u_ptr[idx_lo] = u_ptr[Ng * plane_stride + j * stride + i];
+                } else { // Dirichlet
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
+                }
+
+                // Front boundary (k=Nz+1)
+                int idx_hi = (Nz + Ng) * plane_stride + j * stride + i;
+                if (bc_z_hi == 2) { // Periodic
+                    u_ptr[idx_hi] = u_ptr[Ng * plane_stride + j * stride + i];
+                } else if (bc_z_hi == 1) { // Neumann
+                    u_ptr[idx_hi] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                } else { // Dirichlet
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                }
             }
         }
-        
-        // y-direction boundaries
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
-        for (int i = 0; i < Nx + 2; ++i) {
-            // Bottom boundary (j=0)
-            if (bc_y_lo == 2) { // Periodic
-                u_ptr[i] = u_ptr[Ny * stride + i];
-            } else if (bc_y_lo == 1) { // Neumann
-                u_ptr[i] = u_ptr[Ng * stride + i];
-            } else { // Dirichlet
-                u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
-            }
-            
-            // Top boundary (j=Ny+1)
-            if (bc_y_hi == 2) { // Periodic
-                u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
-            } else if (bc_y_hi == 1) { // Neumann
-                u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
-            } else { // Dirichlet
-                u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
-            }
-        }
-        
+
         return;
     }
 #endif
@@ -1096,28 +1196,58 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
         // Compute max residual on GPU and return scalar to host
         const int Nx = grid.Nx;
         const int Ny = grid.Ny;
+        const int Nz = grid.Nz;
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         const double* r_ptr = r_ptrs_[level];
 
         // Reduction over interior cells only
-        #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size]) \
-            map(tofrom: max_res) \
-            firstprivate(Nx, Ny, stride, Ng)
-        for (int idx = 0; idx < Nx * Ny; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            int ridx = j * stride + i;
-            double v = std::abs(r_ptr[ridx]);
-            if (v > max_res) max_res = v;
+        if (Nz == 1) {
+            // 2D case
+            #pragma omp target teams distribute parallel for reduction(max:max_res) \
+                map(present: r_ptr[0:total_size]) \
+                map(tofrom: max_res) \
+                firstprivate(Nx, Ny, stride, Ng)
+            for (int idx = 0; idx < Nx * Ny; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = idx / Nx + Ng;
+                int ridx = j * stride + i;
+                double v = std::abs(r_ptr[ridx]);
+                if (v > max_res) max_res = v;
+            }
+        } else {
+            // 3D case - check ALL z-planes
+            const int plane_stride = stride * (Ny + 2);
+            #pragma omp target teams distribute parallel for reduction(max:max_res) \
+                map(present: r_ptr[0:total_size]) \
+                map(tofrom: max_res) \
+                firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng)
+            for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+                int ridx = k * plane_stride + j * stride + i;
+                double v = std::abs(r_ptr[ridx]);
+                if (v > max_res) max_res = v;
+            }
         }
     } else
 #endif
     {
-        for (int j = Ng; j < grid.Ny + Ng; ++j) {
-            for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                max_res = std::max(max_res, std::abs(grid.r(i, j)));
+        // CPU fallback with 3D support
+        if (grid.Nz == 1) {
+            for (int j = Ng; j < grid.Ny + Ng; ++j) {
+                for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                    max_res = std::max(max_res, std::abs(grid.r(i, j)));
+                }
+            }
+        } else {
+            for (int k = Ng; k < grid.Nz + Ng; ++k) {
+                for (int j = Ng; j < grid.Ny + Ng; ++j) {
+                    for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                        max_res = std::max(max_res, std::abs(grid.r(i, j, k)));
+                    }
+                }
             }
         }
     }
@@ -1137,43 +1267,97 @@ void MultigridPoissonSolver::subtract_mean(int level) {
         double* u_ptr = u_ptrs_[level];
         const int Nx = grid.Nx;
         const int Ny = grid.Ny;
+        const int Nz = grid.Nz;
         const int stride = Nx + 2;
-        
-        // Compute sum on GPU
-        #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
-        for (int idx = 0; idx < Nx * Ny; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            sum += u_ptr[j * stride + i];
-        }
-        
-        count = Nx * Ny;
-        double mean = sum / count;
-        
-        // Subtract mean on GPU
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
-        for (int idx = 0; idx < Nx * Ny; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            u_ptr[j * stride + i] -= mean;
+
+        if (Nz == 1) {
+            // 2D case
+            // Compute sum on GPU
+            #pragma omp target teams distribute parallel for reduction(+:sum) \
+                map(present: u_ptr[0:total_size])
+            for (int idx = 0; idx < Nx * Ny; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = idx / Nx + Ng;
+                sum += u_ptr[j * stride + i];
+            }
+
+            count = Nx * Ny;
+            double mean = sum / count;
+
+            // Subtract mean on GPU
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size])
+            for (int idx = 0; idx < Nx * Ny; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = idx / Nx + Ng;
+                u_ptr[j * stride + i] -= mean;
+            }
+        } else {
+            // 3D case - integrate over full volume
+            const int plane_stride = stride * (Ny + 2);
+
+            // Compute sum on GPU
+            #pragma omp target teams distribute parallel for reduction(+:sum) \
+                map(present: u_ptr[0:total_size]) \
+                firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng)
+            for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+                sum += u_ptr[k * plane_stride + j * stride + i];
+            }
+
+            count = Nx * Ny * Nz;
+            double mean = sum / count;
+
+            // Subtract mean on GPU
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size]) \
+                firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng, mean)
+            for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+                u_ptr[k * plane_stride + j * stride + i] -= mean;
+            }
         }
     } else
 #endif
     {
-    for (int j = Ng; j < grid.Ny + Ng; ++j) {
-        for (int i = Ng; i < grid.Nx + Ng; ++i) {
-            sum += grid.u(i, j);
-            ++count;
-        }
-    }
-    
-    double mean = sum / count;
-    
-    for (int j = Ng; j < grid.Ny + Ng; ++j) {
-        for (int i = Ng; i < grid.Nx + Ng; ++i) {
-            grid.u(i, j) -= mean;
+        // CPU fallback with 3D support
+        if (grid.Nz == 1) {
+            for (int j = Ng; j < grid.Ny + Ng; ++j) {
+                for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                    sum += grid.u(i, j);
+                    ++count;
+                }
+            }
+
+            double mean = sum / count;
+
+            for (int j = Ng; j < grid.Ny + Ng; ++j) {
+                for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                    grid.u(i, j) -= mean;
+                }
+            }
+        } else {
+            for (int k = Ng; k < grid.Nz + Ng; ++k) {
+                for (int j = Ng; j < grid.Ny + Ng; ++j) {
+                    for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                        sum += grid.u(i, j, k);
+                        ++count;
+                    }
+                }
+            }
+
+            double mean = sum / count;
+
+            for (int k = Ng; k < grid.Nz + Ng; ++k) {
+                for (int j = Ng; j < grid.Ny + Ng; ++j) {
+                    for (int i = Ng; i < grid.Nx + Ng; ++i) {
+                        grid.u(i, j, k) -= mean;
+                    }
+                }
             }
         }
     }
@@ -1184,11 +1368,23 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Copy RHS and initial guess to finest level (CPU side)
     auto& finest = *levels_[0];
     const int Ng = 1;
-    
-    for (int j = Ng; j < finest.Ny + Ng; ++j) {
-        for (int i = Ng; i < finest.Nx + Ng; ++i) {
-            finest.f(i, j) = rhs(i, j);
-            finest.u(i, j) = p(i, j);
+
+    // 3D-aware data copy
+    if (mesh_->is2D()) {
+        for (int j = Ng; j < finest.Ny + Ng; ++j) {
+            for (int i = Ng; i < finest.Nx + Ng; ++i) {
+                finest.f(i, j) = rhs(i, j);
+                finest.u(i, j) = p(i, j);
+            }
+        }
+    } else {
+        for (int k = Ng; k < finest.Nz + Ng; ++k) {
+            for (int j = Ng; j < finest.Ny + Ng; ++j) {
+                for (int i = Ng; i < finest.Nx + Ng; ++i) {
+                    finest.f(i, j, k) = rhs(i, j, k);
+                    finest.u(i, j, k) = p(i, j, k);
+                }
+            }
         }
     }
     
@@ -1238,12 +1434,22 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 #endif
     
     // Copy result back to output field (CPU side)
-    for (int j = Ng; j < finest.Ny + Ng; ++j) {
-        for (int i = Ng; i < finest.Nx + Ng; ++i) {
-            p(i, j) = finest.u(i, j);
+    if (mesh_->is2D()) {
+        for (int j = Ng; j < finest.Ny + Ng; ++j) {
+            for (int i = Ng; i < finest.Nx + Ng; ++i) {
+                p(i, j) = finest.u(i, j);
+            }
+        }
+    } else {
+        for (int k = Ng; k < finest.Nz + Ng; ++k) {
+            for (int j = Ng; j < finest.Ny + Ng; ++j) {
+                for (int i = Ng; i < finest.Nx + Ng; ++i) {
+                    p(i, j, k) = finest.u(i, j, k);
+                }
+            }
         }
     }
-    
+
     return cycle + 1;
 }
 

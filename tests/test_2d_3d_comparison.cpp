@@ -223,6 +223,10 @@ bool test_degenerate_nz1() {
     solver_2d.set_body_force(-config_2d.dp_dx, 0.0);
     init_poiseuille_2d(solver_2d, mesh_2d, config_2d.dp_dx, config_2d.nu);
 
+#ifdef USE_GPU_OFFLOAD
+    solver_2d.sync_to_gpu();  // Upload initial conditions to GPU
+#endif
+
     auto [res_2d, iter_2d] = solver_2d.solve_steady();
     std::cout << "done (iters=" << iter_2d << ", res=" << std::scientific << res_2d << ")\n";
 
@@ -245,6 +249,10 @@ bool test_degenerate_nz1() {
     // For Nz=1 (degenerate case), is2D() returns true so 2D code paths are used
     // We must use 2D initialization which operates on k=0 (flat indexing)
     init_poiseuille_2d(solver_3d, mesh_3d, config_3d.dp_dx, config_3d.nu);
+
+#ifdef USE_GPU_OFFLOAD
+    solver_3d.sync_to_gpu();  // Upload initial conditions to GPU
+#endif
 
     auto [res_3d, iter_3d] = solver_3d.solve_steady();
     std::cout << "done (iters=" << iter_3d << ", res=" << std::scientific << res_3d << ")\n";
@@ -327,6 +335,10 @@ bool test_z_invariant_poiseuille() {
     RANSSolver solver_2d(mesh_2d, config_2d);
     solver_2d.set_body_force(-config_2d.dp_dx, 0.0);
     init_poiseuille_2d(solver_2d, mesh_2d, config_2d.dp_dx, config_2d.nu);
+
+#ifdef USE_GPU_OFFLOAD
+    solver_2d.sync_to_gpu();  // Upload initial conditions to GPU
+#endif
 
     auto [res_2d, iter_2d] = solver_2d.solve_steady();
     std::cout << "done (iters=" << iter_2d << ", res=" << std::scientific << res_2d << ")\n";

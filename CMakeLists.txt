@@ -258,6 +258,16 @@ if(BUILD_TESTS)
     add_executable(test_turbulence_features tests/test_turbulence_features.cpp)
     target_link_libraries(test_turbulence_features nn_cfd_core)
     add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
+
+    # 3D Poisson CPU vs GPU comparison - verifies GPU implementation matches CPU exactly
+    add_executable(test_poisson_cpu_gpu_3d tests/test_poisson_cpu_gpu_3d.cpp)
+    target_link_libraries(test_poisson_cpu_gpu_3d nn_cfd_core)
+    add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
+
+    # CPU vs GPU timestep comparison - finds where they diverge
+    add_executable(test_cpu_gpu_timestep tests/test_cpu_gpu_timestep.cpp)
+    target_link_libraries(test_cpu_gpu_timestep nn_cfd_core)
+    add_test(NAME CPUGPUTimestepTest COMMAND test_cpu_gpu_timestep)
 endif()
 
 # Installation

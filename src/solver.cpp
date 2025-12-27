@@ -1497,6 +1497,103 @@ void RANSSolver::apply_velocity_bc() {
         // (The 2D BC code above only handles k=0 plane implicitly via the flat indexing)
         // For 3D, we need to iterate over ALL k-planes including z-ghost cells
         // This ensures corners/edges have consistent ghost values
+
+#ifdef USE_GPU_OFFLOAD
+        // GPU-accelerated 3D BC propagation for u and v
+
+        // u in x-direction across all k-planes
+        const int n_u_x_bc = (Nz + 2*Ng) * (Ny + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, u_plane_stride, x_lo_periodic, x_hi_periodic, x_lo_noslip, x_hi_noslip)
+        for (int idx = 0; idx < n_u_x_bc; ++idx) {
+            int kk = idx / ((Ny + 2*Ng) * Ng);
+            int jj = (idx / Ng) % (Ny + 2*Ng);
+            int gg = idx % Ng;
+            int i_lo = Ng - 1 - gg;
+            int i_hi = Ng + Nx + 1 + gg;  // u has Nx+1 interior points
+            int idx_lo = kk * u_plane_stride + jj * u_stride + i_lo;
+            int idx_hi = kk * u_plane_stride + jj * u_stride + i_hi;
+
+            if (x_lo_periodic && x_hi_periodic) {
+                u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
+                u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
+            } else {
+                if (x_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
+                if (x_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
+            }
+        }
+
+        // u in y-direction across all k-planes
+        const int n_u_y_bc = (Nz + 2*Ng) * (Nx + 1 + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, u_plane_stride, y_lo_periodic, y_hi_periodic, y_lo_noslip, y_hi_noslip)
+        for (int idx = 0; idx < n_u_y_bc; ++idx) {
+            int kk = idx / ((Nx + 1 + 2*Ng) * Ng);
+            int ii = (idx / Ng) % (Nx + 1 + 2*Ng);
+            int gg = idx % Ng;
+            int j_lo = Ng - 1 - gg;
+            int j_hi = Ng + Ny + gg;
+            int idx_lo = kk * u_plane_stride + j_lo * u_stride + ii;
+            int idx_hi = kk * u_plane_stride + j_hi * u_stride + ii;
+
+            if (y_lo_periodic && y_hi_periodic) {
+                u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
+                u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
+            } else {
+                if (y_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
+                if (y_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
+            }
+        }
+
+        // v in x-direction across all k-planes
+        const int n_v_x_bc = (Nz + 2*Ng) * (Ny + 1 + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(Nx, Ny, Nz, Ng, v_stride, v_plane_stride, x_lo_periodic, x_hi_periodic, x_lo_noslip, x_hi_noslip)
+        for (int idx = 0; idx < n_v_x_bc; ++idx) {
+            int kk = idx / ((Ny + 1 + 2*Ng) * Ng);
+            int jj = (idx / Ng) % (Ny + 1 + 2*Ng);
+            int gg = idx % Ng;
+            int i_lo = Ng - 1 - gg;
+            int i_hi = Ng + Nx + gg;
+            int idx_lo = kk * v_plane_stride + jj * v_stride + i_lo;
+            int idx_hi = kk * v_plane_stride + jj * v_stride + i_hi;
+
+            if (x_lo_periodic && x_hi_periodic) {
+                v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
+                v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
+            } else {
+                if (x_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
+                if (x_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
+            }
+        }
+
+        // v in y-direction across all k-planes
+        const int n_v_y_bc = (Nz + 2*Ng) * (Nx + 2*Ng) * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(Nx, Ny, Nz, Ng, v_stride, v_plane_stride, y_lo_periodic, y_hi_periodic, y_lo_noslip, y_hi_noslip)
+        for (int idx = 0; idx < n_v_y_bc; ++idx) {
+            int kk = idx / ((Nx + 2*Ng) * Ng);
+            int ii = (idx / Ng) % (Nx + 2*Ng);
+            int gg = idx % Ng;
+            int j_lo = Ng - 1 - gg;
+            int j_hi = Ng + Ny + 1 + gg;  // v has Ny+1 interior points
+            int idx_lo = kk * v_plane_stride + j_lo * v_stride + ii;
+            int idx_hi = kk * v_plane_stride + j_hi * v_stride + ii;
+
+            if (y_lo_periodic && y_hi_periodic) {
+                v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
+                v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
+            } else {
+                if (y_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
+                if (y_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
+            }
+        }
+#else
+        // CPU fallback for non-GPU builds
         for (int kk = 0; kk < Nz + 2*Ng; ++kk) {
             // u in x-direction for this k-plane
             for (int jj = 0; jj < Ny + 2*Ng; ++jj) {
@@ -1570,6 +1667,7 @@ void RANSSolver::apply_velocity_bc() {
                 }
             }
         }
+#endif
     }
 
     NVTX_POP();  // End apply_velocity_bc
@@ -2199,24 +2297,70 @@ double RANSSolver::step() {
     const size_t v_total_size = velocity_.v_total_size();
     const int u_stride = Nx + 2 * Ng + 1;
     const int v_stride = Nx + 2 * Ng;
-    
-    // Copy u-velocity device-to-device
-    #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: velocity_u_ptr_[0:u_total_size], velocity_old_u_ptr_[0:u_total_size])
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i <= Ng + Nx; ++i) {
-            const int idx = j * u_stride + i;
-            velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
+
+    if (mesh_->is2D()) {
+        // Copy u-velocity device-to-device (2D)
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: velocity_u_ptr_[0:u_total_size], velocity_old_u_ptr_[0:u_total_size])
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i <= Ng + Nx; ++i) {
+                const int idx = j * u_stride + i;
+                velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
+            }
         }
-    }
-    
-    // Copy v-velocity device-to-device
-    #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: velocity_v_ptr_[0:v_total_size], velocity_old_v_ptr_[0:v_total_size])
-    for (int j = Ng; j <= Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * v_stride + i;
-            velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
+
+        // Copy v-velocity device-to-device (2D)
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: velocity_v_ptr_[0:v_total_size], velocity_old_v_ptr_[0:v_total_size])
+        for (int j = Ng; j <= Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = j * v_stride + i;
+                velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
+            }
+        }
+    } else {
+        // 3D path - need to copy u, v, AND w
+        const int Nz = mesh_->Nz;
+        const int u_plane_stride = u_stride * (Ny + 2*Ng);
+        const int v_plane_stride = v_stride * (Ny + 2*Ng + 1);
+        const size_t w_total_size = velocity_.w_total_size();
+        const int w_stride = Nx + 2*Ng;
+        const int w_plane_stride = w_stride * (Ny + 2*Ng);
+
+        // Copy u-velocity device-to-device (3D)
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: velocity_u_ptr_[0:u_total_size], velocity_old_u_ptr_[0:u_total_size])
+        for (int k = Ng; k < Ng + Nz; ++k) {
+            for (int j = Ng; j < Ng + Ny; ++j) {
+                for (int i = Ng; i <= Ng + Nx; ++i) {
+                    const int idx = k * u_plane_stride + j * u_stride + i;
+                    velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
+                }
+            }
+        }
+
+        // Copy v-velocity device-to-device (3D)
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: velocity_v_ptr_[0:v_total_size], velocity_old_v_ptr_[0:v_total_size])
+        for (int k = Ng; k < Ng + Nz; ++k) {
+            for (int j = Ng; j <= Ng + Ny; ++j) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    const int idx = k * v_plane_stride + j * v_stride + i;
+                    velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
+                }
+            }
+        }
+
+        // Copy w-velocity device-to-device (3D) - THIS WAS MISSING!
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: velocity_w_ptr_[0:w_total_size], velocity_old_w_ptr_[0:w_total_size])
+        for (int k = Ng; k <= Ng + Nz; ++k) {
+            for (int j = Ng; j < Ng + Ny; ++j) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    const int idx = k * w_plane_stride + j * w_stride + i;
+                    velocity_old_w_ptr_[idx] = velocity_w_ptr_[idx];
+                }
+            }
         }
     }
     NVTX_POP();
