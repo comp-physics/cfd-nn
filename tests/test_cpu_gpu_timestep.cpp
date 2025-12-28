@@ -23,9 +23,10 @@ double compute_max_diff(const ScalarField& a, const ScalarField& b, const Mesh& 
 }
 
 // Compare two velocity fields
-std::pair<double, double> compute_velocity_diff(const VectorField& a, const VectorField& b, const Mesh& mesh) {
+std::tuple<double, double, double> compute_velocity_diff(const VectorField& a, const VectorField& b, const Mesh& mesh) {
     double max_u_diff = 0.0;
     double max_v_diff = 0.0;
+    double max_w_diff = 0.0;
 
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -45,7 +46,19 @@ std::pair<double, double> compute_velocity_diff(const VectorField& a, const Vect
         }
     }
 
-    return {max_u_diff, max_v_diff};
+    // w-velocity at z-faces (staggered: k <= k_end())
+    if (!mesh.is2D()) {
+        for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double w_diff = std::abs(a.w(i, j, k) - b.w(i, j, k));
+                    max_w_diff = std::max(max_w_diff, w_diff);
+                }
+            }
+        }
+    }
+
+    return {max_u_diff, max_v_diff, max_w_diff};
 }
 
 // Initialize Poiseuille flow
@@ -140,12 +153,13 @@ int main() {
 
     // Compare initial conditions
     std::cout << "\n=== Initial Conditions ===" << std::endl;
-    auto [u0_diff, v0_diff] = compute_velocity_diff(solver_cpu.velocity(), solver_gpu.velocity(), mesh);
+    auto [u0_diff, v0_diff, w0_diff] = compute_velocity_diff(solver_cpu.velocity(), solver_gpu.velocity(), mesh);
     std::cout << std::scientific << std::setprecision(2);
     std::cout << "Initial u difference: " << u0_diff << std::endl;
     std::cout << "Initial v difference: " << v0_diff << std::endl;
+    std::cout << "Initial w difference: " << w0_diff << std::endl;
 
-    if (u0_diff > 1e-14 || v0_diff > 1e-14) {
+    if (u0_diff > 1e-14 || v0_diff > 1e-14 || w0_diff > 1e-14) {
         std::cout << "[WARNING] Initial conditions differ!" << std::endl;
     }
 
@@ -156,6 +170,7 @@ int main() {
               << std::setw(15) << "GPU Res"
               << std::setw(15) << "u Diff"
               << std::setw(15) << "v Diff"
+              << std::setw(15) << "w Diff"
               << std::setw(15) << "p Diff"
               << std::endl;
 
@@ -175,7 +190,7 @@ int main() {
         solver_gpu.sync_solution_from_gpu();
 
         // Compare results
-        auto [u_diff, v_diff] = compute_velocity_diff(solver_cpu.velocity(), solver_gpu.velocity(), mesh);
+        auto [u_diff, v_diff, w_diff] = compute_velocity_diff(solver_cpu.velocity(), solver_gpu.velocity(), mesh);
         double p_diff = compute_max_diff(solver_cpu.pressure(), solver_gpu.pressure(), mesh);
 
         std::cout << std::setw(6) << step + 1
@@ -183,11 +198,12 @@ int main() {
                   << std::setw(15) << res_gpu
                   << std::setw(15) << u_diff
                   << std::setw(15) << v_diff
+                  << std::setw(15) << w_diff
                   << std::setw(15) << p_diff
                   << std::endl;
 
         // Check for divergence
-        if (u_diff > 1e-10 || v_diff > 1e-10 || p_diff > 1e-10) {
+        if (u_diff > 1e-10 || v_diff > 1e-10 || w_diff > 1e-10 || p_diff > 1e-10) {
             if (!diverged) {
                 diverged = true;
                 diverge_step = step + 1;
@@ -236,6 +252,7 @@ int main() {
 #else
         std::cout << std::setw(6) << step + 1
                   << std::setw(15) << res_cpu
+                  << std::setw(15) << "N/A"
                   << std::setw(15) << "N/A"
                   << std::setw(15) << "N/A"
                   << std::setw(15) << "N/A"
