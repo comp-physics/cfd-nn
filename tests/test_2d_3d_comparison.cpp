@@ -474,11 +474,19 @@ bool test_w_stays_zero() {
     // Check max |w| and max |u|
     double max_w = 0.0;
     double max_u = 0.0;
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+
+    // u is cell-centered in z, so k < k_end()
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                 max_u = std::max(max_u, std::abs(solver.velocity().u(i, j, k)));
             }
+        }
+    }
+
+    // w is staggered in z (at z-faces), so k <= k_end()
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 max_w = std::max(max_w, std::abs(solver.velocity().w(i, j, k)));
             }
