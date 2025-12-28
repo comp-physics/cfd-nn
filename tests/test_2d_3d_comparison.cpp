@@ -343,7 +343,7 @@ bool test_z_invariant_poiseuille() {
     auto [res_2d, iter_2d] = solver_2d.solve_steady();
     std::cout << "done (iters=" << iter_2d << ", res=" << std::scientific << res_2d << ")\n";
 
-    // ---- Run 3D solver with Nz=8 ----
+    // ---- Run 3D solver with Nz=4 ----
     std::cout << "  Running 3D solver (Nz=" << NZ << ")... ";
     Mesh mesh_3d;
     mesh_3d.init_uniform(NX, NY, NZ, 0.0, LX, 0.0, LY, 0.0, LZ);
