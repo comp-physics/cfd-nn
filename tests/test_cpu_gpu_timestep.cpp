@@ -159,6 +159,9 @@ int main() {
               << std::setw(15) << "p Diff"
               << std::endl;
 
+    bool diverged = false;
+    int diverge_step = -1;
+
     for (int step = 0; step < NUM_STEPS; ++step) {
         // CPU step
         double res_cpu = solver_cpu.step();
