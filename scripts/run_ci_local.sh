@@ -138,11 +138,11 @@ fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Fast Tests (~1-2 minutes)"
 
-    # Core 3D tests
-    run_test "3D Quick Validation" "$BUILD_DIR/test_3d_quick_validation" 60
-    run_test "3D Gradients" "$BUILD_DIR/test_3d_gradients" 30
-    run_test "3D W-Velocity" "$BUILD_DIR/test_3d_w_velocity" 30
-    run_test "3D BC Application" "$BUILD_DIR/test_3d_bc_application" 60
+    # Core 3D tests (longer timeouts for CPU Debug builds)
+    run_test "3D Quick Validation" "$BUILD_DIR/test_3d_quick_validation" 120
+    run_test "3D Gradients" "$BUILD_DIR/test_3d_gradients" 60
+    run_test "3D W-Velocity" "$BUILD_DIR/test_3d_w_velocity" 60
+    run_test "3D BC Application" "$BUILD_DIR/test_3d_bc_application" 180
 
     # Existing fast tests
     run_test "Mesh" "$BUILD_DIR/test_mesh" 30
@@ -154,7 +154,7 @@ fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Medium Tests (~2-5 minutes)"
 
-    run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 120
+    run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 300
     run_test "Poisson" "$BUILD_DIR/test_poisson" 120
     run_test "Stability" "$BUILD_DIR/test_stability" 120
     run_test "Turbulence" "$BUILD_DIR/test_turbulence" 120
@@ -176,7 +176,7 @@ fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Longer Tests (~3-5 minutes)"
 
-    run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 300
+    run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
     run_test "Solver" "$BUILD_DIR/test_solver" 180
     run_test "Solver CPU/GPU" "$BUILD_DIR/test_solver_cpu_gpu" 180
     run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
