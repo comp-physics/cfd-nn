@@ -1447,6 +1447,13 @@ void RANSSolver::apply_velocity_bc() {
             int idx_hi = k_hi * w_plane_stride + j * w_stride + i;
 
             if (z_lo_periodic && z_hi_periodic) {
+                // CRITICAL for staggered grid with periodic BCs:
+                // The topmost interior face (Ng+Nz) IS the bottommost interior face (Ng)
+                // They represent the same physical location in a periodic domain
+                if (g == 0) {
+                    w_ptr[(Ng + Nz) * w_plane_stride + j * w_stride + i] =
+                        w_ptr[Ng * w_plane_stride + j * w_stride + i];
+                }
                 // For w at z-faces with periodic BC:
                 // Ghost at k=Ng-1-g gets value from k=Ng+Nz-1-g (interior near hi)
                 // Ghost at k=Ng+Nz+1+g gets value from k=Ng+1+g (interior near lo)
@@ -1517,182 +1524,9 @@ void RANSSolver::apply_velocity_bc() {
                 if (y_hi_noslip) w_ptr[idx_hi] = -w_ptr[k * w_plane_stride + (Ng + Ny - 1 - g) * w_stride + i];
             }
         }
-
-        // Also apply x and y BCs for u and v across all k-planes
-        // (The 2D BC code above only handles k=0 plane implicitly via the flat indexing)
-        // For 3D, we need to iterate over ALL k-planes including z-ghost cells
-        // This ensures corners/edges have consistent ghost values
-
-#ifdef USE_GPU_OFFLOAD
-        // GPU-accelerated 3D BC propagation for u and v
-
-        // u in x-direction across all k-planes
-        const int n_u_x_bc = (Nz + 2*Ng) * (Ny + 2*Ng) * Ng;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size]) \
-            firstprivate(Nx, Ny, Nz, Ng, u_stride, u_plane_stride, x_lo_periodic, x_hi_periodic, x_lo_noslip, x_hi_noslip)
-        for (int idx = 0; idx < n_u_x_bc; ++idx) {
-            int kk = idx / ((Ny + 2*Ng) * Ng);
-            int jj = (idx / Ng) % (Ny + 2*Ng);
-            int gg = idx % Ng;
-            int i_lo = Ng - 1 - gg;
-            int i_hi = Ng + Nx + 1 + gg;  // u has Nx+1 interior points
-            int idx_lo = kk * u_plane_stride + jj * u_stride + i_lo;
-            int idx_hi = kk * u_plane_stride + jj * u_stride + i_hi;
-
-            if (x_lo_periodic && x_hi_periodic) {
-                u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
-                u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
-            } else {
-                if (x_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
-                if (x_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
-            }
-        }
-
-        // u in y-direction across all k-planes
-        const int n_u_y_bc = (Nz + 2*Ng) * (Nx + 1 + 2*Ng) * Ng;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size]) \
-            firstprivate(Nx, Ny, Nz, Ng, u_stride, u_plane_stride, y_lo_periodic, y_hi_periodic, y_lo_noslip, y_hi_noslip)
-        for (int idx = 0; idx < n_u_y_bc; ++idx) {
-            int kk = idx / ((Nx + 1 + 2*Ng) * Ng);
-            int ii = (idx / Ng) % (Nx + 1 + 2*Ng);
-            int gg = idx % Ng;
-            int j_lo = Ng - 1 - gg;
-            int j_hi = Ng + Ny + gg;
-            int idx_lo = kk * u_plane_stride + j_lo * u_stride + ii;
-            int idx_hi = kk * u_plane_stride + j_hi * u_stride + ii;
-
-            if (y_lo_periodic && y_hi_periodic) {
-                u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
-                u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
-            } else {
-                if (y_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
-                if (y_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
-            }
-        }
-
-        // v in x-direction across all k-planes
-        const int n_v_x_bc = (Nz + 2*Ng) * (Ny + 1 + 2*Ng) * Ng;
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size]) \
-            firstprivate(Nx, Ny, Nz, Ng, v_stride, v_plane_stride, x_lo_periodic, x_hi_periodic, x_lo_noslip, x_hi_noslip)
-        for (int idx = 0; idx < n_v_x_bc; ++idx) {
-            int kk = idx / ((Ny + 1 + 2*Ng) * Ng);
-            int jj = (idx / Ng) % (Ny + 1 + 2*Ng);
-            int gg = idx % Ng;
-            int i_lo = Ng - 1 - gg;
-            int i_hi = Ng + Nx + gg;
-            int idx_lo = kk * v_plane_stride + jj * v_stride + i_lo;
-            int idx_hi = kk * v_plane_stride + jj * v_stride + i_hi;
-
-            if (x_lo_periodic && x_hi_periodic) {
-                v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
-                v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
-            } else {
-                if (x_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
-                if (x_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
-            }
-        }
-
-        // v in y-direction across all k-planes
-        const int n_v_y_bc = (Nz + 2*Ng) * (Nx + 2*Ng) * Ng;
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size]) \
-            firstprivate(Nx, Ny, Nz, Ng, v_stride, v_plane_stride, y_lo_periodic, y_hi_periodic, y_lo_noslip, y_hi_noslip)
-        for (int idx = 0; idx < n_v_y_bc; ++idx) {
-            int kk = idx / ((Nx + 2*Ng) * Ng);
-            int ii = (idx / Ng) % (Nx + 2*Ng);
-            int gg = idx % Ng;
-            int j_lo = Ng - 1 - gg;
-            int j_hi = Ng + Ny + 1 + gg;  // v has Ny+1 interior points
-            int idx_lo = kk * v_plane_stride + j_lo * v_stride + ii;
-            int idx_hi = kk * v_plane_stride + j_hi * v_stride + ii;
-
-            if (y_lo_periodic && y_hi_periodic) {
-                v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
-                v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
-            } else {
-                if (y_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
-                if (y_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
-            }
-        }
-#else
-        // CPU fallback for non-GPU builds
-        for (int kk = 0; kk < Nz + 2*Ng; ++kk) {
-            // u in x-direction for this k-plane
-            for (int jj = 0; jj < Ny + 2*Ng; ++jj) {
-                for (int gg = 0; gg < Ng; ++gg) {
-                    int i_lo = Ng - 1 - gg;
-                    int i_hi = Ng + Nx + 1 + gg;  // u has Nx+1 interior points
-                    int idx_lo = kk * u_plane_stride + jj * u_stride + i_lo;
-                    int idx_hi = kk * u_plane_stride + jj * u_stride + i_hi;
-
-                    if (x_lo_periodic && x_hi_periodic) {
-                        u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
-                        u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
-                    } else {
-                        if (x_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + gg)];
-                        if (x_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + jj * u_stride + (Ng + Nx - gg)];
-                    }
-                }
-            }
-
-            // u in y-direction for this k-plane
-            for (int ii = 0; ii < Nx + 1 + 2*Ng; ++ii) {
-                for (int gg = 0; gg < Ng; ++gg) {
-                    int j_lo = Ng - 1 - gg;
-                    int j_hi = Ng + Ny + gg;
-                    int idx_lo = kk * u_plane_stride + j_lo * u_stride + ii;
-                    int idx_hi = kk * u_plane_stride + j_hi * u_stride + ii;
-
-                    if (y_lo_periodic && y_hi_periodic) {
-                        u_ptr[idx_lo] = u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
-                        u_ptr[idx_hi] = u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
-                    } else {
-                        if (y_lo_noslip) u_ptr[idx_lo] = -u_ptr[kk * u_plane_stride + (Ng + gg) * u_stride + ii];
-                        if (y_hi_noslip) u_ptr[idx_hi] = -u_ptr[kk * u_plane_stride + (Ng + Ny - 1 - gg) * u_stride + ii];
-                    }
-                }
-            }
-
-            // v in x-direction for this k-plane
-            for (int jj = 0; jj < Ny + 1 + 2*Ng; ++jj) {
-                for (int gg = 0; gg < Ng; ++gg) {
-                    int i_lo = Ng - 1 - gg;
-                    int i_hi = Ng + Nx + gg;
-                    int idx_lo = kk * v_plane_stride + jj * v_stride + i_lo;
-                    int idx_hi = kk * v_plane_stride + jj * v_stride + i_hi;
-
-                    if (x_lo_periodic && x_hi_periodic) {
-                        v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
-                        v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
-                    } else {
-                        if (x_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + gg)];
-                        if (x_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + jj * v_stride + (Ng + Nx - 1 - gg)];
-                    }
-                }
-            }
-
-            // v in y-direction for this k-plane
-            for (int ii = 0; ii < Nx + 2*Ng; ++ii) {
-                for (int gg = 0; gg < Ng; ++gg) {
-                    int j_lo = Ng - 1 - gg;
-                    int j_hi = Ng + Ny + 1 + gg;  // v has Ny+1 interior points
-                    int idx_lo = kk * v_plane_stride + j_lo * v_stride + ii;
-                    int idx_hi = kk * v_plane_stride + j_hi * v_stride + ii;
-
-                    if (y_lo_periodic && y_hi_periodic) {
-                        v_ptr[idx_lo] = v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
-                        v_ptr[idx_hi] = v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
-                    } else {
-                        if (y_lo_noslip) v_ptr[idx_lo] = -v_ptr[kk * v_plane_stride + (Ng + gg) * v_stride + ii];
-                        if (y_hi_noslip) v_ptr[idx_hi] = -v_ptr[kk * v_plane_stride + (Ng + Ny - gg) * v_stride + ii];
-                    }
-                }
-            }
-        }
-#endif
+        // NOTE: x/y BCs for u and v across all k-planes are now handled
+        // above (lines 1268-1360) using the staggered kernel functions
+        // which properly handle staggered grid periodic BCs.
     }
 
     NVTX_POP();  // End apply_velocity_bc
