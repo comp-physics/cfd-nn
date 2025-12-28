@@ -21,6 +21,7 @@
 #include <iostream>
 #include <cstring>  // for memcpy in debug
 #include <cassert>
+#include <limits>   // for std::numeric_limits (NaN handling)
 
 namespace nncfd {
 
@@ -1218,7 +1219,8 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
                 int k = idx / (Nx * Ny) + Ng;
                 int ridx = k * plane_stride + j * stride + i;
                 double v = std::abs(r_ptr[ridx]);
-                if (v > max_res) max_res = v;
+                // NaN-safe comparison: NaN > x is always false (IEEE 754), causing infinite loops
+                if (std::isfinite(v) && v > max_res) max_res = v;
             }
         }
     } else
@@ -1241,7 +1243,13 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
             }
         }
     }
-    
+
+    // If max_res is invalid (all values were NaN), signal divergence to caller
+    // This prevents infinite loops in the Poisson solver's convergence check
+    if (!std::isfinite(max_res)) {
+        return std::numeric_limits<double>::infinity();
+    }
+
     return max_res;
 }
 

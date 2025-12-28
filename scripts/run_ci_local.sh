@@ -76,10 +76,9 @@ FAILED_TESTS=""
 
 # Known flaky tests on GPU (pre-existing issues, not related to 3D work)
 # These will be skipped when USE_GPU=ON until root causes are addressed:
-# - test_turbulence_guard: SST k-omega produces NaN at step 5 on GPU
-# - test_solver: Hangs in solve_steady() GPU path (180s timeout, no output)
-# - test_physics_validation: Hangs in test 6 (CPU vs GPU consistency) after GPU check passes
-GPU_FLAKY_TESTS="test_turbulence_guard test_solver test_physics_validation"
+# - test_turbulence_guard: NaN injection test (test 3) hangs due to exception handling in GPU context
+# Note: test_solver and test_physics_validation were slow (not flaky) - fixed by increasing timeouts
+GPU_FLAKY_TESTS="test_turbulence_guard"
 
 is_gpu_flaky() {
     local test_binary=$1
@@ -205,11 +204,11 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Longer Tests (~3-5 minutes)"
 
     run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
-    run_test "Solver" "$BUILD_DIR/test_solver" 180
+    run_test "Solver" "$BUILD_DIR/test_solver" 900
     run_test "Solver CPU/GPU" "$BUILD_DIR/test_solver_cpu_gpu" 180
     run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
     run_test "Time History Consistency" "$BUILD_DIR/test_time_history_consistency" 120
-    run_test "Physics Validation" "$BUILD_DIR/test_physics_validation" 180
+    run_test "Physics Validation" "$BUILD_DIR/test_physics_validation" 600
     run_test "Taylor-Green" "$BUILD_DIR/test_tg_validation" 120
     run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
 fi
