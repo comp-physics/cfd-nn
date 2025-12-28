@@ -192,9 +192,12 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     continue;
                 }
 
+                // Apply BCs in sequence (x, then y, then z) to match CPU behavior
+                // Edge/corner cells may be written multiple times (last write wins)
+                // This ensures CPU/GPU consistency for all BC combinations
                 int cell_idx = k * plane_stride + j * stride + i;
 
-                // Apply x-boundaries (priority: handle edges/corners consistently)
+                // X-direction boundaries
                 if (i < Ng) { // Left boundary
                     if (bc_x_lo == 2) { // Periodic
                         u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (i + Nx)];
@@ -211,7 +214,10 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     } else { // Dirichlet
                         u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
                     }
-                } else if (j < Ng) { // Bottom boundary (interior in x)
+                }
+
+                // Y-direction boundaries (may overwrite x-boundary corners)
+                if (j < Ng) { // Bottom boundary
                     if (bc_y_lo == 2) { // Periodic
                         u_ptr[cell_idx] = u_ptr[k * plane_stride + (j + Ny) * stride + i];
                     } else if (bc_y_lo == 1) { // Neumann
@@ -219,7 +225,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     } else { // Dirichlet
                         u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
                     }
-                } else if (j >= Ny + Ng) { // Top boundary (interior in x)
+                } else if (j >= Ny + Ng) { // Top boundary
                     if (bc_y_hi == 2) { // Periodic
                         u_ptr[cell_idx] = u_ptr[k * plane_stride + (j - Ny) * stride + i];
                     } else if (bc_y_hi == 1) { // Neumann
@@ -227,7 +233,10 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     } else { // Dirichlet
                         u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
                     }
-                } else if (k < Ng) { // Back boundary (interior in x,y)
+                }
+
+                // Z-direction boundaries (may overwrite x/y-boundary corners)
+                if (k < Ng) { // Back boundary
                     if (bc_z_lo == 2) { // Periodic
                         u_ptr[cell_idx] = u_ptr[(k + Nz) * plane_stride + j * stride + i];
                     } else if (bc_z_lo == 1) { // Neumann
@@ -235,7 +244,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     } else { // Dirichlet
                         u_ptr[cell_idx] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
                     }
-                } else if (k >= Nz + Ng) { // Front boundary (interior in x,y)
+                } else if (k >= Nz + Ng) { // Front boundary
                     if (bc_z_hi == 2) { // Periodic
                         u_ptr[cell_idx] = u_ptr[(k - Nz) * plane_stride + j * stride + i];
                     } else if (bc_z_hi == 1) { // Neumann

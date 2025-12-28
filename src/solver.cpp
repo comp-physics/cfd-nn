@@ -562,6 +562,11 @@ inline void divergence_cell_kernel_staggered_3d(
 }
 #pragma omp end declare target
 
+// ============================================================================
+// 3D OPERATOR KERNELS (GPU-callable)
+// ============================================================================
+#pragma omp declare target
+
 // 3D Velocity correction for u at x-face
 inline void correct_u_face_kernel_staggered_3d(
     int i, int j, int k,
@@ -910,6 +915,7 @@ inline void diffusive_w_face_kernel_staggered_3d(
     diff_w_ptr[diff_idx] = d2w_dx2 + d2w_dy2 + d2w_dz2;
 }
 
+#pragma omp end declare target
 // ============================================================================
 // END 3D OPERATOR KERNELS
 // ============================================================================
