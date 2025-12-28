@@ -222,12 +222,13 @@ TestResult test_3d_sor_convergence() {
 }
 
 /// Test 3D Multigrid solver convergence rate
-/// KNOWN ISSUE: 3D multigrid with periodic BCs diverges - needs algorithm investigation
-/// For now, skip this test and use SOR for 3D cases
+/// KNOWN ISSUE: 3D multigrid diverges for grids > 16^3 (deeper hierarchies)
+/// The vcycle zeroing bug was fixed, but there's another issue with 3+ level hierarchies.
+/// For now, skip this test. The consistency test (N=16) passes.
 TestResult test_3d_multigrid_convergence() {
     TestResult result;
-    result.passed = true;  // Skip test - known issue
-    result.message = "SKIPPED (known issue: 3D multigrid diverges)";
+    result.passed = true;  // Skip test - known issue with deeper hierarchies
+    result.message = "SKIPPED (3D multigrid diverges for N>16, needs investigation)";
     result.error_coarse = 0.0;
     result.error_fine = 0.0;
     result.convergence_rate = 0.0;

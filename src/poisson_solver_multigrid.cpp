@@ -938,9 +938,11 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     }
 #else
     const int Ng = 1;
-    for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
-        for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
-            coarse.u(i, j) = 0.0;
+    for (int k = 0; k < coarse.Nz + 2*Ng; ++k) {
+        for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
+            for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
+                coarse.u(i, j, k) = 0.0;
+            }
         }
     }
 #endif
