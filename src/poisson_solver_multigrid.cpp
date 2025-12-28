@@ -171,97 +171,78 @@ void MultigridPoissonSolver::apply_bc(int level) {
                 }
             }
         } else {
-            // 3D GPU path
+            // 3D GPU path - unified kernel to avoid race conditions at edges/corners
             const int Nz = grid.Nz;
             const int plane_stride = stride * (Ny + 2*Ng);
+            const int Nx_g = Nx + 2*Ng;
+            const int Ny_g = Ny + 2*Ng;
+            const int Nz_g = Nz + 2*Ng;
+            const int n_total_g = Nx_g * Ny_g * Nz_g;
 
-            // x-direction boundaries (for all j, k planes)
-            const int n_x_bc = (Nz + 2*Ng) * (Ny + 2*Ng);
             #pragma omp target teams distribute parallel for \
                 map(present: u_ptr[0:total_size]) \
-                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, dval)
-            for (int idx = 0; idx < n_x_bc; ++idx) {
-                int j = idx % (Ny + 2*Ng);
-                int k = idx / (Ny + 2*Ng);
+                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, bc_y_lo, bc_y_hi, bc_z_lo, bc_z_hi, dval)
+            for (int idx_g = 0; idx_g < n_total_g; ++idx_g) {
+                int i = idx_g % Nx_g;
+                int j = (idx_g / Nx_g) % Ny_g;
+                int k = idx_g / (Nx_g * Ny_g);
 
-                int base_idx = k * plane_stride + j * stride;
-
-                // Left boundary (i=0)
-                if (bc_x_lo == 2) { // Periodic
-                    u_ptr[base_idx] = u_ptr[base_idx + Nx];
-                } else if (bc_x_lo == 1) { // Neumann
-                    u_ptr[base_idx] = u_ptr[base_idx + Ng];
-                } else { // Dirichlet
-                    u_ptr[base_idx] = 2.0 * dval - u_ptr[base_idx + Ng];
+                // Skip interior points
+                if (i >= Ng && i < Nx + Ng && j >= Ng && j < Ny + Ng && k >= Ng && k < Nz + Ng) {
+                    continue;
                 }
 
-                // Right boundary (i=Nx+1)
-                if (bc_x_hi == 2) { // Periodic
-                    u_ptr[base_idx + Nx + Ng] = u_ptr[base_idx + Ng];
-                } else if (bc_x_hi == 1) { // Neumann
-                    u_ptr[base_idx + Nx + Ng] = u_ptr[base_idx + Nx + Ng - 1];
-                } else { // Dirichlet
-                    u_ptr[base_idx + Nx + Ng] = 2.0 * dval - u_ptr[base_idx + Nx + Ng - 1];
-                }
-            }
+                int cell_idx = k * plane_stride + j * stride + i;
 
-            // y-direction boundaries (for all i, k planes)
-            const int n_y_bc = (Nz + 2*Ng) * (Nx + 2*Ng);
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size]) \
-                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_y_lo, bc_y_hi, dval)
-            for (int idx = 0; idx < n_y_bc; ++idx) {
-                int i = idx % (Nx + 2*Ng);
-                int k = idx / (Nx + 2*Ng);
-
-                // Bottom boundary (j=0)
-                int idx_lo = k * plane_stride + i;
-                if (bc_y_lo == 2) { // Periodic
-                    u_ptr[idx_lo] = u_ptr[k * plane_stride + Ny * stride + i];
-                } else if (bc_y_lo == 1) { // Neumann
-                    u_ptr[idx_lo] = u_ptr[k * plane_stride + Ng * stride + i];
-                } else { // Dirichlet
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
-                }
-
-                // Top boundary (j=Ny+1)
-                int idx_hi = k * plane_stride + (Ny + Ng) * stride + i;
-                if (bc_y_hi == 2) { // Periodic
-                    u_ptr[idx_hi] = u_ptr[k * plane_stride + Ng * stride + i];
-                } else if (bc_y_hi == 1) { // Neumann
-                    u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
-                } else { // Dirichlet
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
-                }
-            }
-
-            // z-direction boundaries (for all i, j planes)
-            const int n_z_bc = (Ny + 2*Ng) * (Nx + 2*Ng);
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size]) \
-                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_z_lo, bc_z_hi, dval)
-            for (int idx = 0; idx < n_z_bc; ++idx) {
-                int i = idx % (Nx + 2*Ng);
-                int j = idx / (Nx + 2*Ng);
-
-                // Back boundary (k=0)
-                int idx_lo = j * stride + i;
-                if (bc_z_lo == 2) { // Periodic
-                    u_ptr[idx_lo] = u_ptr[Nz * plane_stride + j * stride + i];
-                } else if (bc_z_lo == 1) { // Neumann
-                    u_ptr[idx_lo] = u_ptr[Ng * plane_stride + j * stride + i];
-                } else { // Dirichlet
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
-                }
-
-                // Front boundary (k=Nz+1)
-                int idx_hi = (Nz + Ng) * plane_stride + j * stride + i;
-                if (bc_z_hi == 2) { // Periodic
-                    u_ptr[idx_hi] = u_ptr[Ng * plane_stride + j * stride + i];
-                } else if (bc_z_hi == 1) { // Neumann
-                    u_ptr[idx_hi] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
-                } else { // Dirichlet
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                // Apply x-boundaries (priority: handle edges/corners consistently)
+                if (i < Ng) { // Left boundary
+                    if (bc_x_lo == 2) { // Periodic
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (i + Nx)];
+                    } else if (bc_x_lo == 1) { // Neumann
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + Ng];
+                    } else { // Dirichlet
+                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + Ng];
+                    }
+                } else if (i >= Nx + Ng) { // Right boundary
+                    if (bc_x_hi == 2) { // Periodic
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (i - Nx)];
+                    } else if (bc_x_hi == 1) { // Neumann
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+                    } else { // Dirichlet
+                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+                    }
+                } else if (j < Ng) { // Bottom boundary (interior in x)
+                    if (bc_y_lo == 2) { // Periodic
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + (j + Ny) * stride + i];
+                    } else if (bc_y_lo == 1) { // Neumann
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + Ng * stride + i];
+                    } else { // Dirichlet
+                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
+                    }
+                } else if (j >= Ny + Ng) { // Top boundary (interior in x)
+                    if (bc_y_hi == 2) { // Periodic
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + (j - Ny) * stride + i];
+                    } else if (bc_y_hi == 1) { // Neumann
+                        u_ptr[cell_idx] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                    } else { // Dirichlet
+                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                    }
+                } else if (k < Ng) { // Back boundary (interior in x,y)
+                    if (bc_z_lo == 2) { // Periodic
+                        u_ptr[cell_idx] = u_ptr[(k + Nz) * plane_stride + j * stride + i];
+                    } else if (bc_z_lo == 1) { // Neumann
+                        u_ptr[cell_idx] = u_ptr[Ng * plane_stride + j * stride + i];
+                    } else { // Dirichlet
+                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
+                    }
+                } else if (k >= Nz + Ng) { // Front boundary (interior in x,y)
+                    if (bc_z_hi == 2) { // Periodic
+                        u_ptr[cell_idx] = u_ptr[(k - Nz) * plane_stride + j * stride + i];
+                    } else if (bc_z_hi == 1) { // Neumann
+                        u_ptr[cell_idx] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                    } else { // Dirichlet
+                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                    }
                 }
             }
         }
