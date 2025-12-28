@@ -2828,9 +2828,11 @@ double RANSSolver::step() {
             }
             mean_div = (count > 0) ? sum_div / count : 0.0;
 
+            // Use multiplication by inverse to match GPU arithmetic exactly
+            const double dt_inv = 1.0 / current_dt_;
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                 for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    rhs_poisson_(i, j) = (div_velocity_(i, j) - mean_div) / current_dt_;
+                    rhs_poisson_(i, j) = (div_velocity_(i, j) - mean_div) * dt_inv;
                 }
             }
         } else {
@@ -2848,10 +2850,12 @@ double RANSSolver::step() {
             }
             mean_div = (count > 0) ? sum_div / count : 0.0;
 
+            // Use multiplication by inverse to match GPU arithmetic exactly
+            const double dt_inv = 1.0 / current_dt_;
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                     for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                        rhs_poisson_(i, j, k) = (div_velocity_(i, j, k) - mean_div) / current_dt_;
+                        rhs_poisson_(i, j, k) = (div_velocity_(i, j, k) - mean_div) * dt_inv;
                     }
                 }
             }
