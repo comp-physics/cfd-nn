@@ -12,7 +12,8 @@ jobs:
     - name: Clean workspace
       run: |
         echo "Cleaning workspace to avoid stale artifacts..."
-        rm -rf ${GITHUB_WORKSPACE}/build_*
+        rm -rf ${GITHUB_WORKSPACE}/build_gpu
+        rm -rf ${GITHUB_WORKSPACE}/build_cpu
         rm -rf ${GITHUB_WORKSPACE}/CMakeCache.txt
         rm -rf ${GITHUB_WORKSPACE}/CMakeFiles
         echo "Workspace cleaned"
@@ -44,19 +45,13 @@ jobs:
         echo "Commit: $(git rev-parse HEAD)"
         echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
         echo ""
-        echo "=== CMake Config Log ==="
-        cat build_ci_gpu_correctness/cmake_config.log 2>/dev/null || echo "No cmake log found (correctness)"
-        cat build_ci_cpu_ref/cmake_config.log 2>/dev/null || echo "No cmake log found (cpu_ref)"
-        cat build_ci_gpu_perf/cmake_config.log 2>/dev/null || echo "No cmake log found (perf)"
+        echo "=== Build directories ==="
+        ls -la build_gpu 2>/dev/null || echo "No build_gpu directory"
+        ls -la build_cpu 2>/dev/null || echo "No build_cpu directory"
         echo ""
-        echo "=== Checking compiled binaries ==="
-        ls -lh build_ci_gpu_correctness/test_* 2>/dev/null || echo "No test binaries found (correctness)"
-        ls -lh build_ci_cpu_ref/test_* 2>/dev/null || echo "No test binaries found (cpu_ref)"
-        ls -lh build_ci_gpu_perf/test_* 2>/dev/null || echo "No test binaries found (perf)"
-        echo ""
-        echo "=== Verifying source again ==="
-        grep -c "k_ptr_" include/solver.hpp src/solver.cpp || echo "k_ptr_ not found!"
-    
+        echo "=== Test binaries ==="
+        ls -lh build_gpu/test_* 2>/dev/null || echo "No test binaries found"
+
     - name: Cleanup
       if: always()
       run: |
@@ -66,7 +61,6 @@ jobs:
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch || true
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out || true
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err || true
-        rm -rf build_ci_gpu_correctness || true
-        rm -rf build_ci_cpu_ref || true
-        rm -rf build_ci_gpu_perf || true
+        rm -rf build_gpu || true
+        rm -rf build_cpu || true
 

@@ -186,10 +186,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_solver nn_cfd_core)
     add_test(NAME SolverTest COMMAND test_solver)
 
-    add_executable(test_3d_solver tests/test_3d_solver.cpp)
-    target_link_libraries(test_3d_solver nn_cfd_core)
-    add_test(NAME Solver3DTest COMMAND test_3d_solver)
-
     add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
     target_link_libraries(test_2d_3d_comparison nn_cfd_core)
     add_test(NAME Comparison2D3DTest COMMAND test_2d_3d_comparison)
@@ -264,10 +260,35 @@ if(BUILD_TESTS)
     target_link_libraries(test_poisson_cpu_gpu_3d nn_cfd_core)
     add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
 
-    # CPU vs GPU timestep comparison - finds where they diverge
-    add_executable(test_cpu_gpu_timestep tests/test_cpu_gpu_timestep.cpp)
-    target_link_libraries(test_cpu_gpu_timestep nn_cfd_core)
-    add_test(NAME CPUGPUTimestepTest COMMAND test_cpu_gpu_timestep)
+    # Fast 3D validation tests - quick smoke tests (~5s)
+    add_executable(test_3d_quick_validation tests/test_3d_quick_validation.cpp)
+    target_link_libraries(test_3d_quick_validation nn_cfd_core)
+    add_test(NAME Quick3DValidationTest COMMAND test_3d_quick_validation)
+
+    # Fast 3D Poiseuille tests - analytical validation (~10s)
+    add_executable(test_3d_poiseuille_fast tests/test_3d_poiseuille_fast.cpp)
+    target_link_libraries(test_3d_poiseuille_fast nn_cfd_core)
+    add_test(NAME Fast3DPoiseuilleTest COMMAND test_3d_poiseuille_fast)
+
+    # 3D boundary condition tests (~5s)
+    add_executable(test_3d_bc_application tests/test_3d_bc_application.cpp)
+    target_link_libraries(test_3d_bc_application nn_cfd_core)
+    add_test(NAME BC3DApplicationTest COMMAND test_3d_bc_application)
+
+    # CPU/GPU bitwise comparison - enforces code sharing paradigm (~15s)
+    add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
+    target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
+    add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
+
+    # 3D gradient tests - verifies gradient computation (~5s)
+    add_executable(test_3d_gradients tests/test_3d_gradients.cpp)
+    target_link_libraries(test_3d_gradients nn_cfd_core)
+    add_test(NAME Gradients3DTest COMMAND test_3d_gradients)
+
+    # 3D w-velocity tests - tests the 3D-specific component (~5s)
+    add_executable(test_3d_w_velocity tests/test_3d_w_velocity.cpp)
+    target_link_libraries(test_3d_w_velocity nn_cfd_core)
+    add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
 endif()
 
 # Installation

@@ -6,7 +6,7 @@
 #SBATCH -p gpu-h200
 #SBATCH -G 1
 #SBATCH --qos=embers
-#SBATCH -t 01:55:00
+#SBATCH -t 00:30:00
 #SBATCH -o __SLURM_OUT__
 #SBATCH -e __SLURM_ERR__
 
@@ -17,12 +17,40 @@ module load nvhpc
 
 cd "__WORKDIR__"
 
-# Run GPU correctness suite (Option 1 + all validation tests)
-./.github/scripts/gpu_correctness_suite.sh "__WORKDIR__"
+echo "==================================================================="
+echo "  GPU CI Correctness Suite"
+echo "==================================================================="
+echo ""
+echo "Host: $(hostname)"
+echo "Date: $(date)"
+echo ""
+echo "GPU(s):"
+nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
+echo ""
 
-# Run CPU-only vs GPU-offload build comparison (Option 2)
-./.github/scripts/compare_cpu_gpu_builds.sh "__WORKDIR__"
+# Hard-require OpenMP target offload (fail if it falls back to CPU)
+export OMP_TARGET_OFFLOAD=MANDATORY
+
+# Set compiler for GPU build
+export CC=nvc
+export CXX=nvc++
+
+# Clean any stale builds
+rm -rf build_gpu
+
+# Build GPU version
+mkdir -p build_gpu
+cd build_gpu
+cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON
+make -j8
+cd ..
+
+# Make scripts executable
+chmod +x scripts/run_ci_local.sh
+chmod +x scripts/check_code_sharing.sh
+
+# Run the full CI test suite (GPU mode is default)
+./scripts/run_ci_local.sh full
 
 echo ""
 echo "[PASS] GPU Correctness Suite completed successfully"
-
