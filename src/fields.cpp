@@ -15,7 +15,10 @@ void ScalarField::fill(double val) {
 
 double ScalarField::max_interior() const {
     double max_val = -std::numeric_limits<double>::max();
-    for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
+    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
+    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 max_val = std::max(max_val, (*this)(i, j, k));
@@ -27,7 +30,10 @@ double ScalarField::max_interior() const {
 
 double ScalarField::min_interior() const {
     double min_val = std::numeric_limits<double>::max();
-    for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
+    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
+    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 min_val = std::min(min_val, (*this)(i, j, k));
@@ -40,7 +46,10 @@ double ScalarField::min_interior() const {
 double ScalarField::norm_L2() const {
     double sum = 0.0;
     int count = 0;
-    for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
+    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
+    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 double val = (*this)(i, j, k);
@@ -54,7 +63,10 @@ double ScalarField::norm_L2() const {
 
 double ScalarField::norm_Linf() const {
     double max_abs = 0.0;
-    for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
+    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
+    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 max_abs = std::max(max_abs, std::abs((*this)(i, j, k)));
@@ -73,7 +85,11 @@ void ScalarField::write(const std::string& filename) const {
     file << "# Nx=" << mesh_->Nx << " Ny=" << mesh_->Ny << " Nz=" << mesh_->Nz << "\n";
     file << "# x y z value\n";
 
-    for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
+    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
+    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
+
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 file << mesh_->x(i) << " " << mesh_->y(j) << " " << mesh_->z(k) << " "

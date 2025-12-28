@@ -2583,8 +2583,9 @@ double RANSSolver::step() {
 
     const int Nz_pred = mesh_->Nz;
     const int Nz_eff_pred = mesh_->is2D() ? 1 : Nz_pred;
-    const int u_plane_stride_pred = v.u_plane_stride;
-    const int v_plane_stride_pred = v.v_plane_stride;
+    // Avoid reading uninitialized strides in 2D mode (set to 0 if 2D)
+    const int u_plane_stride_pred = mesh_->is2D() ? 0 : v.u_plane_stride;
+    const int v_plane_stride_pred = mesh_->is2D() ? 0 : v.v_plane_stride;
 
     // Compute u* at ALL x-faces (including redundant if periodic)
     const int n_u_faces_pred = (Nx + 1) * Ny * Nz_eff_pred;
@@ -4077,10 +4078,10 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
 
 SolverDeviceView RANSSolver::get_solver_view() const {
     SolverDeviceView view;
-    
+
 #ifdef USE_GPU_OFFLOAD
     assert(gpu_ready_ && "GPU must be initialized to get solver view");
-    
+
     // GPU path: return device-present pointers
     view.u_face = velocity_u_ptr_;
     view.v_face = velocity_v_ptr_;
@@ -4091,7 +4092,16 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
 
-    // 3D velocity fields
+    // Initialize 3D fields to avoid undefined behavior in 2D mode
+    view.w_face = nullptr;
+    view.w_star_face = nullptr;
+    view.w_old_face = nullptr;
+    view.w_stride = 0;
+    view.u_plane_stride = 0;
+    view.v_plane_stride = 0;
+    view.w_plane_stride = 0;
+
+    // 3D velocity fields (overwrite defaults if 3D)
     if (!mesh_->is2D()) {
         view.w_face = velocity_w_ptr_;
         view.w_star_face = velocity_star_w_ptr_;
@@ -4116,7 +4126,11 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.diff_u = diff_u_ptr_;
     view.diff_v = diff_v_ptr_;
 
-    // 3D work arrays
+    // Initialize 3D work arrays to avoid undefined behavior in 2D mode
+    view.conv_w = nullptr;
+    view.diff_w = nullptr;
+
+    // 3D work arrays (overwrite defaults if 3D)
     if (!mesh_->is2D()) {
         view.conv_w = conv_w_ptr_;
         view.diff_w = diff_w_ptr_;
@@ -4207,7 +4221,16 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
 
-    // 3D velocity fields
+    // Initialize 3D fields to avoid undefined behavior in 2D mode
+    view.w_face = nullptr;
+    view.w_star_face = nullptr;
+    view.w_old_face = nullptr;
+    view.w_stride = 0;
+    view.u_plane_stride = 0;
+    view.v_plane_stride = 0;
+    view.w_plane_stride = 0;
+
+    // 3D velocity fields (overwrite defaults if 3D)
     if (!mesh_->is2D()) {
         view.w_face = const_cast<double*>(velocity_.w_data().data());
         view.w_star_face = const_cast<double*>(velocity_star_.w_data().data());
@@ -4232,7 +4255,11 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.diff_u = const_cast<double*>(diff_.u_data().data());
     view.diff_v = const_cast<double*>(diff_.v_data().data());
 
-    // 3D work arrays
+    // Initialize 3D work arrays to avoid undefined behavior in 2D mode
+    view.conv_w = nullptr;
+    view.diff_w = nullptr;
+
+    // 3D work arrays (overwrite defaults if 3D)
     if (!mesh_->is2D()) {
         view.conv_w = const_cast<double*>(conv_.w_data().data());
         view.diff_w = const_cast<double*>(diff_.w_data().data());
