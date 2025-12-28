@@ -692,8 +692,22 @@ void SSTKOmegaTransport::advance_turbulence(
             k_ptr[idx_c] = k_new;
             omega_ptr[idx_c] = omega_new;
         }
-        
-        // Transport PDE done entirely on GPU - no CPU sync needed
+
+        // Apply wall boundary conditions - sync to CPU, apply, sync back
+        // This was missing and caused NaN at step 5 - ghost cells had garbage values
+        // Using target update instead of inline kernel to avoid nvc++ compiler crash
+
+        // Sync k and omega from device to host
+        #pragma omp target update from(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
+
+        // Apply wall BCs on CPU (reuses existing tested code)
+        apply_wall_bc_k(mesh, k);
+        apply_wall_bc_omega(mesh, omega, k);
+
+        // Sync back to device
+        #pragma omp target update to(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
+
+        // Transport PDE done - wall BCs now applied
         return;
     }
 #else

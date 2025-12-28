@@ -1204,7 +1204,8 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
                 int j = idx / Nx + Ng;
                 int ridx = j * stride + i;
                 double v = std::abs(r_ptr[ridx]);
-                if (v > max_res) max_res = v;
+                // NaN-safe comparison: NaN > x is always false (IEEE 754), causing infinite loops
+                if (std::isfinite(v) && v > max_res) max_res = v;
             }
         } else {
             // 3D case - check ALL z-planes

@@ -3741,7 +3741,31 @@ void RANSSolver::initialize_gpu_buffers() {
         const size_t w_total_size = velocity_.w_total_size();
         #pragma omp target enter data map(alloc: velocity_old_w_ptr_[0:w_total_size])
     }
-    
+
+    // Zero-initialize device-only arrays to prevent garbage in first residual computation
+    // Arrays allocated with map(alloc:) contain garbage until explicitly written
+    #pragma omp target teams distribute parallel for map(present: velocity_old_u_ptr_[0:u_total_size])
+    for (size_t i = 0; i < u_total_size; ++i) velocity_old_u_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: velocity_old_v_ptr_[0:v_total_size])
+    for (size_t i = 0; i < v_total_size; ++i) velocity_old_v_ptr_[i] = 0.0;
+
+    if (!mesh_->is2D()) {
+        const size_t w_total_size = velocity_.w_total_size();
+        #pragma omp target teams distribute parallel for map(present: velocity_old_w_ptr_[0:w_total_size])
+        for (size_t i = 0; i < w_total_size; ++i) velocity_old_w_ptr_[i] = 0.0;
+    }
+
+    // Zero-initialize Reynolds stress tensor components
+    #pragma omp target teams distribute parallel for map(present: tau_xx_ptr_[0:field_total_size_])
+    for (size_t i = 0; i < field_total_size_; ++i) tau_xx_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: tau_xy_ptr_[0:field_total_size_])
+    for (size_t i = 0; i < field_total_size_; ++i) tau_xy_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: tau_yy_ptr_[0:field_total_size_])
+    for (size_t i = 0; i < field_total_size_; ++i) tau_yy_ptr_[i] = 0.0;
+
     // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
     if (!gpu::is_pointer_present(velocity_u_ptr_)) {
         throw std::runtime_error("GPU mapping failed despite device availability");
