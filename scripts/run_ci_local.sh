@@ -81,7 +81,7 @@ run_test() {
 
     if [ ! -f "$test_binary" ]; then
         log_skip "$test_name (not built)"
-        ((SKIPPED++))
+        SKIPPED=$((SKIPPED + 1))
         return 0
     fi
 
@@ -90,12 +90,12 @@ run_test() {
 
     if timeout "$timeout_secs" "$test_binary" > /tmp/test_output.txt 2>&1; then
         log_success "$test_name"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
         log_failure "$test_name"
         echo "  Output:"
         tail -20 /tmp/test_output.txt | sed 's/^/    /'
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
     fi
 }
@@ -126,10 +126,10 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "paradigm" ] || [ "$TEST_SUITE
     log_section "Code Sharing Paradigm Check"
     if "${SCRIPT_DIR}/check_code_sharing.sh"; then
         log_success "Code sharing paradigm"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
         log_failure "Code sharing paradigm"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - check_code_sharing.sh"
     fi
 fi
