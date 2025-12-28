@@ -258,7 +258,7 @@ def plot_comparison(results, case='channel'):
             if data.ndim == 2 and data.shape[1] >= 2:
                 profiles[result['model']] = data
         except Exception:
-            pass
+            pass  # Skip files that cannot be loaded; velocity profiles are optional
     
     if not profiles:
         print("No velocity data found for plotting")

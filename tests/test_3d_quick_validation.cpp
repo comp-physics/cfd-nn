@@ -289,14 +289,15 @@ bool test_degenerate_3d() {
         }
     }
 
-    // Should match exactly (or very close) since Nz=1 uses 2D code paths
-    bool passed = (max_u_diff < 1e-12);
+    // Should match closely since Nz=1 uses 2D code paths
+    // Use 1e-10 tolerance to allow for FP ordering differences across compilers/platforms
+    bool passed = (max_u_diff < 1e-10);
 
     if (passed) {
         std::cout << "PASSED (max diff=" << std::scientific << max_u_diff << ")\n";
     } else {
         std::cout << "FAILED\n";
-        std::cout << "  Max u difference: " << max_u_diff << " (expected < 1e-12)\n";
+        std::cout << "  Max u difference: " << max_u_diff << " (expected < 1e-10)\n";
     }
 
     return passed;

@@ -260,7 +260,7 @@ def main():
     try:
         plt.show()
     except Exception:
-        pass
+        pass  # Ignore display errors in headless/CI environments; plot already saved
 
 if __name__ == '__main__':
     import importlib.util

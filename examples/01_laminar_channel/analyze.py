@@ -196,7 +196,7 @@ def main():
     try:
         plt.show()
     except Exception:
-        pass
+        pass  # Ignore display errors in headless/CI environments; plot already saved
     
     print()
     print("="*60)

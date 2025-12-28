@@ -4092,15 +4092,6 @@ SolverDeviceView RANSSolver::get_solver_view() const {
         view.u_plane_stride = velocity_.u_plane_stride();
         view.v_plane_stride = velocity_.v_plane_stride();
         view.w_plane_stride = velocity_.w_plane_stride();
-
-        static bool first_call = true;
-        if (first_call) {
-            std::cout << "\n[DEBUG CPU-only] 3D get_solver_view():\n";
-            std::cout << "  u_stride=" << view.u_stride << ", v_stride=" << view.v_stride << ", w_stride=" << view.w_stride << "\n";
-            std::cout << "  u_plane_stride=" << view.u_plane_stride << ", v_plane_stride=" << view.v_plane_stride << ", w_plane_stride=" << view.w_plane_stride << "\n";
-            std::cout << "  Nx=" << mesh_->Nx << ", Ny=" << mesh_->Ny << ", Nz=" << mesh_->Nz << ", Ng=" << mesh_->Nghost << "\n";
-            first_call = false;
-        }
     }
 
     view.p = const_cast<double*>(pressure_.data().data());
