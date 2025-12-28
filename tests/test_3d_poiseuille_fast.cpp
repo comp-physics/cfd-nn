@@ -128,7 +128,7 @@ bool test_poiseuille_fast_convergence() {
                   << 100 * relative_error << "% of U_max=" << std::scientific << U_max << ")\n";
     } else {
         std::cout << "FAILED\n";
-        std::cout << "  Relative error: " << 100 * relative_error << "% (expected < 5%)\n";
+        std::cout << "  Relative error: " << 100 * relative_error << "% (expected < 10%)\n";
     }
 
     return passed;
@@ -216,7 +216,7 @@ bool test_poiseuille_larger_grid() {
                   << 100 * centerline_error << "%)\n";
     } else {
         std::cout << "FAILED\n";
-        std::cout << "  Centerline error: " << 100 * centerline_error << "% (expected < 3%)\n";
+        std::cout << "  Centerline error: " << 100 * centerline_error << "% (expected < 15%)\n";
     }
 
     return passed;

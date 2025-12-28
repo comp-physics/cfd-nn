@@ -249,7 +249,7 @@ bool test_mass_conservation() {
 #endif
 
     // Run to near steady state
-    auto [res, iters] = solver.solve_steady();
+    [[maybe_unused]] auto [res, iters] = solver.solve_steady();
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_solution_from_gpu();

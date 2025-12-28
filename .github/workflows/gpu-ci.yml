@@ -18,7 +18,7 @@ jobs:
         rm -rf ${GITHUB_WORKSPACE}/CMakeFiles
         echo "Workspace cleaned"
     
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |

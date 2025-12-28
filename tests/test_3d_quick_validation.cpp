@@ -105,7 +105,7 @@ bool test_divergence_free() {
 #endif
 
     // Run to steady state
-    auto [res, iters] = solver.solve_steady();
+    [[maybe_unused]] auto [res, iters] = solver.solve_steady();
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_solution_from_gpu();
@@ -201,7 +201,7 @@ bool test_z_invariant_preservation() {
         std::cout << "PASSED (max z-variation=" << std::scientific << max_z_variation << ")\n";
     } else {
         std::cout << "FAILED\n";
-        std::cout << "  Max z-variation: " << max_z_variation << " (expected < 1e-12)\n";
+        std::cout << "  Max z-variation: " << max_z_variation << " (expected < 1e-4)\n";
     }
 
     return passed;
