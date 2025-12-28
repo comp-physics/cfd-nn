@@ -1258,86 +1258,111 @@ void RANSSolver::apply_velocity_bc() {
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
 
-    // Apply u BCs in x-direction
-    const int n_u_x_bc = u_total_Ny * Ng;
+    // For 3D, apply x/y BCs to ALL z-planes (interior and ghost)
+    // This is necessary because the z-BC code assumes x/y BCs are already applied
+    // Nz_total = Nz + 2*Ng for 3D, 1 for 2D
+    const int Nz_total = mesh_->is2D() ? 1 : (v.Nz + 2*Ng);
+    const int u_plane_stride = mesh_->is2D() ? 0 : v.u_plane_stride;
+    const int v_plane_stride = mesh_->is2D() ? 0 : v.v_plane_stride;
+
+    // Apply u BCs in x-direction (for all k-planes including ghosts in 3D)
+    const int n_u_x_bc = u_total_Ny * Ng * Nz_total;
     #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size])
+        map(present: u_ptr[0:u_total_size]) \
+        firstprivate(Nx, Ny, Ng, u_stride, u_plane_stride, Nz_total, x_lo_periodic, x_lo_noslip, x_hi_periodic, x_hi_noslip)
     for (int idx = 0; idx < n_u_x_bc; ++idx) {
-        int j = idx / Ng;
-        int g = idx % Ng;
+        int j = idx % u_total_Ny;
+        int g = (idx / u_total_Ny) % Ng;
+        int k = idx / (u_total_Ny * Ng);  // k = 0 to Nz_total-1 covers all planes
+        double* u_plane_ptr = u_ptr + k * u_plane_stride;
         apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
                               x_lo_periodic, x_lo_noslip,
-                              x_hi_periodic, x_hi_noslip, u_ptr);
+                              x_hi_periodic, x_hi_noslip, u_plane_ptr);
     }
 
-    // Apply u BCs in y-direction
-    const int n_u_y_bc = (Nx + 1 + 2 * Ng) * Ng;
+    // Apply u BCs in y-direction (for all k-planes including ghosts in 3D)
+    const int n_u_y_bc = (Nx + 1 + 2 * Ng) * Ng * Nz_total;
     #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size])
+        map(present: u_ptr[0:u_total_size]) \
+        firstprivate(Nx, Ny, Ng, u_stride, u_plane_stride, Nz_total, y_lo_periodic, y_lo_noslip, y_hi_periodic, y_hi_noslip)
     for (int idx = 0; idx < n_u_y_bc; ++idx) {
-        int i = idx / Ng;
-        int g = idx % Ng;
+        int u_x_size = Nx + 1 + 2 * Ng;
+        int i = idx % u_x_size;
+        int g = (idx / u_x_size) % Ng;
+        int k = idx / (u_x_size * Ng);
+        double* u_plane_ptr = u_ptr + k * u_plane_stride;
         apply_u_bc_y_staggered(i, g, Ny, Ng, u_stride,
                               y_lo_periodic, y_lo_noslip,
-                              y_hi_periodic, y_hi_noslip, u_ptr);
+                              y_hi_periodic, y_hi_noslip, u_plane_ptr);
     }
 
-    // Apply v BCs in x-direction
-    const int n_v_x_bc = (Ny + 1 + 2 * Ng) * Ng;
+    // Apply v BCs in x-direction (for all k-planes including ghosts in 3D)
+    const int n_v_x_bc = (Ny + 1 + 2 * Ng) * Ng * Nz_total;
     #pragma omp target teams distribute parallel for \
-        map(present: v_ptr[0:v_total_size])
+        map(present: v_ptr[0:v_total_size]) \
+        firstprivate(Nx, Ny, Ng, v_stride, v_plane_stride, Nz_total, x_lo_periodic, x_lo_noslip, x_hi_periodic, x_hi_noslip)
     for (int idx = 0; idx < n_v_x_bc; ++idx) {
-        int j = idx / Ng;
-        int g = idx % Ng;
+        int v_y_size = Ny + 1 + 2 * Ng;
+        int j = idx % v_y_size;
+        int g = (idx / v_y_size) % Ng;
+        int k = idx / (v_y_size * Ng);
+        double* v_plane_ptr = v_ptr + k * v_plane_stride;
         apply_v_bc_x_staggered(j, g, Nx, Ng, v_stride,
                               x_lo_periodic, x_lo_noslip,
-                              x_hi_periodic, x_hi_noslip, v_ptr);
+                              x_hi_periodic, x_hi_noslip, v_plane_ptr);
     }
 
-    // Apply v BCs in y-direction
-    const int n_v_y_bc = v_total_Nx * Ng;
+    // Apply v BCs in y-direction (for all k-planes including ghosts in 3D)
+    const int n_v_y_bc = v_total_Nx * Ng * Nz_total;
     #pragma omp target teams distribute parallel for \
-        map(present: v_ptr[0:v_total_size])
+        map(present: v_ptr[0:v_total_size]) \
+        firstprivate(Nx, Ny, Ng, v_stride, v_plane_stride, Nz_total, y_lo_periodic, y_lo_noslip, y_hi_periodic, y_hi_noslip)
     for (int idx = 0; idx < n_v_y_bc; ++idx) {
-        int i = idx / Ng;
-        int g = idx % Ng;
+        int i = idx % v_total_Nx;
+        int g = (idx / v_total_Nx) % Ng;
+        int k = idx / (v_total_Nx * Ng);
+        double* v_plane_ptr = v_ptr + k * v_plane_stride;
         apply_v_bc_y_staggered(i, g, Ny, Ng, v_stride,
                               y_lo_periodic, y_lo_noslip,
-                              y_hi_periodic, y_hi_noslip, v_ptr);
+                              y_hi_periodic, y_hi_noslip, v_plane_ptr);
     }
-    
+
     // CORNER FIX: For fully periodic domains, apply x-direction BCs again
     // to ensure corner ghosts are correctly wrapped after y-direction BCs modified them
-    // This was missing in the old GPU path!
     if (x_lo_periodic && x_hi_periodic) {
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size])
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(Nx, Ny, Ng, u_stride, u_plane_stride, Nz_total, x_lo_periodic, x_lo_noslip, x_hi_periodic, x_hi_noslip)
         for (int idx = 0; idx < n_u_x_bc; ++idx) {
-            int j = idx / Ng;
-            int g = idx % Ng;
+            int j = idx % u_total_Ny;
+            int g = (idx / u_total_Ny) % Ng;
+            int k = idx / (u_total_Ny * Ng);
+            double* u_plane_ptr = u_ptr + k * u_plane_stride;
             apply_u_bc_x_staggered(j, g, Nx, Ng, u_stride,
                                   x_lo_periodic, x_lo_noslip,
-                                  x_hi_periodic, x_hi_noslip, u_ptr);
+                                  x_hi_periodic, x_hi_noslip, u_plane_ptr);
         }
     }
-    
+
     if (y_lo_periodic && y_hi_periodic) {
         #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size])
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(Nx, Ny, Ng, v_stride, v_plane_stride, Nz_total, y_lo_periodic, y_lo_noslip, y_hi_periodic, y_hi_noslip)
         for (int idx = 0; idx < n_v_y_bc; ++idx) {
-            int i = idx / Ng;
-            int g = idx % Ng;
+            int i = idx % v_total_Nx;
+            int g = (idx / v_total_Nx) % Ng;
+            int k = idx / (v_total_Nx * Ng);
+            double* v_plane_ptr = v_ptr + k * v_plane_stride;
             apply_v_bc_y_staggered(i, g, Ny, Ng, v_stride,
                                   y_lo_periodic, y_lo_noslip,
-                                  y_hi_periodic, y_hi_noslip, v_ptr);
+                                  y_hi_periodic, y_hi_noslip, v_plane_ptr);
         }
     }
 
     // 3D z-direction boundary conditions
     if (!mesh_->is2D()) {
         const int Nz = v.Nz;
-        const int u_plane_stride = v.u_plane_stride;
-        const int v_plane_stride = v.v_plane_stride;
+        // u_plane_stride and v_plane_stride already defined in outer scope
         const int w_stride = v.w_stride;
         const int w_plane_stride = v.w_plane_stride;
         double* w_ptr = v.w_face;
@@ -4233,6 +4258,15 @@ SolverDeviceView RANSSolver::get_solver_view() const {
         view.u_plane_stride = velocity_.u_plane_stride();
         view.v_plane_stride = velocity_.v_plane_stride();
         view.w_plane_stride = velocity_.w_plane_stride();
+
+        static bool first_call = true;
+        if (first_call) {
+            std::cout << "\n[DEBUG CPU-only] 3D get_solver_view():\n";
+            std::cout << "  u_stride=" << view.u_stride << ", v_stride=" << view.v_stride << ", w_stride=" << view.w_stride << "\n";
+            std::cout << "  u_plane_stride=" << view.u_plane_stride << ", v_plane_stride=" << view.v_plane_stride << ", w_plane_stride=" << view.w_plane_stride << "\n";
+            std::cout << "  Nx=" << mesh_->Nx << ", Ny=" << mesh_->Ny << ", Nz=" << mesh_->Nz << ", Ng=" << mesh_->Nghost << "\n";
+            first_call = false;
+        }
     }
 
     view.p = const_cast<double*>(pressure_.data().data());
