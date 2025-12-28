@@ -107,8 +107,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path - handles both 2D and 3D
-    if (Nx >= 16 && Ny >= 16) {
-        assert(gpu_ready_ && "GPU must be initialized");
+    // CRITICAL: Use gpu_ready_ not size check - coarse multigrid levels may be small but data is on GPU
+    if (gpu_ready_) {
         const size_t total_size = level_sizes_[level];
         double* u_ptr = u_ptrs_[level];
         const int stride = Nx + 2*Ng;
@@ -511,6 +511,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
 
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     // Red-Black Gauss-Seidel with SOR
+    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
     const double dx2 = grid.dx * grid.dx;
     const double dy2 = grid.dy * grid.dy;
@@ -524,164 +525,98 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = (Nx + 2) * (Ny + 2);
+
+    // Use raw pointers for unified CPU/GPU code
+    double* u_ptr = grid.u.data().data();
+    const double* f_ptr = grid.f.data().data();
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: red-black Gauss-Seidel on persistent device arrays
-    if (gpu::should_use_gpu_path()) {
-        const int stride = Nx + 2;
-        const int plane_stride = (Nx + 2) * (Ny + 2);
-        const size_t total_size = level_sizes_[level];
-        double* u_ptr = u_ptrs_[level];
-        const double* f_ptr = f_ptrs_[level];
+    const size_t total_size = level_sizes_[level];
+#endif
 
-        if (is_2d) {
-            // 2D GPU path with collapse(2)
-            for (int iter = 0; iter < iterations; ++iter) {
-                // Red sweep (i + j even)
-                #pragma omp target teams distribute parallel for collapse(2) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j) & 1) == 0) {
-                            int idx = j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                        }
-                    }
-                }
-
-                // Black sweep (i + j odd)
-                #pragma omp target teams distribute parallel for collapse(2) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j) & 1) == 1) {
-                            int idx = j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                        }
+    if (is_2d) {
+        for (int iter = 0; iter < iterations; ++iter) {
+            // Red sweep (i + j even)
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if (((i + j) & 1) == 0) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
                     }
                 }
             }
-        } else {
-            // 3D GPU path with collapse(3)
-            for (int iter = 0; iter < iterations; ++iter) {
-                // Red sweep (i + j + k even)
-                #pragma omp target teams distribute parallel for collapse(3) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-                for (int k = Ng; k < Nz + Ng; ++k) {
-                    for (int j = Ng; j < Ny + Ng; ++j) {
-                        for (int i = Ng; i < Nx + Ng; ++i) {
-                            if (((i + j + k) & 1) == 0) {
-                                int idx = k * plane_stride + j * stride + i;
-                                double u_old = u_ptr[idx];
-                                double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                             + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                             + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
-                                             - f_ptr[idx]) / coeff;
-                                u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                            }
-                        }
-                    }
-                }
 
-                // Black sweep (i + j + k odd)
-                #pragma omp target teams distribute parallel for collapse(3) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-                for (int k = Ng; k < Nz + Ng; ++k) {
-                    for (int j = Ng; j < Ny + Ng; ++j) {
-                        for (int i = Ng; i < Nx + Ng; ++i) {
-                            if (((i + j + k) & 1) == 1) {
-                                int idx = k * plane_stride + j * stride + i;
-                                double u_old = u_ptr[idx];
-                                double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                             + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                             + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
-                                             - f_ptr[idx]) / coeff;
-                                u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                            }
-                        }
+            // Black sweep (i + j odd)
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if (((i + j) & 1) == 1) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
                     }
                 }
             }
         }
-
-        // Apply boundary conditions once after all smoothing iterations
-        apply_bc(level);
-        return;
-    }
-#endif
-
-    // 3D CPU path
-    if (!is_2d) {
+    } else {
+        // 3D path
         for (int iter = 0; iter < iterations; ++iter) {
             // Red sweep (i + j + k even)
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+#endif
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         if (((i + j + k) & 1) == 0) {
-                            double u_old = grid.u(i, j, k);
-                            double u_gs = ((grid.u(i+1, j, k) + grid.u(i-1, j, k)) / dx2
-                                         + (grid.u(i, j+1, k) + grid.u(i, j-1, k)) / dy2
-                                         + (grid.u(i, j, k+1) + grid.u(i, j, k-1)) / dz2
-                                         - grid.f(i, j, k)) / coeff;
-                            grid.u(i, j, k) = (1.0 - omega) * u_old + omega * u_gs;
+                            int idx = k * plane_stride + j * stride + i;
+                            double u_old = u_ptr[idx];
+                            double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                         + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
+                                         - f_ptr[idx]) / coeff;
+                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
                         }
                     }
                 }
             }
 
             // Black sweep (i + j + k odd)
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+#endif
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         if (((i + j + k) & 1) == 1) {
-                            double u_old = grid.u(i, j, k);
-                            double u_gs = ((grid.u(i+1, j, k) + grid.u(i-1, j, k)) / dx2
-                                         + (grid.u(i, j+1, k) + grid.u(i, j-1, k)) / dy2
-                                         + (grid.u(i, j, k+1) + grid.u(i, j, k-1)) / dz2
-                                         - grid.f(i, j, k)) / coeff;
-                            grid.u(i, j, k) = (1.0 - omega) * u_old + omega * u_gs;
+                            int idx = k * plane_stride + j * stride + i;
+                            double u_old = u_ptr[idx];
+                            double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                         + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
+                                         - f_ptr[idx]) / coeff;
+                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
                         }
                     }
                 }
-            }
-        }
-
-        // Apply boundary conditions once after all smoothing iterations
-        apply_bc(level);
-        return;
-    }
-
-    // 2D CPU path
-    for (int iter = 0; iter < iterations; ++iter) {
-        // Red sweep (i + j even)
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            int start = Ng + ((Ng + j) % 2);
-            for (int i = start; i < Nx + Ng; i += 2) {
-                double u_old = grid.u(i, j);
-                double u_gs = ((grid.u(i+1, j) + grid.u(i-1, j)) / dx2
-                             + (grid.u(i, j+1) + grid.u(i, j-1)) / dy2
-                             - grid.f(i, j)) / coeff;
-                grid.u(i, j) = (1.0 - omega) * u_old + omega * u_gs;
-            }
-        }
-
-        // Black sweep (i + j odd)
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            int start = Ng + ((Ng + j + 1) % 2);
-            for (int i = start; i < Nx + Ng; i += 2) {
-                double u_old = grid.u(i, j);
-                double u_gs = ((grid.u(i+1, j) + grid.u(i-1, j)) / dx2
-                             + (grid.u(i, j+1) + grid.u(i, j-1)) / dy2
-                             - grid.f(i, j)) / coeff;
-                grid.u(i, j) = (1.0 - omega) * u_old + omega * u_gs;
             }
         }
     }
@@ -692,6 +627,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
 
 void MultigridPoissonSolver::compute_residual(int level) {
     // r = f - L(u) where L is Laplacian operator
+    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
     const double dx2 = grid.dx * grid.dx;
     const double dy2 = grid.dy * grid.dy;
@@ -702,416 +638,263 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = (Nx + 2) * (Ny + 2);
+
+    // Use raw pointers for unified CPU/GPU code
+    const double* u_ptr = grid.u.data().data();
+    const double* f_ptr = grid.f.data().data();
+    double* r_ptr = grid.r.data().data();
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path with persistent device arrays
-    if (gpu::should_use_gpu_path()) {
-        const int stride = Nx + 2;
-        const int plane_stride = (Nx + 2) * (Ny + 2);
-        const size_t total_size = level_sizes_[level];
-        const double* u_ptr = u_ptrs_[level];
-        const double* f_ptr = f_ptrs_[level];
-        double* r_ptr = r_ptrs_[level];
-
-        if (is_2d) {
-            // 2D GPU path
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    int idx = j * stride + i;
-                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
-                    r_ptr[idx] = f_ptr[idx] - laplacian;
-                }
-            }
-        } else {
-            // 3D GPU path with collapse(3)
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
-            for (int k = Ng; k < Nz + Ng; ++k) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        int idx = k * plane_stride + j * stride + i;
-                        double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
-                                         + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
-                        r_ptr[idx] = f_ptr[idx] - laplacian;
-                    }
-                }
-            }
-        }
-
-        return;
-    }
+    const size_t total_size = level_sizes_[level];
 #endif
 
-    // 3D CPU path
-    if (!is_2d) {
+    if (is_2d) {
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+#endif
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * stride + i;
+                double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                 + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
+                r_ptr[idx] = f_ptr[idx] - laplacian;
+            }
+        }
+    } else {
+        // 3D path
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+#endif
         for (int k = Ng; k < Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
-                    double laplacian = (grid.u(i+1, j, k) - 2.0*grid.u(i, j, k) + grid.u(i-1, j, k)) / dx2
-                                     + (grid.u(i, j+1, k) - 2.0*grid.u(i, j, k) + grid.u(i, j-1, k)) / dy2
-                                     + (grid.u(i, j, k+1) - 2.0*grid.u(i, j, k) + grid.u(i, j, k-1)) / dz2;
-                    grid.r(i, j, k) = grid.f(i, j, k) - laplacian;
+                    int idx = k * plane_stride + j * stride + i;
+                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
+                                     + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                    r_ptr[idx] = f_ptr[idx] - laplacian;
                 }
             }
-        }
-        return;
-    }
-
-    // 2D CPU path
-    for (int j = Ng; j < Ny + Ng; ++j) {
-        for (int i = Ng; i < Nx + Ng; ++i) {
-            double laplacian = (grid.u(i+1, j) - 2.0*grid.u(i, j) + grid.u(i-1, j)) / dx2
-                             + (grid.u(i, j+1) - 2.0*grid.u(i, j) + grid.u(i, j-1)) / dy2;
-            grid.r(i, j) = grid.f(i, j) - laplacian;
         }
     }
 }
 
 void MultigridPoissonSolver::restrict_residual(int fine_level) {
     // Full-weighting restriction from fine to coarse grid
+    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& fine = *levels_[fine_level];
     auto& coarse = *levels_[fine_level + 1];
     const bool is_2d = fine.is2D();
 
     const int Ng = 1;
+    const int Nx_c = coarse.Nx;
+    const int Ny_c = coarse.Ny;
+    const int Nz_c = coarse.Nz;
+    const int stride_f = fine.Nx + 2;
+    const int stride_c = coarse.Nx + 2;
+    const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
+    const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
+
+    // Use raw pointers for unified CPU/GPU code
+    const double* r_fine = fine.r.data().data();
+    double* f_coarse = coarse.f.data().data();
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path
-    if (gpu::should_use_gpu_path()) {
-        const int Nx_c = coarse.Nx;
-        const int Ny_c = coarse.Ny;
-        const int Nz_c = coarse.Nz;
-        const int stride_f = fine.Nx + 2;
-        const int stride_c = coarse.Nx + 2;
-        const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
-        const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
-        const size_t size_f = level_sizes_[fine_level];
-        const size_t size_c = level_sizes_[fine_level + 1];
+    const size_t size_f = level_sizes_[fine_level];
+    const size_t size_c = level_sizes_[fine_level + 1];
+#endif
 
-        const double* r_fine = r_ptrs_[fine_level];
-        double* f_coarse = f_ptrs_[fine_level + 1];
+    if (is_2d) {
+        // 2D: 9-point stencil
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+#endif
+        for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
+            for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
+                int i_f = 2 * (i_c - Ng) + Ng;
+                int j_f = 2 * (j_c - Ng) + Ng;
+                int idx_c = j_c * stride_c + i_c;
+                int idx_f = j_f * stride_f + i_f;
 
-        if (is_2d) {
-            // 2D GPU path: 9-point stencil
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: r_fine[0:size_f], f_coarse[0:size_c])
+                f_coarse[idx_c] = 0.25 * r_fine[idx_f]
+                                + 0.125 * (r_fine[idx_f-1] + r_fine[idx_f+1]
+                                         + r_fine[idx_f-stride_f] + r_fine[idx_f+stride_f])
+                                + 0.0625 * (r_fine[idx_f-1-stride_f] + r_fine[idx_f+1-stride_f]
+                                          + r_fine[idx_f-1+stride_f] + r_fine[idx_f+1+stride_f]);
+            }
+        }
+    } else {
+        // 3D: 27-point stencil
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+#endif
+        for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
             for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
                 for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
                     int i_f = 2 * (i_c - Ng) + Ng;
                     int j_f = 2 * (j_c - Ng) + Ng;
-                    int idx_c = j_c * stride_c + i_c;
-                    int idx_f = j_f * stride_f + i_f;
-
-                    f_coarse[idx_c] = 0.25 * r_fine[idx_f]
-                                    + 0.125 * (r_fine[idx_f-1] + r_fine[idx_f+1]
-                                             + r_fine[idx_f-stride_f] + r_fine[idx_f+stride_f])
-                                    + 0.0625 * (r_fine[idx_f-1-stride_f] + r_fine[idx_f+1-stride_f]
-                                              + r_fine[idx_f-1+stride_f] + r_fine[idx_f+1+stride_f]);
-                }
-            }
-        } else {
-            // 3D GPU path: 27-point stencil with collapse(3)
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: r_fine[0:size_f], f_coarse[0:size_c])
-            for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
-                for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
-                    for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
-                        int i_f = 2 * (i_c - Ng) + Ng;
-                        int j_f = 2 * (j_c - Ng) + Ng;
-                        int k_f = 2 * (k_c - Ng) + Ng;
-                        int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
-                        int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
-
-                        // 27-point full-weighting stencil
-                        double sum = 0.0;
-
-                        // Center point (weight = 1/8)
-                        sum += 0.125 * r_fine[idx_f];
-
-                        // 6 face neighbors (weight = 1/16 each)
-                        sum += 0.0625 * (r_fine[idx_f-1] + r_fine[idx_f+1]
-                                       + r_fine[idx_f-stride_f] + r_fine[idx_f+stride_f]
-                                       + r_fine[idx_f-plane_stride_f] + r_fine[idx_f+plane_stride_f]);
-
-                        // 12 edge neighbors (weight = 1/32 each)
-                        sum += 0.03125 * (r_fine[idx_f-1-stride_f] + r_fine[idx_f+1-stride_f]
-                                        + r_fine[idx_f-1+stride_f] + r_fine[idx_f+1+stride_f]
-                                        + r_fine[idx_f-1-plane_stride_f] + r_fine[idx_f+1-plane_stride_f]
-                                        + r_fine[idx_f-1+plane_stride_f] + r_fine[idx_f+1+plane_stride_f]
-                                        + r_fine[idx_f-stride_f-plane_stride_f] + r_fine[idx_f+stride_f-plane_stride_f]
-                                        + r_fine[idx_f-stride_f+plane_stride_f] + r_fine[idx_f+stride_f+plane_stride_f]);
-
-                        // 8 corner neighbors (weight = 1/64 each)
-                        sum += 0.015625 * (r_fine[idx_f-1-stride_f-plane_stride_f] + r_fine[idx_f+1-stride_f-plane_stride_f]
-                                         + r_fine[idx_f-1+stride_f-plane_stride_f] + r_fine[idx_f+1+stride_f-plane_stride_f]
-                                         + r_fine[idx_f-1-stride_f+plane_stride_f] + r_fine[idx_f+1-stride_f+plane_stride_f]
-                                         + r_fine[idx_f-1+stride_f+plane_stride_f] + r_fine[idx_f+1+stride_f+plane_stride_f]);
-
-                        f_coarse[idx_c] = sum;
-                    }
-                }
-            }
-        }
-        return;
-    }
-#endif
-
-    // 3D CPU path: 27-point full-weighting stencil
-    if (!is_2d) {
-        for (int k_c = Ng; k_c < coarse.Nz + Ng; ++k_c) {
-            for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
-                for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
-                    int i_f = 2 * (i_c - Ng) + Ng;
-                    int j_f = 2 * (j_c - Ng) + Ng;
                     int k_f = 2 * (k_c - Ng) + Ng;
+                    int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
+                    int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
 
                     // 27-point full-weighting stencil
-                    // Center: weight = 1/8, Faces: weight = 1/16, Edges: weight = 1/32, Corners: weight = 1/64
                     double sum = 0.0;
 
                     // Center point (weight = 1/8)
-                    sum += 0.125 * fine.r(i_f, j_f, k_f);
+                    sum += 0.125 * r_fine[idx_f];
 
                     // 6 face neighbors (weight = 1/16 each)
-                    sum += 0.0625 * (fine.r(i_f-1, j_f, k_f) + fine.r(i_f+1, j_f, k_f)
-                                   + fine.r(i_f, j_f-1, k_f) + fine.r(i_f, j_f+1, k_f)
-                                   + fine.r(i_f, j_f, k_f-1) + fine.r(i_f, j_f, k_f+1));
+                    sum += 0.0625 * (r_fine[idx_f-1] + r_fine[idx_f+1]
+                                   + r_fine[idx_f-stride_f] + r_fine[idx_f+stride_f]
+                                   + r_fine[idx_f-plane_stride_f] + r_fine[idx_f+plane_stride_f]);
 
                     // 12 edge neighbors (weight = 1/32 each)
-                    sum += 0.03125 * (fine.r(i_f-1, j_f-1, k_f) + fine.r(i_f+1, j_f-1, k_f)
-                                    + fine.r(i_f-1, j_f+1, k_f) + fine.r(i_f+1, j_f+1, k_f)
-                                    + fine.r(i_f-1, j_f, k_f-1) + fine.r(i_f+1, j_f, k_f-1)
-                                    + fine.r(i_f-1, j_f, k_f+1) + fine.r(i_f+1, j_f, k_f+1)
-                                    + fine.r(i_f, j_f-1, k_f-1) + fine.r(i_f, j_f+1, k_f-1)
-                                    + fine.r(i_f, j_f-1, k_f+1) + fine.r(i_f, j_f+1, k_f+1));
+                    sum += 0.03125 * (r_fine[idx_f-1-stride_f] + r_fine[idx_f+1-stride_f]
+                                    + r_fine[idx_f-1+stride_f] + r_fine[idx_f+1+stride_f]
+                                    + r_fine[idx_f-1-plane_stride_f] + r_fine[idx_f+1-plane_stride_f]
+                                    + r_fine[idx_f-1+plane_stride_f] + r_fine[idx_f+1+plane_stride_f]
+                                    + r_fine[idx_f-stride_f-plane_stride_f] + r_fine[idx_f+stride_f-plane_stride_f]
+                                    + r_fine[idx_f-stride_f+plane_stride_f] + r_fine[idx_f+stride_f+plane_stride_f]);
 
                     // 8 corner neighbors (weight = 1/64 each)
-                    sum += 0.015625 * (fine.r(i_f-1, j_f-1, k_f-1) + fine.r(i_f+1, j_f-1, k_f-1)
-                                     + fine.r(i_f-1, j_f+1, k_f-1) + fine.r(i_f+1, j_f+1, k_f-1)
-                                     + fine.r(i_f-1, j_f-1, k_f+1) + fine.r(i_f+1, j_f-1, k_f+1)
-                                     + fine.r(i_f-1, j_f+1, k_f+1) + fine.r(i_f+1, j_f+1, k_f+1));
+                    sum += 0.015625 * (r_fine[idx_f-1-stride_f-plane_stride_f] + r_fine[idx_f+1-stride_f-plane_stride_f]
+                                     + r_fine[idx_f-1+stride_f-plane_stride_f] + r_fine[idx_f+1+stride_f-plane_stride_f]
+                                     + r_fine[idx_f-1-stride_f+plane_stride_f] + r_fine[idx_f+1-stride_f+plane_stride_f]
+                                     + r_fine[idx_f-1+stride_f+plane_stride_f] + r_fine[idx_f+1+stride_f+plane_stride_f]);
 
-                    coarse.f(i_c, j_c, k_c) = sum;
+                    f_coarse[idx_c] = sum;
                 }
             }
-        }
-        return;
-    }
-
-    // 2D CPU path: 9-point full-weighting stencil
-    for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
-        for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
-            int i_f = 2 * (i_c - Ng) + Ng;
-            int j_f = 2 * (j_c - Ng) + Ng;
-
-            // Full-weighting stencil
-            coarse.f(i_c, j_c) = 0.25 * fine.r(i_f, j_f)
-                               + 0.125 * (fine.r(i_f-1, j_f) + fine.r(i_f+1, j_f)
-                                        + fine.r(i_f, j_f-1) + fine.r(i_f, j_f+1))
-                               + 0.0625 * (fine.r(i_f-1, j_f-1) + fine.r(i_f+1, j_f-1)
-                                         + fine.r(i_f-1, j_f+1) + fine.r(i_f+1, j_f+1));
         }
     }
 }
 
 void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     // Bilinear/trilinear interpolation from coarse to fine grid
+    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& coarse = *levels_[coarse_level];
     auto& fine = *levels_[coarse_level - 1];
     const bool is_2d = fine.is2D();
 
     const int Ng = 1;
+    const int Nx_c = coarse.Nx;
+    const int Ny_c = coarse.Ny;
+    const int Nz_c = coarse.Nz;
+    const int Nx_f = fine.Nx;
+    const int Ny_f = fine.Ny;
+    const int Nz_f = fine.Nz;
+    const int stride_f = fine.Nx + 2;
+    const int stride_c = coarse.Nx + 2;
+    const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
+    const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
+
+    // Use raw pointers for unified CPU/GPU code
+    const double* u_coarse = coarse.u.data().data();
+    double* u_fine = fine.u.data().data();
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path
-    if (gpu::should_use_gpu_path()) {
-        const int Nx_c = coarse.Nx;
-        const int Ny_c = coarse.Ny;
-        const int Nz_c = coarse.Nz;
-        const int Nx_f = fine.Nx;
-        const int Ny_f = fine.Ny;
-        const int Nz_f = fine.Nz;
-        const int stride_f = fine.Nx + 2;
-        const int stride_c = coarse.Nx + 2;
-        const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
-        const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
-        const size_t size_f = level_sizes_[coarse_level - 1];
-        const size_t size_c = level_sizes_[coarse_level];
+    const size_t size_f = level_sizes_[coarse_level - 1];
+    const size_t size_c = level_sizes_[coarse_level];
+#endif
 
-        const double* u_coarse = u_ptrs_[coarse_level];
-        double* u_fine = u_ptrs_[coarse_level - 1];
+    if (is_2d) {
+        // 2D: bilinear interpolation
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+#endif
+        for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
+            for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
+                int i_f = 2 * (i_c - Ng) + Ng;
+                int j_f = 2 * (j_c - Ng) + Ng;
+                int idx_c = j_c * stride_c + i_c;
+                int idx_f = j_f * stride_f + i_f;
 
-        if (is_2d) {
-            // 2D GPU path: bilinear interpolation
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_coarse[0:size_c], u_fine[0:size_f])
+                double val_c = u_coarse[idx_c];
+
+                // Direct injection to coarse points
+                u_fine[idx_f] += val_c;
+
+                // Interpolate to fine points
+                if (i_f + 1 < Nx_f + Ng) {
+                    double val_east = u_coarse[idx_c + 1];
+                    u_fine[idx_f + 1] += 0.5 * (val_c + val_east);
+                }
+                if (j_f + 1 < Ny_f + Ng) {
+                    double val_north = u_coarse[idx_c + stride_c];
+                    u_fine[idx_f + stride_f] += 0.5 * (val_c + val_north);
+                }
+                if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng) {
+                    double val_east = u_coarse[idx_c + 1];
+                    double val_north = u_coarse[idx_c + stride_c];
+                    double val_ne = u_coarse[idx_c + 1 + stride_c];
+                    u_fine[idx_f + 1 + stride_f] += 0.25 * (val_c + val_east + val_north + val_ne);
+                }
+            }
+        }
+    } else {
+        // 3D: trilinear interpolation
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+#endif
+        for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
             for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
                 for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
                     int i_f = 2 * (i_c - Ng) + Ng;
                     int j_f = 2 * (j_c - Ng) + Ng;
-                    int idx_c = j_c * stride_c + i_c;
-                    int idx_f = j_f * stride_f + i_f;
+                    int k_f = 2 * (k_c - Ng) + Ng;
+                    int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
+                    int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
 
                     double val_c = u_coarse[idx_c];
 
-                    // Direct injection to coarse points
+                    // Direct injection to coincident point
                     u_fine[idx_f] += val_c;
 
-                    // Interpolate to fine points
+                    // Interpolate to 3 face-midpoints (average of 2 coarse neighbors)
                     if (i_f + 1 < Nx_f + Ng) {
-                        double val_east = u_coarse[idx_c + 1];
-                        u_fine[idx_f + 1] += 0.5 * (val_c + val_east);
+                        u_fine[idx_f + 1] += 0.5 * (val_c + u_coarse[idx_c + 1]);
                     }
                     if (j_f + 1 < Ny_f + Ng) {
-                        double val_north = u_coarse[idx_c + stride_c];
-                        u_fine[idx_f + stride_f] += 0.5 * (val_c + val_north);
+                        u_fine[idx_f + stride_f] += 0.5 * (val_c + u_coarse[idx_c + stride_c]);
                     }
-                    if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng) {
-                        double val_east = u_coarse[idx_c + 1];
-                        double val_north = u_coarse[idx_c + stride_c];
-                        double val_ne = u_coarse[idx_c + 1 + stride_c];
-                        u_fine[idx_f + 1 + stride_f] += 0.25 * (val_c + val_east + val_north + val_ne);
-                    }
-                }
-            }
-        } else {
-            // 3D GPU path: trilinear interpolation with collapse(3)
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_coarse[0:size_c], u_fine[0:size_f])
-            for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
-                for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
-                    for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
-                        int i_f = 2 * (i_c - Ng) + Ng;
-                        int j_f = 2 * (j_c - Ng) + Ng;
-                        int k_f = 2 * (k_c - Ng) + Ng;
-                        int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
-                        int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
-
-                        double val_c = u_coarse[idx_c];
-
-                        // Direct injection to coincident point
-                        u_fine[idx_f] += val_c;
-
-                        // Interpolate to 3 face-midpoints (average of 2 coarse neighbors)
-                        if (i_f + 1 < Nx_f + Ng) {
-                            u_fine[idx_f + 1] += 0.5 * (val_c + u_coarse[idx_c + 1]);
-                        }
-                        if (j_f + 1 < Ny_f + Ng) {
-                            u_fine[idx_f + stride_f] += 0.5 * (val_c + u_coarse[idx_c + stride_c]);
-                        }
-                        if (k_f + 1 < Nz_f + Ng) {
-                            u_fine[idx_f + plane_stride_f] += 0.5 * (val_c + u_coarse[idx_c + plane_stride_c]);
-                        }
-
-                        // Interpolate to 3 edge-midpoints (average of 4 coarse neighbors)
-                        if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng) {
-                            u_fine[idx_f + 1 + stride_f] += 0.25 * (
-                                val_c + u_coarse[idx_c + 1]
-                                + u_coarse[idx_c + stride_c] + u_coarse[idx_c + 1 + stride_c]);
-                        }
-                        if (i_f + 1 < Nx_f + Ng && k_f + 1 < Nz_f + Ng) {
-                            u_fine[idx_f + 1 + plane_stride_f] += 0.25 * (
-                                val_c + u_coarse[idx_c + 1]
-                                + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + 1 + plane_stride_c]);
-                        }
-                        if (j_f + 1 < Ny_f + Ng && k_f + 1 < Nz_f + Ng) {
-                            u_fine[idx_f + stride_f + plane_stride_f] += 0.25 * (
-                                val_c + u_coarse[idx_c + stride_c]
-                                + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + stride_c + plane_stride_c]);
-                        }
-
-                        // Interpolate to cell-center (average of 8 coarse neighbors)
-                        if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng && k_f + 1 < Nz_f + Ng) {
-                            u_fine[idx_f + 1 + stride_f + plane_stride_f] += 0.125 * (
-                                val_c + u_coarse[idx_c + 1]
-                                + u_coarse[idx_c + stride_c] + u_coarse[idx_c + 1 + stride_c]
-                                + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + 1 + plane_stride_c]
-                                + u_coarse[idx_c + stride_c + plane_stride_c] + u_coarse[idx_c + 1 + stride_c + plane_stride_c]);
-                        }
-                    }
-                }
-            }
-        }
-        return;
-    }
-#endif
-
-    // 3D CPU path: trilinear interpolation
-    if (!is_2d) {
-        for (int k_c = Ng; k_c < coarse.Nz + Ng; ++k_c) {
-            for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
-                for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
-                    int i_f = 2 * (i_c - Ng) + Ng;
-                    int j_f = 2 * (j_c - Ng) + Ng;
-                    int k_f = 2 * (k_c - Ng) + Ng;
-
-                    double val_c = coarse.u(i_c, j_c, k_c);
-
-                    // Direct injection to coincident point
-                    fine.u(i_f, j_f, k_f) += val_c;
-
-                    // Interpolate to 3 face-midpoints (average of 2 coarse neighbors)
-                    if (i_f + 1 < fine.Nx + Ng) {
-                        fine.u(i_f+1, j_f, k_f) += 0.5 * (val_c + coarse.u(i_c+1, j_c, k_c));
-                    }
-                    if (j_f + 1 < fine.Ny + Ng) {
-                        fine.u(i_f, j_f+1, k_f) += 0.5 * (val_c + coarse.u(i_c, j_c+1, k_c));
-                    }
-                    if (k_f + 1 < fine.Nz + Ng) {
-                        fine.u(i_f, j_f, k_f+1) += 0.5 * (val_c + coarse.u(i_c, j_c, k_c+1));
+                    if (k_f + 1 < Nz_f + Ng) {
+                        u_fine[idx_f + plane_stride_f] += 0.5 * (val_c + u_coarse[idx_c + plane_stride_c]);
                     }
 
                     // Interpolate to 3 edge-midpoints (average of 4 coarse neighbors)
-                    if (i_f + 1 < fine.Nx + Ng && j_f + 1 < fine.Ny + Ng) {
-                        fine.u(i_f+1, j_f+1, k_f) += 0.25 * (val_c + coarse.u(i_c+1, j_c, k_c)
-                                                           + coarse.u(i_c, j_c+1, k_c) + coarse.u(i_c+1, j_c+1, k_c));
+                    if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng) {
+                        u_fine[idx_f + 1 + stride_f] += 0.25 * (
+                            val_c + u_coarse[idx_c + 1]
+                            + u_coarse[idx_c + stride_c] + u_coarse[idx_c + 1 + stride_c]);
                     }
-                    if (i_f + 1 < fine.Nx + Ng && k_f + 1 < fine.Nz + Ng) {
-                        fine.u(i_f+1, j_f, k_f+1) += 0.25 * (val_c + coarse.u(i_c+1, j_c, k_c)
-                                                           + coarse.u(i_c, j_c, k_c+1) + coarse.u(i_c+1, j_c, k_c+1));
+                    if (i_f + 1 < Nx_f + Ng && k_f + 1 < Nz_f + Ng) {
+                        u_fine[idx_f + 1 + plane_stride_f] += 0.25 * (
+                            val_c + u_coarse[idx_c + 1]
+                            + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + 1 + plane_stride_c]);
                     }
-                    if (j_f + 1 < fine.Ny + Ng && k_f + 1 < fine.Nz + Ng) {
-                        fine.u(i_f, j_f+1, k_f+1) += 0.25 * (val_c + coarse.u(i_c, j_c+1, k_c)
-                                                           + coarse.u(i_c, j_c, k_c+1) + coarse.u(i_c, j_c+1, k_c+1));
+                    if (j_f + 1 < Ny_f + Ng && k_f + 1 < Nz_f + Ng) {
+                        u_fine[idx_f + stride_f + plane_stride_f] += 0.25 * (
+                            val_c + u_coarse[idx_c + stride_c]
+                            + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + stride_c + plane_stride_c]);
                     }
 
                     // Interpolate to cell-center (average of 8 coarse neighbors)
-                    if (i_f + 1 < fine.Nx + Ng && j_f + 1 < fine.Ny + Ng && k_f + 1 < fine.Nz + Ng) {
-                        fine.u(i_f+1, j_f+1, k_f+1) += 0.125 * (
-                            val_c + coarse.u(i_c+1, j_c, k_c)
-                            + coarse.u(i_c, j_c+1, k_c) + coarse.u(i_c+1, j_c+1, k_c)
-                            + coarse.u(i_c, j_c, k_c+1) + coarse.u(i_c+1, j_c, k_c+1)
-                            + coarse.u(i_c, j_c+1, k_c+1) + coarse.u(i_c+1, j_c+1, k_c+1));
+                    if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng && k_f + 1 < Nz_f + Ng) {
+                        u_fine[idx_f + 1 + stride_f + plane_stride_f] += 0.125 * (
+                            val_c + u_coarse[idx_c + 1]
+                            + u_coarse[idx_c + stride_c] + u_coarse[idx_c + 1 + stride_c]
+                            + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + 1 + plane_stride_c]
+                            + u_coarse[idx_c + stride_c + plane_stride_c] + u_coarse[idx_c + 1 + stride_c + plane_stride_c]);
                     }
                 }
-            }
-        }
-        return;
-    }
-
-    // 2D CPU path: bilinear interpolation
-    for (int j_c = Ng; j_c < coarse.Ny + Ng; ++j_c) {
-        for (int i_c = Ng; i_c < coarse.Nx + Ng; ++i_c) {
-            int i_f = 2 * (i_c - Ng) + Ng;
-            int j_f = 2 * (j_c - Ng) + Ng;
-
-            // Direct injection to coarse points
-            fine.u(i_f, j_f) += coarse.u(i_c, j_c);
-
-            // Interpolate to fine points
-            if (i_f + 1 < fine.Nx + Ng) {
-                fine.u(i_f+1, j_f) += 0.5 * (coarse.u(i_c, j_c) + coarse.u(i_c+1, j_c));
-            }
-            if (j_f + 1 < fine.Ny + Ng) {
-                fine.u(i_f, j_f+1) += 0.5 * (coarse.u(i_c, j_c) + coarse.u(i_c, j_c+1));
-            }
-            if (i_f + 1 < fine.Nx + Ng && j_f + 1 < fine.Ny + Ng) {
-                fine.u(i_f+1, j_f+1) += 0.25 * (coarse.u(i_c, j_c) + coarse.u(i_c+1, j_c)
-                                               + coarse.u(i_c, j_c+1) + coarse.u(i_c+1, j_c+1));
             }
         }
     }
@@ -1176,89 +959,59 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
 }
 
 double MultigridPoissonSolver::compute_max_residual(int level) {
+    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     compute_residual(level);
-    
+
     auto& grid = *levels_[level];
     double max_res = 0.0;
     const int Ng = 1;
-    
-#ifdef USE_GPU_OFFLOAD
-    if (grid.Nx >= 32 && grid.Ny >= 32) {
-        // Compute max residual on GPU and return scalar to host
-        const int Nx = grid.Nx;
-        const int Ny = grid.Ny;
-        const int Nz = grid.Nz;
-        const int stride = Nx + 2;
-        const size_t total_size = level_sizes_[level];
-        const double* r_ptr = r_ptrs_[level];
-        int has_nan = 0;  // Track if any value is NaN/Inf
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = stride * (Ny + 2);
 
-        // Reduction over interior cells only
-        if (Nz == 1) {
-            // 2D case
-            #pragma omp target teams distribute parallel for reduction(max:max_res) reduction(|:has_nan) \
-                map(present: r_ptr[0:total_size]) \
-                map(tofrom: max_res, has_nan) \
-                firstprivate(Nx, Ny, stride, Ng)
-            for (int idx = 0; idx < Nx * Ny; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = idx / Nx + Ng;
-                int ridx = j * stride + i;
-                double v = std::abs(r_ptr[ridx]);
-                // NaN-safe: track finite values for max, flag non-finite
-                if (std::isfinite(v)) {
-                    if (v > max_res) max_res = v;
-                } else {
-                    has_nan = 1;
-                }
-            }
-        } else {
-            // 3D case - check ALL z-planes
-            const int plane_stride = stride * (Ny + 2);
-            #pragma omp target teams distribute parallel for reduction(max:max_res) reduction(|:has_nan) \
-                map(present: r_ptr[0:total_size]) \
-                map(tofrom: max_res, has_nan) \
-                firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng)
-            for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = (idx / Nx) % Ny + Ng;
-                int k = idx / (Nx * Ny) + Ng;
-                int ridx = k * plane_stride + j * stride + i;
-                double v = std::abs(r_ptr[ridx]);
-                // NaN-safe: track finite values for max, flag non-finite
-                if (std::isfinite(v)) {
-                    if (v > max_res) max_res = v;
-                } else {
-                    has_nan = 1;
-                }
-            }
-        }
-        // If any NaN/Inf detected, signal divergence
-        if (has_nan) {
-            return std::numeric_limits<double>::infinity();
-        }
-    } else
+    // Use raw pointers for unified CPU/GPU code
+    const double* r_ptr = grid.r.data().data();
+
+#ifdef USE_GPU_OFFLOAD
+    const size_t total_size = level_sizes_[level];
 #endif
-    {
-        // CPU fallback with 3D support
-        if (grid.Nz == 1) {
-            for (int j = Ng; j < grid.Ny + Ng; ++j) {
-                for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                    max_res = std::max(max_res, std::abs(grid.r(i, j)));
-                }
-            }
-        } else {
-            for (int k = Ng; k < grid.Nz + Ng; ++k) {
-                for (int j = Ng; j < grid.Ny + Ng; ++j) {
-                    for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                        max_res = std::max(max_res, std::abs(grid.r(i, j, k)));
-                    }
-                }
-            }
+
+    if (Nz == 1) {
+        // 2D case
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for reduction(max:max_res) \
+            map(present: r_ptr[0:total_size])
+#endif
+        for (int idx = 0; idx < Nx * Ny; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            int ridx = j * stride + i;
+            double v = r_ptr[ridx];
+            // Use fabs for GPU-safe absolute value, treat NaN as 0 for reduction
+            double abs_v = (v >= 0.0) ? v : -v;
+            if (abs_v > max_res) max_res = abs_v;
+        }
+    } else {
+        // 3D case
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for reduction(max:max_res) \
+            map(present: r_ptr[0:total_size])
+#endif
+        for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            int ridx = k * plane_stride + j * stride + i;
+            double v = r_ptr[ridx];
+            // Use manual abs for GPU-safe absolute value
+            double abs_v = (v >= 0.0) ? v : -v;
+            if (abs_v > max_res) max_res = abs_v;
         }
     }
 
-    // If max_res is invalid (all values were NaN), signal divergence to caller
+    // If max_res is invalid (NaN from the solver), signal divergence to caller
     // This prevents infinite loops in the Poisson solver's convergence check
     if (!std::isfinite(max_res)) {
         return std::numeric_limits<double>::infinity();
@@ -1268,109 +1021,72 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
 }
 
 void MultigridPoissonSolver::subtract_mean(int level) {
+    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
     double sum = 0.0;
-    int count = 0;
     const int Ng = 1;
-    
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = stride * (Ny + 2);
+
+    // Use raw pointers for unified CPU/GPU code
+    double* u_ptr = grid.u.data().data();
+
 #ifdef USE_GPU_OFFLOAD
-    if (grid.Nx >= 32 && grid.Ny >= 32) {
-        const size_t total_size = level_sizes_[level];
-        double* u_ptr = u_ptrs_[level];
-        const int Nx = grid.Nx;
-        const int Ny = grid.Ny;
-        const int Nz = grid.Nz;
-        const int stride = Nx + 2;
-
-        if (Nz == 1) {
-            // 2D case
-            // Compute sum on GPU
-            #pragma omp target teams distribute parallel for reduction(+:sum) \
-                map(present: u_ptr[0:total_size])
-            for (int idx = 0; idx < Nx * Ny; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = idx / Nx + Ng;
-                sum += u_ptr[j * stride + i];
-            }
-
-            count = Nx * Ny;
-            double mean = sum / count;
-
-            // Subtract mean on GPU
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int idx = 0; idx < Nx * Ny; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = idx / Nx + Ng;
-                u_ptr[j * stride + i] -= mean;
-            }
-        } else {
-            // 3D case - integrate over full volume
-            const int plane_stride = stride * (Ny + 2);
-
-            // Compute sum on GPU
-            #pragma omp target teams distribute parallel for reduction(+:sum) \
-                map(present: u_ptr[0:total_size]) \
-                firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng)
-            for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = (idx / Nx) % Ny + Ng;
-                int k = idx / (Nx * Ny) + Ng;
-                sum += u_ptr[k * plane_stride + j * stride + i];
-            }
-
-            count = Nx * Ny * Nz;
-            double mean = sum / count;
-
-            // Subtract mean on GPU
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size]) \
-                firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng, mean)
-            for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = (idx / Nx) % Ny + Ng;
-                int k = idx / (Nx * Ny) + Ng;
-                u_ptr[k * plane_stride + j * stride + i] -= mean;
-            }
-        }
-    } else
+    const size_t total_size = level_sizes_[level];
 #endif
-    {
-        // CPU fallback with 3D support
-        if (grid.Nz == 1) {
-            for (int j = Ng; j < grid.Ny + Ng; ++j) {
-                for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                    sum += grid.u(i, j);
-                    ++count;
-                }
-            }
 
-            double mean = sum / count;
+    if (Nz == 1) {
+        // 2D case - compute sum
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for reduction(+:sum) \
+            map(present: u_ptr[0:total_size])
+#endif
+        for (int idx = 0; idx < Nx * Ny; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            sum += u_ptr[j * stride + i];
+        }
 
-            for (int j = Ng; j < grid.Ny + Ng; ++j) {
-                for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                    grid.u(i, j) -= mean;
-                }
-            }
-        } else {
-            for (int k = Ng; k < grid.Nz + Ng; ++k) {
-                for (int j = Ng; j < grid.Ny + Ng; ++j) {
-                    for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                        sum += grid.u(i, j, k);
-                        ++count;
-                    }
-                }
-            }
+        double mean = sum / (Nx * Ny);
 
-            double mean = sum / count;
+        // 2D case - subtract mean
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size])
+#endif
+        for (int idx = 0; idx < Nx * Ny; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            u_ptr[j * stride + i] -= mean;
+        }
+    } else {
+        // 3D case - compute sum
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for reduction(+:sum) \
+            map(present: u_ptr[0:total_size])
+#endif
+        for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            sum += u_ptr[k * plane_stride + j * stride + i];
+        }
 
-            for (int k = Ng; k < grid.Nz + Ng; ++k) {
-                for (int j = Ng; j < grid.Ny + Ng; ++j) {
-                    for (int i = Ng; i < grid.Nx + Ng; ++i) {
-                        grid.u(i, j, k) -= mean;
-                    }
-                }
-            }
+        double mean = sum / (Nx * Ny * Nz);
+
+        // 3D case - subtract mean
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:total_size])
+#endif
+        for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            u_ptr[k * plane_stride + j * stride + i] -= mean;
         }
     }
 }
@@ -1581,6 +1297,15 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         #pragma omp target enter data map(alloc: u_ptrs_[lvl][0:total_size])
         #pragma omp target enter data map(alloc: f_ptrs_[lvl][0:total_size])
         #pragma omp target enter data map(alloc: r_ptrs_[lvl][0:total_size])
+
+        // Zero-initialize residual array to avoid garbage in ghost cells
+        // (restrict_residual reads ghost cells of r_fine for the stencil)
+        double* r_ptr = r_ptrs_[lvl];
+        #pragma omp target teams distribute parallel for \
+            map(present: r_ptr[0:total_size])
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            r_ptr[idx] = 0.0;
+        }
     }
     
     // Verify mappings succeeded

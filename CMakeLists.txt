@@ -181,7 +181,11 @@ if(BUILD_TESTS)
     add_executable(test_poisson tests/test_poisson.cpp)
     target_link_libraries(test_poisson nn_cfd_core)
     add_test(NAME PoissonTest COMMAND test_poisson)
-    
+
+    add_executable(test_poisson_solvers tests/test_poisson_solvers.cpp)
+    target_link_libraries(test_poisson_solvers nn_cfd_core)
+    add_test(NAME PoissonSolversTest COMMAND test_poisson_solvers)
+
     add_executable(test_solver tests/test_solver.cpp)
     target_link_libraries(test_solver nn_cfd_core)
     add_test(NAME SolverTest COMMAND test_solver)

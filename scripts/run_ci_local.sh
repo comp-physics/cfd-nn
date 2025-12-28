@@ -183,6 +183,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
 
     run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 300
     run_test "Poisson" "$BUILD_DIR/test_poisson" 120
+    run_test "Poisson Solvers 2D/3D" "$BUILD_DIR/test_poisson_solvers" 300
     run_test "Stability" "$BUILD_DIR/test_stability" 120
     run_test "Turbulence" "$BUILD_DIR/test_turbulence" 120
     run_test "Turbulence Features" "$BUILD_DIR/test_turbulence_features" 120

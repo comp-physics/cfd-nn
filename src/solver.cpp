@@ -2350,7 +2350,7 @@ double RANSSolver::step() {
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
     // GPU path: compute directly on GPU without CPU fill
 #ifdef USE_GPU_OFFLOAD
-    if (mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+    if (gpu_ready_) {
         NVTX_PUSH("nu_eff_computation");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
@@ -2628,7 +2628,7 @@ double RANSSolver::step() {
     double mean_div = 0.0;
     
 #ifdef USE_GPU_OFFLOAD
-    if (mesh_->Nx >= 32 && mesh_->Ny >= 32) {
+    if (gpu_ready_) {
         // GPU-resident path: compute mean divergence on device via reduction
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
@@ -2817,7 +2817,7 @@ double RANSSolver::step() {
         
         int cycles = 0;
 #ifdef USE_GPU_OFFLOAD
-        if (mesh_->Nx >= 32 && mesh_->Ny >= 32 && use_multigrid_) {
+        if (gpu_ready_ && use_multigrid_) {
             // GPU-RESIDENT PATH: solve directly on device without host staging
             // This eliminates the DtoH/HtoD transfers that happened in the old path
             cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
