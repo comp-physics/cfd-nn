@@ -293,7 +293,6 @@ bool test_3d_channel_flow() {
 
     // Run a few timesteps
     double total_time = 0.0;
-    bool success = true;
 
     for (int step = 0; step < 5; ++step) {
         try {
