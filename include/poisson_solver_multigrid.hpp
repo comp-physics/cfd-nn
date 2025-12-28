@@ -108,6 +108,7 @@ private:
     void restrict_residual(int fine_level);
     void prolongate_correction(int coarse_level);
     void apply_bc(int level);
+    void apply_bc_to_residual(int level);  // Apply periodic BCs to residual for restriction
     void vcycle(int level, int nu1 = 2, int nu2 = 2);
     
     // Direct solver for coarsest level

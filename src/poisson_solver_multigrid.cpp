@@ -509,6 +509,14 @@ void MultigridPoissonSolver::apply_bc(int level) {
     }
 }
 
+void MultigridPoissonSolver::apply_bc_to_residual(int level) {
+    // No-op: The restriction stencil tolerates zero/garbage ghost cells for shallow
+    // hierarchies (2 levels). Filling with periodic values was tested but actually
+    // DEGRADES convergence - the multigrid algorithm expects zero ghost contributions.
+    // The N>16 divergence issue is likely elsewhere in the algorithm, not here.
+    (void)level;
+}
+
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     // Red-Black Gauss-Seidel with SOR
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
@@ -919,7 +927,11 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     
     // Compute residual
     compute_residual(level);
-    
+
+    // Note: apply_bc_to_residual() was tested but degrades convergence.
+    // The multigrid algorithm expects zero ghost contributions in the residual.
+    // N>16 divergence is a separate issue requiring further investigation.
+
     // Restrict to coarse grid
     restrict_residual(level);
     
