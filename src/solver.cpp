@@ -1096,8 +1096,19 @@ void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
 }
 
 void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
+    // Validate: periodic BCs must be symmetric (both ends must match)
+    if ((bc.x_lo == VelocityBC::Periodic) != (bc.x_hi == VelocityBC::Periodic)) {
+        throw std::invalid_argument("Periodic BC in x requires both x_lo and x_hi to be Periodic");
+    }
+    if ((bc.y_lo == VelocityBC::Periodic) != (bc.y_hi == VelocityBC::Periodic)) {
+        throw std::invalid_argument("Periodic BC in y requires both y_lo and y_hi to be Periodic");
+    }
+    if ((bc.z_lo == VelocityBC::Periodic) != (bc.z_hi == VelocityBC::Periodic)) {
+        throw std::invalid_argument("Periodic BC in z requires both z_lo and z_hi to be Periodic");
+    }
+
     velocity_bc_ = bc;
-    
+
     // Update Poisson BCs based on velocity BCs
     PoissonBC p_x_lo = (bc.x_lo == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
     PoissonBC p_x_hi = (bc.x_hi == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;

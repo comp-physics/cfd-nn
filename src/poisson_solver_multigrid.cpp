@@ -1191,28 +1191,33 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
         const int stride = Nx + 2;
         const size_t total_size = level_sizes_[level];
         const double* r_ptr = r_ptrs_[level];
+        int has_nan = 0;  // Track if any value is NaN/Inf
 
         // Reduction over interior cells only
         if (Nz == 1) {
             // 2D case
-            #pragma omp target teams distribute parallel for reduction(max:max_res) \
+            #pragma omp target teams distribute parallel for reduction(max:max_res) reduction(|:has_nan) \
                 map(present: r_ptr[0:total_size]) \
-                map(tofrom: max_res) \
+                map(tofrom: max_res, has_nan) \
                 firstprivate(Nx, Ny, stride, Ng)
             for (int idx = 0; idx < Nx * Ny; ++idx) {
                 int i = idx % Nx + Ng;
                 int j = idx / Nx + Ng;
                 int ridx = j * stride + i;
                 double v = std::abs(r_ptr[ridx]);
-                // NaN-safe comparison: NaN > x is always false (IEEE 754), causing infinite loops
-                if (std::isfinite(v) && v > max_res) max_res = v;
+                // NaN-safe: track finite values for max, flag non-finite
+                if (std::isfinite(v)) {
+                    if (v > max_res) max_res = v;
+                } else {
+                    has_nan = 1;
+                }
             }
         } else {
             // 3D case - check ALL z-planes
             const int plane_stride = stride * (Ny + 2);
-            #pragma omp target teams distribute parallel for reduction(max:max_res) \
+            #pragma omp target teams distribute parallel for reduction(max:max_res) reduction(|:has_nan) \
                 map(present: r_ptr[0:total_size]) \
-                map(tofrom: max_res) \
+                map(tofrom: max_res, has_nan) \
                 firstprivate(Nx, Ny, Nz, stride, plane_stride, Ng)
             for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
                 int i = idx % Nx + Ng;
@@ -1220,9 +1225,17 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
                 int k = idx / (Nx * Ny) + Ng;
                 int ridx = k * plane_stride + j * stride + i;
                 double v = std::abs(r_ptr[ridx]);
-                // NaN-safe comparison: NaN > x is always false (IEEE 754), causing infinite loops
-                if (std::isfinite(v) && v > max_res) max_res = v;
+                // NaN-safe: track finite values for max, flag non-finite
+                if (std::isfinite(v)) {
+                    if (v > max_res) max_res = v;
+                } else {
+                    has_nan = 1;
+                }
             }
+        }
+        // If any NaN/Inf detected, signal divergence
+        if (has_nan) {
+            return std::numeric_limits<double>::infinity();
         }
     } else
 #endif
@@ -1420,8 +1433,9 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
     // and we must fix the nullspace by subtracting the mean
     bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet);
-    
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
+                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
+
     if (!has_dirichlet) {
         subtract_mean(0);
     }
@@ -1463,12 +1477,16 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     auto& finest = *levels_[0];
     const int Nx = finest.Nx;
     const int Ny = finest.Ny;
-    const size_t total_size = (Nx + 2) * (Ny + 2);
-    
+    const int Nz = finest.Nz;
+    // CRITICAL: Use 3D total_size for full volume copy (fixed from 2D-only bug)
+    const size_t total_size = static_cast<size_t>(Nx + 2) *
+                              static_cast<size_t>(Ny + 2) *
+                              static_cast<size_t>(Nz + 2);
+
     // Get device pointers for finest level multigrid buffers
     double* u_dev = u_ptrs_[0];
     double* f_dev = f_ptrs_[0];
-    
+
     // Copy RHS and initial guess from caller's present-mapped arrays to multigrid level-0 buffers
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
@@ -1515,8 +1533,9 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
     // and we must fix the nullspace by subtracting the mean
     bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet);
-    
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
+                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
+
     if (!has_dirichlet) {
         subtract_mean(0);
     }
