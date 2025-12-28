@@ -246,9 +246,10 @@ bool test_degenerate_nz1() {
 
     RANSSolver solver_3d(mesh_3d, config_3d);
     solver_3d.set_body_force(-config_3d.dp_dx, 0.0, 0.0);
-    // Even for Nz=1, the solver uses 3D field storage with ghost cells in z
-    // Must use 3D initialization which writes to k=k_begin() (interior cell)
-    init_poiseuille_3d(solver_3d, mesh_3d, config_3d.dp_dx, config_3d.nu);
+    // For Nz=1 (degenerate case), is2D() returns true so 2D code paths are used
+    // 2D accessors u(i,j) map to k=0 plane for backward compatibility
+    // We must use 2D initialization which writes to k=0 via 2D accessors
+    init_poiseuille_2d(solver_3d, mesh_3d, config_3d.dp_dx, config_3d.nu);
 
 #ifdef USE_GPU_OFFLOAD
     solver_3d.sync_to_gpu();  // Upload initial conditions to GPU
@@ -262,8 +263,8 @@ bool test_degenerate_nz1() {
 
     auto u_2d = extract_2d_u(solver_2d, mesh_2d);
     auto v_2d = extract_2d_v(solver_2d, mesh_2d);
-    // Compare against the first interior z-plane (k_begin()), not ghost cell k=0
-    const int k_slice = mesh_3d.k_begin();
+    // For Nz=1, 2D accessors use k=0 plane (by design for backward compatibility)
+    const int k_slice = 0;
     auto u_3d = extract_3d_u_slice(solver_3d, mesh_3d, k_slice);
     auto v_3d = extract_3d_v_slice(solver_3d, mesh_3d, k_slice);
 
