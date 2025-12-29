@@ -27,6 +27,28 @@
 using namespace nncfd;
 
 //=============================================================================
+// Helper: Compute max trace error for anisotropy tensor b_ij
+// In 2D: tau_ij = 2k * (b_ij + (1/3)*delta_ij)
+// trace(tau) = 2k * (trace(b) + 2/3), so for trace(b)=0: trace(tau) = 4k/3
+// b_trace = trace(tau)/(2k) - 2/3 should be 0
+//=============================================================================
+double compute_max_trace_error(const Mesh& mesh, const ScalarField& k,
+                                const TensorField& tau_ij) {
+    double max_error = 0.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double k_val = k(i, j);
+            if (k_val < 1e-10) continue;
+
+            double tau_trace = tau_ij.trace(i, j);
+            double b_trace = tau_trace / (2.0 * k_val) - 2.0/3.0;  // 2D: trace(delta)=2
+            max_error = std::max(max_error, std::abs(b_trace));
+        }
+    }
+    return max_error;
+}
+
+//=============================================================================
 // Test 1: Each tensor basis function should be trace-free
 //=============================================================================
 bool test_tensor_basis_trace_free() {
@@ -177,25 +199,11 @@ bool test_earsm_varying_conditions() {
 
             model.update(mesh, vel, k, omega, nu_t, &tau_ij);
 
-            // Check trace-free at each interior cell
-            // In 2D: tau_ij = 2k * (b_ij + (1/3)*delta_ij)
-            // trace(tau) = 2k * (trace(b) + 2/3) since trace(delta) = 2 in 2D
-            // For trace(b) = 0: trace(tau) = 2k * 2/3 = 4k/3
-            // So b_trace = trace(tau)/(2k) - 2/3 should be 0
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double k_val = k(i, j);
-                    if (k_val < 1e-10) continue;
-
-                    double tau_trace = tau_ij.trace(i, j);
-                    double b_trace = tau_trace / (2.0 * k_val) - 2.0/3.0;  // 2D: trace(delta)=2
-
-                    if (std::abs(b_trace) > tol) {
-                        std::cout << "\n  Profile=" << profile_name
-                                  << " has b_trace=" << b_trace;
-                        all_passed = false;
-                    }
-                }
+            double max_trace_error = compute_max_trace_error(mesh, k, tau_ij);
+            if (max_trace_error > tol) {
+                std::cout << "\n  Profile=" << profile_name
+                          << " has max b_trace=" << max_trace_error;
+                all_passed = false;
             }
         }
     }
@@ -257,24 +265,7 @@ bool test_earsm_direct_trace_free() {
         // Compute anisotropy via update with tau_ij output
         model.update(mesh, vel, k, omega, nu_t, &tau_ij);
 
-        // Check trace-free property for each cell
-        // In 2D: tau_ij = 2k * (b_ij + (1/3)*delta_ij)
-        // trace(tau) = 2k * (trace(b) + 2/3), so for trace(b)=0: trace(tau) = 4k/3
-        // b_trace = trace(tau)/(2k) - 2/3 should be 0
-        double max_trace_error = 0.0;
-
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double k_val = k(i, j);
-                if (k_val < 1e-10) continue;
-
-                double tau_trace = tau_ij.trace(i, j);
-                double b_trace = tau_trace / (2.0 * k_val) - 2.0/3.0;  // 2D: trace(delta)=2
-
-                max_trace_error = std::max(max_trace_error, std::abs(b_trace));
-            }
-        }
-
+        double max_trace_error = compute_max_trace_error(mesh, k, tau_ij);
         if (max_trace_error > tol) {
             std::cout << "\n  " << type_names[t] << ": max b_trace = "
                       << std::scientific << max_trace_error;

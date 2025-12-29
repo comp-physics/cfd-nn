@@ -89,6 +89,11 @@ RealizabilityResult test_model_realizability(TurbulenceModelType type, int num_s
             result.failure_step = step;
             result.failure_reason = std::string("Exception: ") + e.what();
             return result;
+        } catch (...) {
+            result.passed = false;
+            result.failure_step = step;
+            result.failure_reason = "Unknown exception";
+            return result;
         }
 
         // Check realizability at intervals
