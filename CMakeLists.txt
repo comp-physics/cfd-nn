@@ -293,6 +293,26 @@ if(BUILD_TESTS)
     add_executable(test_3d_w_velocity tests/test_3d_w_velocity.cpp)
     target_link_libraries(test_3d_w_velocity nn_cfd_core)
     add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
+
+    # 3D Taylor-Green vortex - verifies 3D viscous decay and time integration
+    add_executable(test_taylor_green_3d tests/test_taylor_green_3d.cpp)
+    target_link_libraries(test_taylor_green_3d nn_cfd_core)
+    add_test(NAME TaylorGreen3DTest COMMAND test_taylor_green_3d)
+
+    # All turbulence models smoke test - verifies all 10 models run without crashing
+    add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
+    target_link_libraries(test_all_turbulence_models_smoke nn_cfd_core)
+    add_test(NAME AllTurbulenceModelsSmokeTest COMMAND test_all_turbulence_models_smoke)
+
+    # Transport equation realizability - verifies k>0, omega>0 over long runs
+    add_executable(test_transport_realizability tests/test_transport_realizability.cpp)
+    target_link_libraries(test_transport_realizability nn_cfd_core)
+    add_test(NAME TransportRealizabilityTest COMMAND test_transport_realizability)
+
+    # EARSM trace-free constraint - verifies b_xx + b_yy = 0
+    add_executable(test_earsm_trace_free tests/test_earsm_trace_free.cpp)
+    target_link_libraries(test_earsm_trace_free nn_cfd_core)
+    add_test(NAME EARSMTraceFreeTest COMMAND test_earsm_trace_free)
 endif()
 
 # Installation
