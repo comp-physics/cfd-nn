@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sys
-import os
 sys.path.insert(0, '.')
 # Modify the analysis to use GPU output directory
 exec(open('convergence_analysis.py').read().replace(

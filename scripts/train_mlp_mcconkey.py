@@ -81,7 +81,7 @@ def load_mcconkey_data_mlp(data_dir, case='periodic_hills', split='train'):
     
     if not case_dir.exists():
         print(f"\nWARNING: Dataset directory not found: {case_dir}")
-        print(f"Generating synthetic data for demonstration...")
+        print("Generating synthetic data for demonstration...")
         return generate_synthetic_data_mlp(n_samples=10000)
     
     try:
@@ -278,7 +278,7 @@ def export_to_cpp(model, feature_means, feature_stds, output_dir):
     with open(os.path.join(output_dir, 'metadata.json'), 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print(f"Export complete!")
+    print("Export complete!")
 
 
 def main():

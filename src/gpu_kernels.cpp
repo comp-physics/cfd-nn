@@ -1,4 +1,5 @@
 #include "gpu_kernels.hpp"
+#include "profiling.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -29,11 +30,13 @@ void compute_gradients_from_mac_gpu(
     int v_total_size,
     int cell_total_size)
 {
-#ifdef USE_GPU_OFFLOAD
+    NVTX_SCOPE_GRADIENT("kernel:gradients_from_mac");
+
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
-    
-    // Parallelize over interior cells
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: parallelize over interior cells
     // CRITICAL: map(present:...) indicates these arrays are already mapped by solver
     // (use host pointers, lengths required for map clause)
     #pragma omp target teams distribute parallel for collapse(2) \
@@ -42,13 +45,19 @@ void compute_gradients_from_mac_gpu(
                      dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size])
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
+#else
+    // CPU path: same logic without GPU offloading
+    (void)u_total_size; (void)v_total_size; (void)cell_total_size;
+    for (int jj = 0; jj < Ny; ++jj) {
+        for (int ii = 0; ii < Nx; ++ii) {
+#endif
             // Interior cell indices (i,j) in [Ng, Ng+N-1]
             const int i = ii + Ng;
             const int j = jj + Ng;
-            
+
             // Cell-centered output index
             const int idx_cell = j * cell_stride + i;
-            
+
             // For gradients at cell (i,j), need neighboring face values
             // dudx: central difference of u at x-faces
             //   u(i+1,j) - u(i-1,j) gives u_face at i+1 and i-1
@@ -56,13 +65,13 @@ void compute_gradients_from_mac_gpu(
             const int u_idx_im = j * u_stride + (i - 1);
             const int u_idx_jp = (j + 1) * u_stride + i;
             const int u_idx_jm = (j - 1) * u_stride + i;
-            
+
             // v at y-faces
             const int v_idx_ip = j * v_stride + (i + 1);
             const int v_idx_im = j * v_stride + (i - 1);
             const int v_idx_jp = (j + 1) * v_stride + i;
             const int v_idx_jm = (j - 1) * v_stride + i;
-            
+
             // Central differences
             dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
             dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_2dy;
@@ -70,14 +79,6 @@ void compute_gradients_from_mac_gpu(
             dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_2dy;
         }
     }
-#else
-    (void)u_face; (void)v_face;
-    (void)dudx_cell; (void)dudy_cell; (void)dvdx_cell; (void)dvdy_cell;
-    (void)Nx; (void)Ny; (void)Ng;
-    (void)dx; (void)dy;
-    (void)u_stride; (void)v_stride; (void)cell_stride;
-    (void)u_total_size; (void)v_total_size; (void)cell_total_size;
-#endif
 }
 
 // ============================================================================
@@ -95,6 +96,8 @@ void compute_mlp_scalar_features_gpu(
     int total_cells, int u_total, int v_total,
     double nu, double delta, double u_ref)
 {
+    NVTX_SCOPE_TURB("kernel:mlp_features");
+
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
@@ -179,6 +182,8 @@ void postprocess_mlp_outputs_gpu(
     int stride,
     double nu_t_max)
 {
+    NVTX_SCOPE_NN("kernel:postprocess_mlp");
+
 #ifdef USE_GPU_OFFLOAD
     const int total_field_size = stride * (Ny + 2*Ng);
     
@@ -226,6 +231,8 @@ void compute_tbnn_features_gpu(
     int cell_stride, int total_cells,
     double nu, double delta)
 {
+    NVTX_SCOPE_TURB("kernel:tbnn_features");
+
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
@@ -348,6 +355,8 @@ void postprocess_nn_outputs_gpu(
     int output_dim,
     double nu_ref)
 {
+    NVTX_SCOPE_NN("kernel:postprocess_nn");
+
 #ifdef USE_GPU_OFFLOAD
     const int NUM_BASIS = 4;
     const bool compute_tau = (tau_xx != nullptr);
@@ -520,6 +529,8 @@ void tbnn_full_pipeline_gpu(
     int Nx, int Ny, double dx, double dy,
     double nu, double delta)
 {
+    NVTX_SCOPE_NN("kernel:tbnn_full_pipeline");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     const int stride = Nx + 2;
@@ -783,6 +794,8 @@ void compute_boussinesq_closure_gpu(
     double k_min, double omega_min,
     double nu_t_max)
 {
+    NVTX_SCOPE_CLOSURE("kernel:boussinesq_closure");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     
@@ -845,6 +858,8 @@ void compute_sst_closure_gpu(
     double k_min, double omega_min,
     double nu_t_max)
 {
+    NVTX_SCOPE_CLOSURE("kernel:sst_closure");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     
@@ -932,6 +947,8 @@ void komega_transport_step_gpu(
     double k_min, double k_max,
     double omega_min, double omega_max)
 {
+    NVTX_SCOPE_TURB("kernel:komega_transport");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     const double inv_2dx = 1.0 / (2.0 * dx);

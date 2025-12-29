@@ -25,10 +25,10 @@ void TurbulenceNNMLP::load(const std::string& weights_dir, const std::string& sc
     }
 }
 
-void TurbulenceNNMLP::upload_to_gpu() {
+void TurbulenceNNMLP::sync_weights_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_ready_) {
-        mlp_.upload_to_gpu();  // Will throw if no GPU available
+        mlp_.sync_weights_to_gpu();  // Will throw if no GPU available
         gpu_ready_ = mlp_.is_on_gpu();
     }
 #endif
@@ -40,7 +40,7 @@ void TurbulenceNNMLP::initialize_gpu_buffers(const Mesh& mesh) {
     gpu::verify_device_available();
     
     const int n_cells = mesh.Nx * mesh.Ny;
-    upload_to_gpu();  // Upload MLP weights if not already done
+    sync_weights_to_gpu();  // Upload MLP weights if not already done
     allocate_gpu_buffers(n_cells);
     gpu_ready_ = (mlp_.is_on_gpu() && buffers_on_gpu_);  // Set gpu_ready after successful allocation
 #else
@@ -170,7 +170,7 @@ void TurbulenceNNMLP::update(
     [[maybe_unused]] const int n_cells = Nx * Ny;
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: require device_view and gpu_ready (no CPU fallback)
+    // GPU path: require device_view and gpu_ready (host fallback forbidden)
     if (!device_view || !gpu_ready_) {
         throw std::runtime_error("NN-MLP GPU pipeline requires device_view and GPU buffers initialized");
     }
@@ -268,7 +268,7 @@ void TurbulenceNNMLP::update(
         baseline_->update(mesh, velocity, k, omega, baseline_nu_t_);
     }
     
-    // CPU-only sequential inference path
+    // Sequential inference path (host build)
     {
         TIMED_SCOPE("nn_mlp_inference_cpu");
         

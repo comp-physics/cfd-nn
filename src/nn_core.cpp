@@ -34,7 +34,7 @@ DenseLayer::DenseLayer(int in, int out)
     : in_dim(in), out_dim(out), W(out * in, 0.0), b(out, 0.0) {}
 
 void DenseLayer::forward(const double* x, double* y) const {
-    // y = W * x + b (CPU version)
+    // y = W * x + b (host implementation)
     // W is stored row-major: W[i * in_dim + j] = W_ij
     for (int i = 0; i < out_dim; ++i) {
         double sum = b[i];
@@ -255,7 +255,7 @@ void MLP::flatten_weights() {
     }
 }
 
-void MLP::upload_to_gpu() {
+void MLP::sync_weights_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_) {
         return;
@@ -463,7 +463,7 @@ void MLP::forward_batch_gpu(double* x_batch, double* y_batch,
         }
     }
 #else
-    // CPU fallback
+    // Host path
     std::vector<double> buf1, buf2;
     int in_dim = input_dim();
     int out_dim = output_dim();

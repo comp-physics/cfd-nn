@@ -101,7 +101,7 @@ def validate_model_directory(model_dir, verbose=True):
             issues.append(f"Error loading normalization files: {e}")
     else:
         if verbose:
-            print(f"  ⚠ No normalization files (optional)")
+            print("  ⚠ No normalization files (optional)")
     
     # Check weight/bias files
     layer_idx = 0
@@ -147,7 +147,7 @@ def validate_model_directory(model_dir, verbose=True):
             for issue in issues:
                 print(f"    - {issue}")
         else:
-            print(f"\n  ✓ PASSED: All checks OK")
+            print("\n  ✓ PASSED: All checks OK")
     
     return len(issues) == 0, issues
 

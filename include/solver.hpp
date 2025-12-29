@@ -22,18 +22,29 @@ enum class VelocityWhich {
 struct FaceVelPtrs {
     const double* u;
     const double* v;
+    const double* w;
     int u_stride;
     int v_stride;
+    int w_stride;
+    int u_plane_stride;
+    int v_plane_stride;
+    int w_plane_stride;
 };
 
 /// Select velocity pointers from SolverDeviceView based on which field
 inline FaceVelPtrs select_face_velocity(const SolverDeviceView& v, VelocityWhich which) {
     switch (which) {
-    case VelocityWhich::Current: return {v.u_face, v.v_face, v.u_stride, v.v_stride};
-    case VelocityWhich::Star:    return {v.u_star_face, v.v_star_face, v.u_stride, v.v_stride};
-    case VelocityWhich::Old:     return {v.u_old_face, v.v_old_face, v.u_stride, v.v_stride};
+    case VelocityWhich::Current: return {v.u_face, v.v_face, v.w_face,
+                                         v.u_stride, v.v_stride, v.w_stride,
+                                         v.u_plane_stride, v.v_plane_stride, v.w_plane_stride};
+    case VelocityWhich::Star:    return {v.u_star_face, v.v_star_face, v.w_star_face,
+                                         v.u_stride, v.v_stride, v.w_stride,
+                                         v.u_plane_stride, v.v_plane_stride, v.w_plane_stride};
+    case VelocityWhich::Old:     return {v.u_old_face, v.v_old_face, v.w_old_face,
+                                         v.u_stride, v.v_stride, v.w_stride,
+                                         v.u_plane_stride, v.v_plane_stride, v.w_plane_stride};
     }
-    return {nullptr, nullptr, 0, 0};
+    return {nullptr, nullptr, nullptr, 0, 0, 0, 0, 0, 0};
 }
 
 /// Boundary condition specification for velocity
@@ -43,10 +54,17 @@ struct VelocityBC {
     Type x_hi = Periodic;
     Type y_lo = NoSlip;
     Type y_hi = NoSlip;
-    
-    // Inflow values (if applicable)
+    Type z_lo = Periodic;  // Default periodic for spanwise direction
+    Type z_hi = Periodic;
+
+    // Inflow values (if applicable) - 2D backward compatible
     std::function<double(double y)> u_inflow = [](double) { return 0.0; };
     std::function<double(double y)> v_inflow = [](double) { return 0.0; };
+
+    // 3D inflow values (if applicable)
+    std::function<double(double y, double z)> u_inflow_3d = [](double, double) { return 0.0; };
+    std::function<double(double y, double z)> v_inflow_3d = [](double, double) { return 0.0; };
+    std::function<double(double y, double z)> w_inflow_3d = [](double, double) { return 0.0; };
 };
 
 /// Incompressible RANS solver using projection method
@@ -62,7 +80,7 @@ public:
     void set_velocity_bc(const VelocityBC& bc);
     
     /// Set body force (pressure gradient equivalent)
-    void set_body_force(double fx, double fy);
+    void set_body_force(double fx, double fy, double fz = 0.0);
     
     /// Initialize velocity field
     void initialize(const VectorField& initial_velocity);
@@ -138,6 +156,12 @@ public:
     void sync_from_gpu();               // Update CPU copy for I/O (data stays on GPU) - downloads all fields
     void sync_solution_from_gpu();      // Sync only solution fields (u,v,p,nu_t) - use for diagnostics/I/O
     void sync_transport_from_gpu();     // Sync transport fields (k,omega) only if needed - guards laminar runs
+
+    /// Check for NaN/Inf in solution fields and abort if detected
+    /// @param step Current step number (used for guard interval checking)
+    /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
+    /// @note Checks velocity, pressure, nu_t, and transport fields (k, omega)
+    void check_for_nan_inf(int step) const;
     
 private:
     const Mesh* mesh_;
@@ -179,15 +203,14 @@ private:
     PoissonBC poisson_bc_x_hi_ = PoissonBC::Periodic;
     PoissonBC poisson_bc_y_lo_ = PoissonBC::Neumann;
     PoissonBC poisson_bc_y_hi_ = PoissonBC::Neumann;
-    double fx_ = 0.0, fy_ = 0.0;  // Body force
+    PoissonBC poisson_bc_z_lo_ = PoissonBC::Periodic;
+    PoissonBC poisson_bc_z_hi_ = PoissonBC::Periodic;
+    double fx_ = 0.0, fy_ = 0.0, fz_ = 0.0;  // Body force (3D)
     
     // State
     int iter_ = 0;
     int step_count_ = 0;  // Track current step for guard
     double current_dt_;
-    
-    // Internal methods
-    void check_for_nan_inf(int step) const;
     
     // Original internal methods
     void apply_velocity_bc();
@@ -217,18 +240,23 @@ private:
     // Persistent pointers to GPU-resident arrays (mapped for solver lifetime)
     double* velocity_u_ptr_ = nullptr;
     double* velocity_v_ptr_ = nullptr;
+    double* velocity_w_ptr_ = nullptr;  // 3D w-velocity
     double* velocity_star_u_ptr_ = nullptr;
     double* velocity_star_v_ptr_ = nullptr;
+    double* velocity_star_w_ptr_ = nullptr;  // 3D w-velocity
     double* velocity_old_u_ptr_ = nullptr;  // Device-resident old velocity for residual
     double* velocity_old_v_ptr_ = nullptr;  // Device-resident old velocity for residual
+    double* velocity_old_w_ptr_ = nullptr;  // 3D w-velocity
     double* pressure_ptr_ = nullptr;
     double* pressure_corr_ptr_ = nullptr;
     double* nu_t_ptr_ = nullptr;
     double* nu_eff_ptr_ = nullptr;
     double* conv_u_ptr_ = nullptr;
     double* conv_v_ptr_ = nullptr;
+    double* conv_w_ptr_ = nullptr;  // 3D convective term
     double* diff_u_ptr_ = nullptr;
     double* diff_v_ptr_ = nullptr;
+    double* diff_w_ptr_ = nullptr;  // 3D diffusive term
     double* rhs_poisson_ptr_ = nullptr;
     double* div_velocity_ptr_ = nullptr;
     double* k_ptr_ = nullptr;
@@ -237,13 +265,21 @@ private:
     // Reynolds stress tensor pointers (for EARSM/TBNN models)
     double* tau_xx_ptr_ = nullptr;
     double* tau_xy_ptr_ = nullptr;
+    double* tau_xz_ptr_ = nullptr;  // 3D
     double* tau_yy_ptr_ = nullptr;
-    
+    double* tau_yz_ptr_ = nullptr;  // 3D
+    double* tau_zz_ptr_ = nullptr;  // 3D
+
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;
     double* dudy_ptr_ = nullptr;
+    double* dudz_ptr_ = nullptr;  // 3D
     double* dvdx_ptr_ = nullptr;
     double* dvdy_ptr_ = nullptr;
+    double* dvdz_ptr_ = nullptr;  // 3D
+    double* dwdx_ptr_ = nullptr;  // 3D
+    double* dwdy_ptr_ = nullptr;  // 3D
+    double* dwdz_ptr_ = nullptr;  // 3D
     double* wall_distance_ptr_ = nullptr;
     
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells

@@ -100,13 +100,13 @@ void SSTClosure::compute_nu_t(
     ensure_initialized(mesh);
     
     // Compute velocity gradients (MAC-aware for CPU/GPU consistency)
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double a1 = constants_.a1;
     
     // NOTE: SSTClosure GPU path is intentionally disabled to avoid pointer aliasing
     // issues with RANSSolver's GPU buffers. The caller (RANSSolver or SSTKOmegaTransport)
-    // handles GPU synchronization when needed. This CPU-only path is acceptable because
+    // handles GPU synchronization when needed. This host path is acceptable because
     // the SST closure computation is relatively cheap compared to transport equation solves.
     
     // CPU path
@@ -337,7 +337,7 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
 }
 
 void SSTKOmegaTransport::free_gpu_buffers() {
-    // No-op for CPU-only builds
+    // No-op for host builds
     buffers_on_gpu_ = false;
 }
 #endif
@@ -377,7 +377,7 @@ void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocit
 void SSTKOmegaTransport::compute_velocity_gradients(
     const Mesh& mesh, const VectorField& velocity)
 {
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
 }
 
 void SSTKOmegaTransport::compute_blending_functions(
@@ -692,8 +692,22 @@ void SSTKOmegaTransport::advance_turbulence(
             k_ptr[idx_c] = k_new;
             omega_ptr[idx_c] = omega_new;
         }
-        
-        // Transport PDE done entirely on GPU - no CPU sync needed
+
+        // Apply wall boundary conditions - sync to CPU, apply, sync back
+        // This was missing and caused NaN at step 5 - ghost cells had garbage values
+        // Using target update instead of inline kernel to avoid nvc++ compiler crash
+
+        // Sync k and omega from device to host
+        #pragma omp target update from(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
+
+        // Apply wall BCs on CPU (reuses existing tested code)
+        apply_wall_bc_k(mesh, k);
+        apply_wall_bc_omega(mesh, omega, k);
+
+        // Sync back to device
+        #pragma omp target update to(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
+
+        // Transport PDE done - wall BCs now applied
         return;
     }
 #else
@@ -1207,8 +1221,8 @@ void KOmegaTransport::advance_turbulence(
     (void)device_view;
 #endif
     
-    // CPU fallback path (only used when GPU offload disabled or device_view invalid)
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    // Host path (only used when GPU offload disabled or device_view invalid)
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;
     const double dy = mesh.dy;

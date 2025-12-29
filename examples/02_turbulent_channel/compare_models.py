@@ -226,8 +226,8 @@ def main():
     # Try to display
     try:
         plt.show()
-    except:
-        pass
+    except Exception:
+        pass  # Ignore display errors in headless/CI environments; plot already saved
     
     print("="*60)
     print("Comparison complete!")

@@ -138,13 +138,13 @@ def fix_model_normalization(model_dir, mode='reasonable', backup=True):
     if mode == 'reasonable':
         if n_features == 5:
             new_means, new_stds = generate_reasonable_tbnn_stats()
-            print(f"\n✓ Generated reasonable TBNN normalization stats")
+            print("\n✓ Generated reasonable TBNN normalization stats")
         else:
             print(f"\n⚠ Unknown feature count ({n_features}), using identity normalization")
             new_means, new_stds = disable_normalization(n_features)
     else:  # disable
         new_means, new_stds = disable_normalization(n_features)
-        print(f"\n✓ Generated identity normalization (disabled)")
+        print("\n✓ Generated identity normalization (disabled)")
     
     print(f"New means: {new_means}")
     print(f"New stds:  {new_stds}")
@@ -153,7 +153,7 @@ def fix_model_normalization(model_dir, mode='reasonable', backup=True):
     np.savetxt(means_file, new_means, fmt='%.16e')
     np.savetxt(stds_file, new_stds, fmt='%.16e')
     
-    print(f"\n✓ Updated normalization files")
+    print("\n✓ Updated normalization files")
     
     # Verify
     verify_means = np.loadtxt(means_file)
@@ -164,7 +164,7 @@ def fix_model_normalization(model_dir, mode='reasonable', backup=True):
         print(f"\n✗ ERROR: New stats still have issues: {verify_issues}")
         return False
     else:
-        print(f"✓ Verified: New stats are valid")
+        print("✓ Verified: New stats are valid")
         return True
 
 

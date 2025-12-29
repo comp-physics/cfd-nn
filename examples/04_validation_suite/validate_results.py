@@ -193,7 +193,7 @@ def main():
     
     # Create validation report figure
     n_cases = len(results)
-    fig = plt.figure(figsize=(14, 4*((n_cases+1)//2)))
+    plt.figure(figsize=(14, 4*((n_cases+1)//2)))
     
     plot_idx = 1
     for case_name, data in results.items():
@@ -259,13 +259,12 @@ def main():
     
     try:
         plt.show()
-    except:
-        pass
+    except Exception:
+        pass  # Ignore display errors in headless/CI environments; plot already saved
 
 if __name__ == '__main__':
-    try:
-        import scipy
-    except ImportError:
+    import importlib.util
+    if importlib.util.find_spec('scipy') is None:
         print("WARNING: scipy not installed - install for full functionality")
         print("  pip install scipy")
         print()

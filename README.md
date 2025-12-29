@@ -4,7 +4,7 @@
 
 A **high-performance C++ solver** for **incompressible turbulence simulations** with **pluggable turbulence closures** ranging from classical algebraic models to advanced transport equations and data-driven neural networks. Features a fractional-step projection method with a multigrid Poisson solver, pure C++ NN inference, and comprehensive GPU acceleration.
 
-The solver supports **10 turbulence models** spanning algebraic (mixing length, GEP), transport equation (SST k-ω, k-ω), explicit algebraic Reynolds stress (EARSM), and neural network closures (MLP, TBNN). All models support GPU offload via OpenMP target directives for NVIDIA and AMD GPUs, achieving 10-50x speedup on large grids.
+The solver supports **10 turbulence closure options**: 3 algebraic (baseline, GEP), 2 transport (SST k-ω, k-ω), 3 EARSM variants (Wallin-Johansson, Gatski-Speziale, Pope), and 2 neural network closures (MLP, TBNN). All models support GPU offload via OpenMP target directives for NVIDIA and AMD GPUs, achieving 10-50x speedup on large grids.
 
 ## Features
 

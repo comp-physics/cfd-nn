@@ -202,7 +202,7 @@ def main():
             print(f"  {g1:12s} → {g2:12s}:  r = {r:.2f}    p = {p_obs:.2f}")
         
         print()
-        print(f"Expected order for 2nd-order scheme: p ≈ 2.0")
+        print("Expected order for 2nd-order scheme: p ≈ 2.0")
         print()
     
     # Plot convergence
@@ -297,8 +297,8 @@ def main():
     # Try to display
     try:
         plt.show()
-    except:
-        pass
+    except Exception:
+        pass  # Ignore display errors in headless/CI environments; plot already saved
     
     print()
     print("="*70)
@@ -312,10 +312,9 @@ def main():
     print()
 
 if __name__ == '__main__':
-    # Try importing scipy for interpolation
-    try:
-        import scipy
-    except ImportError:
+    # Check for scipy availability
+    import importlib.util
+    if importlib.util.find_spec('scipy') is None:
         print("WARNING: scipy not found - install for full functionality")
         print("  pip install scipy")
         print()

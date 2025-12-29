@@ -70,16 +70,23 @@ struct TurbulenceDeviceView {
 /// mapped to GPU via `target enter data`. Kernels use `map(present: ...)` to
 /// access device copies. No device-to-host transfers occur during compute.
 struct SolverDeviceView {
-    // Velocity fields (staggered)
+    // Velocity fields (staggered) - 2D/3D
     double* u_face = nullptr;
     double* v_face = nullptr;
+    double* w_face = nullptr;  // 3D
     double* u_star_face = nullptr;
     double* v_star_face = nullptr;
+    double* w_star_face = nullptr;  // 3D
     double* u_old_face = nullptr;
     double* v_old_face = nullptr;
+    double* w_old_face = nullptr;  // 3D
     int u_stride = 0;
     int v_stride = 0;
-    
+    int w_stride = 0;  // 3D
+    int u_plane_stride = 0;  // 3D
+    int v_plane_stride = 0;  // 3D
+    int w_plane_stride = 0;  // 3D
+
     // Scalar fields (cell-centered)
     double* p = nullptr;
     double* p_corr = nullptr;
@@ -88,20 +95,25 @@ struct SolverDeviceView {
     double* rhs = nullptr;
     double* div = nullptr;
     int cell_stride = 0;
-    
+    int cell_plane_stride = 0;  // 3D
+
     // Work arrays
     double* conv_u = nullptr;
     double* conv_v = nullptr;
+    double* conv_w = nullptr;  // 3D
     double* diff_u = nullptr;
     double* diff_v = nullptr;
-    
+    double* diff_w = nullptr;  // 3D
+
     // Mesh parameters
-    int Nx = 0, Ny = 0, Ng = 0;
-    double dx = 0.0, dy = 0.0, dt = 0.0;
-    
+    int Nx = 0, Ny = 0, Nz = 1, Ng = 0;
+    double dx = 0.0, dy = 0.0, dz = 1.0, dt = 0.0;
+
     bool is_valid() const {
         return (u_face && v_face && p && nu_eff && Nx > 0 && Ny > 0);
     }
+
+    bool is3D() const { return Nz > 1; }
 };
 
 /// Abstract base class for turbulence closures

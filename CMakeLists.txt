@@ -169,6 +169,17 @@ target_link_libraries(profile_poisson_warmstart nn_cfd_core)
 add_executable(profile_large_grid app/profile_large_grid.cpp)
 target_link_libraries(profile_large_grid nn_cfd_core)
 
+# Comprehensive kernel-level profiling (all turbulence models + 3D)
+add_executable(profile_kernels app/profile_kernels.cpp)
+target_link_libraries(profile_kernels nn_cfd_core)
+
+# 3D applications
+add_executable(duct app/main_duct.cpp)
+target_link_libraries(duct nn_cfd_core)
+
+add_executable(taylor_green_3d app/main_taylor_green_3d.cpp)
+target_link_libraries(taylor_green_3d nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -181,11 +192,19 @@ if(BUILD_TESTS)
     add_executable(test_poisson tests/test_poisson.cpp)
     target_link_libraries(test_poisson nn_cfd_core)
     add_test(NAME PoissonTest COMMAND test_poisson)
-    
+
+    add_executable(test_poisson_solvers tests/test_poisson_solvers.cpp)
+    target_link_libraries(test_poisson_solvers nn_cfd_core)
+    add_test(NAME PoissonSolversTest COMMAND test_poisson_solvers)
+
     add_executable(test_solver tests/test_solver.cpp)
     target_link_libraries(test_solver nn_cfd_core)
     add_test(NAME SolverTest COMMAND test_solver)
-    
+
+    add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
+    target_link_libraries(test_2d_3d_comparison nn_cfd_core)
+    add_test(NAME Comparison2D3DTest COMMAND test_2d_3d_comparison)
+
     add_executable(test_features tests/test_features.cpp)
     target_link_libraries(test_features nn_cfd_core)
     add_test(NAME FeaturesTest COMMAND test_features)
@@ -250,6 +269,66 @@ if(BUILD_TESTS)
     add_executable(test_turbulence_features tests/test_turbulence_features.cpp)
     target_link_libraries(test_turbulence_features nn_cfd_core)
     add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
+
+    # 3D Poisson CPU vs GPU comparison - verifies GPU implementation matches CPU exactly
+    add_executable(test_poisson_cpu_gpu_3d tests/test_poisson_cpu_gpu_3d.cpp)
+    target_link_libraries(test_poisson_cpu_gpu_3d nn_cfd_core)
+    add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
+
+    # Fast 3D validation tests - quick smoke tests (~5s)
+    add_executable(test_3d_quick_validation tests/test_3d_quick_validation.cpp)
+    target_link_libraries(test_3d_quick_validation nn_cfd_core)
+    add_test(NAME Quick3DValidationTest COMMAND test_3d_quick_validation)
+
+    # Fast 3D Poiseuille tests - analytical validation (~10s)
+    add_executable(test_3d_poiseuille_fast tests/test_3d_poiseuille_fast.cpp)
+    target_link_libraries(test_3d_poiseuille_fast nn_cfd_core)
+    add_test(NAME Fast3DPoiseuilleTest COMMAND test_3d_poiseuille_fast)
+
+    # 3D boundary condition tests (~5s)
+    add_executable(test_3d_bc_application tests/test_3d_bc_application.cpp)
+    target_link_libraries(test_3d_bc_application nn_cfd_core)
+    add_test(NAME BC3DApplicationTest COMMAND test_3d_bc_application)
+
+    # CPU/GPU bitwise comparison - enforces code sharing paradigm (~15s)
+    add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
+    target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
+    add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
+
+    # 3D gradient tests - verifies gradient computation (~5s)
+    add_executable(test_3d_gradients tests/test_3d_gradients.cpp)
+    target_link_libraries(test_3d_gradients nn_cfd_core)
+    add_test(NAME Gradients3DTest COMMAND test_3d_gradients)
+
+    # 3D w-velocity tests - tests the 3D-specific component (~5s)
+    add_executable(test_3d_w_velocity tests/test_3d_w_velocity.cpp)
+    target_link_libraries(test_3d_w_velocity nn_cfd_core)
+    add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
+
+    # 3D Taylor-Green vortex - verifies 3D viscous decay and time integration
+    add_executable(test_taylor_green_3d tests/test_taylor_green_3d.cpp)
+    target_link_libraries(test_taylor_green_3d nn_cfd_core)
+    add_test(NAME TaylorGreen3DTest COMMAND test_taylor_green_3d)
+
+    # All turbulence models smoke test - verifies all 10 models run without crashing
+    add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
+    target_link_libraries(test_all_turbulence_models_smoke nn_cfd_core)
+    add_test(NAME AllTurbulenceModelsSmokeTest COMMAND test_all_turbulence_models_smoke)
+
+    # Transport equation realizability - verifies k>0, omega>0 over long runs
+    add_executable(test_transport_realizability tests/test_transport_realizability.cpp)
+    target_link_libraries(test_transport_realizability nn_cfd_core)
+    add_test(NAME TransportRealizabilityTest COMMAND test_transport_realizability)
+
+    # EARSM trace-free constraint - verifies b_xx + b_yy = 0
+    add_executable(test_earsm_trace_free tests/test_earsm_trace_free.cpp)
+    target_link_libraries(test_earsm_trace_free nn_cfd_core)
+    add_test(NAME EARSMTraceFreeTest COMMAND test_earsm_trace_free)
+
+    # GPU utilization test - validates compute runs on GPU for GPU builds
+    add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
+    target_link_libraries(test_gpu_utilization nn_cfd_core)
+    add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 endif()
 
 # Installation

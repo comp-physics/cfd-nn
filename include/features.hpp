@@ -43,9 +43,12 @@ struct VelocityGradient {
     }
 };
 
-/// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
-/// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
-void compute_gradients_from_mac_cpu(
+/// Compute gradients from MAC staggered grid (abstraction wrapper)
+/// This extracts raw pointers and calls the unified implementation in
+/// gpu_kernels::compute_gradients_from_mac_gpu, which handles both CPU and
+/// GPU paths via conditional compilation. This ensures CPU/GPU consistency
+/// by having a single source of truth for the gradient computation.
+void compute_gradients_from_mac(
     const Mesh& mesh,
     const VectorField& velocity,
     ScalarField& dudx, ScalarField& dudy,
@@ -53,14 +56,13 @@ void compute_gradients_from_mac_cpu(
 );
 
 /// Feature computation for scalar eddy viscosity NN
-/// Standard features include:
+/// Computes 6 features:
 ///   0: normalized strain rate magnitude (S * delta / u_ref)
-///   1: normalized rotation rate magnitude (Omega * delta / u_ref)  
+///   1: normalized rotation rate magnitude (Omega * delta / u_ref)
 ///   2: normalized wall distance (y / delta)
 ///   3: strain-rotation ratio (Omega / S)
 ///   4: local Reynolds number (S * delta^2 / nu)
 ///   5: normalized velocity magnitude
-///   etc.
 Features compute_features_scalar_nut(
     const Mesh& mesh,
     const VectorField& velocity,
@@ -72,7 +74,7 @@ Features compute_features_scalar_nut(
 );
 
 /// Feature computation for TBNN model
-/// Includes invariants of normalized S and Omega tensors
+/// Computes 5 scalar invariants of normalized S and Omega tensors
 Features compute_features_tbnn(
     const Mesh& mesh,
     const VectorField& velocity,

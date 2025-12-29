@@ -9,7 +9,6 @@ Usage:
     python safe_extract.py <zip_file> <output_dir>
 """
 
-import os
 import sys
 import pathlib
 import zipfile

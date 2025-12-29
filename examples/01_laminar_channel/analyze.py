@@ -142,16 +142,16 @@ def main():
     rms_error = np.sqrt(np.mean(error**2))
     rel_error = max_error / np.max(u_analytical)
     
-    print(f"Physical Parameters:")
+    print("Physical Parameters:")
     print(f"  Channel height (H): {H}")
     print(f"  Viscosity (nu): {nu}")
     print(f"  Pressure gradient (dp/dx): {dp_dx}")
     print()
-    print(f"Maximum velocity:")
+    print("Maximum velocity:")
     print(f"  Analytical: {np.max(u_analytical):.6f}")
     print(f"  Numerical:  {np.max(u_profile):.6f}")
     print()
-    print(f"Error metrics:")
+    print("Error metrics:")
     print(f"  Max error:  {max_error:.2e}")
     print(f"  RMS error:  {rms_error:.2e}")
     print(f"  Relative:   {rel_error*100:.3f}%")
@@ -195,8 +195,8 @@ def main():
     # Try to display if in interactive mode
     try:
         plt.show()
-    except:
-        pass
+    except Exception:
+        pass  # Ignore display errors in headless/CI environments; plot already saved
     
     print()
     print("="*60)

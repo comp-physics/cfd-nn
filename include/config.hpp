@@ -47,7 +47,14 @@ struct Config {
     double y_max = 1.0;
     bool stretch_y = false;
     double stretch_beta = 2.0;  ///< Stretching parameter for tanh stretching
-    
+
+    // Z-direction parameters (3D)
+    int Nz = 1;                 ///< Grid cells in z (1 = 2D simulation)
+    double z_min = 0.0;
+    double z_max = 1.0;
+    bool stretch_z = false;
+    double stretch_beta_z = 2.0;  ///< Stretching parameter for z-direction
+
     // Physical parameters
     double Re = 1000.0;         ///< Reynolds number (based on channel half-height and bulk velocity)
     double nu = 0.001;          ///< Kinematic viscosity (computed from Re)
@@ -96,7 +103,7 @@ struct Config {
     
     // Poisson solver
     double poisson_tol = 1e-6;
-    int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve (reduced from 10000 for performance)
+    int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     

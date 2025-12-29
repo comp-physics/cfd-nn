@@ -13,41 +13,49 @@
 /// form the inputs to data-driven closures like TBNN and EARSM.
 
 #include "features.hpp"
+#include "gpu_kernels.hpp"
 #include <cmath>
 #include <algorithm>
 
 namespace nncfd {
 
-/// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
-/// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
-void compute_gradients_from_mac_cpu(
+/// Compute gradients from MAC staggered grid (wrapper for abstraction types)
+/// This thin wrapper extracts raw pointers from Mesh/VectorField/ScalarField
+/// and calls the unified implementation in gpu_kernels::compute_gradients_from_mac_gpu.
+/// The unified implementation handles both CPU and GPU paths via conditional compilation.
+void compute_gradients_from_mac(
     const Mesh& mesh,
     const VectorField& velocity,
     ScalarField& dudx, ScalarField& dudy,
     ScalarField& dvdx, ScalarField& dvdy) {
-    
-    const double inv_2dx = 1.0 / (2.0 * mesh.dx);
-    const double inv_2dy = 1.0 / (2.0 * mesh.dy);
-    
-    // Loop over interior cells
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // For gradients at cell (i,j), sample neighboring face values
-            // This matches the GPU kernel's indexing exactly
-            
-            // dudx: central difference of u at x-faces
-            dudx(i, j) = (velocity.u(i + 1, j) - velocity.u(i - 1, j)) * inv_2dx;
-            
-            // dudy: central difference of u at x-faces in y-direction
-            dudy(i, j) = (velocity.u(i, j + 1) - velocity.u(i, j - 1)) * inv_2dy;
-            
-            // dvdx: central difference of v at y-faces in x-direction
-            dvdx(i, j) = (velocity.v(i + 1, j) - velocity.v(i - 1, j)) * inv_2dx;
-            
-            // dvdy: central difference of v at y-faces
-            dvdy(i, j) = (velocity.v(i, j + 1) - velocity.v(i, j - 1)) * inv_2dy;
-        }
-    }
+
+    // Extract raw pointers from abstractions
+    const double* u_face = velocity.u_data().data();
+    const double* v_face = velocity.v_data().data();
+    double* dudx_cell = dudx.data().data();
+    double* dudy_cell = dudy.data().data();
+    double* dvdx_cell = dvdx.data().data();
+    double* dvdy_cell = dvdy.data().data();
+
+    // Get dimensions and strides
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Ng = mesh.Nghost;
+    const int u_stride = velocity.u_stride();
+    const int v_stride = velocity.v_stride();
+    const int cell_stride = mesh.total_Nx();
+
+    // Call the unified implementation (uses CPU path when USE_GPU_OFFLOAD not defined)
+    gpu_kernels::compute_gradients_from_mac_gpu(
+        u_face, v_face,
+        dudx_cell, dudy_cell, dvdx_cell, dvdy_cell,
+        Nx, Ny, Ng,
+        mesh.dx, mesh.dy,
+        u_stride, v_stride, cell_stride,
+        velocity.u_total_size(),
+        velocity.v_total_size(),
+        static_cast<int>(dudx.data().size())
+    );
 }
 
 Features compute_features_scalar_nut(
@@ -328,7 +336,7 @@ void FeatureComputer::compute_scalar_features(
     std::vector<Features>& features) {
     
     // Compute all gradients first (MAC-aware for CPU/GPU consistency)
-    compute_gradients_from_mac_cpu(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Resize output
     int n_interior = mesh_->Nx * mesh_->Ny;
@@ -351,7 +359,7 @@ void FeatureComputer::compute_tbnn_features(
     std::vector<Features>& features,
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>>& basis) {
     
-    compute_gradients_from_mac_cpu(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     int n_interior = mesh_->Nx * mesh_->Ny;
     features.resize(n_interior);

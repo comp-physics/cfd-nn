@@ -94,21 +94,6 @@ Quantifies numerical error using Richardson extrapolation across 4 grid levels.
 
 ---
 
-### [04_taylor_green_convergence/](04_taylor_green_convergence/) - **Temporal Accuracy**
-
-**What**: Taylor-Green vortex convergence study  
-**Time**: ~15 minutes  
-**Level**: Advanced  
-
-Validates temporal integration accuracy using exact Taylor-Green solution.
-
-**Key Learning**:
-- Verify temporal order of accuracy
-- Energy decay verification
-- Time step sensitivity
-
----
-
 ### [04_validation_suite/](04_validation_suite/) - **Benchmark Suite**
 
 **What**: 4 validation cases (2 analytical, 2 DNS benchmarks)  
@@ -128,9 +113,9 @@ Comprehensive test suite comparing against:
 
 ### [05_channel_retau180_sst/](05_channel_retau180_sst/) - **SST k-ω Model**
 
-**What**: High-Reynolds turbulent channel with SST k-ω transport  
-**Time**: ~20 minutes (GPU), ~1 hour (CPU)  
-**Level**: Advanced  
+**What**: High-Reynolds turbulent channel with SST k-ω transport
+**Time**: ~20 minutes (GPU), ~1 hour (CPU)
+**Level**: Advanced
 
 Demonstrates full transport equation turbulence modeling with SST k-ω.
 
@@ -138,6 +123,38 @@ Demonstrates full transport equation turbulence modeling with SST k-ω.
 - Transport equation models
 - GPU acceleration benefits
 - Complex turbulence physics
+
+---
+
+## Phase 2: 3D Validation Examples
+
+### [08_duct_flow/](08_duct_flow/) - **3D Square Duct**
+
+**What**: 3D laminar flow in a square duct
+**Time**: ~5-20 minutes (depending on grid)
+**Level**: Intermediate
+
+Validates 3D solver against analytical solution for duct flow.
+
+**Key Learning**:
+- 3D mesh setup and BCs
+- Multi-wall boundary conditions
+- 3D Poisson solver performance
+
+---
+
+### [09_taylor_green_3d/](09_taylor_green_3d/) - **3D Taylor-Green Vortex**
+
+**What**: Classic 3D validation case with known analytical decay
+**Time**: ~5-30 minutes (depending on Re)
+**Level**: Intermediate
+
+Demonstrates 3D unsteady simulation with energy tracking.
+
+**Key Learning**:
+- 3D periodic domains
+- Kinetic energy decay validation
+- Vortex dynamics (high Re)
 
 ---
 
@@ -429,6 +446,8 @@ And the relevant turbulence model papers (see individual example READMEs).
 | 02 | Model Comparison | Model evaluation | 25 min | [*][*] | All 5 |
 | 03 | Grid Refinement | Convergence study | 25 min | [*][*][*] | None |
 | 04 | Validation Suite | Benchmarking | 35 min | [*][*] | None, Baseline |
+| 08 | Duct Flow | 3D Verification | 5-20 min | [*][*] | None |
+| 09 | Taylor-Green 3D | 3D Unsteady | 5-30 min | [*][*] | None |
 
 **Legend**: [*] Beginner | [*][*] Intermediate | [*][*][*] Advanced
 

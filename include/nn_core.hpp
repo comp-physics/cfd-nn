@@ -45,7 +45,7 @@ struct DenseLayer {
 /// Multi-layer perceptron with GPU acceleration
 /// 
 /// GPU Strategy:
-/// - Weights are uploaded to GPU once via upload_to_gpu()
+/// - Weights are uploaded to GPU once via sync_weights_to_gpu()
 /// - Weights remain on GPU for entire simulation
 /// - forward_batch_gpu() processes all grid cells in parallel
 /// - Input/output buffers are managed externally for zero-copy
@@ -92,8 +92,8 @@ public:
     /// Apply input scaling (CPU)
     void scale_input(std::vector<double>& x) const;
     
-    /// Upload all weights and scaling to GPU (call once after loading)
-    void upload_to_gpu();
+    /// Sync all weights and scaling to GPU (call once after loading)
+    void sync_weights_to_gpu();
     
     /// Check if weights are on GPU
     bool is_on_gpu() const { return gpu_ready_; }

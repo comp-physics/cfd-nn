@@ -14,7 +14,6 @@ Usage:
 """
 
 import subprocess
-import os
 import sys
 import argparse
 import numpy as np
@@ -90,7 +89,7 @@ class ModelRunner:
         executable = self.build_dir / self.case
         if not executable.exists():
             print(f"ERROR: Executable not found: {executable}")
-            print(f"Please build the project first: cd build && make")
+            print("Please build the project first: cd build && make")
             return None
         
         cmd = [
@@ -138,7 +137,7 @@ class ModelRunner:
             }
             
         except subprocess.TimeoutExpired:
-            print(f"ERROR: Solver timed out after 5 minutes")
+            print("ERROR: Solver timed out after 5 minutes")
             return None
         except Exception as e:
             print(f"ERROR: {e}")
@@ -190,7 +189,7 @@ class ModelRunner:
             return
         
         print(f"\n{'='*70}")
-        print(f"COMPARISON REPORT")
+        print("COMPARISON REPORT")
         print(f"{'='*70}\n")
         
         report_lines = []
@@ -258,8 +257,8 @@ def plot_comparison(results, case='channel'):
             data = np.loadtxt(vel_file)
             if data.ndim == 2 and data.shape[1] >= 2:
                 profiles[result['model']] = data
-        except:
-            pass
+        except Exception:
+            pass  # Skip files that cannot be loaded; velocity profiles are optional
     
     if not profiles:
         print("No velocity data found for plotting")
@@ -299,7 +298,7 @@ def plot_comparison(results, case='channel'):
     
     plt.tight_layout()
     plt.savefig('model_comparison.png', dpi=150)
-    print(f"Plot saved to: model_comparison.png")
+    print("Plot saved to: model_comparison.png")
     
     plt.show()
 

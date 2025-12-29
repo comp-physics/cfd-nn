@@ -8,14 +8,21 @@ namespace nncfd {
 namespace gpu_kernels {
 
 // ============================================================================
-// GPU Kernel: Compute cell-centered gradients from staggered MAC grid
+// Unified Kernel: Compute cell-centered gradients from staggered MAC grid
 // ============================================================================
+// This is the SINGLE SOURCE OF TRUTH for gradient computation. It provides:
+//   - GPU path: Uses OpenMP target offloading (when USE_GPU_OFFLOAD defined)
+//   - CPU path: Same logic without offloading (when USE_GPU_OFFLOAD not defined)
+//
+// The abstraction wrapper (compute_gradients_from_mac in features.cpp) calls this
+// function after extracting raw pointers from the abstraction types.
+//
 // This kernel matches VectorField's staggered layout:
 //   - u stored at x-faces: size (Ny+2Ng) × (Nx+2Ng+1)
 //   - v stored at y-faces: size (Ny+2Ng+1) × (Nx+2Ng)
 //   - Outputs are cell-centered: size (Ny+2Ng) × (Nx+2Ng)
 //
-// Uses central differences matching CPU compute_gradients_from_mac_cpu():
+// Uses central differences:
 //   dudx(i,j) = (u(i+1,j) - u(i-1,j)) / (2*dx)
 //   dudy(i,j) = (u(i,j+1) - u(i,j-1)) / (2*dy)
 //   etc.
@@ -120,7 +127,7 @@ void tbnn_full_pipeline_gpu(
     // Turbulence quantities (interior only)
     const double* k, const double* omega,
     const double* wall_distance,
-    // NN weights (already on GPU via MLP::upload_to_gpu)
+    // NN weights (already on GPU via MLP::sync_weights_to_gpu)
     const double* nn_weights, const double* nn_biases,
     const int* weight_offsets, const int* bias_offsets,
     const int* layer_dims, const int* activation_types,

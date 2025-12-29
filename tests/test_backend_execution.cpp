@@ -155,7 +155,7 @@ void test_mlp_execution() {
     }
     
     // GPU path - upload and test batched inference
-    mlp.upload_to_gpu();
+    mlp.sync_weights_to_gpu();
     
     if (!mlp.is_on_gpu()) {
         std::cout << "WARNING (GPU upload failed, using CPU)\n";

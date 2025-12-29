@@ -276,7 +276,7 @@ def main():
         print("\n" + "=" * 60)
         print("COMPARISON COMPLETE (PASS)")
         print("=" * 60)
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  - Comparison plot: {plot_file}")
         print(f"  - Velocity data:   {profile_file}")
         print("\nReference:")
