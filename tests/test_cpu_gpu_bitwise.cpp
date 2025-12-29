@@ -39,7 +39,7 @@ bool file_exists(const std::string& path) {
 
 // Write velocity field component to file
 void write_field_data(const std::string& filename,
-                      const Mesh& mesh,
+                      [[maybe_unused]] const Mesh& mesh,
                       const std::function<double(int, int, int)>& getter,
                       int i_begin, int i_end, int j_begin, int j_end, int k_begin, int k_end) {
     std::ofstream file(filename);
@@ -280,7 +280,7 @@ int run_dump_mode(const std::string& prefix) {
 // Compare mode: Run GPU and compare against CPU reference
 //=============================================================================
 
-int run_compare_mode(const std::string& prefix) {
+int run_compare_mode([[maybe_unused]] const std::string& prefix) {
 #ifndef USE_GPU_OFFLOAD
     std::cerr << "ERROR: --compare-prefix requires GPU build\n";
     std::cerr << "       This binary was built with USE_GPU_OFFLOAD=OFF\n";
@@ -450,38 +450,43 @@ void print_usage(const char* prog) {
 }
 
 int main(int argc, char* argv[]) {
-    std::string dump_prefix, compare_prefix;
+    try {
+        std::string dump_prefix, compare_prefix;
 
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--dump-prefix") == 0 && i + 1 < argc) {
-            dump_prefix = argv[++i];
-        } else if (std::strcmp(argv[i], "--compare-prefix") == 0 && i + 1 < argc) {
-            compare_prefix = argv[++i];
-        } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
-            print_usage(argv[0]);
-            return 0;
+        for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--dump-prefix") == 0 && i + 1 < argc) {
+                dump_prefix = argv[++i];
+            } else if (std::strcmp(argv[i], "--compare-prefix") == 0 && i + 1 < argc) {
+                compare_prefix = argv[++i];
+            } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+                print_usage(argv[0]);
+                return 0;
+            } else {
+                std::cerr << "Unknown argument: " << argv[i] << "\n";
+                print_usage(argv[0]);
+                return 1;
+            }
+        }
+
+        std::cout << "=== CPU/GPU Bitwise Comparison Test ===\n";
+#ifdef USE_GPU_OFFLOAD
+        std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
+#else
+        std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
+#endif
+        std::cout << "Tolerance: " << std::scientific << TOLERANCE << "\n\n";
+
+        if (!dump_prefix.empty()) {
+            return run_dump_mode(dump_prefix);
+        } else if (!compare_prefix.empty()) {
+            return run_compare_mode(compare_prefix);
         } else {
-            std::cerr << "Unknown argument: " << argv[i] << "\n";
+            std::cerr << "ERROR: This test requires --dump-prefix or --compare-prefix\n\n";
             print_usage(argv[0]);
             return 1;
         }
-    }
-
-    std::cout << "=== CPU/GPU Bitwise Comparison Test ===\n";
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
-    std::cout << "Tolerance: " << std::scientific << TOLERANCE << "\n\n";
-
-    if (!dump_prefix.empty()) {
-        return run_dump_mode(dump_prefix);
-    } else if (!compare_prefix.empty()) {
-        return run_compare_mode(compare_prefix);
-    } else {
-        std::cerr << "ERROR: This test requires --dump-prefix or --compare-prefix\n\n";
-        print_usage(argv[0]);
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: " << e.what() << "\n";
         return 1;
     }
 }
