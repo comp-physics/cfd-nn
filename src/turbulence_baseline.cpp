@@ -464,17 +464,17 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             auto model = std::make_unique<TurbulenceNNMLP>();
             if (!weights_path.empty()) {
                 model->load(weights_path, scaling_path);
-                // Upload NN weights to GPU (if available)
+                // Sync NN weights to GPU (if available)
                 model->sync_weights_to_gpu();
             }
             return model;
         }
-            
+
         case TurbulenceModelType::NNTBNN: {
             auto model = std::make_unique<TurbulenceNNTBNN>();
             if (!weights_path.empty()) {
                 model->load(weights_path, scaling_path);
-                // Upload NN weights to GPU (if available)
+                // Sync NN weights to GPU (if available)
                 model->sync_weights_to_gpu();
             }
             return model;

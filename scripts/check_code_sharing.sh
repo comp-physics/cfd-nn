@@ -19,6 +19,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/../src"
 
+# Validate source directory exists
+if [ ! -d "$SRC_DIR" ]; then
+    echo "ERROR: Source directory not found: $SRC_DIR"
+    exit 1
+fi
+
 echo "=== Code Sharing Paradigm Check ==="
 echo ""
 
@@ -67,11 +73,13 @@ echo "Check 2: Verifying #ifdef USE_GPU_OFFLOAD blocks are for allowed purposes.
 echo "  [INFO] Scanning for potentially duplicated compute logic..."
 echo "  (Manual review recommended for complex cases)"
 
-# Count GPU ifdef blocks in key files
-for file in solver.cpp gpu_kernels.cpp; do
-    if [ -f "$SRC_DIR/$file" ]; then
-        count=$(grep -c "#ifdef USE_GPU_OFFLOAD" "$SRC_DIR/$file" 2>/dev/null || echo "0")
-        echo "  $file: $count #ifdef USE_GPU_OFFLOAD blocks"
+# Count GPU ifdef blocks in all source files
+for file in "$SRC_DIR"/*.cpp; do
+    if [ -f "$file" ]; then
+        count=$(grep -c "#ifdef USE_GPU_OFFLOAD" "$file" 2>/dev/null | head -1 || echo "0")
+        if [ -n "$count" ] && [ "$count" -gt 0 ] 2>/dev/null; then
+            echo "  $(basename "$file"): $count #ifdef USE_GPU_OFFLOAD blocks"
+        fi
     fi
 done
 

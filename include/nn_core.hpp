@@ -92,7 +92,7 @@ public:
     /// Apply input scaling (CPU)
     void scale_input(std::vector<double>& x) const;
     
-    /// Upload all weights and scaling to GPU (call once after loading)
+    /// Sync all weights and scaling to GPU (call once after loading)
     void sync_weights_to_gpu();
     
     /// Check if weights are on GPU
