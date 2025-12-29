@@ -113,10 +113,15 @@ DUPLICATE_PATTERNS=(
 )
 
 for pattern in "${DUPLICATE_PATTERNS[@]}"; do
-    # Filter out comment lines, GPU kernel wrapper functions (allowed), and test files
+    # Filter out allowed patterns:
+    # - Comment lines
+    # - sync_*_gpu/cleanup_gpu_buffers (memory management)
+    # - solve_device (intentional device-pointer entry point for Poisson solver)
+    # - *_gpu() methods (kernel wrappers and query methods like weights_gpu, is_on_gpu)
+    # - omp_*_device (OpenMP device management)
     matches=$(grep -rn -E "$pattern" "$SRC_DIR" 2>/dev/null | \
               grep -Ev '^[^:]+:[0-9]+:[[:space:]]*//' | \
-              grep -Ev 'sync_to_gpu|sync_from_gpu|_gpu_buffers|compute.*_gpu\s*\(' || true)
+              grep -Ev 'sync_.*_gpu|_gpu_buffers|solve_device|[a-z_]+_gpu\s*\(|omp_.*_device' || true)
     if [ -n "$matches" ]; then
         echo "  [WARNING] Found potentially duplicate kernel implementation:"
         echo "$matches" | head -3

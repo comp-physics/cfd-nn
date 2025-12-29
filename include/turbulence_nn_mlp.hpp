@@ -57,7 +57,7 @@ public:
     const MLP& mlp() const { return mlp_; }
     
     /// Upload NN weights to GPU (call after load())
-    void upload_to_gpu();
+    void sync_weights_to_gpu();
     
     /// GPU buffer management (override from base)
     void initialize_gpu_buffers(const Mesh& mesh) override;

@@ -14,7 +14,7 @@ namespace gpu_kernels {
 //   - GPU path: Uses OpenMP target offloading (when USE_GPU_OFFLOAD defined)
 //   - CPU path: Same logic without offloading (when USE_GPU_OFFLOAD not defined)
 //
-// The CPU wrapper (compute_gradients_from_mac_cpu in features.cpp) calls this
+// The abstraction wrapper (compute_gradients_from_mac in features.cpp) calls this
 // function after extracting raw pointers from the abstraction types.
 //
 // This kernel matches VectorField's staggered layout:
@@ -127,7 +127,7 @@ void tbnn_full_pipeline_gpu(
     // Turbulence quantities (interior only)
     const double* k, const double* omega,
     const double* wall_distance,
-    // NN weights (already on GPU via MLP::upload_to_gpu)
+    // NN weights (already on GPU via MLP::sync_weights_to_gpu)
     const double* nn_weights, const double* nn_biases,
     const int* weight_offsets, const int* bias_offsets,
     const int* layer_dims, const int* activation_types,

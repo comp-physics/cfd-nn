@@ -103,7 +103,7 @@ void test_nn_mlp_model() {
 #ifdef USE_GPU_OFFLOAD
         // Upload to GPU if available
         if (omp_get_num_devices() > 0) {
-            model.upload_to_gpu();
+            model.sync_weights_to_gpu();
             std::cout << "[GPU mode] ";
         }
 #endif
@@ -146,7 +146,7 @@ void test_nn_tbnn_model() {
 #ifdef USE_GPU_OFFLOAD
         // Upload to GPU if available
         if (omp_get_num_devices() > 0) {
-            model.upload_to_gpu();
+            model.sync_weights_to_gpu();
             std::cout << "[GPU mode] ";
         }
 #endif

@@ -372,7 +372,7 @@ void test_gradient_computation_backend() {
     
     // CPU gradients
     ScalarField dudx_cpu(mesh), dudy_cpu(mesh), dvdx_cpu(mesh), dvdy_cpu(mesh);
-    compute_gradients_from_mac_cpu(mesh, vel, dudx_cpu, dudy_cpu, dvdx_cpu, dvdy_cpu);
+    compute_gradients_from_mac(mesh, vel, dudx_cpu, dudy_cpu, dvdx_cpu, dvdy_cpu);
     
     // GPU gradients
     ScalarField dudx_gpu(mesh), dudy_gpu(mesh), dvdx_gpu(mesh), dvdy_gpu(mesh);
@@ -446,7 +446,7 @@ void test_gradient_computation_backend() {
     
     // CPU gradients
     ScalarField dudx(mesh), dudy(mesh), dvdx(mesh), dvdy(mesh);
-    compute_gradients_from_mac_cpu(mesh, vel, dudx, dudy, dvdx, dvdy);
+    compute_gradients_from_mac(mesh, vel, dudx, dudy, dvdx, dvdy);
     
     // Verify expected values for shear flow at center (use any interior point)
     // Just verify the computation ran without errors

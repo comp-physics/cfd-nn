@@ -317,7 +317,7 @@ void MixingLengthModel::update(
     
     // Compute velocity gradients on CPU using MAC-aware function
     // This matches the GPU kernel's indexing for consistent results
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Mixing length model with van Driest damping:
     // l_m = kappa * y * (1 - exp(-y+/A+))
@@ -394,7 +394,7 @@ void AlgebraicKOmegaModel::update(
         dvdy_ = ScalarField(mesh);
     }
     
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Estimate friction velocity
     double u_tau = 0.0;
@@ -465,7 +465,7 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             if (!weights_path.empty()) {
                 model->load(weights_path, scaling_path);
                 // Upload NN weights to GPU (if available)
-                model->upload_to_gpu();
+                model->sync_weights_to_gpu();
             }
             return model;
         }
@@ -475,7 +475,7 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             if (!weights_path.empty()) {
                 model->load(weights_path, scaling_path);
                 // Upload NN weights to GPU (if available)
-                model->upload_to_gpu();
+                model->sync_weights_to_gpu();
             }
             return model;
         }

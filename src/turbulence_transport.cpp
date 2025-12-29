@@ -100,7 +100,7 @@ void SSTClosure::compute_nu_t(
     ensure_initialized(mesh);
     
     // Compute velocity gradients (MAC-aware for CPU/GPU consistency)
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double a1 = constants_.a1;
     
@@ -377,7 +377,7 @@ void SSTKOmegaTransport::initialize(const Mesh& mesh, const VectorField& velocit
 void SSTKOmegaTransport::compute_velocity_gradients(
     const Mesh& mesh, const VectorField& velocity)
 {
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
 }
 
 void SSTKOmegaTransport::compute_blending_functions(
@@ -1222,7 +1222,7 @@ void KOmegaTransport::advance_turbulence(
 #endif
     
     // Host path (only used when GPU offload disabled or device_view invalid)
-    compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;
     const double dy = mesh.dy;

@@ -26,10 +26,10 @@ void TurbulenceNNTBNN::load(const std::string& weights_dir, const std::string& s
     }
 }
 
-void TurbulenceNNTBNN::upload_to_gpu() {
+void TurbulenceNNTBNN::sync_weights_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
-    // MLP upload_to_gpu() will verify device availability and throw if not available
-    mlp_.upload_to_gpu();
+    // MLP sync_weights_to_gpu() will verify device availability and throw if not available
+    mlp_.sync_weights_to_gpu();
     gpu_ready_ = mlp_.is_on_gpu();
     full_gpu_ready_ = gpu_ready_;  // Full pipeline also ready
 #endif
@@ -41,7 +41,7 @@ void TurbulenceNNTBNN::initialize_gpu_buffers(const Mesh& mesh) {
     gpu::verify_device_available();
     
     const int n_cells = mesh.Nx * mesh.Ny;
-    upload_to_gpu();  // Upload MLP weights if not already done
+    sync_weights_to_gpu();  // Upload MLP weights if not already done
     allocate_gpu_buffers(n_cells);
     gpu_ready_ = (mlp_.is_on_gpu() && buffers_on_gpu_);  // Set gpu_ready after successful allocation
 #else
@@ -383,7 +383,7 @@ void TurbulenceNNTBNN::update_full_gpu(
     double* tau_xy_ptr = tau_ij ? tau_xy_flat_.data() : nullptr;
     double* tau_yy_ptr = tau_ij ? tau_yy_flat_.data() : nullptr;
     
-    // NN weights (already mapped to GPU via MLP::upload_to_gpu)
+    // NN weights (already mapped to GPU via MLP::sync_weights_to_gpu)
     const double* weights_ptr = mlp_.weights_gpu();
     const double* biases_ptr = mlp_.biases_gpu();
     const int* w_offsets_ptr = mlp_.weight_offsets_gpu();

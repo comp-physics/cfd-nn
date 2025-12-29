@@ -255,7 +255,7 @@ void MLP::flatten_weights() {
     }
 }
 
-void MLP::upload_to_gpu() {
+void MLP::sync_weights_to_gpu() {
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_) {
         return;

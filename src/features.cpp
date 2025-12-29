@@ -23,7 +23,7 @@ namespace nncfd {
 /// This thin wrapper extracts raw pointers from Mesh/VectorField/ScalarField
 /// and calls the unified implementation in gpu_kernels::compute_gradients_from_mac_gpu.
 /// The unified implementation handles both CPU and GPU paths via conditional compilation.
-void compute_gradients_from_mac_cpu(
+void compute_gradients_from_mac(
     const Mesh& mesh,
     const VectorField& velocity,
     ScalarField& dudx, ScalarField& dudy,
@@ -336,7 +336,7 @@ void FeatureComputer::compute_scalar_features(
     std::vector<Features>& features) {
     
     // Compute all gradients first (MAC-aware for CPU/GPU consistency)
-    compute_gradients_from_mac_cpu(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     // Resize output
     int n_interior = mesh_->Nx * mesh_->Ny;
@@ -359,7 +359,7 @@ void FeatureComputer::compute_tbnn_features(
     std::vector<Features>& features,
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>>& basis) {
     
-    compute_gradients_from_mac_cpu(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
+    compute_gradients_from_mac(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     int n_interior = mesh_->Nx * mesh_->Ny;
     features.resize(n_interior);
