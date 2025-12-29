@@ -2376,35 +2376,67 @@ double RANSSolver::step() {
         NVTX_PUSH("nu_eff_computation");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
-        const int n_cells = Nx * Ny;
-        const int stride = Nx + 2;
+        const int Nz = mesh_->Nz;
+        const int Ng = mesh_->Nghost;
+        const int stride = Nx + 2 * Ng;
+        const int plane_stride = stride * (Ny + 2 * Ng);
         const size_t total_size = field_total_size_;
         const double nu = config_.nu;
         double* nu_eff_ptr = nu_eff_ptr_;
         const double* nu_t_ptr = nu_t_ptr_;
-        
-        if (turb_model_) {
-            // With turbulence: nu_eff = nu + nu_t
-            #pragma omp target teams distribute parallel for \
-                map(present: nu_eff_ptr[0:total_size]) \
-                map(present: nu_t_ptr[0:total_size]) \
-                firstprivate(nu, stride, Nx)
-            for (int idx = 0; idx < n_cells; ++idx) {
-                int i = idx % Nx + 1;  // +1 for ghost cells
-                int j = idx / Nx + 1;
-                int cell_idx = j * stride + i;
-                nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
+        const bool is_2d = mesh_->is2D();
+
+        if (is_2d) {
+            // 2D path
+            const int n_cells = Nx * Ny;
+            if (turb_model_) {
+                #pragma omp target teams distribute parallel for \
+                    map(present: nu_eff_ptr[0:total_size]) \
+                    map(present: nu_t_ptr[0:total_size]) \
+                    firstprivate(nu, stride, Nx, Ng)
+                for (int idx = 0; idx < n_cells; ++idx) {
+                    int i = idx % Nx + Ng;
+                    int j = idx / Nx + Ng;
+                    int cell_idx = j * stride + i;
+                    nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
+                }
+            } else {
+                #pragma omp target teams distribute parallel for \
+                    map(present: nu_eff_ptr[0:total_size]) \
+                    firstprivate(nu, stride, Nx, Ng)
+                for (int idx = 0; idx < n_cells; ++idx) {
+                    int i = idx % Nx + Ng;
+                    int j = idx / Nx + Ng;
+                    int cell_idx = j * stride + i;
+                    nu_eff_ptr[cell_idx] = nu;
+                }
             }
         } else {
-            // No turbulence: nu_eff = nu (constant)
-            #pragma omp target teams distribute parallel for \
-                map(present: nu_eff_ptr[0:total_size]) \
-                firstprivate(nu, stride, Nx)
-            for (int idx = 0; idx < n_cells; ++idx) {
-                int i = idx % Nx + 1;  // +1 for ghost cells
-                int j = idx / Nx + 1;
-                int cell_idx = j * stride + i;
-                nu_eff_ptr[cell_idx] = nu;
+            // 3D path
+            const int n_cells = Nx * Ny * Nz;
+            if (turb_model_) {
+                #pragma omp target teams distribute parallel for \
+                    map(present: nu_eff_ptr[0:total_size]) \
+                    map(present: nu_t_ptr[0:total_size]) \
+                    firstprivate(nu, stride, plane_stride, Nx, Ny, Ng)
+                for (int idx = 0; idx < n_cells; ++idx) {
+                    int i = idx % Nx + Ng;
+                    int j = (idx / Nx) % Ny + Ng;
+                    int k = idx / (Nx * Ny) + Ng;
+                    int cell_idx = k * plane_stride + j * stride + i;
+                    nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
+                }
+            } else {
+                #pragma omp target teams distribute parallel for \
+                    map(present: nu_eff_ptr[0:total_size]) \
+                    firstprivate(nu, stride, plane_stride, Nx, Ny, Ng)
+                for (int idx = 0; idx < n_cells; ++idx) {
+                    int i = idx % Nx + Ng;
+                    int j = (idx / Nx) % Ny + Ng;
+                    int k = idx / (Nx * Ny) + Ng;
+                    int cell_idx = k * plane_stride + j * stride + i;
+                    nu_eff_ptr[cell_idx] = nu;
+                }
             }
         }
         NVTX_POP();
@@ -2414,9 +2446,19 @@ double RANSSolver::step() {
         // CPU path
         nu_eff_.fill(config_.nu);
         if (turb_model_) {
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    nu_eff_(i, j) = config_.nu + nu_t_(i, j);
+            if (mesh_->is2D()) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        nu_eff_(i, j) = config_.nu + nu_t_(i, j);
+                    }
+                }
+            } else {
+                for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+                    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                            nu_eff_(i, j, k) = config_.nu + nu_t_(i, j, k);
+                        }
+                    }
                 }
             }
         }
@@ -2655,44 +2697,83 @@ double RANSSolver::step() {
         // GPU-resident path: compute mean divergence on device via reduction
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
+        const int Nz = mesh_->Nz;
+        const int Ng = mesh_->Nghost;
         const int i_begin = mesh_->i_begin();
         const int j_begin = mesh_->j_begin();
-        const int Nxg = mesh_->Nx + 2;  // Total grid width with ghost cells
-        
+        const int k_begin = mesh_->k_begin();
+        const int stride = Nx + 2 * Ng;
+        const int plane_stride = stride * (Ny + 2 * Ng);
+        const bool is_2d = mesh_->is2D();
+
         double sum_div = 0.0;
-        int count = Nx * Ny;
-        
-        // Compute sum of divergence on GPU (parallel reduction)
-        // Note: Variables captured implicitly (NVHPC has issues with firstprivate)
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: div_velocity_ptr_[0:field_total_size_]) \
-            reduction(+:sum_div)
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                int ii = i + i_begin;
-                int jj = j + j_begin;
-                int idx = ii + jj * Nxg;
-                sum_div += div_velocity_ptr_[idx];
+        int count = is_2d ? (Nx * Ny) : (Nx * Ny * Nz);
+
+        if (is_2d) {
+            // 2D path
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: div_velocity_ptr_[0:field_total_size_]) \
+                reduction(+:sum_div)
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + i_begin;
+                    int jj = j + j_begin;
+                    int idx = jj * stride + ii;
+                    sum_div += div_velocity_ptr_[idx];
+                }
+            }
+        } else {
+            // 3D path
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: div_velocity_ptr_[0:field_total_size_]) \
+                reduction(+:sum_div)
+            for (int k = 0; k < Nz; ++k) {
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ii = i + i_begin;
+                        int jj = j + j_begin;
+                        int kk = k + k_begin;
+                        int idx = kk * plane_stride + jj * stride + ii;
+                        sum_div += div_velocity_ptr_[idx];
+                    }
+                }
             }
         }
-        
+
         mean_div = (count > 0) ? sum_div / count : 0.0;
-        
+
         // Build RHS on GPU: rhs = (div - mean_div) / dt
         const double dt_inv = 1.0 / current_dt_;
-        
-        // Note: Variables captured implicitly (NVHPC has issues with firstprivate)
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: div_velocity_ptr_[0:field_total_size_], rhs_poisson_ptr_[0:field_total_size_])
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                int ii = i + i_begin;
-                int jj = j + j_begin;
-                int idx = ii + jj * Nxg;
-                rhs_poisson_ptr_[idx] = (div_velocity_ptr_[idx] - mean_div) * dt_inv;
+
+        if (is_2d) {
+            // 2D path
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: div_velocity_ptr_[0:field_total_size_], rhs_poisson_ptr_[0:field_total_size_])
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + i_begin;
+                    int jj = j + j_begin;
+                    int idx = jj * stride + ii;
+                    rhs_poisson_ptr_[idx] = (div_velocity_ptr_[idx] - mean_div) * dt_inv;
+                }
+            }
+        } else {
+            // 3D path
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: div_velocity_ptr_[0:field_total_size_], rhs_poisson_ptr_[0:field_total_size_])
+            for (int k = 0; k < Nz; ++k) {
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ii = i + i_begin;
+                        int jj = j + j_begin;
+                        int kk = k + k_begin;
+                        int idx = kk * plane_stride + jj * stride + ii;
+                        rhs_poisson_ptr_[idx] = (div_velocity_ptr_[idx] - mean_div) * dt_inv;
+                    }
+                }
             }
         }
-        
+
         // OPTIMIZATION: Warm-start for Poisson solver (device-resident)
         // Zero pressure correction on device on first iteration only
         if (iter_ == 0) {
@@ -2703,7 +2784,7 @@ double RANSSolver::step() {
             }
         }
         // Otherwise, reuse previous solution (already on device, no action needed)
-        
+
     } else
 #endif
     {
@@ -2771,25 +2852,51 @@ double RANSSolver::step() {
         // Absolute tolerance would be too strict for small RHS, too loose for large RHS
         double rhs_norm_sq = 0.0;
         int rhs_count = 0;
-        
+
 #ifdef USE_GPU_OFFLOAD
-        const int Nx = mesh_->Nx;
-        const int Ny = mesh_->Ny;
-        const int Nxg = Nx + 2*mesh_->Nghost;
-        const int i_begin = mesh_->i_begin();
-        const int j_begin = mesh_->j_begin();
-        
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: rhs_poisson_ptr_[0:field_total_size_]) \
-            reduction(+:rhs_norm_sq, rhs_count)
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                int ii = i + i_begin;
-                int jj = j + j_begin;
-                int idx = ii + jj * Nxg;
-                double rhs_val = rhs_poisson_ptr_[idx];
-                rhs_norm_sq += rhs_val * rhs_val;
-                rhs_count++;
+        {
+            const int Nx = mesh_->Nx;
+            const int Ny = mesh_->Ny;
+            const int Nz = mesh_->Nz;
+            const int Ng = mesh_->Nghost;
+            const int i_begin = mesh_->i_begin();
+            const int j_begin = mesh_->j_begin();
+            const int k_begin = mesh_->k_begin();
+            const int stride = Nx + 2 * Ng;
+            const int plane_stride = stride * (Ny + 2 * Ng);
+            const bool is_2d = mesh_->is2D();
+
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: rhs_poisson_ptr_[0:field_total_size_]) \
+                    reduction(+:rhs_norm_sq, rhs_count)
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ii = i + i_begin;
+                        int jj = j + j_begin;
+                        int idx = jj * stride + ii;
+                        double rhs_val = rhs_poisson_ptr_[idx];
+                        rhs_norm_sq += rhs_val * rhs_val;
+                        rhs_count++;
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) \
+                    map(present: rhs_poisson_ptr_[0:field_total_size_]) \
+                    reduction(+:rhs_norm_sq, rhs_count)
+                for (int k = 0; k < Nz; ++k) {
+                    for (int j = 0; j < Ny; ++j) {
+                        for (int i = 0; i < Nx; ++i) {
+                            int ii = i + i_begin;
+                            int jj = j + j_begin;
+                            int kk = k + k_begin;
+                            int idx = kk * plane_stride + jj * stride + ii;
+                            double rhs_val = rhs_poisson_ptr_[idx];
+                            rhs_norm_sq += rhs_val * rhs_val;
+                            rhs_count++;
+                        }
+                    }
+                }
             }
         }
 #else

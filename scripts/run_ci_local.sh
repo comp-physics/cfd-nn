@@ -161,6 +161,114 @@ run_test() {
     rm -f "$output_file"
 }
 
+# Run a CPU/GPU cross-build comparison test
+# These tests require both CPU and GPU builds and compare outputs between them
+run_cross_build_test() {
+    local test_name=$1
+    local test_binary_name=$2
+    local timeout_secs=${3:-120}
+    local ref_prefix=$4
+
+    local cpu_binary="${PROJECT_DIR}/build_cpu/${test_binary_name}"
+    local gpu_binary="${PROJECT_DIR}/build_gpu/${test_binary_name}"
+
+    # In GPU mode, compare GPU build against CPU reference
+    if [[ "$USE_GPU" == "ON" ]]; then
+        if [ ! -f "$gpu_binary" ]; then
+            log_skip "$test_name (GPU binary not built)"
+            SKIPPED=$((SKIPPED + 1))
+            return 0
+        fi
+
+        # Check if CPU build exists for reference generation
+        if [ ! -f "$cpu_binary" ]; then
+            log_skip "$test_name (CPU build not available for reference)"
+            SKIPPED=$((SKIPPED + 1))
+            return 0
+        fi
+
+        echo ""
+        log_info "Running $test_name (cross-build comparison)..."
+
+        # Generate CPU reference if it doesn't exist
+        local ref_dir="${PROJECT_DIR}/build_gpu/cpu_reference"
+        mkdir -p "$ref_dir"
+
+        local output_file="/tmp/test_output_$$.txt"
+
+        # Check if reference already exists
+        if [ ! -f "${ref_dir}/${ref_prefix}_u.dat" ] && [ ! -f "${ref_dir}/${ref_prefix}_pressure.dat" ]; then
+            log_info "  Generating CPU reference..."
+            timeout "$timeout_secs" "$cpu_binary" --dump-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || {
+                log_failure "$test_name (CPU reference generation failed)"
+                tail -20 "$output_file" | sed 's/^/    /'
+                FAILED=$((FAILED + 1))
+                FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU ref)"
+                rm -f "$output_file"
+                return 0
+            }
+        fi
+
+        # Run GPU comparison
+        log_info "  Running GPU and comparing against CPU reference..."
+        local exit_code=0
+        timeout "$timeout_secs" "$gpu_binary" --compare-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            log_success "$test_name"
+            PASSED=$((PASSED + 1))
+            if [ $VERBOSE -eq 1 ]; then
+                echo "  Output:"
+                cat "$output_file" | sed 's/^/    /'
+            else
+                local summary
+                summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|\[WARN\]|PASSED|FAILED|Max abs diff|Max rel diff|RMS diff)' "$output_file" | head -10) || true
+                if [ -n "$summary" ]; then
+                    echo "$summary" | sed 's/^/    /'
+                fi
+            fi
+        else
+            log_failure "$test_name (exit code: $exit_code)"
+            echo "  Output (last 30 lines):"
+            tail -30 "$output_file" | sed 's/^/    /'
+            FAILED=$((FAILED + 1))
+            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
+        fi
+        rm -f "$output_file"
+    else
+        # In CPU mode, just generate reference (useful for pre-generating)
+        if [ ! -f "$cpu_binary" ]; then
+            log_skip "$test_name (CPU binary not built)"
+            SKIPPED=$((SKIPPED + 1))
+            return 0
+        fi
+
+        echo ""
+        log_info "Running $test_name (CPU reference generation)..."
+
+        local ref_dir="${PROJECT_DIR}/build_cpu/cpu_reference"
+        mkdir -p "$ref_dir"
+
+        local output_file="/tmp/test_output_$$.txt"
+        local exit_code=0
+        timeout "$timeout_secs" "$cpu_binary" --dump-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            log_success "$test_name (reference generated)"
+            PASSED=$((PASSED + 1))
+            if [ $VERBOSE -eq 1 ]; then
+                cat "$output_file" | sed 's/^/    /'
+            fi
+        else
+            log_failure "$test_name (exit code: $exit_code)"
+            tail -20 "$output_file" | sed 's/^/    /'
+            FAILED=$((FAILED + 1))
+            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
+        fi
+        rm -f "$output_file"
+    fi
+}
+
 # Check build directory exists
 if [ ! -d "$BUILD_DIR" ]; then
     log_info "Build directory not found. Creating and building..."
@@ -229,10 +337,16 @@ fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "GPU-Specific Tests"
 
-    run_test "CPU/GPU Bitwise" "$BUILD_DIR/test_cpu_gpu_bitwise" 120
-    run_test "Poisson CPU/GPU 3D" "$BUILD_DIR/test_poisson_cpu_gpu_3d" 120
+    # Cross-build comparison tests (require both CPU and GPU builds)
+    # These tests compare CPU-built outputs against GPU-built outputs
+    run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
+    run_cross_build_test "Poisson CPU/GPU 3D" "test_poisson_cpu_gpu_3d" 180 "poisson3d"
+    run_cross_build_test "CPU/GPU Consistency" "test_cpu_gpu_consistency" 180 "consistency"
+    run_cross_build_test "Solver CPU/GPU" "test_solver_cpu_gpu" 180 "solver"
+    run_cross_build_test "Time History Consistency" "test_time_history_consistency" 180 "timehistory"
+
+    # Non-comparison GPU tests
     run_test "Backend Execution" "$BUILD_DIR/test_backend_execution" 60
-    run_test "CPU/GPU Consistency" "$BUILD_DIR/test_cpu_gpu_consistency" 180
 
     # GPU utilization test - ensures compute runs on GPU, not CPU
     # Only meaningful for GPU builds (skips gracefully on CPU builds)
@@ -247,9 +361,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
 
     run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
     run_test "Solver" "$BUILD_DIR/test_solver" 900
-    run_test "Solver CPU/GPU" "$BUILD_DIR/test_solver_cpu_gpu" 180
     run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
-    run_test "Time History Consistency" "$BUILD_DIR/test_time_history_consistency" 120
     run_test "Physics Validation" "$BUILD_DIR/test_physics_validation" 600
     run_test "Taylor-Green" "$BUILD_DIR/test_tg_validation" 120
     run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180

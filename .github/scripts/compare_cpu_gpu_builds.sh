@@ -28,15 +28,24 @@ echo ""
 echo "--- Step 1: Generate CPU reference outputs ---"
 rm -rf cpu_gpu_comparison
 mkdir -p cpu_gpu_comparison
-./test_cpu_gpu_consistency --dump-prefix cpu_gpu_comparison/cpu_ref || {
-    echo "[FAIL] CPU reference generation failed!"
+
+./test_cpu_gpu_bitwise --dump-prefix cpu_gpu_comparison/bitwise || {
+    echo "[FAIL] Bitwise CPU reference generation failed!"
     exit 1
 }
-./test_solver_cpu_gpu --dump-prefix cpu_gpu_comparison/cpu_ref || {
+./test_poisson_cpu_gpu_3d --dump-prefix cpu_gpu_comparison/poisson3d || {
+    echo "[FAIL] Poisson 3D CPU reference generation failed!"
+    exit 1
+}
+./test_cpu_gpu_consistency --dump-prefix cpu_gpu_comparison/consistency || {
+    echo "[FAIL] Consistency CPU reference generation failed!"
+    exit 1
+}
+./test_solver_cpu_gpu --dump-prefix cpu_gpu_comparison/solver || {
     echo "[FAIL] Solver CPU reference generation failed!"
     exit 1
 }
-./test_time_history_consistency --dump-prefix cpu_gpu_comparison/cpu_ref || {
+./test_time_history_consistency --dump-prefix cpu_gpu_comparison/timehistory || {
     echo "[FAIL] Time-history CPU reference generation failed!"
     exit 1
 }
@@ -60,15 +69,23 @@ else
     make -j8
 fi
 
-./test_cpu_gpu_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
-    echo "[FAIL] GPU vs CPU comparison failed!"
+./test_cpu_gpu_bitwise --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/bitwise" || {
+    echo "[FAIL] Bitwise GPU vs CPU comparison failed!"
     exit 1
 }
-./test_solver_cpu_gpu --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
+./test_poisson_cpu_gpu_3d --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/poisson3d" || {
+    echo "[FAIL] Poisson 3D GPU vs CPU comparison failed!"
+    exit 1
+}
+./test_cpu_gpu_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/consistency" || {
+    echo "[FAIL] Consistency GPU vs CPU comparison failed!"
+    exit 1
+}
+./test_solver_cpu_gpu --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/solver" || {
     echo "[FAIL] Solver GPU vs CPU comparison failed!"
     exit 1
 }
-./test_time_history_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/cpu_ref" || {
+./test_time_history_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/timehistory" || {
     echo "[FAIL] Time-history GPU vs CPU comparison failed!"
     exit 1
 }
