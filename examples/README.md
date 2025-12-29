@@ -136,6 +136,16 @@ Demonstrates full transport equation turbulence modeling with SST k-ω.
 
 Validates 3D solver against analytical solution for duct flow.
 
+**Running**:
+```bash
+./run.sh laminar_square      # Coarse grid (default)
+./run.sh laminar_fine        # Fine grid
+./run.sh turbulent_sst       # Turbulent with SST k-omega
+
+# Or run directly:
+./duct --config laminar_square.cfg
+```
+
 **Key Learning**:
 - 3D mesh setup and BCs
 - Multi-wall boundary conditions
@@ -150,6 +160,16 @@ Validates 3D solver against analytical solution for duct flow.
 **Level**: Intermediate
 
 Demonstrates 3D unsteady simulation with energy tracking.
+
+**Running**:
+```bash
+./run.sh tg_re100           # Re=100 on 32³ (default)
+./run.sh tg_re100_fine      # Re=100 on 64³
+./run.sh tg_re1600          # Re=1600 DNS on 64³
+
+# Or run directly:
+./taylor_green_3d --config tg_re100.cfg
+```
 
 **Key Learning**:
 - 3D periodic domains

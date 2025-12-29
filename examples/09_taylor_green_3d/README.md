@@ -27,29 +27,55 @@ The simulation tracks this decay and compares against theory.
 
 ## Running
 
+### Using run.sh wrapper
+
 ```bash
-# Default run (32³, Re=100, T=10)
-./run.sh
+# Re=100 on 32³ grid (default)
+./run.sh tg_re100
 
-# Higher resolution
-N=64 ./run.sh
+# Re=100 on 64³ grid (higher accuracy)
+./run.sh tg_re100_fine
 
-# Higher Reynolds number (turbulence transition)
-N=64 RE=1600 T_FINAL=20.0 ./run.sh
+# Re=1600 DNS on 64³ (turbulence transition)
+./run.sh tg_re1600
 
-# Quick test
-N=16 RE=100 T_FINAL=1.0 ./run.sh
+# Override parameters
+./run.sh tg_re100 --Re 200 --T 20.0
 ```
 
-## Parameters
+### Running the binary directly
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| N | 32 | Grid cells per direction (N³ total) |
-| RE | 100 | Reynolds number |
-| T_FINAL | 10.0 | Simulation end time |
-| DT | 0.01 | Time step |
-| NUM_SNAPSHOTS | 10 | Number of VTK output files |
+```bash
+cd build
+
+# With config file
+./taylor_green_3d --config ../examples/09_taylor_green_3d/tg_re100.cfg
+
+# Override parameters
+./taylor_green_3d --config ../examples/09_taylor_green_3d/tg_re100.cfg --N 64 --T 20.0
+```
+
+## Available Configurations
+
+| Config | Grid | Re | Description |
+|--------|------|-----|-------------|
+| `tg_re100.cfg` | 32³ | 100 | Standard validation case |
+| `tg_re100_fine.cfg` | 64³ | 100 | High-resolution validation |
+| `tg_re1600.cfg` | 64³ | 1600 | Turbulence transition DNS |
+
+## Configuration Parameters
+
+Key parameters in the `.cfg` files:
+
+```
+Nx = 32             # Grid cells per direction
+Ny = 32
+Nz = 32
+nu = 0.01           # Viscosity (sets Re = 1/nu for V₀=L=1)
+Re = 100            # Reynolds number
+dt = 0.01           # Time step
+max_iter = 1000     # Max steps (determines T_final)
+```
 
 ## Output
 
@@ -67,10 +93,13 @@ N=16 RE=100 T_FINAL=1.0 ./run.sh
 
 ```bash
 # ParaView - view vortex evolution
-paraview output/tg3d_*.vtk
+paraview output/tg_re100/tg3d_*.vtk
 
 # Plot energy decay
-gnuplot -e "plot 'output/tg3d_history.dat' u 1:3 w l title 'KE/KE0', exp(-0.02*x) title 'Theory'"
+python plot_energy.py output/tg_re100/
+
+# gnuplot
+gnuplot -e "plot 'output/tg_re100/tg3d_history.dat' u 1:3 w l title 'KE/KE0', exp(-0.02*x) title 'Theory'"
 ```
 
 ## Reference

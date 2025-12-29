@@ -1,7 +1,19 @@
 #!/bin/bash
+#
 # Run all three RANS models and compare results
+#
+# Usage: ./run_all.sh
+#
+# Or run individual models:
+#   ./run.sh baseline
+#   ./run.sh gep
+#   ./run.sh sst
 
-set -e
+set -euo pipefail
+
+EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
+BUILD_DIR="$PROJECT_ROOT/build"
 
 echo "======================================"
 echo "  Steady RANS Channel Comparison"
@@ -13,39 +25,40 @@ echo "  2. GEP (algebraic)"
 echo "  3. SST k-omega (transport)"
 echo ""
 
-# Build directory
-BUILD_DIR="../../build"
-
-if [ ! -f "$BUILD_DIR/channel" ]; then
-    echo "Error: channel executable not found in $BUILD_DIR"
+# Check if solver is built
+if [[ ! -x "$BUILD_DIR/channel" ]]; then
+    echo "ERROR: channel executable not found at $BUILD_DIR/channel"
     echo "Please build the project first:"
+    echo "  cd $PROJECT_ROOT"
     echo "  mkdir -p build && cd build"
     echo "  cmake .. && make -j4"
     exit 1
 fi
 
 # Create output directories
-mkdir -p output/baseline output/gep output/sst
+mkdir -p "$EXAMPLE_DIR/output/baseline" "$EXAMPLE_DIR/output/gep" "$EXAMPLE_DIR/output/sst"
+
+cd "$BUILD_DIR"
 
 # Run baseline model
 echo "======================================"
 echo "Running Baseline Model..."
 echo "======================================"
-$BUILD_DIR/channel --config baseline.cfg
+./channel --config "$EXAMPLE_DIR/baseline.cfg" --output "$EXAMPLE_DIR/output/baseline/"
 
 # Run GEP model
 echo ""
 echo "======================================"
 echo "Running GEP Model..."
 echo "======================================"
-$BUILD_DIR/channel --config gep.cfg
+./channel --config "$EXAMPLE_DIR/gep.cfg" --output "$EXAMPLE_DIR/output/gep/"
 
 # Run SST model
 echo ""
 echo "======================================"
 echo "Running SST k-omega Model..."
 echo "======================================"
-$BUILD_DIR/channel --config sst.cfg
+./channel --config "$EXAMPLE_DIR/sst.cfg" --output "$EXAMPLE_DIR/output/sst/"
 
 echo ""
 echo "======================================"
@@ -53,12 +66,10 @@ echo "  All simulations complete!"
 echo "======================================"
 echo ""
 echo "Results saved to:"
-echo "  output/baseline/"
-echo "  output/gep/"
-echo "  output/sst/"
+echo "  $EXAMPLE_DIR/output/baseline/"
+echo "  $EXAMPLE_DIR/output/gep/"
+echo "  $EXAMPLE_DIR/output/sst/"
 echo ""
 echo "To visualize:"
-echo "  paraview output/*/channel_final.vtk"
+echo "  paraview $EXAMPLE_DIR/output/*/channel_final.vtk"
 echo ""
-
-
