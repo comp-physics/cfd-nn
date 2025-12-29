@@ -34,9 +34,10 @@ void PoissonSolver::apply_bc(ScalarField& p) {
     const int Ng = mesh_->Nghost;
     const bool is_2d = mesh_->is2D();
 
-    // For 2D, we only process k=0 plane; for 3D, process all k planes
-    const int k_start = is_2d ? 0 : 0;
-    const int k_stop = is_2d ? 1 : mesh_->total_Nz();
+    // Apply BCs across full allocated z-extent for consistency
+    // (in 2D, replicating across all z-planes ensures no uninitialized ghost data)
+    const int k_start = 0;
+    const int k_stop = mesh_->total_Nz();
 
     // x-direction boundaries
     for (int k = k_start; k < k_stop; ++k) {

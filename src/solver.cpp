@@ -1274,6 +1274,20 @@ void RANSSolver::apply_velocity_bc() {
     const bool y_hi_periodic = (velocity_bc_.y_hi == VelocityBC::Periodic);
     const bool y_hi_noslip   = (velocity_bc_.y_hi == VelocityBC::NoSlip);
 
+    // Validate that all BCs are supported (Inflow/Outflow not implemented for x/y)
+    if (!x_lo_periodic && !x_lo_noslip) {
+        throw std::runtime_error("Unsupported velocity BC type for x_lo (only Periodic and NoSlip are implemented)");
+    }
+    if (!x_hi_periodic && !x_hi_noslip) {
+        throw std::runtime_error("Unsupported velocity BC type for x_hi (only Periodic and NoSlip are implemented)");
+    }
+    if (!y_lo_periodic && !y_lo_noslip) {
+        throw std::runtime_error("Unsupported velocity BC type for y_lo (only Periodic and NoSlip are implemented)");
+    }
+    if (!y_hi_periodic && !y_hi_noslip) {
+        throw std::runtime_error("Unsupported velocity BC type for y_hi (only Periodic and NoSlip are implemented)");
+    }
+
     double* u_ptr = v.u_face;
     double* v_ptr = v.v_face;
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
@@ -1393,6 +1407,14 @@ void RANSSolver::apply_velocity_bc() {
         const bool z_hi_periodic = (velocity_bc_.z_hi == VelocityBC::Periodic);
         const bool z_lo_noslip = (velocity_bc_.z_lo == VelocityBC::NoSlip);
         const bool z_hi_noslip = (velocity_bc_.z_hi == VelocityBC::NoSlip);
+
+        // Validate that z-direction BCs are supported (Inflow/Outflow not implemented)
+        if (!z_lo_periodic && !z_lo_noslip) {
+            throw std::runtime_error("Unsupported velocity BC type for z_lo (only Periodic and NoSlip are implemented)");
+        }
+        if (!z_hi_periodic && !z_hi_noslip) {
+            throw std::runtime_error("Unsupported velocity BC type for z_hi (only Periodic and NoSlip are implemented)");
+        }
 
         // Apply u BCs in z-direction (for all x-faces, all y rows)
         // Each x-face: (Nx+1) i-values, (Ny) j-values, Ng ghost layers at each z-end
@@ -2882,7 +2904,7 @@ double RANSSolver::step() {
 
     // Compute max |u_new - u_old| via reduction
     const int n_u_faces_res = (Nx + 1) * Ny * Nz_eff;
-    const int u_plane_stride_res = v_res.u_plane_stride;
+    const int u_plane_stride_res = mesh_->is2D() ? 0 : v_res.u_plane_stride;
     double max_du = 0.0;
     #pragma omp target teams distribute parallel for reduction(max:max_du) \
         map(present: u_new_ptr[0:u_total_size_res], u_old_ptr[0:u_total_size_res]) \
@@ -2903,7 +2925,7 @@ double RANSSolver::step() {
 
     // Compute max |v_new - v_old| via reduction
     const int n_v_faces_res = Nx * (Ny + 1) * Nz_eff;
-    const int v_plane_stride_res = v_res.v_plane_stride;
+    const int v_plane_stride_res = mesh_->is2D() ? 0 : v_res.v_plane_stride;
     double max_dv = 0.0;
     #pragma omp target teams distribute parallel for reduction(max:max_dv) \
         map(present: v_new_ptr[0:v_total_size_res], v_old_ptr[0:v_total_size_res]) \

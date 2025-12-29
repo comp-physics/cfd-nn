@@ -244,10 +244,13 @@ TensorField::TensorField(const Mesh& mesh)
       yy_(mesh), yz_(mesh), zz_(mesh) {}
 
 void TensorField::fill(double xx_val, double xy_val, double yy_val) {
-    // 2D backward compatible - only fills 2D components
+    // 2D backward compatible - fills 2D components and clears 3D to prevent stale data
     xx_.fill(xx_val);
     xy_.fill(xy_val);
     yy_.fill(yy_val);
+    xz_.fill(0.0);
+    yz_.fill(0.0);
+    zz_.fill(0.0);
 }
 
 void TensorField::fill(double xx_val, double xy_val, double xz_val,

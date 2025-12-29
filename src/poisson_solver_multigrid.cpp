@@ -179,6 +179,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
             const int Ny_g = Ny + 2*Ng;
             const int Nz_g = Nz + 2*Ng;
             const int n_total_g = Nx_g * Ny_g * Nz_g;
+            assert(total_size == static_cast<size_t>(n_total_g) && "BC kernel size mismatch");
 
             #pragma omp target teams distribute parallel for \
                 map(present: u_ptr[0:total_size]) \
@@ -537,11 +538,13 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     const int plane_stride = (Nx + 2) * (Ny + 2);
 
     // Use raw pointers for unified CPU/GPU code
+#ifdef USE_GPU_OFFLOAD
+    double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    const size_t total_size = level_sizes_[level];
+#else
     double* u_ptr = grid.u.data().data();
     const double* f_ptr = grid.f.data().data();
-
-#ifdef USE_GPU_OFFLOAD
-    const size_t total_size = level_sizes_[level];
 #endif
 
     if (is_2d) {
@@ -650,12 +653,15 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const int plane_stride = (Nx + 2) * (Ny + 2);
 
     // Use raw pointers for unified CPU/GPU code
+#ifdef USE_GPU_OFFLOAD
+    const double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    double* r_ptr = r_ptrs_[level];
+    const size_t total_size = level_sizes_[level];
+#else
     const double* u_ptr = grid.u.data().data();
     const double* f_ptr = grid.f.data().data();
     double* r_ptr = grid.r.data().data();
-
-#ifdef USE_GPU_OFFLOAD
-    const size_t total_size = level_sizes_[level];
 #endif
 
     if (is_2d) {
@@ -708,12 +714,14 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
 
     // Use raw pointers for unified CPU/GPU code
-    const double* r_fine = fine.r.data().data();
-    double* f_coarse = coarse.f.data().data();
-
 #ifdef USE_GPU_OFFLOAD
+    const double* r_fine = r_ptrs_[fine_level];
+    double* f_coarse = f_ptrs_[fine_level + 1];
     const size_t size_f = level_sizes_[fine_level];
     const size_t size_c = level_sizes_[fine_level + 1];
+#else
+    const double* r_fine = fine.r.data().data();
+    double* f_coarse = coarse.f.data().data();
 #endif
 
     if (is_2d) {
@@ -803,12 +811,14 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
 
     // Use raw pointers for unified CPU/GPU code
-    const double* u_coarse = coarse.u.data().data();
-    double* u_fine = fine.u.data().data();
-
 #ifdef USE_GPU_OFFLOAD
+    const double* u_coarse = u_ptrs_[coarse_level];
+    double* u_fine = u_ptrs_[coarse_level - 1];
     const size_t size_f = level_sizes_[coarse_level - 1];
     const size_t size_c = level_sizes_[coarse_level];
+#else
+    const double* u_coarse = coarse.u.data().data();
+    double* u_fine = fine.u.data().data();
 #endif
 
     if (is_2d) {
@@ -997,10 +1007,11 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     const int plane_stride = stride * (Ny + 2);
 
     // Use raw pointers for unified CPU/GPU code
-    const double* r_ptr = grid.r.data().data();
-
 #ifdef USE_GPU_OFFLOAD
+    const double* r_ptr = r_ptrs_[level];
     const size_t total_size = level_sizes_[level];
+#else
+    const double* r_ptr = grid.r.data().data();
 #endif
 
     if (Nz == 1) {
@@ -1057,10 +1068,11 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     const int plane_stride = stride * (Ny + 2);
 
     // Use raw pointers for unified CPU/GPU code
-    double* u_ptr = grid.u.data().data();
-
 #ifdef USE_GPU_OFFLOAD
+    double* u_ptr = u_ptrs_[level];
     const size_t total_size = level_sizes_[level];
+#else
+    double* u_ptr = grid.u.data().data();
 #endif
 
     if (Nz == 1) {
