@@ -169,6 +169,13 @@ target_link_libraries(profile_poisson_warmstart nn_cfd_core)
 add_executable(profile_large_grid app/profile_large_grid.cpp)
 target_link_libraries(profile_large_grid nn_cfd_core)
 
+# 3D applications
+add_executable(duct app/main_duct.cpp)
+target_link_libraries(duct nn_cfd_core)
+
+add_executable(taylor_green_3d app/main_taylor_green_3d.cpp)
+target_link_libraries(taylor_green_3d nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
