@@ -6,8 +6,9 @@
 ///
 /// Tests:
 /// 1. Identical timesteps (20 steps, compare all fields)
-/// 2. Identical Poisson solve (same RHS, same solution)
-/// 3. Larger grid test (48x48x8, more iterations)
+/// 2. Deterministic results (run solver twice, compare outputs)
+/// 3. Larger grid test (48x48x8, 30 steps)
+/// 4. Code path verification (sanity check for physics)
 
 #include "mesh.hpp"
 #include "fields.hpp"

@@ -182,10 +182,9 @@ double PoissonSolver::compute_residual(const ScalarField& rhs, const ScalarField
 
     double max_res = 0.0;
 
-    // For 2D, only process single interior k-plane; for 3D, process all interior k-planes
-    const int k0 = mesh_->k_begin();
-    const int k_start = k0;
-    const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
+    // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+    const int k_start = is_2d ? 0 : mesh_->k_begin();
+    const int k_stop = is_2d ? 1 : mesh_->k_end();
 
     for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
@@ -221,10 +220,9 @@ void PoissonSolver::sor_iteration(const ScalarField& rhs, ScalarField& p, double
         coeff += 2.0 / dz2;
     }
 
-    // For 2D, only process single interior k-plane; for 3D, process all interior k-planes
-    const int k0 = mesh_->k_begin();
-    const int k_start = k0;
-    const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
+    // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+    const int k_start = is_2d ? 0 : mesh_->k_begin();
+    const int k_stop = is_2d ? 1 : mesh_->k_end();
 
     for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
@@ -258,10 +256,9 @@ void PoissonSolver::sor_rb_iteration(const ScalarField& rhs, ScalarField& p, dou
         coeff += 2.0 / dz2;
     }
 
-    // For 2D, only process single interior k-plane; for 3D, process all interior k-planes
-    const int k0 = mesh_->k_begin();
-    const int k_start = k0;
-    const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
+    // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+    const int k_start = is_2d ? 0 : mesh_->k_begin();
+    const int k_stop = is_2d ? 1 : mesh_->k_end();
 
     // Red sweep (i + j + k even)
     for (int k = k_start; k < k_stop; ++k) {
@@ -343,9 +340,9 @@ int PoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonCo
         // Subtract mean
         double sum = 0.0;
         int count = 0;
-        const int k0 = mesh_->k_begin();
-        const int k_start = k0;
-        const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
+        // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+        const int k_start = is_2d ? 0 : mesh_->k_begin();
+        const int k_stop = is_2d ? 1 : mesh_->k_end();
 
         for (int k = k_start; k < k_stop; ++k) {
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
