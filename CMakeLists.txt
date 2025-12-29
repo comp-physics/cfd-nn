@@ -150,9 +150,6 @@ endif()
 add_executable(channel app/main_channel.cpp)
 target_link_libraries(channel nn_cfd_core)
 
-add_executable(periodic_hills app/main_periodic_hills.cpp)
-target_link_libraries(periodic_hills nn_cfd_core)
-
 # CPU vs GPU comparison tool (for validation)
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
 target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
@@ -332,5 +329,5 @@ if(BUILD_TESTS)
 endif()
 
 # Installation
-install(TARGETS channel periodic_hills DESTINATION bin)
+install(TARGETS channel DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)

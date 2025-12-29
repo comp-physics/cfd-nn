@@ -10,7 +10,7 @@ This script:
 
 Usage:
     python scripts/run_all_models.py --case channel
-    python scripts/run_all_models.py --case periodic_hills --quick
+    python scripts/run_all_models.py --case channel --quick
 """
 
 import subprocess
@@ -308,7 +308,7 @@ def main():
         description='Run and compare all turbulence models'
     )
     parser.add_argument('--case', type=str, default='channel',
-                        choices=['channel', 'periodic_hills'],
+                        choices=['channel'],
                         help='Test case to run')
     parser.add_argument('--build_dir', type=str, default='build',
                         help='Build directory')

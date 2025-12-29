@@ -27,9 +27,6 @@ Each model directory contains:
 # Use trained TBNN model for channel flow
 ./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
 
-# Use trained TBNN model for periodic hills
-./periodic_hills --model nn_tbnn --nn_preset tbnn_phll_caseholdout
-
 # Or specify paths directly
 ./channel --model nn_tbnn --weights data/models/tbnn_channel_caseholdout --scaling data/models/tbnn_channel_caseholdout
 ```

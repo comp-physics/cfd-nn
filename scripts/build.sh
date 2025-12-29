@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             rm -rf "$BUILD_DIR"/CMake* "$BUILD_DIR"/Makefile "$BUILD_DIR"/*.cmake
             rm -rf "$BUILD_DIR"/*.a "$BUILD_DIR"/compile_commands.json
             rm -rf "$BUILD_DIR"/channel "$BUILD_DIR"/duct "$BUILD_DIR"/taylor_green_3d
-            rm -rf "$BUILD_DIR"/periodic_hills "$BUILD_DIR"/compare_channel_cpu_gpu
+            rm -rf "$BUILD_DIR"/compare_channel_cpu_gpu
             rm -rf "$BUILD_DIR"/profile_* "$BUILD_DIR"/test_*
             echo "Clean complete."
             exit 0
@@ -177,7 +177,7 @@ echo "  Build complete!"
 echo "=============================================="
 echo ""
 echo "Executables:"
-for exe in channel duct taylor_green_3d periodic_hills; do
+for exe in channel duct taylor_green_3d; do
     if [[ -x "$BUILD_DIR/$exe" ]]; then
         echo "  ./$exe"
     fi

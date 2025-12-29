@@ -109,23 +109,6 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 
 **Note:** Real trained weights from published models are needed for meaningful validation.
 
-## Periodic Hills
-
-**Status:** Implemented, basic testing done
-
-```bash
-./periodic_hills --Nx 64 --Ny 48 --model baseline
-```
-
-**Geometry:**
-- Simplified hill profile
-- Periodic boundary conditions in streamwise direction
-- No-slip at top and bottom walls
-
-**Validation:**
-- Not yet validated against reference data (Breuer et al.)
-- Future work: detailed comparison with DNS/LES reference
-
 ## Unit Tests
 
 ### Mesh and Fields
@@ -235,7 +218,6 @@ Typical convergence:
 - **Poiseuille flow:** Classical analytical solution
 - **Mixing length:** Pope, "Turbulent Flows" (2000)
 - **TBNN:** Ling et al., JFM 807 (2016)
-- **Periodic hills:** Breuer & Rodi, Flow Turb. Combust. 66 (2001)
 
 ---
 

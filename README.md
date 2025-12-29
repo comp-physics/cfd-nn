@@ -12,7 +12,7 @@ The solver supports **10 turbulence closure options**: 3 algebraic (baseline, GE
   - Explicit Euler time integration with adaptive time stepping
   - **Multigrid Poisson solver** (O(N) complexity, 10-100x faster than SOR)
   - Pressure projection for divergence-free velocity
-- **Pseudo-time marching to steady RANS** for canonical flows (channel, periodic hills)
+- **Pseudo-time marching to steady RANS** for canonical flows (channel, duct)
 - **Multiple turbulence closures**:
   - **Algebraic models**: Mixing length, GEP symbolic regression
   - **Transport equation models**: SST k-ω, standard k-ω (Wilcox)
@@ -59,9 +59,6 @@ make -j4
 ./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --adaptive_dt  # Fast, GPU-optimized
 ./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout --adaptive_dt  # Physically consistent
 
-# Periodic hills
-./periodic_hills --Nx 64 --Ny 96 --model baseline --adaptive_dt
-
 # Higher Reynolds number turbulent channel
 ./channel --Nx 128 --Ny 256 --Re 5000 --model baseline --adaptive_dt
 ```
@@ -82,19 +79,19 @@ bash scripts/download_mcconkey_data.sh
 # Train TBNN model (~30 min on CPU)
 python scripts/train_tbnn_mcconkey.py \
     --data_dir mcconkey_data \
-    --case periodic_hills \
-    --output data/models/tbnn_hills \
+    --case channel \
+    --output data/models/tbnn_channel \
     --epochs 100
 
 # Validate against DNS
 python scripts/validate_trained_model.py \
-    --model data/models/tbnn_hills \
-    --test_data mcconkey_data/periodic_hills/test/data.npz \
+    --model data/models/tbnn_channel \
+    --test_data mcconkey_data/channel/test/data.npz \
     --plot
 
 # Use in solver
 cd build
-./periodic_hills --model nn_tbnn --nn_preset tbnn_hills
+./channel --model nn_tbnn --nn_preset tbnn_channel
 ```
 
 ## Command-Line Options
@@ -557,7 +554,7 @@ This project integrates with the **McConkey et al. (2021)** dataset:
 - **Reference**: *Scientific Data* 8, 255 (2021)
 - **Content**: RANS + DNS/LES data for multiple flow cases
 - **Features**: Pre-computed TBNN invariants and tensor basis
-- **Cases**: Channel flow, periodic hills, square duct
+- **Cases**: Channel flow, square duct
 - **Download**: `bash scripts/download_mcconkey_data.sh`
 
 

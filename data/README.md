@@ -18,9 +18,6 @@ See `data/models/README.md` for:
 # Use trained TBNN model for channel flow
 ./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
 
-# Use trained TBNN model for periodic hills
-./periodic_hills --model nn_tbnn --nn_preset tbnn_phll_caseholdout
-
 # Use example/demo models (random weights - for testing only)
 ./channel --model nn_tbnn --nn_preset example_tbnn
 ./channel --model nn_mlp --nn_preset example_scalar_nut

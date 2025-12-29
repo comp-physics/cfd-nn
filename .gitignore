@@ -17,11 +17,9 @@ Makefile
 
 # Executables (in build directories only, not source files)
 /build/channel
-/build/periodic_hills
 /build/compare_channel_cpu_gpu
 /build/profile_solver
 build*/channel
-build*/periodic_hills
 build*/compare_channel_cpu_gpu
 build*/profile_solver
 /test_*
