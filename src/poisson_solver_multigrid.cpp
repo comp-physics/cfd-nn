@@ -910,8 +910,10 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
 
 void MultigridPoissonSolver::solve_coarsest(int iterations) {
     // Direct solve on coarsest grid using many SOR iterations
+    // Use omega=1.0 (pure Gauss-Seidel) for maximum stability on coarse grids
+    // Higher omega can cause divergence on small grids with periodic BCs
     int coarsest = levels_.size() - 1;
-    smooth(coarsest, iterations, 1.8);
+    smooth(coarsest, iterations, 1.0);
 }
 
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
@@ -921,9 +923,18 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
         solve_coarsest(40);
         return;
     }
-    
+
+    // Adaptive omega based on grid size for stability
+    // Optimal SOR omega ≈ 2/(1+sin(π/N)), but we use more conservative values
+    // to ensure stability with periodic BCs and deep hierarchies
+    auto& grid = *levels_[level];
+    const int N = std::min({grid.Nx, grid.Ny, grid.Nz});
+    double omega = 1.5;  // Default for large grids
+    if (N <= 16) omega = 1.3;
+    if (N <= 8) omega = 1.0;
+
     // Pre-smoothing
-    smooth(level, nu1, 1.8);
+    smooth(level, nu1, omega);
     
     // Compute residual
     compute_residual(level);
@@ -967,9 +978,9 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     
     // Apply boundary conditions
     apply_bc(level);
-    
+
     // Post-smoothing (more iterations for better convergence)
-    smooth(level, nu2, 1.8);
+    smooth(level, nu2, omega);
 }
 
 double MultigridPoissonSolver::compute_max_residual(int level) {

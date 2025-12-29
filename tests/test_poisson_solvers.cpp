@@ -222,16 +222,46 @@ TestResult test_3d_sor_convergence() {
 }
 
 /// Test 3D Multigrid solver convergence rate
-/// KNOWN ISSUE: 3D multigrid diverges for grids > 16^3 (deeper hierarchies)
-/// The vcycle zeroing bug was fixed, but there's another issue with 3+ level hierarchies.
-/// For now, skip this test. The consistency test (N=16) passes.
 TestResult test_3d_multigrid_convergence() {
     TestResult result;
-    result.passed = true;  // Skip test - known issue with deeper hierarchies
-    result.message = "SKIPPED (3D multigrid diverges for N>16, needs investigation)";
-    result.error_coarse = 0.0;
-    result.error_fine = 0.0;
-    result.convergence_rate = 0.0;
+    const double L = 2.0 * M_PI;
+    std::vector<int> Ns = {16, 32};  // Test deeper hierarchy
+    std::vector<double> errors;
+
+    for (int N : Ns) {
+        Mesh mesh;
+        mesh.init_uniform(N, N, N, 0.0, L, 0.0, L, 0.0, L);
+
+        ScalarField rhs(mesh);
+        ScalarField p(mesh, 0.0);
+
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    rhs(i, j, k) = -3.0 * std::sin(mesh.x(i)) * std::sin(mesh.y(j)) * std::sin(mesh.z(k));
+                }
+            }
+        }
+
+        MultigridPoissonSolver solver(mesh);
+        solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                      PoissonBC::Periodic, PoissonBC::Periodic,
+                      PoissonBC::Periodic, PoissonBC::Periodic);
+
+        PoissonConfig cfg;
+        cfg.tol = 1e-8;
+        cfg.max_iter = 200;
+
+        solver.solve(rhs, p, cfg);
+        errors.push_back(compute_error_3d(p, mesh));
+    }
+
+    result.error_coarse = errors[0];
+    result.error_fine = errors[1];
+    result.convergence_rate = std::log2(errors[0] / errors[1]);
+
+    result.passed = (result.convergence_rate > 1.5 && result.convergence_rate < 2.5);
+    result.message = result.passed ? "PASSED" : "FAILED";
     return result;
 }
 
