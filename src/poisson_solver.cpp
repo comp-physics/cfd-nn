@@ -182,9 +182,10 @@ double PoissonSolver::compute_residual(const ScalarField& rhs, const ScalarField
 
     double max_res = 0.0;
 
-    // For 2D, only process k=0 plane
-    const int k_start = is_2d ? 0 : mesh_->k_begin();
-    const int k_stop = is_2d ? 1 : mesh_->k_end();
+    // For 2D, only process single interior k-plane; for 3D, process all interior k-planes
+    const int k0 = mesh_->k_begin();
+    const int k_start = k0;
+    const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
 
     for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
@@ -220,9 +221,10 @@ void PoissonSolver::sor_iteration(const ScalarField& rhs, ScalarField& p, double
         coeff += 2.0 / dz2;
     }
 
-    // For 2D, only process k=0 plane
-    const int k_start = is_2d ? 0 : mesh_->k_begin();
-    const int k_stop = is_2d ? 1 : mesh_->k_end();
+    // For 2D, only process single interior k-plane; for 3D, process all interior k-planes
+    const int k0 = mesh_->k_begin();
+    const int k_start = k0;
+    const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
 
     for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
@@ -256,9 +258,10 @@ void PoissonSolver::sor_rb_iteration(const ScalarField& rhs, ScalarField& p, dou
         coeff += 2.0 / dz2;
     }
 
-    // For 2D, only process k=0 plane
-    const int k_start = is_2d ? 0 : mesh_->k_begin();
-    const int k_stop = is_2d ? 1 : mesh_->k_end();
+    // For 2D, only process single interior k-plane; for 3D, process all interior k-planes
+    const int k0 = mesh_->k_begin();
+    const int k_start = k0;
+    const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
 
     // Red sweep (i + j + k even)
     for (int k = k_start; k < k_stop; ++k) {
@@ -323,28 +326,26 @@ int PoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonCo
     residual_ = compute_residual(rhs, p);
     
     // For pure Neumann or fully periodic problems, subtract mean to ensure unique solution
+    // An axis is "ok" for nullspace if both boundaries are periodic or both are Neumann
     const bool is_2d = mesh_->is2D();
 
-    // Check x-y periodicity/Neumann
-    bool xy_periodic = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                        bc_y_lo_ == PoissonBC::Periodic && bc_y_hi_ == PoissonBC::Periodic);
-    bool xy_neumann = (bc_x_lo_ == PoissonBC::Neumann && bc_x_hi_ == PoissonBC::Neumann &&
-                       bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
-    bool xy_mixed = (bc_x_lo_ == PoissonBC::Periodic && bc_x_hi_ == PoissonBC::Periodic &&
-                     bc_y_lo_ == PoissonBC::Neumann && bc_y_hi_ == PoissonBC::Neumann);
+    auto axis_ok = [](PoissonBC lo, PoissonBC hi) {
+        return (lo == PoissonBC::Periodic && hi == PoissonBC::Periodic) ||
+               (lo == PoissonBC::Neumann && hi == PoissonBC::Neumann);
+    };
 
-    // For 3D, also check z-direction
-    bool z_ok = is_2d || (bc_z_lo_ == PoissonBC::Periodic && bc_z_hi_ == PoissonBC::Periodic) ||
-                         (bc_z_lo_ == PoissonBC::Neumann && bc_z_hi_ == PoissonBC::Neumann);
-
-    bool needs_mean_subtraction = (xy_periodic || xy_neumann || xy_mixed) && z_ok;
+    const bool needs_mean_subtraction =
+        axis_ok(bc_x_lo_, bc_x_hi_) &&
+        axis_ok(bc_y_lo_, bc_y_hi_) &&
+        (is_2d || axis_ok(bc_z_lo_, bc_z_hi_));
 
     if (needs_mean_subtraction) {
         // Subtract mean
         double sum = 0.0;
         int count = 0;
-        const int k_start = is_2d ? 0 : mesh_->k_begin();
-        const int k_stop = is_2d ? 1 : mesh_->k_end();
+        const int k0 = mesh_->k_begin();
+        const int k_start = k0;
+        const int k_stop = is_2d ? (k0 + 1) : mesh_->k_end();
 
         for (int k = k_start; k < k_stop; ++k) {
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {

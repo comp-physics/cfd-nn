@@ -1072,9 +1072,13 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
             int j = idx / Nx + Ng;
             int ridx = j * stride + i;
             double v = r_ptr[ridx];
-            // Use fabs for GPU-safe absolute value, treat NaN as 0 for reduction
-            double abs_v = (v >= 0.0) ? v : -v;
-            if (abs_v > max_res) max_res = abs_v;
+            // Explicitly detect NaN and propagate infinity to signal divergence
+            if (!(v == v)) {  // NaN check: NaN != NaN
+                max_res = 1e308;  // Large value that will "win" max reduction
+            } else {
+                double abs_v = (v >= 0.0) ? v : -v;
+                if (abs_v > max_res) max_res = abs_v;
+            }
         }
     } else {
         // 3D case
@@ -1088,9 +1092,13 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
             int k = idx / (Nx * Ny) + Ng;
             int ridx = k * plane_stride + j * stride + i;
             double v = r_ptr[ridx];
-            // Use manual abs for GPU-safe absolute value
-            double abs_v = (v >= 0.0) ? v : -v;
-            if (abs_v > max_res) max_res = abs_v;
+            // Explicitly detect NaN and propagate infinity to signal divergence
+            if (!(v == v)) {  // NaN check: NaN != NaN
+                max_res = 1e308;  // Large value that will "win" max reduction
+            } else {
+                double abs_v = (v >= 0.0) ? v : -v;
+                if (abs_v > max_res) max_res = abs_v;
+            }
         }
     }
 

@@ -393,14 +393,23 @@ The solver supports both 2D and 3D simulations:
 - 3D loops use `collapse(3)` instead of `collapse(2)`
 - Z-direction boundary conditions default to periodic
 
-**Important**: The `Config` struct does NOT have `Nz`, `z_min`, `z_max` members. For 3D applications, use local variables:
+The `Config` struct includes 3D parameters (in `include/config.hpp`):
 
 ```cpp
-// In app/main_duct.cpp:
-int Nz = 32;           // Local variable, not config.Nz
-double z_min = -1.0;
+int Nz = 1;                 // Grid cells in z (1 = 2D simulation)
+double z_min = 0.0;
 double z_max = 1.0;
-Mesh mesh(Nx, Ny, Nz, x_min, x_max, y_min, y_max, z_min, z_max);
+bool stretch_z = false;
+double stretch_beta_z = 2.0;
+```
+
+Example 3D mesh creation using Config:
+```cpp
+Mesh mesh;
+mesh.init_uniform(config.Nx, config.Ny, config.Nz,
+                  config.x_min, config.x_max,
+                  config.y_min, config.y_max,
+                  config.z_min, config.z_max);
 ```
 
 ## Turbulence Models

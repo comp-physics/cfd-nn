@@ -1407,7 +1407,7 @@ void RANSSolver::apply_velocity_bc() {
         const int n_u_z_bc = (Nx + 1 + 2*Ng) * (Ny + 2*Ng) * Ng;
         #pragma omp target teams distribute parallel for \
             map(present: u_ptr[0:u_total_size]) \
-            firstprivate(Nx, Ny, Ng, Nz, u_stride, u_plane_stride)
+            firstprivate(Nx, Ny, Ng, Nz, u_stride, u_plane_stride, z_lo_periodic, z_hi_periodic, z_lo_noslip, z_hi_noslip)
         for (int idx = 0; idx < n_u_z_bc; ++idx) {
             int i = idx % (Nx + 1 + 2*Ng);
             int j = (idx / (Nx + 1 + 2*Ng)) % (Ny + 2*Ng);
@@ -1437,7 +1437,7 @@ void RANSSolver::apply_velocity_bc() {
         const int n_v_z_bc = (Nx + 2*Ng) * (Ny + 1 + 2*Ng) * Ng;
         #pragma omp target teams distribute parallel for \
             map(present: v_ptr[0:v_total_size]) \
-            firstprivate(Nx, Ny, Ng, Nz, v_stride, v_plane_stride)
+            firstprivate(Nx, Ny, Ng, Nz, v_stride, v_plane_stride, z_lo_periodic, z_hi_periodic, z_lo_noslip, z_hi_noslip)
         for (int idx = 0; idx < n_v_z_bc; ++idx) {
             int i = idx % (Nx + 2*Ng);
             int j = (idx / (Nx + 2*Ng)) % (Ny + 1 + 2*Ng);
@@ -1465,7 +1465,7 @@ void RANSSolver::apply_velocity_bc() {
         const int n_w_z_bc = (Nx + 2*Ng) * (Ny + 2*Ng) * Ng;
         #pragma omp target teams distribute parallel for \
             map(present: w_ptr[0:w_total_size]) \
-            firstprivate(Nx, Ny, Ng, Nz, w_stride, w_plane_stride)
+            firstprivate(Nx, Ny, Ng, Nz, w_stride, w_plane_stride, z_lo_periodic, z_hi_periodic, z_lo_noslip, z_hi_noslip)
         for (int idx = 0; idx < n_w_z_bc; ++idx) {
             int i = idx % (Nx + 2*Ng);
             int j = (idx / (Nx + 2*Ng)) % (Ny + 2*Ng);
