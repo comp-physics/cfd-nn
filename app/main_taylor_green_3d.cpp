@@ -114,63 +114,66 @@ void print_usage(const char* prog) {
 int main(int argc, char** argv) {
     std::cout << "=== 3D Taylor-Green Vortex Solver ===\n\n";
 
-    // Configuration
-    int N = 32;
+    // Taylor-Green specific parameters
     double Re = 100.0;
     double T_final = 10.0;
-    double dt = 0.01;
-    double CFL_max = 0.5;
-    bool adaptive_dt = false;
-    bool write_fields = true;
-    int num_snapshots = 10;
-    std::string output_dir = "output/";
+    double V0 = 1.0;  // Initial velocity amplitude
 
-    // Initial velocity amplitude
-    double V0 = 1.0;
+    // Configuration with Taylor-Green defaults (cubic domain [0, 2π]³)
+    Config config;
+    config.Nx = 32;
+    config.Ny = 32;
+    config.Nz = 32;
+    config.x_min = 0.0;
+    config.x_max = 2.0 * M_PI;
+    config.y_min = 0.0;
+    config.y_max = 2.0 * M_PI;
+    config.z_min = 0.0;
+    config.z_max = 2.0 * M_PI;
+    config.dt = 0.01;
+    config.CFL_max = 0.5;
+    config.adaptive_dt = false;
+    config.num_snapshots = 10;
+    config.tol = 1e-12;  // Won't converge in unsteady mode
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
 
-    // Parse command line
+    // Parse command line - handles common args (--Nx, --Ny, --Nz, --output, etc.)
+    // Also handle Taylor-Green specific args
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
         } else if (arg == "--N" && i+1 < argc) {
-            N = std::stoi(argv[++i]);
+            // Shorthand for cubic grid
+            int N = std::stoi(argv[++i]);
+            config.Nx = config.Ny = config.Nz = N;
         } else if (arg == "--Re" && i+1 < argc) {
             Re = std::stod(argv[++i]);
         } else if (arg == "--T" && i+1 < argc) {
             T_final = std::stod(argv[++i]);
-        } else if (arg == "--dt" && i+1 < argc) {
-            dt = std::stod(argv[++i]);
-        } else if (arg == "--CFL" && i+1 < argc) {
-            CFL_max = std::stod(argv[++i]);
-        } else if (arg == "--output" && i+1 < argc) {
-            output_dir = argv[++i];
-            if (output_dir.back() != '/') output_dir += '/';
-        } else if (arg == "--num_snapshots" && i+1 < argc) {
-            num_snapshots = std::stoi(argv[++i]);
-        } else if (arg == "--no_write_fields") {
-            write_fields = false;
-        } else if (arg == "--adaptive_dt") {
-            adaptive_dt = true;
         }
     }
+    // Let Config handle remaining standard args
+    config.parse_args(argc, argv);
 
     // Compute viscosity from Re
     // Re = V0 * L / nu, with L = 1 (unit box scaled to 2π)
     double L = 1.0;
     double nu = V0 * L / Re;
+    config.nu = nu;
 
     // Estimate number of steps
-    int max_iter = static_cast<int>(T_final / dt) + 1;
+    config.max_iter = static_cast<int>(T_final / config.dt) + 1;
 
     std::cout << "=== Configuration ===\n";
-    std::cout << "Grid: " << N << "³ cells\n";
+    std::cout << "Grid: " << config.Nx << "³ cells\n";
     std::cout << "Domain: [0, 2π]³ (periodic)\n";
     std::cout << "Re = " << Re << " (nu = " << nu << ")\n";
     std::cout << "V0 = " << V0 << "\n";
-    std::cout << "T_final = " << T_final << ", dt = " << dt << "\n";
-    std::cout << "Adaptive dt: " << (adaptive_dt ? "YES" : "NO") << "\n";
+    std::cout << "T_final = " << T_final << ", dt = " << config.dt << "\n";
+    std::cout << "Adaptive dt: " << (config.adaptive_dt ? "YES" : "NO") << "\n";
     std::cout << "=====================\n\n";
 
     // Theoretical decay rate for low Re: KE(t) = KE(0) * exp(-2*nu*t)
@@ -180,21 +183,13 @@ int main(int argc, char** argv) {
 
     // Create 3D mesh
     Mesh mesh;
-    mesh.init_uniform(N, N, N, 0.0, 2.0*M_PI, 0.0, 2.0*M_PI, 0.0, 2.0*M_PI);
+    mesh.init_uniform(config.Nx, config.Ny, config.Nz,
+                      config.x_min, config.x_max,
+                      config.y_min, config.y_max,
+                      config.z_min, config.z_max);
 
     std::cout << "Mesh: " << mesh.Nx << " x " << mesh.Ny << " x " << mesh.Nz << " cells\n";
     std::cout << "dx = dy = dz = " << mesh.dx << "\n\n";
-
-    // Configure solver
-    Config config;
-    config.nu = nu;
-    config.dt = dt;
-    config.adaptive_dt = adaptive_dt;
-    config.CFL_max = CFL_max;
-    config.max_iter = max_iter;
-    config.tol = 1e-12;  // Won't converge in unsteady mode
-    config.turb_model = TurbulenceModelType::None;
-    config.verbose = false;
 
     RANSSolver solver(mesh, config);
 
@@ -253,7 +248,7 @@ int main(int argc, char** argv) {
     ens_hist.push_back(ens0);
 
     // Snapshot frequency
-    int snapshot_freq = (num_snapshots > 0) ? std::max(1, max_iter / num_snapshots) : 0;
+    int snapshot_freq = (config.num_snapshots > 0) ? std::max(1, config.max_iter / config.num_snapshots) : 0;
 
     std::cout << "=== Running unsteady simulation ===\n\n";
     std::cout << std::setw(10) << "Step"
@@ -268,9 +263,10 @@ int main(int argc, char** argv) {
 
     double t = 0.0;
     int snap_count = 0;
+    double dt = config.dt;
 
-    for (int step = 1; step <= max_iter && t < T_final; ++step) {
-        if (adaptive_dt) {
+    for (int step = 1; step <= config.max_iter && t < T_final; ++step) {
+        if (config.adaptive_dt) {
             dt = solver.compute_adaptive_dt();
         }
 
@@ -284,7 +280,7 @@ int main(int argc, char** argv) {
         }
 
         // Periodic output
-        if (step % 100 == 0 || step == max_iter || t >= T_final) {
+        if (step % 100 == 0 || step == config.max_iter || t >= T_final) {
 #ifdef USE_GPU_OFFLOAD
             solver.sync_from_gpu();
 #endif
@@ -306,14 +302,14 @@ int main(int argc, char** argv) {
         }
 
         // Write snapshots
-        if (write_fields && snapshot_freq > 0 && step % snapshot_freq == 0) {
+        if (config.write_fields && snapshot_freq > 0 && step % snapshot_freq == 0) {
             ++snap_count;
 #ifdef USE_GPU_OFFLOAD
             solver.sync_from_gpu();
 #endif
             try {
-                std::filesystem::create_directories(output_dir);
-                solver.write_vtk(output_dir + "tg3d_" + std::to_string(snap_count) + ".vtk");
+                std::filesystem::create_directories(config.output_dir);
+                solver.write_vtk(config.output_dir + "tg3d_" + std::to_string(snap_count) + ".vtk");
             } catch (...) {}
         }
     }
@@ -344,10 +340,10 @@ int main(int argc, char** argv) {
     }
 
     // Write time history
-    if (write_fields) {
+    if (config.write_fields) {
         try {
-            std::filesystem::create_directories(output_dir);
-            std::ofstream hist_file(output_dir + "tg3d_history.dat");
+            std::filesystem::create_directories(config.output_dir);
+            std::ofstream hist_file(config.output_dir + "tg3d_history.dat");
             hist_file << "# time KE KE/KE0 enstrophy\n";
             for (size_t i = 0; i < time_hist.size(); ++i) {
                 hist_file << time_hist[i] << " "
@@ -355,10 +351,10 @@ int main(int argc, char** argv) {
                           << ke_hist[i]/KE0 << " "
                           << ens_hist[i] << "\n";
             }
-            std::cout << "\nWrote time history to " << output_dir << "tg3d_history.dat\n";
+            std::cout << "\nWrote time history to " << config.output_dir << "tg3d_history.dat\n";
 
             // Final VTK
-            solver.write_vtk(output_dir + "tg3d_final.vtk");
+            solver.write_vtk(config.output_dir + "tg3d_final.vtk");
         } catch (const std::exception& e) {
             std::cerr << "Warning: Could not write output: " << e.what() << "\n";
         }

@@ -125,14 +125,17 @@ void print_usage(const char* prog) {
 int main(int argc, char** argv) {
     std::cout << "=== 3D Square Duct Flow Solver ===\n\n";
 
-    // 3D mesh parameters (not in Config)
-    int Nx = 16, Ny = 32, Nz = 32;
-    double x_min = 0.0, x_max = 2.0 * M_PI;
-    double y_min = -1.0, y_max = 1.0;
-    double z_min = -1.0, z_max = 1.0;
-
-    // Solver configuration
+    // Solver configuration with duct-specific defaults
     Config config;
+    config.Nx = 16;
+    config.Ny = 32;
+    config.Nz = 32;
+    config.x_min = 0.0;
+    config.x_max = 2.0 * M_PI;
+    config.y_min = -1.0;
+    config.y_max = 1.0;
+    config.z_min = -1.0;
+    config.z_max = 1.0;
     config.nu = 0.01;
     config.dp_dx = -1.0;
     config.dt = 0.001;
@@ -144,66 +147,23 @@ int main(int argc, char** argv) {
     config.poisson_tol = 1e-8;
     config.poisson_max_iter = 5000;
 
-    std::string output_dir = "output/";
-    bool write_fields = true;
-
-    // Parse command line
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--help" || arg == "-h") {
-            print_usage(argv[0]);
-            return 0;
-        } else if (arg == "--Nx" && i+1 < argc) {
-            Nx = std::stoi(argv[++i]);
-        } else if (arg == "--Ny" && i+1 < argc) {
-            Ny = std::stoi(argv[++i]);
-        } else if (arg == "--Nz" && i+1 < argc) {
-            Nz = std::stoi(argv[++i]);
-        } else if (arg == "--nu" && i+1 < argc) {
-            config.nu = std::stod(argv[++i]);
-        } else if (arg == "--dp_dx" && i+1 < argc) {
-            config.dp_dx = std::stod(argv[++i]);
-        } else if (arg == "--dt" && i+1 < argc) {
-            config.dt = std::stod(argv[++i]);
-        } else if (arg == "--max_iter" && i+1 < argc) {
-            config.max_iter = std::stoi(argv[++i]);
-        } else if (arg == "--tol" && i+1 < argc) {
-            config.tol = std::stod(argv[++i]);
-        } else if (arg == "--output" && i+1 < argc) {
-            output_dir = argv[++i];
-            if (output_dir.back() != '/') output_dir += '/';
-        } else if (arg == "--no_write_fields") {
-            write_fields = false;
-        } else if (arg == "--adaptive_dt") {
-            config.adaptive_dt = true;
-        } else if (arg == "--model" && i+1 < argc) {
-            std::string model = argv[++i];
-            if (model == "none") config.turb_model = TurbulenceModelType::None;
-            else if (model == "baseline") config.turb_model = TurbulenceModelType::Baseline;
-            else if (model == "sst") config.turb_model = TurbulenceModelType::SSTKOmega;
-            else if (model == "komega") config.turb_model = TurbulenceModelType::KOmega;
-            else std::cerr << "Unknown model: " << model << "\n";
-        }
-    }
+    // Parse command line (handles all args including --Nx, --Ny, --Nz, etc.)
+    config.parse_args(argc, argv);
 
     // Print configuration
-    std::cout << "=== Configuration ===\n";
-    std::cout << "Mesh: " << Nx << " x " << Ny << " x " << Nz << " (3D)\n";
-    std::cout << "Domain: [" << x_min << ", " << x_max << "] x ["
-              << y_min << ", " << y_max << "] x ["
-              << z_min << ", " << z_max << "]\n";
-    std::cout << "nu = " << config.nu << ", dp/dx = " << config.dp_dx << "\n";
-    std::cout << "dt = " << config.dt << ", max_iter = " << config.max_iter << "\n";
-    std::cout << "=====================\n\n";
+    config.print();
 
     // Compute expected values
-    double a = (y_max - y_min) / 2.0;
+    double a = (config.y_max - config.y_min) / 2.0;
     double u_center_approx = duct_velocity_analytical(0.0, 0.0, a, config.dp_dx, config.nu);
     std::cout << "Expected centerline velocity (approx): " << u_center_approx << "\n\n";
 
     // Create 3D mesh
     Mesh mesh;
-    mesh.init_uniform(Nx, Ny, Nz, x_min, x_max, y_min, y_max, z_min, z_max);
+    mesh.init_uniform(config.Nx, config.Ny, config.Nz,
+                      config.x_min, config.x_max,
+                      config.y_min, config.y_max,
+                      config.z_min, config.z_max);
 
     std::cout << "Mesh: " << mesh.Nx << " x " << mesh.Ny << " x " << mesh.Nz << " cells (3D)\n";
     std::cout << "dx = " << mesh.dx << ", dy = " << mesh.dy << ", dz = " << mesh.dz << "\n\n";
@@ -308,13 +268,13 @@ int main(int argc, char** argv) {
     }
 
     // Write output
-    if (write_fields) {
+    if (config.write_fields) {
         try {
-            std::filesystem::create_directories(output_dir);
-            solver.write_vtk(output_dir + "duct_final.vtk");
-            write_duct_profile(output_dir + "duct_profile.dat", mesh,
+            std::filesystem::create_directories(config.output_dir);
+            solver.write_vtk(config.output_dir + "duct_final.vtk");
+            write_duct_profile(config.output_dir + "duct_profile.dat", mesh,
                               solver.velocity(), config.dp_dx, config.nu);
-            std::cout << "\nWrote output to " << output_dir << "\n";
+            std::cout << "\nWrote output to " << config.output_dir << "\n";
         } catch (const std::exception& e) {
             std::cerr << "Warning: Could not write output: " << e.what() << "\n";
         }

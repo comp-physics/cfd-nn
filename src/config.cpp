@@ -94,7 +94,14 @@ void Config::load(const std::string& filename) {
     y_max = get_double("y_max", y_max);
     stretch_y = get_bool("stretch_y", stretch_y);
     stretch_beta = get_double("stretch_beta", stretch_beta);
-    
+
+    // Z-direction (3D)
+    Nz = get_int("Nz", Nz);
+    z_min = get_double("z_min", z_min);
+    z_max = get_double("z_max", z_max);
+    stretch_z = get_bool("stretch_z", stretch_z);
+    stretch_beta_z = get_double("stretch_beta_z", stretch_beta_z);
+
     // Physical
     auto params_map = params; // Save for checking if key exists
     Re = get_double("Re", Re);
@@ -186,6 +193,16 @@ void Config::parse_args(int argc, char** argv) {
             Nx = std::stoi(argv[++i]);
         } else if (arg == "--Ny" && i + 1 < argc) {
             Ny = std::stoi(argv[++i]);
+        } else if (arg == "--Nz" && i + 1 < argc) {
+            Nz = std::stoi(argv[++i]);
+        } else if (arg == "--z_min" && i + 1 < argc) {
+            z_min = std::stod(argv[++i]);
+        } else if (arg == "--z_max" && i + 1 < argc) {
+            z_max = std::stod(argv[++i]);
+        } else if (arg == "--stretch_z") {
+            stretch_z = true;
+        } else if (arg == "--stretch_beta_z" && i + 1 < argc) {
+            stretch_beta_z = std::stod(argv[++i]);
         } else if (arg == "--Re" && i + 1 < argc) {
             Re = std::stod(argv[++i]);
             Re_specified = true;
@@ -272,6 +289,11 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --config FILE     Load config file\n"
                       << "  --Nx N            Grid cells in x\n"
                       << "  --Ny N            Grid cells in y\n"
+                      << "  --Nz N            Grid cells in z (1 = 2D)\n"
+                      << "  --z_min V         Domain z minimum\n"
+                      << "  --z_max V         Domain z maximum\n"
+                      << "  --stretch_z       Use stretched mesh in z\n"
+                      << "  --stretch_beta_z B  Z-stretching parameter (default 2.0)\n"
                       << "  --Re R            Reynolds number (auto-computes nu or dp_dx)\n"
                       << "  --nu V            Kinematic viscosity\n"
                       << "  --dp_dx D         Pressure gradient (driving force)\n"
@@ -441,11 +463,21 @@ void Config::print() const {
     double delta = (y_max - y_min) / 2.0;
     double Re_actual = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
     
-    std::cout << "=== Configuration ===\n"
-              << "Mesh: " << Nx << " x " << Ny << "\n"
-              << "Domain: [" << x_min << ", " << x_max << "] x [" << y_min << ", " << y_max << "]\n"
-              << "Stretched y: " << (stretch_y ? "yes" : "no") << "\n"
-              << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
+    std::cout << "=== Configuration ===\n";
+    if (Nz > 1) {
+        std::cout << "Mesh: " << Nx << " x " << Ny << " x " << Nz << " (3D)\n"
+                  << "Domain: [" << x_min << ", " << x_max << "] x ["
+                  << y_min << ", " << y_max << "] x ["
+                  << z_min << ", " << z_max << "]\n"
+                  << "Stretched y: " << (stretch_y ? "yes" : "no")
+                  << ", z: " << (stretch_z ? "yes" : "no") << "\n";
+    } else {
+        std::cout << "Mesh: " << Nx << " x " << Ny << "\n"
+                  << "Domain: [" << x_min << ", " << x_max << "] x ["
+                  << y_min << ", " << y_max << "]\n"
+                  << "Stretched y: " << (stretch_y ? "yes" : "no") << "\n";
+    }
+    std::cout << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
               << "Time stepping: Explicit Euler + Projection\n"
               << "Poisson solver: Multigrid (warm-start enabled)\n"
