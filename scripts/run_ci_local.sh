@@ -5,25 +5,40 @@
 # to verify their changes before pushing.
 #
 # Usage:
-#   ./scripts/run_ci_local.sh           # Run all tests (fast + medium), auto-detect GPU
-#   ./scripts/run_ci_local.sh fast      # Run only fast tests (~1 minute)
-#   ./scripts/run_ci_local.sh full      # Run all tests including slow ones
-#   ./scripts/run_ci_local.sh gpu       # Run GPU-specific tests only
-#   ./scripts/run_ci_local.sh paradigm  # Run code sharing paradigm checks
-#   ./scripts/run_ci_local.sh --cpu     # Force CPU-only build (no GPU offload)
-#   ./scripts/run_ci_local.sh --cpu fast # CPU-only with fast tests
+#   ./scripts/run_ci_local.sh              # Run all tests (fast + medium), auto-detect GPU
+#   ./scripts/run_ci_local.sh fast         # Run only fast tests (~1 minute)
+#   ./scripts/run_ci_local.sh full         # Run all tests including slow ones
+#   ./scripts/run_ci_local.sh gpu          # Run GPU-specific tests only
+#   ./scripts/run_ci_local.sh paradigm     # Run code sharing paradigm checks
+#   ./scripts/run_ci_local.sh --cpu        # Force CPU-only build (no GPU offload)
+#   ./scripts/run_ci_local.sh --cpu fast   # CPU-only with fast tests
+#   ./scripts/run_ci_local.sh -v           # Verbose output (show full test output)
+#   ./scripts/run_ci_local.sh --verbose    # Same as -v
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
-# Parse --cpu flag
+# Parse flags
 USE_GPU=ON
-if [[ "$1" == "--cpu" ]]; then
-    USE_GPU=OFF
-    shift
-fi
+VERBOSE=0
+while [[ "$1" == --* || "$1" == -* ]]; do
+    case "$1" in
+        --cpu)
+            USE_GPU=OFF
+            shift
+            ;;
+        --verbose|-v)
+            VERBOSE=1
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
 
 # Set build directory based on mode
 if [[ "$USE_GPU" == "ON" ]]; then
@@ -115,16 +130,31 @@ run_test() {
     echo ""
     log_info "Running $test_name..."
 
-    if timeout "$timeout_secs" "$test_binary" > /tmp/test_output.txt 2>&1; then
+    local output_file="/tmp/test_output_$$.txt"
+    local exit_code=0
+    timeout "$timeout_secs" "$test_binary" > "$output_file" 2>&1 || exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
         log_success "$test_name"
         PASSED=$((PASSED + 1))
+        if [ $VERBOSE -eq 1 ]; then
+            echo "  Output:"
+            cat "$output_file" | sed 's/^/    /'
+        else
+            # Show summary lines (PASSED/FAILED counts, key results)
+            local summary=$(grep -E '(PASSED|FAILED|passed|failed|Results:|===.*===|error=|Error|SUCCESS)' "$output_file" | head -10)
+            if [ -n "$summary" ]; then
+                echo "$summary" | sed 's/^/    /'
+            fi
+        fi
     else
-        log_failure "$test_name"
-        echo "  Output:"
-        tail -20 /tmp/test_output.txt | sed 's/^/    /'
+        log_failure "$test_name (exit code: $exit_code)"
+        echo "  Output (last 30 lines):"
+        tail -30 "$output_file" | sed 's/^/    /'
         FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
     fi
+    rm -f "$output_file"
 }
 
 # Check build directory exists
