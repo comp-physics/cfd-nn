@@ -1,4 +1,5 @@
 #include "gpu_kernels.hpp"
+#include "profiling.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -29,6 +30,8 @@ void compute_gradients_from_mac_gpu(
     int v_total_size,
     int cell_total_size)
 {
+    NVTX_SCOPE_GRADIENT("kernel:gradients_from_mac");
+
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
 
@@ -93,6 +96,8 @@ void compute_mlp_scalar_features_gpu(
     int total_cells, int u_total, int v_total,
     double nu, double delta, double u_ref)
 {
+    NVTX_SCOPE_TURB("kernel:mlp_features");
+
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
@@ -177,6 +182,8 @@ void postprocess_mlp_outputs_gpu(
     int stride,
     double nu_t_max)
 {
+    NVTX_SCOPE_NN("kernel:postprocess_mlp");
+
 #ifdef USE_GPU_OFFLOAD
     const int total_field_size = stride * (Ny + 2*Ng);
     
@@ -224,6 +231,8 @@ void compute_tbnn_features_gpu(
     int cell_stride, int total_cells,
     double nu, double delta)
 {
+    NVTX_SCOPE_TURB("kernel:tbnn_features");
+
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
@@ -346,6 +355,8 @@ void postprocess_nn_outputs_gpu(
     int output_dim,
     double nu_ref)
 {
+    NVTX_SCOPE_NN("kernel:postprocess_nn");
+
 #ifdef USE_GPU_OFFLOAD
     const int NUM_BASIS = 4;
     const bool compute_tau = (tau_xx != nullptr);
@@ -518,6 +529,8 @@ void tbnn_full_pipeline_gpu(
     int Nx, int Ny, double dx, double dy,
     double nu, double delta)
 {
+    NVTX_SCOPE_NN("kernel:tbnn_full_pipeline");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     const int stride = Nx + 2;
@@ -781,6 +794,8 @@ void compute_boussinesq_closure_gpu(
     double k_min, double omega_min,
     double nu_t_max)
 {
+    NVTX_SCOPE_CLOSURE("kernel:boussinesq_closure");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     
@@ -843,6 +858,8 @@ void compute_sst_closure_gpu(
     double k_min, double omega_min,
     double nu_t_max)
 {
+    NVTX_SCOPE_CLOSURE("kernel:sst_closure");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     
@@ -930,6 +947,8 @@ void komega_transport_step_gpu(
     double k_min, double k_max,
     double omega_min, double omega_max)
 {
+    NVTX_SCOPE_TURB("kernel:komega_transport");
+
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     const double inv_2dx = 1.0 / (2.0 * dx);

@@ -15,6 +15,7 @@
 #include "solver.hpp"
 #include "timing.hpp"
 #include "gpu_utils.hpp"
+#include "profiling.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -26,39 +27,24 @@
 #include <chrono>
 #endif
 
+// Legacy NVTX macros for backward compatibility
+// These are kept for existing code; new code should use profiling.hpp macros
 #ifdef GPU_PROFILE_KERNELS
-// Try to use NVTX if available, otherwise use lightweight markers
 #if __has_include(<nvtx3/nvToolsExt.h>)
     #include <nvtx3/nvToolsExt.h>
     #define NVTX_PUSH(name) nvtxRangePushA(name)
     #define NVTX_POP() nvtxRangePop()
-    #define NVTX_AVAILABLE 1
-    
-    // RAII scope guard for NVTX ranges (prevents unmatched push/pop on early returns)
-    struct NvtxRangeScope {
-        explicit NvtxRangeScope(const char* name) { nvtxRangePushA(name); }
-        ~NvtxRangeScope() { nvtxRangePop(); }
-        NvtxRangeScope(const NvtxRangeScope&) = delete;
-        NvtxRangeScope& operator=(const NvtxRangeScope&) = delete;
-    };
-    #define NVTX_RANGE(name) NvtxRangeScope nvtx_scope_##__LINE__(name)
+#elif __has_include(<nvToolsExt.h>)
+    #include <nvToolsExt.h>
+    #define NVTX_PUSH(name) nvtxRangePushA(name)
+    #define NVTX_POP() nvtxRangePop()
 #else
-    // Lightweight markers when NVTX is not available
-    #define NVTX_PUSH(name) do { if (false) std::cout << "NVTX: " << name << std::endl; } while(0)
-    #define NVTX_POP() do { } while(0)
-    #define NVTX_AVAILABLE 0
-    struct NvtxRangeScope {
-        explicit NvtxRangeScope(const char*) {}
-    };
-    #define NVTX_RANGE(name) NvtxRangeScope nvtx_scope_##__LINE__(name)
+    #define NVTX_PUSH(name)
+    #define NVTX_POP()
 #endif
 #else
 #define NVTX_PUSH(name)
 #define NVTX_POP()
-struct NvtxRangeScope {
-    explicit NvtxRangeScope(const char*) {}
-};
-#define NVTX_RANGE(name) NvtxRangeScope nvtx_scope_##__LINE__(name)
 #endif
 
 namespace nncfd {
@@ -1576,6 +1562,8 @@ void RANSSolver::apply_velocity_bc() {
 }
 
 void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& conv) {
+    NVTX_SCOPE_CONVECT("solver:convective_term");
+
     (void)vel;   // Unused - always operates on velocity_ via view
     (void)conv;  // Unused - always operates on conv_ via view
 
@@ -1695,6 +1683,8 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
 
 void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff,
                                         VectorField& diff) {
+    NVTX_SCOPE_DIFFUSE("solver:diffusive_term");
+
     (void)vel;     // Unused - always operates on velocity_ via view
     (void)nu_eff;  // Unused - always operates on nu_eff_ via view
     (void)diff;    // Unused - always operates on diff_ via view

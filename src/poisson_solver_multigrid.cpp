@@ -16,6 +16,7 @@
 
 #include "poisson_solver_multigrid.hpp"
 #include "gpu_utils.hpp"
+#include "profiling.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -519,6 +520,8 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 }
 
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
+    NVTX_SCOPE_POISSON("mg:smooth");
+
     // Red-Black Gauss-Seidel with SOR
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
@@ -637,6 +640,8 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
 }
 
 void MultigridPoissonSolver::compute_residual(int level) {
+    NVTX_SCOPE_RESIDUAL("mg:residual");
+
     // r = f - L(u) where L is Laplacian operator
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
@@ -698,6 +703,8 @@ void MultigridPoissonSolver::compute_residual(int level) {
 }
 
 void MultigridPoissonSolver::restrict_residual(int fine_level) {
+    NVTX_SCOPE_MG("mg:restrict");
+
     // Full-weighting restriction from fine to coarse grid
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& fine = *levels_[fine_level];
@@ -792,6 +799,8 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
 }
 
 void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
+    NVTX_SCOPE_MG("mg:prolongate");
+
     // Bilinear/trilinear interpolation from coarse to fine grid
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& coarse = *levels_[coarse_level];
@@ -963,6 +972,8 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
 }
 
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
+    NVTX_SCOPE_POISSON("mg:vcycle");
+
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - solve directly
         // Reduced from 100 to 40 iterations for better performance
@@ -1165,7 +1176,8 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 }
 
 int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonConfig& cfg) {
-    
+    NVTX_SCOPE_POISSON("poisson:solve");
+
     // Copy RHS and initial guess to finest level (CPU side)
     auto& finest = *levels_[0];
     const int Ng = 1;
@@ -1261,6 +1273,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
 #ifdef USE_GPU_OFFLOAD
 int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg) {
+    NVTX_SCOPE_POISSON("poisson:solve_device");
+
     assert(gpu_ready_ && "GPU must be initialized in constructor");
     
     // Device-resident solve using Model 1 (host pointer + present mapping)

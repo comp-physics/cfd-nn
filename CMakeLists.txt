@@ -169,6 +169,10 @@ target_link_libraries(profile_poisson_warmstart nn_cfd_core)
 add_executable(profile_large_grid app/profile_large_grid.cpp)
 target_link_libraries(profile_large_grid nn_cfd_core)
 
+# Comprehensive kernel-level profiling (all turbulence models + 3D)
+add_executable(profile_kernels app/profile_kernels.cpp)
+target_link_libraries(profile_kernels nn_cfd_core)
+
 # 3D applications
 add_executable(duct app/main_duct.cpp)
 target_link_libraries(duct nn_cfd_core)
