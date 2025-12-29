@@ -174,12 +174,22 @@ int main(int argc, char** argv) {
     // Allow threshold override via environment
     double threshold = GPU_THRESHOLD;
     if (const char* env_thresh = std::getenv("GPU_UTIL_THRESHOLD")) {
-        threshold = std::stod(env_thresh);
+        try {
+            threshold = std::stod(env_thresh);
+        } catch (const std::exception& e) {
+            std::cerr << "Invalid GPU_UTIL_THRESHOLD: " << env_thresh << "\n";
+            return 1;
+        }
     }
 
     // Allow override via command line
     if (argc > 1) {
-        threshold = std::stod(argv[1]);
+        try {
+            threshold = std::stod(argv[1]);
+        } catch (const std::exception& e) {
+            std::cerr << "Invalid threshold argument: " << argv[1] << "\n";
+            return 1;
+        }
     }
 
     std::cout << "\n";

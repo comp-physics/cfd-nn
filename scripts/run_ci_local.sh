@@ -97,7 +97,8 @@ GPU_FLAKY_TESTS=""
 
 is_gpu_flaky() {
     local test_binary=$1
-    local test_name=$(basename "$test_binary")
+    local test_name
+    test_name=$(basename "$test_binary")
 
     if [[ "$USE_GPU" == "ON" ]]; then
         for flaky in $GPU_FLAKY_TESTS; do
@@ -144,7 +145,8 @@ run_test() {
             # Show summary lines (PASSED/FAILED counts, key results, metrics)
             # Patterns: [PASS], [FAIL], [OK], PASSED, FAILED, Results:, ===...===,
             #           max_diff=, max_div=, L2/Linf norms, Test N:, scientific notation
-            local summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|PASSED|FAILED|passed|failed|Results:|===.*===|error=|Error|SUCCESS|max_diff|max_div|L2|Linf|Test [0-9]+:|[0-9]+\.[0-9]+e[-+]?[0-9]+)' "$output_file" | head -15)
+            local summary
+            summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|PASSED|FAILED|passed|failed|Results:|===.*===|error=|Error|SUCCESS|max_diff|max_div|L2|Linf|Test [0-9]+:|[0-9]+\.[0-9]+e[-+]?[0-9]+)' "$output_file" | head -15) || true
             if [ -n "$summary" ]; then
                 echo "$summary" | sed 's/^/    /'
             fi
@@ -165,7 +167,7 @@ if [ ! -d "$BUILD_DIR" ]; then
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
     cmake .. -DUSE_GPU_OFFLOAD=${USE_GPU} -DBUILD_TESTS=ON
-    make -j$(nproc)
+    make -j"$(nproc)"
     cd "$PROJECT_DIR"
 fi
 

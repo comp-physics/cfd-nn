@@ -8,12 +8,11 @@
 #   2. NVIDIA Nsight Systems (detailed, for investigation)
 #
 # Usage:
-#   ./scripts/profile_gpu_utilization.sh [--nsys] [--threshold N] [--steps N]
+#   ./scripts/profile_gpu_utilization.sh [--nsys] [--threshold N]
 #
 # Options:
 #   --nsys      Use Nsight Systems for detailed profiling (default: built-in timing)
 #   --threshold Set GPU utilization threshold percentage (default: 70)
-#   --steps     Number of solver steps per model (default: 50)
 #   --verbose   Show detailed output
 #   --help      Show this help message
 #
@@ -27,7 +26,6 @@ BUILD_DIR="${PROJECT_DIR}/build_gpu"
 # Default options
 USE_NSYS=false
 THRESHOLD=70
-STEPS=50
 VERBOSE=false
 
 # Parse arguments
@@ -39,10 +37,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --threshold)
             THRESHOLD="$2"
-            shift 2
-            ;;
-        --steps)
-            STEPS="$2"
             shift 2
             ;;
         --verbose|-v)
@@ -140,15 +134,13 @@ else
     echo ""
 
     # Run the test with threshold
-    export GPU_UTIL_THRESHOLD=$(echo "scale=2; $THRESHOLD/100" | bc)
+    threshold_decimal=$(echo "scale=2; $THRESHOLD/100" | bc)
+    export GPU_UTIL_THRESHOLD="$threshold_decimal"
 
-    if $VERBOSE; then
-        ./test_gpu_utilization
-    else
-        ./test_gpu_utilization
-    fi
-
-    EXIT_CODE=$?
+    # Run test and capture exit code
+    # In non-verbose mode, we still show all output (test already has reasonable output)
+    EXIT_CODE=0
+    ./test_gpu_utilization 2>&1 || EXIT_CODE=$?
 
     if [[ $EXIT_CODE -eq 0 ]]; then
         echo ""
