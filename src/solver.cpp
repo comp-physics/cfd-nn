@@ -1114,15 +1114,25 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     PoissonBC p_x_hi = (bc.x_hi == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
     PoissonBC p_y_lo = (bc.y_lo == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
     PoissonBC p_y_hi = (bc.y_hi == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
-    
+    PoissonBC p_z_lo = (bc.z_lo == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
+    PoissonBC p_z_hi = (bc.z_hi == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
+
     // Store for GPU Poisson solver
     poisson_bc_x_lo_ = p_x_lo;
     poisson_bc_x_hi_ = p_x_hi;
     poisson_bc_y_lo_ = p_y_lo;
     poisson_bc_y_hi_ = p_y_hi;
-    
-    poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
-    mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+    poisson_bc_z_lo_ = p_z_lo;
+    poisson_bc_z_hi_ = p_z_hi;
+
+    // Set BCs on Poisson solvers - use 3D overload for 3D meshes
+    if (!mesh_->is2D()) {
+        poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+    } else {
+        poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+        mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+    }
 }
 
 void RANSSolver::set_body_force(double fx, double fy, double fz) {

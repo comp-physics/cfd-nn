@@ -58,7 +58,7 @@ double ScalarField::norm_L2() const {
             }
         }
     }
-    return std::sqrt(sum / count);
+    return (count > 0) ? std::sqrt(sum / count) : 0.0;
 }
 
 double ScalarField::norm_Linf() const {
@@ -210,7 +210,7 @@ double VectorField::norm_L2() const {
             }
         }
     }
-    return std::sqrt(sum / count);
+    return (count > 0) ? std::sqrt(sum / count) : 0.0;
 }
 
 void VectorField::write(const std::string& filename) const {
