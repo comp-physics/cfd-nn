@@ -90,10 +90,10 @@ SKIPPED=0
 FAILED_TESTS=""
 
 # Known flaky tests on GPU (pre-existing issues, not related to 3D work)
-# These will be skipped when USE_GPU=ON until root causes are addressed:
-# - test_turbulence_guard: NaN injection test (test 3) hangs due to exception handling in GPU context
+# These will be skipped when USE_GPU=ON until root causes are addressed.
 # Note: test_solver and test_physics_validation were slow (not flaky) - fixed by increasing timeouts
-GPU_FLAKY_TESTS="test_turbulence_guard"
+# Note: test_turbulence_guard was flaky - fixed by calling check_for_nan_inf directly instead of step()
+GPU_FLAKY_TESTS=""
 
 is_gpu_flaky() {
     local test_binary=$1

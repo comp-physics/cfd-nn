@@ -156,6 +156,9 @@ public:
     void sync_from_gpu();               // Update CPU copy for I/O (data stays on GPU) - downloads all fields
     void sync_solution_from_gpu();      // Sync only solution fields (u,v,p,nu_t) - use for diagnostics/I/O
     void sync_transport_from_gpu();     // Sync transport fields (k,omega) only if needed - guards laminar runs
+
+    /// NaN/Inf guard check (public for testing)
+    void check_for_nan_inf(int step) const;
     
 private:
     const Mesh* mesh_;
@@ -205,9 +208,6 @@ private:
     int iter_ = 0;
     int step_count_ = 0;  // Track current step for guard
     double current_dt_;
-    
-    // Internal methods
-    void check_for_nan_inf(int step) const;
     
     // Original internal methods
     void apply_velocity_bc();

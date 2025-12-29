@@ -45,8 +45,12 @@ RUNTIME_PATTERNS=(
 )
 
 for pattern in "${RUNTIME_PATTERNS[@]}"; do
-    # Filter out comment-only lines (lines starting with optional whitespace then //)
-    matches=$(grep -rn -E "$pattern" "$SRC_DIR" 2>/dev/null | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    # Filter out:
+    # - Comment-only lines (lines starting with optional whitespace then //)
+    # - timing.cpp (profiling code that categorizes timing entries, not compute branching)
+    matches=$(grep -rn -E "$pattern" "$SRC_DIR" 2>/dev/null | \
+              grep -Ev '^[^:]+:[0-9]+:[[:space:]]*//' | \
+              grep -v 'timing\.cpp' || true)
     if [ -n "$matches" ]; then
         echo "  [VIOLATION] Found runtime GPU branching:"
         echo "$matches" | head -5
