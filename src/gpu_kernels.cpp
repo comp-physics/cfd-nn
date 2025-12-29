@@ -29,11 +29,11 @@ void compute_gradients_from_mac_gpu(
     int v_total_size,
     int cell_total_size)
 {
-#ifdef USE_GPU_OFFLOAD
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
-    
-    // Parallelize over interior cells
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: parallelize over interior cells
     // CRITICAL: map(present:...) indicates these arrays are already mapped by solver
     // (use host pointers, lengths required for map clause)
     #pragma omp target teams distribute parallel for collapse(2) \
@@ -42,13 +42,19 @@ void compute_gradients_from_mac_gpu(
                      dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size])
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
+#else
+    // CPU path: same logic without GPU offloading
+    (void)u_total_size; (void)v_total_size; (void)cell_total_size;
+    for (int jj = 0; jj < Ny; ++jj) {
+        for (int ii = 0; ii < Nx; ++ii) {
+#endif
             // Interior cell indices (i,j) in [Ng, Ng+N-1]
             const int i = ii + Ng;
             const int j = jj + Ng;
-            
+
             // Cell-centered output index
             const int idx_cell = j * cell_stride + i;
-            
+
             // For gradients at cell (i,j), need neighboring face values
             // dudx: central difference of u at x-faces
             //   u(i+1,j) - u(i-1,j) gives u_face at i+1 and i-1
@@ -56,13 +62,13 @@ void compute_gradients_from_mac_gpu(
             const int u_idx_im = j * u_stride + (i - 1);
             const int u_idx_jp = (j + 1) * u_stride + i;
             const int u_idx_jm = (j - 1) * u_stride + i;
-            
+
             // v at y-faces
             const int v_idx_ip = j * v_stride + (i + 1);
             const int v_idx_im = j * v_stride + (i - 1);
             const int v_idx_jp = (j + 1) * v_stride + i;
             const int v_idx_jm = (j - 1) * v_stride + i;
-            
+
             // Central differences
             dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
             dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_2dy;
@@ -70,14 +76,6 @@ void compute_gradients_from_mac_gpu(
             dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_2dy;
         }
     }
-#else
-    (void)u_face; (void)v_face;
-    (void)dudx_cell; (void)dudy_cell; (void)dvdx_cell; (void)dvdy_cell;
-    (void)Nx; (void)Ny; (void)Ng;
-    (void)dx; (void)dy;
-    (void)u_stride; (void)v_stride; (void)cell_stride;
-    (void)u_total_size; (void)v_total_size; (void)cell_total_size;
-#endif
 }
 
 // ============================================================================

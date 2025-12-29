@@ -43,8 +43,11 @@ struct VelocityGradient {
     }
 };
 
-/// Compute gradients from MAC staggered grid (CPU version matching GPU kernel)
-/// This mirrors compute_gradients_from_mac_gpu for CPU/GPU consistency
+/// Compute gradients from MAC staggered grid (CPU wrapper)
+/// This extracts raw pointers and calls the unified implementation in
+/// gpu_kernels::compute_gradients_from_mac_gpu, which handles both CPU and
+/// GPU paths via conditional compilation. This ensures CPU/GPU consistency
+/// by having a single source of truth for the gradient computation.
 void compute_gradients_from_mac_cpu(
     const Mesh& mesh,
     const VectorField& velocity,

@@ -1179,25 +1179,29 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
     if (!has_dirichlet) {
         subtract_mean(0);
+        // Re-apply BCs after mean subtraction since ghost cells are now inconsistent
+        apply_bc(0);
     }
-    
+
 #ifdef USE_GPU_OFFLOAD
     // Download from GPU once after all V-cycles
     assert(gpu_ready_ && "GPU must be initialized");
     sync_level_from_gpu(0);
 #endif
-    
+
     // Copy result back to output field (CPU side)
+    // CRITICAL: Copy ALL cells including ghost cells to match GPU behavior
+    // The ghost cells contain correct BC values that are needed for pressure gradient
     if (mesh_->is2D()) {
-        for (int j = Ng; j < finest.Ny + Ng; ++j) {
-            for (int i = Ng; i < finest.Nx + Ng; ++i) {
+        for (int j = 0; j < finest.Ny + 2*Ng; ++j) {
+            for (int i = 0; i < finest.Nx + 2*Ng; ++i) {
                 p(i, j) = finest.u(i, j);
             }
         }
     } else {
-        for (int k = Ng; k < finest.Nz + Ng; ++k) {
-            for (int j = Ng; j < finest.Ny + Ng; ++j) {
-                for (int i = Ng; i < finest.Nx + Ng; ++i) {
+        for (int k = 0; k < finest.Nz + 2*Ng; ++k) {
+            for (int j = 0; j < finest.Ny + 2*Ng; ++j) {
+                for (int i = 0; i < finest.Nx + 2*Ng; ++i) {
                     p(i, j, k) = finest.u(i, j, k);
                 }
             }
@@ -1279,8 +1283,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
     if (!has_dirichlet) {
         subtract_mean(0);
+        // Re-apply BCs after mean subtraction since ghost cells are now inconsistent
+        apply_bc(0);
     }
-    
+
     // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
@@ -1288,7 +1294,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     for (size_t idx = 0; idx < total_size; ++idx) {
         p_present[idx] = u_dev[idx];
     }
-    
+
     return cycle + 1;
 }
 
