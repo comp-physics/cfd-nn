@@ -157,7 +157,10 @@ public:
     void sync_solution_from_gpu();      // Sync only solution fields (u,v,p,nu_t) - use for diagnostics/I/O
     void sync_transport_from_gpu();     // Sync transport fields (k,omega) only if needed - guards laminar runs
 
-    /// NaN/Inf guard check (public for testing)
+    /// Check for NaN/Inf in solution fields and abort if detected
+    /// @param step Current step number (used for guard interval checking)
+    /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
+    /// @note Checks velocity, pressure, nu_t, and transport fields (k, omega)
     void check_for_nan_inf(int step) const;
     
 private:

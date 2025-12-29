@@ -364,4 +364,129 @@ ctest --output-on-failure --verbose
 Remember: CI failures are usually legitimate bugs or test issues, not platform quirks.
 Fix the root cause, don't work around it!
 
+## Architecture Patterns
+
+### Unified CPU/GPU Code via OpenMP Target
+
+The codebase uses OpenMP target directives for GPU offloading. When `USE_GPU_OFFLOAD` is defined, the same code runs on GPU; otherwise it runs on CPU:
+
+```cpp
+#pragma omp target teams distribute parallel for collapse(2) \
+    map(present: ptr1, ptr2) if(target: use_gpu)
+for (int j = 0; j < Ny; ++j) {
+    for (int i = 0; i < Nx; ++i) {
+        // Kernel code - runs on GPU or CPU
+    }
+}
+```
+
+Key pattern: Use `map(present: ...)` for data that has been persistently mapped via `target enter data`. The solver manages GPU memory lifetime.
+
+### Device Views for GPU Data
+
+The `SolverDeviceView` and `TurbulenceDeviceView` structs hold pointers to GPU-resident data. These are HOST pointers that have been mapped to GPU via `target enter data`. Pass them to kernels with `map(present: view)`.
+
+### 2D/3D Support
+
+The solver supports both 2D and 3D simulations:
+- `mesh.is2D()` returns true for 2D cases (Nz == 1)
+- 3D loops use `collapse(3)` instead of `collapse(2)`
+- Z-direction boundary conditions default to periodic
+
+**Important**: The `Config` struct does NOT have `Nz`, `z_min`, `z_max` members. For 3D applications, use local variables:
+
+```cpp
+// In app/main_duct.cpp:
+int Nz = 32;           // Local variable, not config.Nz
+double z_min = -1.0;
+double z_max = 1.0;
+Mesh mesh(Nx, Ny, Nz, x_min, x_max, y_min, y_max, z_min, z_max);
+```
+
+## Turbulence Models
+
+Available via `TurbulenceModelType` enum in `config.hpp`:
+
+| Model | Type | Description |
+|-------|------|-------------|
+| `None` | Algebraic | Laminar (no turbulence) |
+| `Baseline` | Algebraic | Van Driest mixing length |
+| `GEP` | Algebraic | Gene Expression Programming |
+| `NNMLP` | Algebraic | Neural network MLP |
+| `NNTBNN` | Algebraic | Tensor Basis Neural Network |
+| `SSTKOmega` | Transport | SST k-ω with linear Boussinesq |
+| `KOmega` | Transport | Standard k-ω (Wilcox 1988) |
+| `EARSM_WJ` | Transport | SST k-ω + Wallin-Johansson EARSM |
+| `EARSM_GS` | Transport | SST k-ω + Gatski-Speziale EARSM |
+| `EARSM_Pope` | Transport | SST k-ω + Pope quadratic model |
+
+Create via factory: `create_turbulence_model(TurbulenceModelType::SSTKOmega)`
+
+## Timing Infrastructure
+
+Use `TIMED_SCOPE` for performance profiling:
+
+```cpp
+#include "timing.hpp"
+
+void my_function() {
+    TIMED_SCOPE("my_function");  // Records time to TimingStats singleton
+    // ... code ...
+}
+
+// At end of program:
+TimingStats::instance().print_summary();
+```
+
+### GPU Utilization Tracking
+
+For GPU builds, the timing system categorizes operations as GPU or CPU:
+
+```cpp
+// Check GPU utilization (for CI validation)
+auto& stats = TimingStats::instance();
+double gpu_ratio = stats.gpu_utilization_ratio();  // 0.0 to 1.0
+stats.assert_gpu_dominant(0.7, "solver test");     // Throws if < 70%
+```
+
+## Build Commands
+
+```bash
+# GPU build (requires nvc++ from NVIDIA HPC SDK)
+mkdir -p build && cd build
+cmake .. -DUSE_GPU_OFFLOAD=ON
+make -j8
+
+# CPU-only build
+mkdir -p build_cpu && cd build_cpu
+cmake .. -DUSE_GPU_OFFLOAD=OFF
+make -j8
+
+# Run local CI tests
+./scripts/run_ci_local.sh           # Auto-detect GPU, run fast+medium tests
+./scripts/run_ci_local.sh --cpu     # Force CPU build
+./scripts/run_ci_local.sh gpu       # GPU-specific tests only
+```
+
+## Bash Scripting Gotcha
+
+**Problem**: Post-increment `((VAR++))` returns exit status 1 when VAR is 0:
+```bash
+set -e
+VIOLATIONS=0
+((VIOLATIONS++))   # EXITS! Returns 1 (old value) which is falsy
+```
+
+**Solution**: Use explicit assignment:
+```bash
+VIOLATIONS=$((VIOLATIONS + 1))   # Always succeeds
+```
+
+## Performance Notes
+
+- Poisson solver dominates: Multigrid solver is 99%+ of GPU time
+- Smoothing kernels: Red-black Gauss-Seidel is the bottleneck (~76%)
+- Memory transfers: Negligible (<3%) - unified memory model works well
+- 3D scaling: Memory grows as O(N³), performance degrades for large N
+
 

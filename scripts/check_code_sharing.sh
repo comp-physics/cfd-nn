@@ -80,7 +80,7 @@ echo "  (Manual review recommended for complex cases)"
 # Count GPU ifdef blocks in all source files
 for file in "$SRC_DIR"/*.cpp; do
     if [ -f "$file" ]; then
-        count=$(grep -c "#ifdef USE_GPU_OFFLOAD" "$file" 2>/dev/null || echo "0")
+        count=$(grep -c "#ifdef USE_GPU_OFFLOAD" "$file" 2>/dev/null) || true
         if [ -n "$count" ] && [ "$count" -gt 0 ] 2>/dev/null; then
             echo "  $(basename "$file"): $count #ifdef USE_GPU_OFFLOAD blocks"
         fi
