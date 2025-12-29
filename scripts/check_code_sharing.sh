@@ -50,7 +50,7 @@ for pattern in "${RUNTIME_PATTERNS[@]}"; do
     if [ -n "$matches" ]; then
         echo "  [VIOLATION] Found runtime GPU branching:"
         echo "$matches" | head -5
-        ((VIOLATIONS++))
+        VIOLATIONS=$((VIOLATIONS + 1))
     fi
 done
 
