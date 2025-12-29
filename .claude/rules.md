@@ -98,7 +98,7 @@ What These Tests Prove:
 BEFORE EVERY PUSH TO REPOSITORY:
 
 1. Run the pre-CI test script:
-   ./test_before_ci.sh
+   ./scripts/run_ci_local.sh
    This script MUST pass before pushing. It tests:
    - Debug build (like CI does)
    - Release build (like CI does)
@@ -106,7 +106,7 @@ BEFORE EVERY PUSH TO REPOSITORY:
    - Checks for compiler warnings
 
 2. For GPU-related changes, ALSO run:
-   ./test_before_ci_gpu.sh
+   ./scripts/run_gpu_ci_test.sh
    This runs the COMPLETE GPU CI test suite locally:
    - All unit tests on GPU (including physics validation tests)
    - Fast turbulence model validation (Baseline, GEP, SST, k-omega, EARSM)
@@ -238,7 +238,7 @@ assert(std::abs(max_u - 1.0) < 1e-10);
 ### Before Starting Work
 1. Pull latest changes from main
 2. Create feature branch
-3. Run ./test_before_ci.sh to verify starting state
+3. Run ./scripts/run_ci_local.sh to verify starting state
 
 ### During Development
 1. Build and test frequently
@@ -251,7 +251,7 @@ assert(std::abs(max_u - 1.0) < 1e-10);
 3. Verify changes don't break existing functionality
 
 ### Before Pushing
-1. MANDATORY: Run ./test_before_ci.sh
+1. MANDATORY: Run ./scripts/run_ci_local.sh
 2. Only push if script passes completely
 3. If it fails, fix issues before pushing
 
@@ -312,7 +312,7 @@ assert(std::abs(max_u - 1.0) < 1e-10);
 ## Quick Reference
 
 Run tests locally (like CI):
-./test_before_ci.sh
+./scripts/run_ci_local.sh
 
 Build for debugging:
 mkdir -p build_debug && cd build_debug
@@ -346,7 +346,7 @@ ctest --output-on-failure --verbose
 
 2. Reproduce locally:
    For Ubuntu Debug failure:
-   ./test_before_ci.sh
+   ./scripts/run_ci_local.sh
    Check Debug output specifically
 
 3. Common fixes:
@@ -356,7 +356,7 @@ ctest --output-on-failure --verbose
    - Missing #include that worked locally
 
 4. Don't:
-   - Push "fixes" without running test_before_ci.sh
+   - Push "fixes" without running scripts/run_ci_local.sh
    - Add platform-specific workarounds
    - Disable failing tests
    - Relax tolerances to hide issues
@@ -421,8 +421,8 @@ Available via `TurbulenceModelType` enum in `config.hpp`:
 | `None` | Algebraic | Laminar (no turbulence) |
 | `Baseline` | Algebraic | Van Driest mixing length |
 | `GEP` | Algebraic | Gene Expression Programming |
-| `NNMLP` | Algebraic | Neural network MLP |
-| `NNTBNN` | Algebraic | Tensor Basis Neural Network |
+| `NNMLP` | Neural Network | MLP scalar eddy viscosity |
+| `NNTBNN` | Neural Network | Tensor Basis Neural Network |
 | `SSTKOmega` | Transport | SST k-ω with linear Boussinesq |
 | `KOmega` | Transport | Standard k-ω (Wilcox 1988) |
 | `EARSM_WJ` | Transport | SST k-ω + Wallin-Johansson EARSM |

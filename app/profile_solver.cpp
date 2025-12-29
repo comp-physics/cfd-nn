@@ -39,7 +39,7 @@ void initialize_poiseuille_profile(RANSSolver& solver, const Mesh& mesh,
 void profile_laminar_poiseuille(int nsteps) {
     std::cout << "=== Profiling: Laminar Poiseuille (" << nsteps << " steps) ===\n";
     
-    // EXACT same setup as test_solver.cpp test_laminar_poiseuille()
+    // Similar setup to test_solver.cpp test_laminar_poiseuille()
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 4.0, -1.0, 1.0);
     
@@ -75,7 +75,7 @@ void profile_laminar_poiseuille(int nsteps) {
 void profile_divergence_free(int nsteps) {
     std::cout << "\n=== Profiling: Divergence-Free Test (" << nsteps << " steps) ===\n";
     
-    // EXACT same setup as test_solver.cpp test_divergence_free()
+    // Similar setup to test_solver.cpp test_divergence_free()
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 4.0, -1.0, 1.0);
     
@@ -113,7 +113,7 @@ void profile_divergence_free(int nsteps) {
 void profile_mass_conservation(int nsteps) {
     std::cout << "\n=== Profiling: Mass Conservation (" << nsteps << " steps) ===\n";
     
-    // EXACT same setup as test_solver.cpp test_mass_conservation()
+    // Similar setup to test_solver.cpp test_mass_conservation()
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 4.0, -1.0, 1.0);
     

@@ -512,10 +512,9 @@ void MultigridPoissonSolver::apply_bc(int level) {
 }
 
 void MultigridPoissonSolver::apply_bc_to_residual(int level) {
-    // No-op: The restriction stencil tolerates zero/garbage ghost cells for shallow
-    // hierarchies (2 levels). Filling with periodic values was tested but actually
-    // DEGRADES convergence - the multigrid algorithm expects zero ghost contributions.
-    // The N>16 divergence issue is likely elsewhere in the algorithm, not here.
+    // No-op: Ghost cells are left zero-initialized. The restriction stencil is robust
+    // to this, and the multigrid algorithm expects zero ghost contributions.
+    // Empirically, applying BCs here degrades convergence rates.
     (void)level;
 }
 
@@ -996,9 +995,8 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     // Compute residual
     compute_residual(level);
 
-    // Note: apply_bc_to_residual() was tested but degrades convergence.
+    // Note: apply_bc_to_residual() is intentionally skipped here.
     // The multigrid algorithm expects zero ghost contributions in the residual.
-    // N>16 divergence is a separate issue requiring further investigation.
 
     // Restrict to coarse grid
     restrict_residual(level);
@@ -1293,7 +1291,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     const int Nx = finest.Nx;
     const int Ny = finest.Ny;
     const int Nz = finest.Nz;
-    // CRITICAL: Use 3D total_size for full volume copy (fixed from 2D-only bug)
+    // Total size includes ghost cells: (Nx+2)*(Ny+2)*(Nz+2) for 3D, or *3 for 2D (Nz=1)
     const size_t total_size = static_cast<size_t>(Nx + 2) *
                               static_cast<size_t>(Ny + 2) *
                               static_cast<size_t>(Nz + 2);

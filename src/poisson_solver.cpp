@@ -182,7 +182,7 @@ double PoissonSolver::compute_residual(const ScalarField& rhs, const ScalarField
 
     double max_res = 0.0;
 
-    // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+    // For 2D, only process k=0 plane (2D data is stored at k=0 by design)
     const int k_start = is_2d ? 0 : mesh_->k_begin();
     const int k_stop = is_2d ? 1 : mesh_->k_end();
 
@@ -220,7 +220,7 @@ void PoissonSolver::sor_iteration(const ScalarField& rhs, ScalarField& p, double
         coeff += 2.0 / dz2;
     }
 
-    // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+    // For 2D, only process k=0 plane (2D data is stored at k=0 by design)
     const int k_start = is_2d ? 0 : mesh_->k_begin();
     const int k_stop = is_2d ? 1 : mesh_->k_end();
 
@@ -256,7 +256,7 @@ void PoissonSolver::sor_rb_iteration(const ScalarField& rhs, ScalarField& p, dou
         coeff += 2.0 / dz2;
     }
 
-    // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+    // For 2D, only process k=0 plane (2D data is stored at k=0 by design)
     const int k_start = is_2d ? 0 : mesh_->k_begin();
     const int k_stop = is_2d ? 1 : mesh_->k_end();
 
@@ -340,7 +340,7 @@ int PoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonCo
         // Subtract mean
         double sum = 0.0;
         int count = 0;
-        // For 2D, only process k=0 plane (2D data lives at k=0 for backward compatibility)
+        // For 2D, only process k=0 plane (2D data is stored at k=0 by design)
         const int k_start = is_2d ? 0 : mesh_->k_begin();
         const int k_stop = is_2d ? 1 : mesh_->k_end();
 

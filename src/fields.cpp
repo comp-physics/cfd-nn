@@ -5,6 +5,8 @@
 namespace nncfd {
 
 // ScalarField implementation
+// Note: For 2D meshes, data is stored at k=0 plane for backward compatibility.
+// All interior loop methods use k_start=0, k_stop=1 for 2D, and k_begin/k_end for 3D.
 
 ScalarField::ScalarField(const Mesh& mesh, double init_val)
     : mesh_(&mesh), data_(mesh.total_cells(), init_val) {}
@@ -15,7 +17,6 @@ void ScalarField::fill(double val) {
 
 double ScalarField::max_interior() const {
     double max_val = -std::numeric_limits<double>::max();
-    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
     const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
     const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
     for (int k = k_start; k < k_stop; ++k) {
@@ -30,7 +31,6 @@ double ScalarField::max_interior() const {
 
 double ScalarField::min_interior() const {
     double min_val = std::numeric_limits<double>::max();
-    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
     const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
     const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
     for (int k = k_start; k < k_stop; ++k) {
@@ -46,7 +46,6 @@ double ScalarField::min_interior() const {
 double ScalarField::norm_L2() const {
     double sum = 0.0;
     int count = 0;
-    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
     const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
     const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
     for (int k = k_start; k < k_stop; ++k) {
@@ -63,7 +62,6 @@ double ScalarField::norm_L2() const {
 
 double ScalarField::norm_Linf() const {
     double max_abs = 0.0;
-    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
     const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
     const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
     for (int k = k_start; k < k_stop; ++k) {
@@ -85,7 +83,6 @@ void ScalarField::write(const std::string& filename) const {
     file << "# Nx=" << mesh_->Nx << " Ny=" << mesh_->Ny << " Nz=" << mesh_->Nz << "\n";
     file << "# x y z value\n";
 
-    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
     const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
     const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
 
@@ -222,7 +219,6 @@ void VectorField::write(const std::string& filename) const {
     file << "# Nx=" << mesh_->Nx << " Ny=" << mesh_->Ny << " Nz=" << mesh_->Nz << "\n";
     file << "# x y z u v w (interpolated to cell centers)\n";
 
-    // For 2D meshes, data is at k=0 (backward compat); for 3D, use interior range
     const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
     const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
 

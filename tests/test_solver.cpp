@@ -135,7 +135,7 @@ void test_laminar_poiseuille() {
     double error = std::abs(u_centerline - u_max_analytical) / u_max_analytical;
     
     // Test physics correctness (relaxed on GPU for fast smoke test)
-    double error_limit = poiseuille_error_limit();  // GPU: 8%, CPU: 5%
+    double error_limit = poiseuille_error_limit();  // GPU: 5%, CPU: 3%
     if (error >= error_limit) {
         std::cout << "FAILED: Poiseuille solution error = " << error*100 << "% (limit: " << error_limit*100 << "%)\n";
         std::cout << "        u_centerline = " << u_centerline << ", u_analytical = " << u_max_analytical << "\n";
@@ -204,7 +204,7 @@ void test_divergence_free() {
     std::cout << "Testing divergence-free constraint (staggered grid)... ";
 
     // STAGGERED GRID TEST: After implementing MAC grid + periodic BC fix,
-    // divergence should be at machine epsilon (~1e-12) for all BC types.
+    // divergence should be at machine epsilon (~1e-8) for periodic-x, wall-y BCs.
     // This is a STRONG test of the projection method.
 
     Mesh mesh;
@@ -214,7 +214,7 @@ void test_divergence_free() {
     config.nu = 0.01;
     config.dp_dx = -0.001;
     config.adaptive_dt = true;
-    config.max_iter = steady_max_iter();  // GPU: 120, CPU: 3000 (not used, only 100 steps run)
+    config.max_iter = steady_max_iter();  // Not used for convergence - test runs fixed 100 steps
     config.tol = 1e-7;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
@@ -436,7 +436,7 @@ void test_momentum_balance() {
               << ", iters=" << iters << ", L2_error=" << std::fixed << std::setprecision(2) << rel_l2_error * 100 << "%... " << std::flush;
     
     // Error tolerance (relaxed on GPU for fast smoke test)
-    double error_limit = poiseuille_error_limit();  // GPU: 8%, CPU: 5%
+    double error_limit = poiseuille_error_limit();  // GPU: 5%, CPU: 3%
     if (rel_l2_error >= error_limit) {
         std::cout << "FAILED\n";
         std::cout << "        Momentum balance L2 error = " << rel_l2_error * 100 

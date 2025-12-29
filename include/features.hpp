@@ -56,14 +56,13 @@ void compute_gradients_from_mac(
 );
 
 /// Feature computation for scalar eddy viscosity NN
-/// Standard features include:
+/// Computes 6 features:
 ///   0: normalized strain rate magnitude (S * delta / u_ref)
-///   1: normalized rotation rate magnitude (Omega * delta / u_ref)  
+///   1: normalized rotation rate magnitude (Omega * delta / u_ref)
 ///   2: normalized wall distance (y / delta)
 ///   3: strain-rotation ratio (Omega / S)
 ///   4: local Reynolds number (S * delta^2 / nu)
 ///   5: normalized velocity magnitude
-///   etc.
 Features compute_features_scalar_nut(
     const Mesh& mesh,
     const VectorField& velocity,
@@ -75,7 +74,7 @@ Features compute_features_scalar_nut(
 );
 
 /// Feature computation for TBNN model
-/// Includes invariants of normalized S and Omega tensors
+/// Computes 5 scalar invariants of normalized S and Omega tensors
 Features compute_features_tbnn(
     const Mesh& mesh,
     const VectorField& velocity,

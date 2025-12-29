@@ -132,10 +132,10 @@ public:
 private:
     const Mesh* mesh_ = nullptr;
 
-    // Staggered storage for 3D:
-    // u at x-faces: (Nx+1+2*Ng) × (Ny+2*Ng) × (Nz+2*Ng)
-    // v at y-faces: (Nx+2*Ng) × (Ny+1+2*Ng) × (Nz+2*Ng)
-    // w at z-faces: (Nx+2*Ng) × (Ny+2*Ng) × (Nz+1+2*Ng)
+    // Staggered storage for 3D (Ng = ghost layers):
+    // u at x-faces: ((Nx+1)+2*Ng) × (Ny+2*Ng) × (Nz+2*Ng)
+    // v at y-faces: (Nx+2*Ng) × ((Ny+1)+2*Ng) × (Nz+2*Ng)
+    // w at z-faces: (Nx+2*Ng) × (Ny+2*Ng) × ((Nz+1)+2*Ng)
     std::vector<double> u_data_;
     std::vector<double> v_data_;
     std::vector<double> w_data_;
