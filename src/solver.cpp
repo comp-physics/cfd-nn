@@ -2477,18 +2477,19 @@ double RANSSolver::step() {
     const double* diff_u_ptr = v.diff_u;
     const double* diff_v_ptr = v.diff_v;
 
+    const bool is_2d_pred = mesh_->is2D();
     const int Nz_pred = mesh_->Nz;
-    const int Nz_eff_pred = mesh_->is2D() ? 1 : Nz_pred;
+    const int Nz_eff_pred = is_2d_pred ? 1 : Nz_pred;
     // Avoid reading uninitialized strides in 2D mode (set to 0 if 2D)
-    const int u_plane_stride_pred = mesh_->is2D() ? 0 : v.u_plane_stride;
-    const int v_plane_stride_pred = mesh_->is2D() ? 0 : v.v_plane_stride;
+    const int u_plane_stride_pred = is_2d_pred ? 0 : v.u_plane_stride;
+    const int v_plane_stride_pred = is_2d_pred ? 0 : v.v_plane_stride;
 
     // Compute u* at ALL x-faces (including redundant if periodic)
     const int n_u_faces_pred = (Nx + 1) * Ny * Nz_eff_pred;
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_total_size_pred], u_star_ptr[0:u_total_size_pred], \
                     conv_u_ptr[0:u_total_size_pred], diff_u_ptr[0:u_total_size_pred]) \
-        firstprivate(dt, fx, u_stride_pred, u_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
+        firstprivate(dt, fx, u_stride_pred, u_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng, is_2d_pred)
     for (int idx = 0; idx < n_u_faces_pred; ++idx) {
         int i_local = idx % (Nx + 1);
         int j_local = (idx / (Nx + 1)) % Ny;
@@ -2496,8 +2497,8 @@ double RANSSolver::step() {
         int i = i_local + Ng;
         int j = j_local + Ng;
         int k = k_local + Ng;
-        int u_idx = (Nz_eff_pred > 1) ? (k * u_plane_stride_pred + j * u_stride_pred + i)
-                                      : (j * u_stride_pred + i);
+        int u_idx = is_2d_pred ? (j * u_stride_pred + i)
+                               : (k * u_plane_stride_pred + j * u_stride_pred + i);
 
         u_star_ptr[u_idx] = u_ptr[u_idx] + dt * (-conv_u_ptr[u_idx] + diff_u_ptr[u_idx] + fx);
     }
@@ -2507,14 +2508,14 @@ double RANSSolver::step() {
         const int n_u_periodic = Ny * Nz_eff_pred;
         #pragma omp target teams distribute parallel for \
             map(present: u_star_ptr[0:u_total_size_pred]) \
-            firstprivate(u_stride_pred, u_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
+            firstprivate(u_stride_pred, u_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng, is_2d_pred)
         for (int idx = 0; idx < n_u_periodic; ++idx) {
             int j_local = idx % Ny;
             int k_local = idx / Ny;
             int j = j_local + Ng;
             int k = k_local + Ng;
-            int base = (Nz_eff_pred > 1) ? (k * u_plane_stride_pred + j * u_stride_pred)
-                                         : (j * u_stride_pred);
+            int base = is_2d_pred ? (j * u_stride_pred)
+                                  : (k * u_plane_stride_pred + j * u_stride_pred);
             double u_avg = 0.5 * (u_star_ptr[base + Ng] + u_star_ptr[base + (Ng + Nx)]);
             u_star_ptr[base + Ng] = u_avg;
             u_star_ptr[base + (Ng + Nx)] = u_avg;
@@ -2526,7 +2527,7 @@ double RANSSolver::step() {
     #pragma omp target teams distribute parallel for \
         map(present: v_ptr[0:v_total_size_pred], v_star_ptr[0:v_total_size_pred], \
                     conv_v_ptr[0:v_total_size_pred], diff_v_ptr[0:v_total_size_pred]) \
-        firstprivate(dt, fy, v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
+        firstprivate(dt, fy, v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng, is_2d_pred)
     for (int idx = 0; idx < n_v_faces_pred; ++idx) {
         int i_local = idx % Nx;
         int j_local = (idx / Nx) % (Ny + 1);
@@ -2534,8 +2535,8 @@ double RANSSolver::step() {
         int i = i_local + Ng;
         int j = j_local + Ng;
         int k = k_local + Ng;
-        int v_idx = (Nz_eff_pred > 1) ? (k * v_plane_stride_pred + j * v_stride_pred + i)
-                                      : (j * v_stride_pred + i);
+        int v_idx = is_2d_pred ? (j * v_stride_pred + i)
+                               : (k * v_plane_stride_pred + j * v_stride_pred + i);
 
         v_star_ptr[v_idx] = v_ptr[v_idx] + dt * (-conv_v_ptr[v_idx] + diff_v_ptr[v_idx] + fy);
     }
@@ -2545,16 +2546,16 @@ double RANSSolver::step() {
         const int n_v_periodic = Nx * Nz_eff_pred;
         #pragma omp target teams distribute parallel for \
             map(present: v_star_ptr[0:v_total_size_pred]) \
-            firstprivate(v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng)
+            firstprivate(v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_eff_pred, Ng, is_2d_pred)
         for (int idx = 0; idx < n_v_periodic; ++idx) {
             int i_local = idx % Nx;
             int k_local = idx / Nx;
             int i = i_local + Ng;
             int k = k_local + Ng;
-            int base_lo = (Nz_eff_pred > 1) ? (k * v_plane_stride_pred + Ng * v_stride_pred + i)
-                                            : (Ng * v_stride_pred + i);
-            int base_hi = (Nz_eff_pred > 1) ? (k * v_plane_stride_pred + (Ng + Ny) * v_stride_pred + i)
-                                            : ((Ng + Ny) * v_stride_pred + i);
+            int base_lo = is_2d_pred ? (Ng * v_stride_pred + i)
+                                     : (k * v_plane_stride_pred + Ng * v_stride_pred + i);
+            int base_hi = is_2d_pred ? ((Ng + Ny) * v_stride_pred + i)
+                                     : (k * v_plane_stride_pred + (Ng + Ny) * v_stride_pred + i);
             double v_avg = 0.5 * (v_star_ptr[base_lo] + v_star_ptr[base_hi]);
             v_star_ptr[base_lo] = v_avg;
             v_star_ptr[base_hi] = v_avg;
@@ -2900,15 +2901,16 @@ double RANSSolver::step() {
     const int u_stride_res = v_res.u_stride;
     const int v_stride_res = v_res.v_stride;
     const int Nz = mesh_->Nz;
-    const int Nz_eff = mesh_->is2D() ? 1 : Nz;  // Effective Nz for loop bounds
+    const bool is_2d_res = mesh_->is2D();
+    const int Nz_eff = is_2d_res ? 1 : Nz;  // Effective Nz for loop bounds
 
     // Compute max |u_new - u_old| via reduction
     const int n_u_faces_res = (Nx + 1) * Ny * Nz_eff;
-    const int u_plane_stride_res = mesh_->is2D() ? 0 : v_res.u_plane_stride;
+    const int u_plane_stride_res = is_2d_res ? 0 : v_res.u_plane_stride;
     double max_du = 0.0;
     #pragma omp target teams distribute parallel for reduction(max:max_du) \
         map(present: u_new_ptr[0:u_total_size_res], u_old_ptr[0:u_total_size_res]) \
-        map(to: Ng, u_stride_res, u_plane_stride_res, Nx, Ny, Nz_eff)
+        map(to: Ng, u_stride_res, u_plane_stride_res, Nx, Ny, Nz_eff, is_2d_res)
     for (int idx = 0; idx < n_u_faces_res; ++idx) {
         int i_local = idx % (Nx + 1);
         int j_local = (idx / (Nx + 1)) % Ny;
@@ -2916,8 +2918,8 @@ double RANSSolver::step() {
         int i = i_local + Ng;
         int j = j_local + Ng;
         int k = k_local + Ng;
-        int u_idx = (Nz_eff > 1) ? (k * u_plane_stride_res + j * u_stride_res + i)
-                                 : (j * u_stride_res + i);
+        int u_idx = is_2d_res ? (j * u_stride_res + i)
+                              : (k * u_plane_stride_res + j * u_stride_res + i);
         double du = u_new_ptr[u_idx] - u_old_ptr[u_idx];
         if (du < 0.0) du = -du;
         if (du > max_du) max_du = du;
@@ -2925,11 +2927,11 @@ double RANSSolver::step() {
 
     // Compute max |v_new - v_old| via reduction
     const int n_v_faces_res = Nx * (Ny + 1) * Nz_eff;
-    const int v_plane_stride_res = mesh_->is2D() ? 0 : v_res.v_plane_stride;
+    const int v_plane_stride_res = is_2d_res ? 0 : v_res.v_plane_stride;
     double max_dv = 0.0;
     #pragma omp target teams distribute parallel for reduction(max:max_dv) \
         map(present: v_new_ptr[0:v_total_size_res], v_old_ptr[0:v_total_size_res]) \
-        map(to: Ng, v_stride_res, v_plane_stride_res, Nx, Ny, Nz_eff)
+        map(to: Ng, v_stride_res, v_plane_stride_res, Nx, Ny, Nz_eff, is_2d_res)
     for (int idx = 0; idx < n_v_faces_res; ++idx) {
         int i_local = idx % Nx;
         int j_local = (idx / Nx) % (Ny + 1);
@@ -2937,8 +2939,8 @@ double RANSSolver::step() {
         int i = i_local + Ng;
         int j = j_local + Ng;
         int k = k_local + Ng;
-        int v_idx = (Nz_eff > 1) ? (k * v_plane_stride_res + j * v_stride_res + i)
-                                 : (j * v_stride_res + i);
+        int v_idx = is_2d_res ? (j * v_stride_res + i)
+                              : (k * v_plane_stride_res + j * v_stride_res + i);
         double dv = v_new_ptr[v_idx] - v_old_ptr[v_idx];
         if (dv < 0.0) dv = -dv;
         if (dv > max_dv) max_dv = dv;
@@ -2947,7 +2949,7 @@ double RANSSolver::step() {
     double max_change = (max_du > max_dv) ? max_du : max_dv;
 
     // For 3D, also check w component
-    if (!mesh_->is2D()) {
+    if (!is_2d_res) {
         const double* w_new_ptr = v_res.w_face;
         const double* w_old_ptr = v_res.w_old_face;
         const int w_stride_res = v_res.w_stride;

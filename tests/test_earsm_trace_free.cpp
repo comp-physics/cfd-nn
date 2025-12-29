@@ -286,34 +286,42 @@ bool test_earsm_direct_trace_free() {
 // MAIN
 //=============================================================================
 int main() {
-    std::cout << "\n";
-    std::cout << "================================================================\n";
-    std::cout << "  EARSM TRACE-FREE CONSTRAINT TEST\n";
-    std::cout << "================================================================\n";
-    std::cout << "Verifies anisotropy tensor b_ij satisfies: b_xx + b_yy = 0\n";
-    std::cout << "This is required by incompressibility constraint\n\n";
+    try {
+        std::cout << "\n";
+        std::cout << "================================================================\n";
+        std::cout << "  EARSM TRACE-FREE CONSTRAINT TEST\n";
+        std::cout << "================================================================\n";
+        std::cout << "Verifies anisotropy tensor b_ij satisfies: b_xx + b_yy = 0\n";
+        std::cout << "This is required by incompressibility constraint\n\n";
 
-    int passed = 0;
-    int total = 0;
+        int passed = 0;
+        int total = 0;
 
-    total++; if (test_tensor_basis_trace_free()) passed++;
-    total++; if (test_anisotropy_construction_trace_free()) passed++;
-    total++; if (test_earsm_varying_conditions()) passed++;
-    total++; if (test_earsm_direct_trace_free()) passed++;
+        total++; if (test_tensor_basis_trace_free()) passed++;
+        total++; if (test_anisotropy_construction_trace_free()) passed++;
+        total++; if (test_earsm_varying_conditions()) passed++;
+        total++; if (test_earsm_direct_trace_free()) passed++;
 
-    std::cout << "\n";
-    std::cout << "================================================================\n";
-    std::cout << "SUMMARY\n";
-    std::cout << "================================================================\n";
-    std::cout << "Passed: " << passed << "/" << total << " tests\n\n";
+        std::cout << "\n";
+        std::cout << "================================================================\n";
+        std::cout << "SUMMARY\n";
+        std::cout << "================================================================\n";
+        std::cout << "Passed: " << passed << "/" << total << " tests\n\n";
 
-    if (passed == total) {
-        std::cout << "[SUCCESS] All trace-free constraint tests passed!\n";
-        std::cout << "================================================================\n\n";
-        return 0;
-    } else {
-        std::cout << "[FAILURE] Some tests failed\n";
-        std::cout << "================================================================\n\n";
+        if (passed == total) {
+            std::cout << "[SUCCESS] All trace-free constraint tests passed!\n";
+            std::cout << "================================================================\n\n";
+            return 0;
+        } else {
+            std::cout << "[FAILURE] Some tests failed\n";
+            std::cout << "================================================================\n\n";
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "\n[EXCEPTION] Test crashed: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << "\n[EXCEPTION] Test crashed with unknown exception\n";
         return 1;
     }
 }
