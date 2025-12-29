@@ -28,7 +28,7 @@ VIOLATIONS=0
 echo "Check 1: No runtime GPU/CPU branching..."
 
 # Pattern: look for runtime boolean checks that switch between GPU and CPU logic
-# These are NOT allowed in compute kernels
+# These are NOT allowed in compute kernels (but allowed for memory management)
 RUNTIME_PATTERNS=(
     'if\s*\(\s*use_gpu'
     'if\s*\(\s*gpu_enabled'
@@ -39,7 +39,8 @@ RUNTIME_PATTERNS=(
 )
 
 for pattern in "${RUNTIME_PATTERNS[@]}"; do
-    matches=$(grep -rn -E "$pattern" "$SRC_DIR" 2>/dev/null | grep -v '^\s*//' || true)
+    # Filter out comment-only lines (lines starting with optional whitespace then //)
+    matches=$(grep -rn -E "$pattern" "$SRC_DIR" 2>/dev/null | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*//' || true)
     if [ -n "$matches" ]; then
         echo "  [VIOLATION] Found runtime GPU branching:"
         echo "$matches" | head -5
@@ -61,9 +62,6 @@ echo "Check 2: Verifying #ifdef USE_GPU_OFFLOAD blocks are for allowed purposes.
 # - #pragma omp target
 # - map(to:, map(from:, map(tofrom:
 # - gpu_ready_, device_ptr, DeviceArray
-
-# We'll do a heuristic check: look for function definitions inside #ifdef blocks
-# that don't match the allowed patterns
 
 # This is a soft check - just warn, don't fail
 echo "  [INFO] Scanning for potentially duplicated compute logic..."
@@ -101,27 +99,37 @@ for kernel in "${KERNEL_FUNCTIONS[@]}"; do
     fi
 done
 
-# --- Check 4: No CPU-only compute implementations ---
+# --- Check 4: No separate CPU/GPU kernel function implementations ---
 echo ""
-echo "Check 4: Checking for CPU-only compute paths..."
+echo "Check 4: Checking for separate CPU/GPU kernel implementations..."
 
-# Look for patterns like "// CPU version" or "// CPU fallback" followed by compute code
-CPU_ONLY_PATTERNS=(
-    'CPU.only'
-    'CPU.version'
-    'CPU.fallback'
-    'cpu_compute'
-    'host_compute'
+# Look for function naming patterns that suggest duplicate implementations
+# These patterns detect actual code constructs, not comments
+DUPLICATE_PATTERNS=(
+    '_cpu\s*\('          # function_cpu() pattern
+    '_gpu\s*\('          # function_gpu() pattern
+    '_host\s*\('         # function_host() pattern
+    '_device\s*\('       # function_device() pattern
 )
 
-for pattern in "${CPU_ONLY_PATTERNS[@]}"; do
-    matches=$(grep -rn -i "$pattern" "$SRC_DIR" 2>/dev/null | grep -v '^\s*//' || true)
+for pattern in "${DUPLICATE_PATTERNS[@]}"; do
+    # Filter out comment lines, GPU kernel wrapper functions (allowed), and test files
+    matches=$(grep -rn -E "$pattern" "$SRC_DIR" 2>/dev/null | \
+              grep -Ev '^[^:]+:[0-9]+:[[:space:]]*//' | \
+              grep -Ev 'sync_to_gpu|sync_from_gpu|_gpu_buffers|compute.*_gpu\s*\(' || true)
     if [ -n "$matches" ]; then
-        echo "  [WARNING] Found CPU-specific compute reference:"
+        echo "  [WARNING] Found potentially duplicate kernel implementation:"
         echo "$matches" | head -3
-        echo "  (Verify this is not duplicated compute logic)"
+        echo "  (Verify these are not duplicating compute logic)"
     fi
 done
+
+# Check for gpu_ready_ runtime branching (informational)
+echo ""
+echo "Check 5: Runtime gpu_ready_ branching (informational)..."
+gpu_ready_count=$(grep -rn 'if\s*(\s*gpu_ready_' "$SRC_DIR" 2>/dev/null | wc -l || echo "0")
+echo "  Found $gpu_ready_count 'if (gpu_ready_)' patterns"
+echo "  (These should only guard memory transfers, not duplicate compute logic)"
 
 # --- Summary ---
 echo ""

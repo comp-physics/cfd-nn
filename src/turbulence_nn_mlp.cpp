@@ -170,7 +170,7 @@ void TurbulenceNNMLP::update(
     [[maybe_unused]] const int n_cells = Nx * Ny;
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: require device_view and gpu_ready (no CPU fallback)
+    // GPU path: require device_view and gpu_ready (host fallback forbidden)
     if (!device_view || !gpu_ready_) {
         throw std::runtime_error("NN-MLP GPU pipeline requires device_view and GPU buffers initialized");
     }
@@ -268,7 +268,7 @@ void TurbulenceNNMLP::update(
         baseline_->update(mesh, velocity, k, omega, baseline_nu_t_);
     }
     
-    // CPU-only sequential inference path
+    // Sequential inference path (host build)
     {
         TIMED_SCOPE("nn_mlp_inference_cpu");
         

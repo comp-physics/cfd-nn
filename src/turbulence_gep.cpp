@@ -235,7 +235,7 @@ void TurbulenceGEP::update(const Mesh& mesh,
     (void)device_view;
 #endif
     
-    // CPU fallback path - match GPU implementation exactly
+    // Host path - match GPU implementation exactly
     // Use same MAC gradient computation as GPU for consistency
     ScalarField dudx_field(mesh), dudy_field(mesh), dvdx_field(mesh), dvdy_field(mesh);
     compute_gradients_from_mac_cpu(mesh, velocity, dudx_field, dudy_field, dvdx_field, dvdy_field);

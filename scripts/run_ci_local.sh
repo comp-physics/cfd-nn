@@ -141,8 +141,10 @@ run_test() {
             echo "  Output:"
             cat "$output_file" | sed 's/^/    /'
         else
-            # Show summary lines (PASSED/FAILED counts, key results)
-            local summary=$(grep -E '(PASSED|FAILED|passed|failed|Results:|===.*===|error=|Error|SUCCESS)' "$output_file" | head -10)
+            # Show summary lines (PASSED/FAILED counts, key results, metrics)
+            # Patterns: [PASS], [FAIL], [OK], PASSED, FAILED, Results:, ===...===,
+            #           max_diff=, max_div=, L2/Linf norms, Test N:, scientific notation
+            local summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|PASSED|FAILED|passed|failed|Results:|===.*===|error=|Error|SUCCESS|max_diff|max_div|L2|Linf|Test [0-9]+:|[0-9]+\.[0-9]+e[-+]?[0-9]+)' "$output_file" | head -15)
             if [ -n "$summary" ]; then
                 echo "$summary" | sed 's/^/    /'
             fi

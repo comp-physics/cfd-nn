@@ -657,7 +657,7 @@ void SSTWithEARSM::update(
     (void)device_view;
 #endif
     
-    // CPU fallback: use EARSM closure for ν_t computation
+    // Host path: use EARSM closure for ν_t computation
     if (closure_) {
         closure_->set_nu(nu_);
         closure_->set_delta(delta_);

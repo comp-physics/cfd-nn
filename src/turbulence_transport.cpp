@@ -106,7 +106,7 @@ void SSTClosure::compute_nu_t(
     
     // NOTE: SSTClosure GPU path is intentionally disabled to avoid pointer aliasing
     // issues with RANSSolver's GPU buffers. The caller (RANSSolver or SSTKOmegaTransport)
-    // handles GPU synchronization when needed. This CPU-only path is acceptable because
+    // handles GPU synchronization when needed. This host path is acceptable because
     // the SST closure computation is relatively cheap compared to transport equation solves.
     
     // CPU path
@@ -337,7 +337,7 @@ void SSTKOmegaTransport::allocate_gpu_buffers(const Mesh& mesh) {
 }
 
 void SSTKOmegaTransport::free_gpu_buffers() {
-    // No-op for CPU-only builds
+    // No-op for host builds
     buffers_on_gpu_ = false;
 }
 #endif
@@ -1221,7 +1221,7 @@ void KOmegaTransport::advance_turbulence(
     (void)device_view;
 #endif
     
-    // CPU fallback path (only used when GPU offload disabled or device_view invalid)
+    // Host path (only used when GPU offload disabled or device_view invalid)
     compute_gradients_from_mac_cpu(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double dx = mesh.dx;

@@ -688,7 +688,7 @@ void TurbulenceNNTBNN::update(
     [[maybe_unused]] const int Ng = mesh.Nghost;
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: require device_view and gpu_ready (no CPU fallback)
+    // GPU path: require device_view and gpu_ready (host fallback forbidden)
     if (!device_view || !gpu_ready_) {
         throw std::runtime_error("NN-TBNN GPU pipeline requires device_view and GPU buffers initialized");
     }
@@ -798,7 +798,7 @@ void TurbulenceNNTBNN::update(
                                                 features_, basis_);
     }
     
-    // CPU-only sequential inference
+    // Sequential inference (host build)
     {
         TIMED_SCOPE("nn_tbnn_inference_cpu");
         

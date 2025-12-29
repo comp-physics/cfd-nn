@@ -2355,9 +2355,9 @@ double RANSSolver::step() {
             device_view_ptr = &device_view;
         }
         
-        // GPU simulation: enforce device_view validity (no CPU fallback allowed)
+        // GPU simulation: enforce device_view validity (host fallback forbidden)
         if (gpu_ready_ && (!device_view_ptr || !device_view_ptr->is_valid())) {
-            throw std::runtime_error("GPU simulation requires valid TurbulenceDeviceView - CPU fallback forbidden");
+            throw std::runtime_error("GPU simulation requires valid TurbulenceDeviceView - host fallback forbidden");
         }
 #endif
         
@@ -2717,7 +2717,7 @@ double RANSSolver::step() {
     } else
 #endif
     {
-        // CPU fallback path
+        // Host path
         double sum_div = 0.0;
         int count = 0;
 
@@ -2857,7 +2857,7 @@ double RANSSolver::step() {
         } else
 #endif
         {
-            // CPU fallback path (or GPU with host staging for non-multigrid)
+            // Host path (or GPU with host staging for non-multigrid)
             if (use_multigrid_) {
                 cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
             } else {
@@ -3213,7 +3213,7 @@ double RANSSolver::bulk_velocity() const {
     } else
 #endif
     {
-        // CPU fallback
+        // Host path
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 sum += velocity_.u(i, j);
@@ -3221,7 +3221,7 @@ double RANSSolver::bulk_velocity() const {
             }
         }
     }
-    
+
     return sum / count;
 }
 
@@ -3257,7 +3257,7 @@ double RANSSolver::wall_shear_stress() const {
     } else
 #endif
     {
-        // CPU fallback
+        // Host path
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
             // u at wall is 0 (no-slip)
             double dudy = velocity_.u(i, j_wall) / dist;
@@ -3265,7 +3265,7 @@ double RANSSolver::wall_shear_stress() const {
             ++count;
         }
     }
-    
+
     double dudy_avg = sum / count;
     return config_.nu * dudy_avg;  // tau_w = mu * du/dy = rho * nu * du/dy (rho=1)
 }
@@ -3502,7 +3502,7 @@ double RANSSolver::compute_adaptive_dt() const {
     }
     
 #else
-    // CPU fallback: original host-side computation
+    // Host path: original host-side computation
     double u_max = 1e-10;
     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {

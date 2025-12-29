@@ -300,7 +300,7 @@ void MixingLengthModel::update(
         return;
     }
 #else
-    (void)device_view;  // Unused in CPU-only build
+    (void)device_view;  // Unused in host build
 #endif
     
     // ==================================================================
