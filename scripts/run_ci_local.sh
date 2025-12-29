@@ -220,6 +220,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "Turbulence" "$BUILD_DIR/test_turbulence" 120
     run_test "Turbulence Features" "$BUILD_DIR/test_turbulence_features" 120
     run_test "Turbulence Guard" "$BUILD_DIR/test_turbulence_guard" 60
+    run_test "All Turbulence Models Smoke" "$BUILD_DIR/test_all_turbulence_models_smoke" 300
 fi
 
 # GPU-specific tests
@@ -230,6 +231,12 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
     run_test "Poisson CPU/GPU 3D" "$BUILD_DIR/test_poisson_cpu_gpu_3d" 120
     run_test "Backend Execution" "$BUILD_DIR/test_backend_execution" 60
     run_test "CPU/GPU Consistency" "$BUILD_DIR/test_cpu_gpu_consistency" 180
+
+    # GPU utilization test - ensures compute runs on GPU, not CPU
+    # Only meaningful for GPU builds (skips gracefully on CPU builds)
+    if [[ "$USE_GPU" == "ON" ]]; then
+        run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300
+    fi
 fi
 
 # Longer tests (~3-5 minutes)

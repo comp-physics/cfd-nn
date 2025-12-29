@@ -313,6 +313,11 @@ if(BUILD_TESTS)
     add_executable(test_earsm_trace_free tests/test_earsm_trace_free.cpp)
     target_link_libraries(test_earsm_trace_free nn_cfd_core)
     add_test(NAME EARSMTraceFreeTest COMMAND test_earsm_trace_free)
+
+    # GPU utilization test - validates compute runs on GPU for GPU builds
+    add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
+    target_link_libraries(test_gpu_utilization nn_cfd_core)
+    add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 endif()
 
 # Installation

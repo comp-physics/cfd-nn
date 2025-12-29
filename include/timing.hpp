@@ -32,28 +32,65 @@ private:
 class TimingStats {
 public:
     static TimingStats& instance();
-    
+
     /// Record a timing measurement
     void record(const std::string& name, double seconds);
-    
+
     /// Get total time for a category
     double total(const std::string& name) const;
-    
+
     /// Get number of calls for a category
     int count(const std::string& name) const;
-    
+
     /// Get average time per call
     double average(const std::string& name) const;
-    
+
     /// Reset all statistics
     void reset();
-    
+
     /// Print summary to stdout
     void print_summary(std::ostream& os = std::cout) const;
-    
+
+    // ========================================================================
+    // GPU utilization tracking for CI verification
+    // ========================================================================
+
+    /// Get total time spent in GPU kernels (categories ending in "_gpu")
+    double gpu_kernel_time() const;
+
+    /// Get total time spent in CPU compute (categories with "_cpu" suffix
+    /// or compute-related categories without "_gpu" suffix)
+    double cpu_compute_time() const;
+
+    /// Get total compute time (GPU + CPU compute, excluding I/O and setup)
+    double total_compute_time() const;
+
+    /// Get GPU utilization ratio (0.0 to 1.0)
+    /// Returns gpu_kernel_time / total_compute_time
+    double gpu_utilization_ratio() const;
+
+    /// Check if GPU dominates computation (for CI validation)
+    /// @param threshold Minimum required GPU utilization (default 0.8 = 80%)
+    /// @return true if GPU utilization >= threshold
+    bool is_gpu_dominant(double threshold = 0.8) const;
+
+    /// Print GPU utilization summary for CI
+    void print_gpu_utilization_summary(std::ostream& os = std::cout) const;
+
+    /// Assert GPU utilization meets threshold (throws if not met)
+    /// @param threshold Minimum required GPU utilization
+    /// @param context Description for error message
+    void assert_gpu_dominant(double threshold, const std::string& context = "") const;
+
 private:
     TimingStats() = default;
-    
+
+    /// Check if a timing category is a GPU kernel
+    static bool is_gpu_category(const std::string& name);
+
+    /// Check if a timing category is CPU compute (not I/O)
+    static bool is_cpu_compute_category(const std::string& name);
+
     struct Stats {
         double total_time = 0.0;
         int num_calls = 0;

@@ -121,7 +121,15 @@ echo ""
 
 echo ""
 echo "==================================================================="
-echo "  7. Physics Validation (Comprehensive)"
+echo "  8. GPU Utilization Validation (Critical)"
+echo "==================================================================="
+echo ""
+echo "Verifying that compute runs on GPU, not CPU..."
+./test_gpu_utilization
+
+echo ""
+echo "==================================================================="
+echo "  9. Physics Validation (Comprehensive)"
 echo "==================================================================="
 echo ""
 ./test_physics_validation
@@ -129,7 +137,7 @@ echo ""
 
 echo ""
 echo "==================================================================="
-echo "  9. Perturbed Channel Flow Test (Poisson validation)"
+echo " 10. Perturbed Channel Flow Test (Poisson validation)"
 echo "==================================================================="
 echo ""
 echo "Testing 2D perturbed channel (validates Poisson solver with non-trivial flow)"
