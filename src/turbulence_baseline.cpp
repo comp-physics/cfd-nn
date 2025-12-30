@@ -262,7 +262,7 @@ void MixingLengthModel::update(
         double* nu_t_ptr = device_view->nu_t;
         double* wall_dist_ptr = device_view->wall_distance;
         
-        // GPU kernel: compute mixing length eddy viscosity
+        // GPU kernel: compute mixing length eddy viscosity using unified kernel
         // Use map(present:...) since these are solver-mapped host pointers
         #pragma omp target teams distribute parallel for \
             map(present: dudx_ptr[0:cell_total_size], dudy_ptr[0:cell_total_size], \
@@ -272,28 +272,14 @@ void MixingLengthModel::update(
             const int i = idx % Nx + Ng;  // interior i (add ghost offset)
             const int j = idx / Nx + Ng;  // interior j (add ghost offset)
             const int cell_idx = j * stride + i;
-            
-            // Get wall distance
-            const double y_wall = wall_dist_ptr[cell_idx];
-            
-            // Compute strain rate magnitude
-            const double Sxx = dudx_ptr[cell_idx];
-            const double Syy = dvdy_ptr[cell_idx];
-            const double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
-            const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
-            // y+ and van Driest damping
-            const double y_plus = y_wall * u_tau / nu_local;
-            const double damping = 1.0 - exp(-y_plus / A_plus_local);
-            
-            // Mixing length (capped at delta/2)
-            double l_mix = kappa_local * y_wall * damping;
-            if (l_mix > 0.5 * delta_local) {
-                l_mix = 0.5 * delta_local;
-            }
-            
-            // Eddy viscosity
-            nu_t_ptr[cell_idx] = l_mix * l_mix * S_mag;
+
+            // Call unified kernel (same code path as CPU)
+            mixing_length_cell_kernel(
+                cell_idx, u_tau, nu_local,
+                kappa_local, A_plus_local, delta_local,
+                wall_dist_ptr[cell_idx],
+                dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+                nu_t_ptr);
         }
         
         // Done! nu_t is now on GPU, will be synced by solver when needed
