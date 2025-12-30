@@ -5,12 +5,61 @@
 
 #include <vector>
 #include <cstddef>
+#include <cmath>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #endif
 
 namespace nncfd {
+
+//=============================================================================
+// Strain rate magnitude computations (GPU-compatible inline functions)
+// These are used throughout the turbulence models and must be GPU-callable
+//=============================================================================
+
+#ifdef USE_GPU_OFFLOAD
+#pragma omp declare target
+#endif
+
+/// Frobenius norm of strain rate tensor: ||S|| = sqrt(2 * S:S)
+/// where S:S = Sxx^2 + Syy^2 + 2*Sxy^2 (2D symmetric tensor)
+/// This is the standard form used for eddy viscosity calculations
+inline double strain_magnitude_frobenius(double Sxx, double Syy, double Sxy) {
+    return sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+}
+
+/// 3D version: ||S|| = sqrt(2 * S:S)
+/// S:S = Sxx^2 + Syy^2 + Szz^2 + 2*(Sxy^2 + Sxz^2 + Syz^2)
+inline double strain_magnitude_frobenius_3d(double Sxx, double Syy, double Szz,
+                                             double Sxy, double Sxz, double Syz) {
+    return sqrt(2.0 * (Sxx*Sxx + Syy*Syy + Szz*Szz +
+                       2.0*(Sxy*Sxy + Sxz*Sxz + Syz*Syz)));
+}
+
+/// Simple strain magnitude: sqrt(S:S) without factor of 2
+/// Used in some feature extraction contexts
+inline double strain_magnitude_simple(double Sxx, double Syy, double Sxy) {
+    return sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+}
+
+/// Squared strain for production terms: 2 * S:S
+/// Avoids sqrt when only S^2 is needed (e.g., turbulence production)
+inline double strain_squared(double Sxx, double Syy, double Sxy) {
+    return 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+}
+
+/// 3D squared strain: 2 * S:S
+inline double strain_squared_3d(double Sxx, double Syy, double Szz,
+                                 double Sxy, double Sxz, double Syz) {
+    return 2.0 * (Sxx*Sxx + Syy*Syy + Szz*Szz +
+                  2.0*(Sxy*Sxy + Sxz*Sxz + Syz*Syz));
+}
+
+#ifdef USE_GPU_OFFLOAD
+#pragma omp end declare target
+#endif
+
 namespace gpu {
 
 /// Check if GPU offloading is available at runtime
