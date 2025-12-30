@@ -19,8 +19,6 @@
 #include <algorithm>
 #include <iostream>
 #include <complex>
-#include <fstream>
-#include <chrono>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -707,6 +705,94 @@ std::unique_ptr<EARSMClosure> create_earsm_closure(const std::string& name) {
 }
 
 // ============================================================================
+// Unified EARSM output kernel - compiles for both CPU and GPU
+// Computes tensor basis, anisotropy, Reynolds stresses, and nu_t from β coefficients
+// ============================================================================
+#ifdef USE_GPU_OFFLOAD
+#pragma omp declare target
+#endif
+
+/// Compute EARSM output (Reynolds stresses and eddy viscosity) from β coefficients
+/// This is the common part of all EARSM variants, called after model-specific β computation.
+/// @param beta1, beta2, beta3  Model-specific tensor basis coefficients
+/// @param alpha                Re_t-based blending factor (0=Boussinesq, 1=full EARSM)
+/// @param Sxx, Syy, Sxy, Oxy   Strain rate and rotation tensor components
+/// @param tau                  Turbulent time scale (k/ε)
+/// @param k_loc                Local turbulent kinetic energy
+/// @param S_mag                Strain rate magnitude
+/// @param nu                   Molecular viscosity (for clipping)
+/// @param tau_xx_ptr, tau_xy_ptr, tau_yy_ptr  [out] Reynolds stress components
+/// @param nu_t_ptr             [out] Eddy viscosity
+/// @param idx                  Array index for output
+inline void earsm_compute_output(
+    double beta1, double beta2, double beta3, double alpha,
+    double Sxx, double Syy, double Sxy, double Oxy,
+    double tau, double k_loc, double S_mag, double nu,
+    double* tau_xx_ptr, double* tau_xy_ptr, double* tau_yy_ptr, double* nu_t_ptr,
+    int idx)
+{
+    // Apply Re_t blending: keep linear term (beta1), fade nonlinear terms (beta2, beta3)
+    beta2 *= alpha;
+    beta3 *= alpha;
+
+    // Normalized tensors for tensor basis
+    const double S_star_xx = tau * Sxx;
+    const double S_star_xy = tau * Sxy;
+    const double S_star_yy = tau * Syy;
+    const double Omega_star_xy = tau * Oxy;
+
+    // Tensor basis terms (2D):
+    // T^(1) = S*
+    // T^(2) = [S*, Ω*] = S*Ω* - Ω*S*  (commutator)
+    // T^(3) = S*² - (1/3)tr(S*²)I
+
+    // Commutator [S*, Ω*]
+    const double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
+    const double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
+    const double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
+
+    // S*² - (1/3)tr(S*²)I
+    double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
+    const double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
+    double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
+    const double trace_S2 = S2_xx + S2_yy;
+    S2_xx -= trace_S2 / 3.0;
+    S2_yy -= trace_S2 / 3.0;
+
+    // Anisotropy tensor b = Σ β_i T^(i)
+    const double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
+    const double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
+    const double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
+
+    // Reynolds stresses: τ_ij = -2k b_ij
+    tau_xx_ptr[idx] = -2.0 * k_loc * b_xx;
+    tau_xy_ptr[idx] = -2.0 * k_loc * b_xy;
+    tau_yy_ptr[idx] = -2.0 * k_loc * b_yy;
+
+    // Equivalent eddy viscosity from τ_xy = -2ν_t S_xy
+    double nu_t_loc = 0.0;
+    if (std::fabs(Sxy) > 1e-10) {
+        nu_t_loc = std::fabs(-b_xy * k_loc / Sxy);
+    } else if (S_mag > 1e-10) {
+        const double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+        nu_t_loc = k_loc * b_mag / S_mag;
+    }
+
+    // Clipping
+    const double nu_max = 100.0 * nu;
+    nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
+    nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
+    nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // NaN check
+
+    nu_t_ptr[idx] = nu_t_loc;
+}
+
+#ifdef USE_GPU_OFFLOAD
+#pragma omp end declare target
+#endif
+// ============================================================================
+
+// ============================================================================
 // GPU Kernels for EARSM (Specialized Versions)
 // ============================================================================
 
@@ -729,7 +815,6 @@ void compute_earsm_wj_full_gpu(
     const double A3 = constants.A3();
     const double A4 = constants.A4();
     const double C_mu = 0.09;
-    const double nu_max = 100.0 * nu;
     const size_t total_size = stride * (Ny + 2*Ng);
     
     #pragma omp target teams distribute parallel for collapse(2) \
@@ -792,65 +877,12 @@ void compute_earsm_wj_full_gpu(
             beta2 = (beta2 < 10.0) ? beta2 : 10.0;
             beta3 = (beta3 > -10.0) ? beta3 : -10.0;
             beta3 = (beta3 < 10.0) ? beta3 : 10.0;
-            
-            // Apply Re_t blending: keep linear term (beta1), fade nonlinear terms (beta2, beta3)
-            beta2 *= alpha;
-            beta3 *= alpha;
-            
-            // Normalized tensors for tensor basis
-            double S_star_xx = tau * Sxx;
-            double S_star_xy = tau * Sxy;
-            double S_star_yy = tau * Syy;
-            double Omega_star_xy = tau * Oxy;
-            
-            // Tensor basis terms (2D):
-            // T^(1) = S*
-            // T^(2) = [S*, Ω*] = S*Ω* - Ω*S*
-            // T^(3) = S*² - (1/3)tr(S*²)I
-            
-            // Commutator [S*, Ω*]
-            double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
-            double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
-            double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
-            
-            // S*² - (1/3)tr(S*²)I
-            double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
-            double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
-            double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
-            double trace_S2 = S2_xx + S2_yy;
-            S2_xx -= trace_S2 / 3.0;
-            S2_yy -= trace_S2 / 3.0;
-            
-            // Anisotropy tensor b = Σ β_i T^(i)
-            double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
-            double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
-            double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
-            
-            // Reynolds stresses: τ_ij = -2k b_ij
-            double tau_xx_val = -2.0 * k_loc * b_xx;
-            double tau_xy_val = -2.0 * k_loc * b_xy;
-            double tau_yy_val = -2.0 * k_loc * b_yy;
-            
-            // Store Reynolds stresses
-            tau_xx[idx] = tau_xx_val;
-            tau_xy[idx] = tau_xy_val;
-            tau_yy[idx] = tau_yy_val;
-            
-            // Equivalent eddy viscosity from τ_xy = -2ν_t S_xy
-            double nu_t_loc = 0.0;
-            if (fabs(Sxy) > 1e-10) {
-                nu_t_loc = fabs(-b_xy * k_loc / Sxy);
-            } else if (S_mag > 1e-10) {
-                double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                nu_t_loc = k_loc * b_mag / S_mag;
-            }
-            
-            // Clipping
-            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
-            nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
-            nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // Check for NaN
-            
-            nu_t[idx] = nu_t_loc;
+
+            // Call unified output kernel (handles Re_t blending, tensor basis, stresses, nu_t)
+            earsm_compute_output(beta1, beta2, beta3, alpha,
+                                 Sxx, Syy, Sxy, Oxy,
+                                 tau, k_loc, S_mag, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t, idx);
         }
     }
 #else
@@ -877,7 +909,6 @@ void compute_earsm_gs_full_gpu(
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
     const double C_mu_eps = 0.09;
-    const double nu_max = 100.0 * nu;
     const size_t total_size = stride * (Ny + 2*Ng);
     
     #pragma omp target teams distribute parallel for collapse(2) \
@@ -937,53 +968,12 @@ void compute_earsm_gs_full_gpu(
             beta2 = (beta2 < 5.0) ? beta2 : 5.0;
             beta3 = (beta3 > -5.0) ? beta3 : -5.0;
             beta3 = (beta3 < 5.0) ? beta3 : 5.0;
-            
-            // Apply Re_t blending: keep linear term (beta1), fade nonlinear terms (beta2, beta3)
-            beta2 *= alpha;
-            beta3 *= alpha;
-            
-            // Build anisotropy (same as WJ)
-            double S_star_xx = tau * Sxx;
-            double S_star_xy = tau * Sxy;
-            double S_star_yy = tau * Syy;
-            double Omega_star_xy = tau * Oxy;
-            
-            double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
-            double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
-            double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
-            
-            double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
-            double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
-            double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
-            double trace_S2 = S2_xx + S2_yy;
-            S2_xx -= trace_S2 / 3.0;
-            S2_yy -= trace_S2 / 3.0;
-            
-            double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
-            double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
-            double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
-            
-            double tau_xx_val = -2.0 * k_loc * b_xx;
-            double tau_xy_val = -2.0 * k_loc * b_xy;
-            double tau_yy_val = -2.0 * k_loc * b_yy;
-            
-            tau_xx[idx] = tau_xx_val;
-            tau_xy[idx] = tau_xy_val;
-            tau_yy[idx] = tau_yy_val;
-            
-            double nu_t_loc = 0.0;
-            if (fabs(Sxy) > 1e-10) {
-                nu_t_loc = fabs(-b_xy * k_loc / Sxy);
-            } else if (S_mag > 1e-10) {
-                double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                nu_t_loc = k_loc * b_mag / S_mag;
-            }
-            
-            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
-            nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
-            nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // Check for NaN
-            
-            nu_t[idx] = nu_t_loc;
+
+            // Call unified output kernel (handles Re_t blending, tensor basis, stresses, nu_t)
+            earsm_compute_output(beta1, beta2, beta3, alpha,
+                                 Sxx, Syy, Sxy, Oxy,
+                                 tau, k_loc, S_mag, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t, idx);
         }
     }
 #else
@@ -1006,175 +996,55 @@ void compute_earsm_pope_full_gpu(
 {
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
-    const double nu_max = 100.0 * nu;
     const size_t total_size = stride * (Ny + 2*Ng);
-    
-    // #region agent log - GPU debug arrays (H1-H5)
-    // Capture diagnostic values from first interior cell for logging
-    std::vector<double> debug_values(20, 0.0); // Store diagnostics from GPU
-    double* debug_ptr = debug_values.data();
-    // #endregion
-    
+
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
-                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size]) \
-        map(tofrom: debug_ptr[0:20])
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
-            
+
             double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
             double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
-            
+
             // Compute turbulence Reynolds number for Re_t-based blending
             double Re_t = k_loc / (nu * omega_loc);
-            
+
             // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
             double alpha = 0.5 * (1.0 + tanh((Re_t - 10.0) / 5.0));
-            
-            // #region agent log - Capture diagnostics from first cell (H1,H2)
-            if (i == Ng && j == Ng) {
-                debug_ptr[0] = k_loc;
-                debug_ptr[1] = omega_loc;
-                debug_ptr[2] = Re_t;
-                debug_ptr[3] = alpha;
-            }
-            // #endregion
-            
+
+            // Strain and rotation
             double Sxx = dudx[idx];
             double Syy = dvdy[idx];
             double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
             double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
-            
+
             double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
+
             double eps = C_mu * k_loc * omega_loc;
-            double tau = k_loc / eps;  // tau = 1 / (C_mu * omega)
-            double eta = tau * S_mag;  // Normalized strain rate
-            
-            // #region agent log - Capture intermediate values (H1,H3)
-            if (i == Ng && j == Ng) {
-                debug_ptr[4] = S_mag;
-                debug_ptr[5] = tau;
-                debug_ptr[6] = eta;
-            }
-            // #endregion
-            
+            double tau = k_loc / eps;
+            double eta = tau * S_mag;
+
             // Regularization
             double reg = 1.0 + 0.01 * eta * eta;
             double C_mu_eff = C_mu / reg;
-            
+
+            // Pope model: simple quadratic coefficients
             double beta1 = -C_mu_eff;
             double beta2 = C2 * eta;
             double beta3 = C1 * eta;
-            
-            // #region agent log - Capture beta values before blending (H3)
-            if (i == Ng && j == Ng) {
-                debug_ptr[7] = beta1;
-                debug_ptr[8] = beta2;
-                debug_ptr[9] = beta3;
-            }
-            // #endregion
-            
-            // Apply Re_t blending: keep linear term (beta1), fade nonlinear terms (beta2, beta3)
-            beta2 *= alpha;
-            beta3 *= alpha;
-            
-            // #region agent log - Capture beta values after blending (H3)
-            if (i == Ng && j == Ng) {
-                debug_ptr[10] = beta2;  // after blending
-                debug_ptr[11] = beta3;  // after blending
-            }
-            // #endregion
-            
-            // Build anisotropy
-            double S_star_xx = tau * Sxx;
-            double S_star_xy = tau * Sxy;
-            double S_star_yy = tau * Syy;
-            double Omega_star_xy = tau * Oxy;
-            
-            double comm_xx = -2.0 * S_star_xy * Omega_star_xy;
-            double comm_xy = (S_star_xx - S_star_yy) * Omega_star_xy;
-            double comm_yy = 2.0 * S_star_xy * Omega_star_xy;
-            
-            double S2_xx = S_star_xx * S_star_xx + S_star_xy * S_star_xy;
-            double S2_xy = S_star_xx * S_star_xy + S_star_xy * S_star_yy;
-            double S2_yy = S_star_xy * S_star_xy + S_star_yy * S_star_yy;
-            double trace_S2 = S2_xx + S2_yy;
-            S2_xx -= trace_S2 / 3.0;
-            S2_yy -= trace_S2 / 3.0;
-            
-            double b_xx = beta1 * S_star_xx + beta2 * comm_xx + beta3 * S2_xx;
-            double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
-            double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
-            
-            // #region agent log - Capture anisotropy tensor (H4)
-            if (i == Ng && j == Ng) {
-                debug_ptr[12] = b_xx;
-                debug_ptr[13] = b_xy;
-                debug_ptr[14] = b_yy;
-            }
-            // #endregion
-            
-            tau_xx[idx] = -2.0 * k_loc * b_xx;
-            tau_xy[idx] = -2.0 * k_loc * b_xy;
-            tau_yy[idx] = -2.0 * k_loc * b_yy;
-            
-            double nu_t_loc = 0.0;
-            if (fabs(Sxy) > 1e-10) {
-                nu_t_loc = fabs(-b_xy * k_loc / Sxy);
-            } else if (S_mag > 1e-10) {
-                double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                nu_t_loc = k_loc * b_mag / S_mag;
-            }
-            
-            nu_t_loc = (nu_t_loc > 0.0) ? nu_t_loc : 0.0;
-            nu_t_loc = (nu_t_loc < nu_max) ? nu_t_loc : nu_max;
-            nu_t_loc = (nu_t_loc == nu_t_loc) ? nu_t_loc : 0.0;  // Check for NaN
-            
-            // #region agent log - Capture final nu_t (H4,H5)
-            if (i == Ng && j == Ng) {
-                debug_ptr[15] = nu_t_loc;
-                debug_ptr[16] = Sxy;
-            }
-            // #endregion
-            
-            nu_t[idx] = nu_t_loc;
+
+            // Call unified output kernel (handles Re_t blending, tensor basis, stresses, nu_t)
+            earsm_compute_output(beta1, beta2, beta3, alpha,
+                                 Sxx, Syy, Sxy, Oxy,
+                                 tau, k_loc, S_mag, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t, idx);
         }
     }
-    
-    // #region agent log - Write diagnostics to log file (H1-H5)
-    {
-        std::ofstream log_file("/storage/home/hcoda1/6/sbryngelson3/cfd-nn/.cursor/debug.log", std::ios::app);
-        if (log_file.is_open()) {
-            log_file << "{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H1-H5\","
-                     << "\"location\":\"turbulence_earsm.cpp:1115\",\"message\":\"Pope GPU kernel diagnostics\","
-                     << "\"data\":{\"k_loc\":" << debug_values[0] 
-                     << ",\"omega_loc\":" << debug_values[1]
-                     << ",\"Re_t\":" << debug_values[2]
-                     << ",\"alpha\":" << debug_values[3]
-                     << ",\"S_mag\":" << debug_values[4]
-                     << ",\"tau\":" << debug_values[5]
-                     << ",\"eta\":" << debug_values[6]
-                     << ",\"beta1\":" << debug_values[7]
-                     << ",\"beta2_before\":" << debug_values[8]
-                     << ",\"beta3_before\":" << debug_values[9]
-                     << ",\"beta2_after\":" << debug_values[10]
-                     << ",\"beta3_after\":" << debug_values[11]
-                     << ",\"b_xx\":" << debug_values[12]
-                     << ",\"b_xy\":" << debug_values[13]
-                     << ",\"b_yy\":" << debug_values[14]
-                     << ",\"nu_t_loc\":" << debug_values[15]
-                     << ",\"Sxy\":" << debug_values[16]
-                     << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
-            log_file.close();
-        }
-    }
-    // #endregion
 #else
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
     (void)k; (void)omega; (void)nu_t;
