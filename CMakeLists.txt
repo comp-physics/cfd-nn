@@ -329,5 +329,5 @@ if(BUILD_TESTS)
 endif()
 
 # Installation
-install(TARGETS channel DESTINATION bin)
+install(TARGETS channel duct taylor_green_3d DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
