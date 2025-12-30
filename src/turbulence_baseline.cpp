@@ -16,6 +16,7 @@
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
 #include "gpu_kernels.hpp"
+#include "gpu_utils.hpp"
 #include "features.hpp"
 #include <cmath>
 #include <algorithm>
@@ -44,8 +45,8 @@ inline void mixing_length_cell_kernel(
     double Syy = dvdy_ptr[cell_idx];
     double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
 
-    // Strain rate magnitude
-    double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+    // Strain rate magnitude (Frobenius norm)
+    double S_mag = strain_magnitude_frobenius(Sxx, Syy, Sxy);
 
     // y+ from wall distance
     double y_plus = y_wall * u_tau / nu;

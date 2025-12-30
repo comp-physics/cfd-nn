@@ -144,21 +144,25 @@ void compute_mlp_scalar_features_gpu(
             
             // Wall distance (cell-centered; same indexing space as gradients)
             double y_wall = wall_distance[idx_cell];
-            
-            // Features (6 values):
+
+            // Reference velocity: use LOCAL velocity magnitude (matches CPU)
+            // CPU uses: double u_ref = std::max(u_mag, 1e-10);
+            double u_ref_local = (u_mag > 1e-10) ? u_mag : 1e-10;
+
+            // Features (6 values) - must match CPU compute_features_scalar_nut():
             // 0: Normalized strain rate magnitude
-            // 1: Normalized rotation rate magnitude  
+            // 1: Normalized rotation rate magnitude
             // 2: Normalized wall distance
-            // 3: Strain-rotation ratio
+            // 3: Strain-rotation ratio (conditional, not regularized)
             // 4: Local Reynolds number
             // 5: Normalized velocity magnitude
             int feat_base = idx_out * 6;
-            features[feat_base + 0] = S_mag * delta / (u_ref + 1e-10);
-            features[feat_base + 1] = Omega_mag * delta / (u_ref + 1e-10);
+            features[feat_base + 0] = S_mag * delta / u_ref_local;
+            features[feat_base + 1] = Omega_mag * delta / u_ref_local;
             features[feat_base + 2] = y_wall / delta;
-            features[feat_base + 3] = Omega_mag / (S_mag + 1e-10);
-            features[feat_base + 4] = S_mag * delta * delta / (nu + 1e-10);
-            features[feat_base + 5] = u_mag / (u_ref + 1e-10);
+            features[feat_base + 3] = (S_mag > 1e-10) ? (Omega_mag / S_mag) : 0.0;
+            features[feat_base + 4] = S_mag * delta * delta / nu;
+            features[feat_base + 5] = u_mag / u_ref_local;
         }
     }
 #else

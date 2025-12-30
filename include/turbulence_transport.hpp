@@ -264,6 +264,8 @@ private:
     ScalarField adv_k_, adv_omega_;
     ScalarField diff_k_, diff_omega_;
     ScalarField nu_k_, nu_omega_;  // Effective diffusivities
+    ScalarField k_old_, omega_old_;  // Snapshot for Jacobi iteration (CPU/GPU consistency)
+    ScalarField wall_dist_;     // Pre-computed wall distance for unified CPU/GPU kernel
     
     bool initialized_ = false;
     
@@ -286,18 +288,8 @@ private:
     void compute_production(const Mesh& mesh, const ScalarField& nu_t);
     
     void apply_wall_bc_k(const Mesh& mesh, ScalarField& k);
-    void apply_wall_bc_omega(const Mesh& mesh, ScalarField& omega, 
+    void apply_wall_bc_omega(const Mesh& mesh, ScalarField& omega,
                              const ScalarField& k);
-    
-    // GPU kernels
-    void advance_turbulence_gpu(
-        const Mesh& mesh,
-        const VectorField& velocity,
-        double dt,
-        ScalarField& k,
-        ScalarField& omega,
-        const ScalarField& nu_t_prev
-    );
 };
 
 // ============================================================================
