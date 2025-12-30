@@ -20,6 +20,10 @@
 #include <vector>
 #include <climits>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 using namespace nncfd;
 
 // Tolerance for CPU vs GPU comparison
@@ -266,6 +270,27 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
 #else
     std::cout << "=== GPU Comparison Mode ===\n";
     std::cout << "Reference prefix: " << prefix << "\n\n";
+
+    // Verify GPU is actually accessible (not just compiled with offload)
+    const int num_devices = omp_get_num_devices();
+    std::cout << "GPU devices available: " << num_devices << "\n";
+    if (num_devices == 0) {
+        std::cerr << "ERROR: No GPU devices found. Cannot run GPU comparison.\n";
+        return 1;
+    }
+
+    // Verify target regions actually execute on GPU (not host fallback)
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    {
+        on_device = !omp_is_initial_device();
+    }
+    if (!on_device) {
+        std::cerr << "ERROR: Target region executed on host, not GPU.\n";
+        std::cerr << "       Check GPU drivers and OMP_TARGET_OFFLOAD settings.\n";
+        return 1;
+    }
+    std::cout << "GPU execution verified: YES\n\n";
 
     // Verify reference files exist
     if (!file_exists(prefix + "_pressure.dat")) {
