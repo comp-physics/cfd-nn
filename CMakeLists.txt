@@ -326,6 +326,17 @@ if(BUILD_TESTS)
     add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
+
+    # Golden file regression tests - verify numerical reproducibility
+    add_executable(test_golden tests/golden/test_golden.cpp)
+    target_link_libraries(test_golden nn_cfd_core)
+    # Add individual test cases
+    add_test(NAME GoldenChannelKOmega COMMAND test_golden channel_komega)
+    add_test(NAME GoldenChannelEARSM COMMAND test_golden channel_earsm)
+    add_test(NAME GoldenChannelMLP COMMAND test_golden channel_mlp)
+    add_test(NAME GoldenChannelTBNN COMMAND test_golden channel_tbnn)
+    add_test(NAME GoldenMixingLength COMMAND test_golden mixing_length)
+    add_test(NAME GoldenLaminar3D COMMAND test_golden laminar_3d)
 endif()
 
 # Installation

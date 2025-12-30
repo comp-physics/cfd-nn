@@ -5,8 +5,9 @@
 # to verify their changes before pushing.
 #
 # Usage:
-#   ./scripts/run_ci_local.sh              # Run all tests (fast + medium), auto-detect GPU
+#   ./scripts/run_ci_local.sh              # Run all tests (fast + medium + golden), auto-detect GPU
 #   ./scripts/run_ci_local.sh fast         # Run only fast tests (~1 minute)
+#   ./scripts/run_ci_local.sh golden       # Run golden file regression tests only
 #   ./scripts/run_ci_local.sh full         # Run all tests including slow ones
 #   ./scripts/run_ci_local.sh gpu          # Run GPU-specific tests only
 #   ./scripts/run_ci_local.sh paradigm     # Run code sharing paradigm checks
@@ -147,6 +148,58 @@ run_test() {
             #           max_diff=, max_div=, L2/Linf norms, Test N:, scientific notation
             local summary
             summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|PASSED|FAILED|passed|failed|Results:|===.*===|error=|Error|SUCCESS|max_diff|max_div|L2|Linf|Test [0-9]+:|[0-9]+\.[0-9]+e[-+]?[0-9]+)' "$output_file" | head -15) || true
+            if [ -n "$summary" ]; then
+                echo "$summary" | sed 's/^/    /'
+            fi
+        fi
+    else
+        log_failure "$test_name (exit code: $exit_code)"
+        echo "  Output (last 30 lines):"
+        tail -30 "$output_file" | sed 's/^/    /'
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
+    fi
+    rm -f "$output_file"
+}
+
+# Run a golden file regression test
+# These tests take a case name as argument to the test_golden binary
+run_golden_test() {
+    local test_name=$1
+    local case_name=$2
+    local timeout_secs=${3:-60}
+
+    local test_binary="${BUILD_DIR}/test_golden"
+
+    if [ ! -f "$test_binary" ]; then
+        log_skip "$test_name (test_golden not built)"
+        SKIPPED=$((SKIPPED + 1))
+        return 0
+    fi
+
+    echo ""
+    log_info "Running $test_name..."
+
+    local output_file="/tmp/test_output_$$.txt"
+    local exit_code=0
+    timeout "$timeout_secs" "$test_binary" "$case_name" > "$output_file" 2>&1 || exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        # Check if test was skipped (NN weights not found)
+        if grep -q "\[SKIP\]" "$output_file"; then
+            log_skip "$test_name (NN weights not available)"
+            SKIPPED=$((SKIPPED + 1))
+        else
+            log_success "$test_name"
+            PASSED=$((PASSED + 1))
+        fi
+        if [ $VERBOSE -eq 1 ]; then
+            echo "  Output:"
+            cat "$output_file" | sed 's/^/    /'
+        else
+            # Show max_diff lines for golden tests
+            local summary
+            summary=$(grep -E '(max_diff|SUCCESS|FAILURE|\[OK\]|\[FAIL\]|\[SKIP\])' "$output_file" | head -10) || true
             if [ -n "$summary" ]; then
                 echo "$summary" | sed 's/^/    /'
             fi
@@ -317,6 +370,21 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = 
     run_test "Mesh" "$BUILD_DIR/test_mesh" 30
     run_test "Features" "$BUILD_DIR/test_features" 30
     run_test "NN Core" "$BUILD_DIR/test_nn_core" 30
+fi
+
+# Golden file regression tests - verify numerical reproducibility
+if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "golden" ] || [ "$TEST_SUITE" = "full" ]; then
+    log_section "Golden File Regression Tests"
+
+    # These tests verify exact numerical reproducibility against reference files
+    # Each runs 10 time steps and compares output to golden files (tol=1e-10)
+    run_golden_test "Golden: Channel k-omega" "channel_komega" 60
+    run_golden_test "Golden: Channel EARSM" "channel_earsm" 60
+    run_golden_test "Golden: Mixing Length" "mixing_length" 60
+    run_golden_test "Golden: 3D Laminar" "laminar_3d" 60
+    # NN models may be skipped if weights not available
+    run_golden_test "Golden: Channel MLP" "channel_mlp" 60
+    run_golden_test "Golden: Channel TBNN" "channel_tbnn" 60
 fi
 
 # Medium tests (~2-5 minutes total)
