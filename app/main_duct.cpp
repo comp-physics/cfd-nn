@@ -200,8 +200,16 @@ int main(int argc, char** argv) {
     solver.sync_to_gpu();
 #endif
 
-    std::cout << "=== Running STEADY solve ===\n";
-    std::cout << "Convergence tolerance: " << config.tol << "\n\n";
+    // Determine simulation mode
+    bool is_unsteady = (config.simulation_mode == SimulationMode::Unsteady);
+
+    if (is_unsteady) {
+        std::cout << "=== Running UNSTEADY simulation ===\n";
+        std::cout << "Max iterations: " << config.max_iter << "\n\n";
+    } else {
+        std::cout << "=== Running STEADY solve ===\n";
+        std::cout << "Convergence tolerance: " << config.tol << "\n\n";
+    }
 
     std::cout << std::setw(10) << "Iter"
               << std::setw(15) << "Residual"
@@ -211,13 +219,39 @@ int main(int argc, char** argv) {
 
     ScopedTimer total_timer("Total simulation", false);
 
+    // Setup VTK snapshots
+    const std::string snapshot_prefix = config.write_fields ? (config.output_dir + "duct") : "";
+    const int snapshot_freq = (config.num_snapshots > 0 && config.max_iter > 0) ?
+        std::max(1, config.max_iter / config.num_snapshots) : 0;
+    int snap_count = 0;
+
+    if (!snapshot_prefix.empty()) {
+        std::filesystem::create_directories(config.output_dir);
+    }
+
     double residual = 1.0;
     int iter = 0;
-    for (iter = 1; iter <= config.max_iter && residual > config.tol; ++iter) {
+
+    // Unsteady: run all iterations; Steady: check convergence
+    for (iter = 1; iter <= config.max_iter; ++iter) {
+        // For steady mode, check convergence
+        if (!is_unsteady && residual <= config.tol) {
+            break;
+        }
+
         if (config.adaptive_dt) {
             (void)solver.compute_adaptive_dt();
         }
         residual = solver.step();
+
+        // Write VTK snapshot
+        if (!snapshot_prefix.empty() && snapshot_freq > 0 && (iter % snapshot_freq == 0)) {
+#ifdef USE_GPU_OFFLOAD
+            solver.sync_from_gpu();
+#endif
+            ++snap_count;
+            solver.write_vtk(snapshot_prefix + "_" + std::to_string(snap_count) + ".vtk");
+        }
 
         if (config.verbose && (iter % config.output_freq == 0)) {
 #ifdef USE_GPU_OFFLOAD
@@ -249,7 +283,12 @@ int main(int argc, char** argv) {
     std::cout << "\n=== Results ===\n";
     std::cout << "Final residual: " << std::scientific << residual << "\n";
     std::cout << "Iterations: " << iter - 1 << "\n";
-    std::cout << "Converged: " << (residual < config.tol ? "YES" : "NO") << "\n";
+    if (is_unsteady) {
+        std::cout << "Mode: Unsteady (ran all " << config.max_iter << " iterations)\n";
+        std::cout << "VTK snapshots written: " << snap_count << "\n";
+    } else {
+        std::cout << "Converged: " << (residual < config.tol ? "YES" : "NO") << "\n";
+    }
 
     double max_u = compute_max_velocity_3d(mesh, solver.velocity());
     double bulk_u = compute_bulk_velocity_3d(mesh, solver.velocity());
