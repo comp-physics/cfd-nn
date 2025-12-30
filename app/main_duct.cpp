@@ -287,7 +287,8 @@ int main(int argc, char** argv) {
     if (is_unsteady) {
         // DNS/unsteady: use divergence-free perturbations to seed instability
         std::cout << "Initializing with divergence-free perturbations for DNS...\n";
-        solver.initialize(create_perturbed_duct_field(mesh, 1e-2));
+        std::cout << "Perturbation amplitude: " << config.perturbation_amplitude << "\n";
+        solver.initialize(create_perturbed_duct_field(mesh, config.perturbation_amplitude));
     } else {
         // Steady: start with small uniform velocity
         solver.initialize_uniform(0.1 * std::abs(u_center_approx), 0.0);
@@ -299,8 +300,7 @@ int main(int argc, char** argv) {
 
     if (is_unsteady) {
         std::cout << "=== Running UNSTEADY simulation (DNS) ===\n";
-        std::cout << "Max iterations: " << config.max_iter << "\n";
-        std::cout << "Perturbation amplitude: 1e-2\n\n";
+        std::cout << "Max iterations: " << config.max_iter << "\n\n";
     } else {
         std::cout << "=== Running STEADY solve ===\n";
         std::cout << "Convergence tolerance: " << config.tol << "\n\n";

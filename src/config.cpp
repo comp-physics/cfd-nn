@@ -136,7 +136,10 @@ void Config::load(const std::string& filename) {
     } else {
         simulation_mode = SimulationMode::Steady;
     }
-    
+
+    // Initial conditions
+    perturbation_amplitude = get_double("perturbation_amplitude", perturbation_amplitude);
+
     // Turbulence
     auto model_str = get_string("turb_model", "none");
     if (model_str == "baseline") {
@@ -283,6 +286,8 @@ void Config::parse_args(int argc, char** argv) {
             } else {
                 simulation_mode = SimulationMode::Steady;
             }
+        } else if (arg == "--perturbation_amplitude" && i + 1 < argc) {
+            perturbation_amplitude = std::stod(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -318,6 +323,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
                       << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
+                      << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"
