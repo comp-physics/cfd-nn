@@ -40,9 +40,9 @@ jobs:
         cd ..
 
         # Run the CI test suite
-        chmod +x scripts/run_ci_local.sh
+        chmod +x scripts/ci.sh
         chmod +x scripts/check_code_sharing.sh
-        ./scripts/run_ci_local.sh --cpu
+        ./scripts/ci.sh --cpu
 
     - name: Check for warnings
       if: matrix.build_type == 'Release'

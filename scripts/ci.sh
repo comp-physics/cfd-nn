@@ -1,19 +1,27 @@
 #!/bin/bash
-# run_ci_local.sh - Run CI tests locally
+# ci.sh - Run CI tests (locally or in CI pipelines)
 #
-# This script runs the same tests that would run in CI, allowing developers
-# to verify their changes before pushing.
+# This script runs the test suite used by both local development and GitHub CI.
 #
 # Usage:
-#   ./scripts/run_ci_local.sh              # Run all tests (fast + medium), auto-detect GPU
-#   ./scripts/run_ci_local.sh fast         # Run only fast tests (~1 minute)
-#   ./scripts/run_ci_local.sh full         # Run all tests including slow ones
-#   ./scripts/run_ci_local.sh gpu          # Run GPU-specific tests only
-#   ./scripts/run_ci_local.sh paradigm     # Run code sharing paradigm checks
-#   ./scripts/run_ci_local.sh --cpu        # Force CPU-only build (no GPU offload)
-#   ./scripts/run_ci_local.sh --cpu fast   # CPU-only with fast tests
-#   ./scripts/run_ci_local.sh -v           # Verbose output (show full test output)
-#   ./scripts/run_ci_local.sh --verbose    # Same as -v
+#   ./scripts/ci.sh              # Run all tests (requires GPU for cross-build tests)
+#   ./scripts/ci.sh fast         # Run only fast tests (~1 minute)
+#   ./scripts/ci.sh full         # Run all tests including slow ones
+#   ./scripts/ci.sh gpu          # Run GPU-specific tests only (requires GPU)
+#   ./scripts/ci.sh paradigm     # Run code sharing paradigm checks
+#   ./scripts/ci.sh --cpu        # Force CPU-only build (skips cross-build tests)
+#   ./scripts/ci.sh --cpu fast   # CPU-only with fast tests
+#   ./scripts/ci.sh -v           # Verbose output (show full test output)
+#   ./scripts/ci.sh --verbose    # Same as -v
+#
+# Cross-build tests (CPU vs GPU comparison):
+#   When running in GPU mode (default), the script will:
+#   1. Build both CPU (USE_GPU_OFFLOAD=OFF) and GPU (USE_GPU_OFFLOAD=ON) versions
+#   2. Generate CPU reference outputs
+#   3. Run GPU and compare against CPU reference
+#   4. FAIL if GPU is not available (not skip!)
+#
+#   This ensures we actually test CPU/GPU consistency, not just CPU/CPU.
 
 set -e
 
@@ -80,6 +88,60 @@ log_info() {
     echo -e "${YELLOW}[INFO]${NC} $1"
 }
 
+# Check if GPU is available (for GPU builds)
+check_gpu_available() {
+    # Check if nvidia-smi exists and reports a GPU
+    if command -v nvidia-smi &> /dev/null; then
+        if nvidia-smi &> /dev/null; then
+            return 0  # GPU available
+        fi
+    fi
+    return 1  # No GPU
+}
+
+# Build a specific configuration, ensuring all tests are built
+# Usage: ensure_build <build_dir> <use_gpu_offload>
+ensure_build() {
+    local build_dir=$1
+    local gpu_offload=$2
+    local build_name="CPU"
+    if [[ "$gpu_offload" == "ON" ]]; then
+        build_name="GPU"
+    fi
+
+    log_info "Ensuring $build_name build in $build_dir..."
+    mkdir -p "$build_dir"
+
+    # Save current directory
+    local orig_dir=$(pwd)
+    cd "$build_dir"
+
+    # Configure if not already configured
+    if [ ! -f "CMakeCache.txt" ]; then
+        log_info "  Configuring $build_name build..."
+        if ! cmake "$PROJECT_DIR" -DUSE_GPU_OFFLOAD=${gpu_offload} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
+            log_failure "$build_name cmake configuration failed"
+            cat cmake_output.log | tail -20 | sed 's/^/    /'
+            cd "$orig_dir"
+            return 1
+        fi
+    fi
+
+    # Always run make to ensure all targets are built
+    # (make is smart and will skip already-built targets)
+    log_info "  Building $build_name..."
+    if ! make -j"$(nproc)" > build_output.log 2>&1; then
+        log_failure "$build_name build failed"
+        cat build_output.log | tail -30 | sed 's/^/    /'
+        cd "$orig_dir"
+        return 1
+    fi
+
+    log_success "$build_name build completed"
+    cd "$orig_dir"
+    return 0
+}
+
 # Parse arguments
 TEST_SUITE="${1:-all}"
 
@@ -88,6 +150,10 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 FAILED_TESTS=""
+
+# Track build status to avoid redundant ensure_build calls
+CPU_BUILD_ENSURED=0
+GPU_BUILD_ENSURED=0
 
 # Known flaky tests on GPU (pre-existing issues, not related to 3D work)
 # These will be skipped when USE_GPU=ON until root causes are addressed.
@@ -163,110 +229,119 @@ run_test() {
 
 # Run a CPU/GPU cross-build comparison test
 # These tests require both CPU and GPU builds and compare outputs between them
+# This function will build both versions if they don't exist
 run_cross_build_test() {
     local test_name=$1
     local test_binary_name=$2
     local timeout_secs=${3:-120}
     local ref_prefix=$4
 
-    local cpu_binary="${PROJECT_DIR}/build_cpu/${test_binary_name}"
-    local gpu_binary="${PROJECT_DIR}/build_gpu/${test_binary_name}"
+    local cpu_build_dir="${PROJECT_DIR}/build_cpu"
+    local gpu_build_dir="${PROJECT_DIR}/build_gpu"
+    local cpu_binary="${cpu_build_dir}/${test_binary_name}"
+    local gpu_binary="${gpu_build_dir}/${test_binary_name}"
 
-    # In GPU mode, compare GPU build against CPU reference
-    if [[ "$USE_GPU" == "ON" ]]; then
-        if [ ! -f "$gpu_binary" ]; then
-            log_skip "$test_name (GPU binary not built)"
-            SKIPPED=$((SKIPPED + 1))
-            return 0
-        fi
+    echo ""
+    log_info "Running $test_name (cross-build CPU vs GPU comparison)..."
 
-        # Check if CPU build exists for reference generation
-        if [ ! -f "$cpu_binary" ]; then
-            log_skip "$test_name (CPU build not available for reference)"
-            SKIPPED=$((SKIPPED + 1))
-            return 0
-        fi
-
-        echo ""
-        log_info "Running $test_name (cross-build comparison)..."
-
-        # Generate CPU reference if it doesn't exist
-        local ref_dir="${PROJECT_DIR}/build_gpu/cpu_reference"
-        mkdir -p "$ref_dir"
-
-        local output_file="/tmp/test_output_$$.txt"
-
-        # Check if reference already exists
-        if [ ! -f "${ref_dir}/${ref_prefix}_u.dat" ] && [ ! -f "${ref_dir}/${ref_prefix}_pressure.dat" ]; then
-            log_info "  Generating CPU reference..."
-            timeout "$timeout_secs" "$cpu_binary" --dump-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || {
-                log_failure "$test_name (CPU reference generation failed)"
-                tail -20 "$output_file" | sed 's/^/    /'
-                FAILED=$((FAILED + 1))
-                FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU ref)"
-                rm -f "$output_file"
-                return 0
-            }
-        fi
-
-        # Run GPU comparison
-        log_info "  Running GPU and comparing against CPU reference..."
-        local exit_code=0
-        timeout "$timeout_secs" "$gpu_binary" --compare-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || exit_code=$?
-
-        if [ $exit_code -eq 0 ]; then
-            log_success "$test_name"
-            PASSED=$((PASSED + 1))
-            if [ $VERBOSE -eq 1 ]; then
-                echo "  Output:"
-                cat "$output_file" | sed 's/^/    /'
-            else
-                local summary
-                summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|\[WARN\]|PASSED|FAILED|Max abs diff|Max rel diff|RMS diff)' "$output_file" | head -10) || true
-                if [ -n "$summary" ]; then
-                    echo "$summary" | sed 's/^/    /'
-                fi
-            fi
-        else
-            log_failure "$test_name (exit code: $exit_code)"
-            echo "  Output (last 30 lines):"
-            tail -30 "$output_file" | sed 's/^/    /'
-            FAILED=$((FAILED + 1))
-            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
-        fi
-        rm -f "$output_file"
-    else
-        # In CPU mode, just generate reference (useful for pre-generating)
-        if [ ! -f "$cpu_binary" ]; then
-            log_skip "$test_name (CPU binary not built)"
-            SKIPPED=$((SKIPPED + 1))
-            return 0
-        fi
-
-        echo ""
-        log_info "Running $test_name (CPU reference generation)..."
-
-        local ref_dir="${PROJECT_DIR}/build_cpu/cpu_reference"
-        mkdir -p "$ref_dir"
-
-        local output_file="/tmp/test_output_$$.txt"
-        local exit_code=0
-        timeout "$timeout_secs" "$cpu_binary" --dump-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || exit_code=$?
-
-        if [ $exit_code -eq 0 ]; then
-            log_success "$test_name (reference generated)"
-            PASSED=$((PASSED + 1))
-            if [ $VERBOSE -eq 1 ]; then
-                cat "$output_file" | sed 's/^/    /'
-            fi
-        else
-            log_failure "$test_name (exit code: $exit_code)"
-            tail -20 "$output_file" | sed 's/^/    /'
-            FAILED=$((FAILED + 1))
-            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
-        fi
-        rm -f "$output_file"
+    # For cross-build tests, we need a GPU available
+    if ! check_gpu_available; then
+        log_failure "$test_name (GPU required but not available)"
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (no GPU)"
+        return 0
     fi
+
+    # Ensure both CPU and GPU builds exist and are up to date
+    # Use caching to avoid redundant builds across multiple cross-build tests
+    if [ $CPU_BUILD_ENSURED -eq 0 ]; then
+        if ! ensure_build "$cpu_build_dir" "OFF"; then
+            log_failure "$test_name (CPU build failed)"
+            FAILED=$((FAILED + 1))
+            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU build)"
+            return 0
+        fi
+        CPU_BUILD_ENSURED=1
+    fi
+
+    if [ $GPU_BUILD_ENSURED -eq 0 ]; then
+        if ! ensure_build "$gpu_build_dir" "ON"; then
+            log_failure "$test_name (GPU build failed)"
+            FAILED=$((FAILED + 1))
+            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (GPU build)"
+            return 0
+        fi
+        GPU_BUILD_ENSURED=1
+    fi
+
+    # Verify binaries exist after build
+    if [ ! -f "$cpu_binary" ]; then
+        log_failure "$test_name (CPU binary missing after build: $cpu_binary)"
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU binary missing)"
+        return 0
+    fi
+
+    if [ ! -f "$gpu_binary" ]; then
+        log_failure "$test_name (GPU binary missing after build: $gpu_binary)"
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (GPU binary missing)"
+        return 0
+    fi
+
+    # Create reference directory
+    local ref_dir="${PROJECT_DIR}/build_gpu/cpu_reference"
+    mkdir -p "$ref_dir"
+
+    local output_file="/tmp/test_output_$$.txt"
+
+    # Always regenerate CPU reference to ensure consistency
+    # (reference files might be stale from a previous build)
+    log_info "  Step 1: Generating CPU reference..."
+    local cpu_exit_code=0
+    timeout "$timeout_secs" "$cpu_binary" --dump-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || cpu_exit_code=$?
+
+    if [ $cpu_exit_code -ne 0 ]; then
+        log_failure "$test_name (CPU reference generation failed, exit code: $cpu_exit_code)"
+        echo "  Output (last 30 lines):"
+        tail -30 "$output_file" | sed 's/^/    /'
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU ref generation)"
+        rm -f "$output_file"
+        return 0
+    fi
+
+    if [ $VERBOSE -eq 1 ]; then
+        echo "  CPU reference output:"
+        cat "$output_file" | sed 's/^/    /'
+    fi
+
+    # Run GPU comparison against CPU reference
+    log_info "  Step 2: Running GPU and comparing against CPU reference..."
+    local gpu_exit_code=0
+    timeout "$timeout_secs" "$gpu_binary" --compare-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || gpu_exit_code=$?
+
+    if [ $gpu_exit_code -eq 0 ]; then
+        log_success "$test_name"
+        PASSED=$((PASSED + 1))
+        if [ $VERBOSE -eq 1 ]; then
+            echo "  GPU comparison output:"
+            cat "$output_file" | sed 's/^/    /'
+        else
+            local summary
+            summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|\[WARN\]|PASSED|FAILED|Max abs diff|Max rel diff|RMS diff)' "$output_file" | head -10) || true
+            if [ -n "$summary" ]; then
+                echo "$summary" | sed 's/^/    /'
+            fi
+        fi
+    else
+        log_failure "$test_name (GPU comparison failed, exit code: $gpu_exit_code)"
+        echo "  Output (last 30 lines):"
+        tail -30 "$output_file" | sed 's/^/    /'
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
+    fi
+    rm -f "$output_file"
 }
 
 # Check build directory exists
@@ -339,11 +414,17 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
 
     # Cross-build comparison tests (require both CPU and GPU builds)
     # These tests compare CPU-built outputs against GPU-built outputs
-    run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
-    run_cross_build_test "Poisson CPU/GPU 3D" "test_poisson_cpu_gpu_3d" 180 "poisson3d"
-    run_cross_build_test "CPU/GPU Consistency" "test_cpu_gpu_consistency" 180 "consistency"
-    run_cross_build_test "Solver CPU/GPU" "test_solver_cpu_gpu" 180 "solver"
-    run_cross_build_test "Time History Consistency" "test_time_history_consistency" 180 "timehistory"
+    # Skip these if --cpu flag was passed (no GPU comparison possible)
+    if [[ "$USE_GPU" == "OFF" ]]; then
+        log_info "Skipping cross-build tests in CPU-only mode (--cpu flag)"
+        log_info "Cross-build tests require GPU to compare CPU vs GPU outputs"
+    else
+        run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
+        run_cross_build_test "Poisson CPU/GPU 3D" "test_poisson_cpu_gpu_3d" 180 "poisson3d"
+        run_cross_build_test "CPU/GPU Consistency" "test_cpu_gpu_consistency" 180 "consistency"
+        run_cross_build_test "Solver CPU/GPU" "test_solver_cpu_gpu" 180 "solver"
+        run_cross_build_test "Time History Consistency" "test_time_history_consistency" 180 "timehistory"
+    fi
 
     # Non-comparison GPU tests
     run_test "Backend Execution" "$BUILD_DIR/test_backend_execution" 60

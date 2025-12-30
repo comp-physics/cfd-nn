@@ -97,8 +97,8 @@ What These Tests Prove:
 
 BEFORE EVERY PUSH TO REPOSITORY:
 
-1. Run the pre-CI test script:
-   ./scripts/run_ci_local.sh
+1. Run the CI test script:
+   ./scripts/ci.sh
    This script MUST pass before pushing. It tests:
    - Debug build (like CI does)
    - Release build (like CI does)
@@ -238,7 +238,7 @@ assert(std::abs(max_u - 1.0) < 1e-10);
 ### Before Starting Work
 1. Pull latest changes from main
 2. Create feature branch
-3. Run ./scripts/run_ci_local.sh to verify starting state
+3. Run ./scripts/ci.sh to verify starting state
 
 ### During Development
 1. Build and test frequently
@@ -251,7 +251,7 @@ assert(std::abs(max_u - 1.0) < 1e-10);
 3. Verify changes don't break existing functionality
 
 ### Before Pushing
-1. MANDATORY: Run ./scripts/run_ci_local.sh
+1. MANDATORY: Run ./scripts/ci.sh
 2. Only push if script passes completely
 3. If it fails, fix issues before pushing
 
@@ -312,7 +312,7 @@ assert(std::abs(max_u - 1.0) < 1e-10);
 ## Quick Reference
 
 Run tests locally (like CI):
-./scripts/run_ci_local.sh
+./scripts/ci.sh
 
 Build for debugging:
 mkdir -p build_debug && cd build_debug
@@ -346,7 +346,7 @@ ctest --output-on-failure --verbose
 
 2. Reproduce locally:
    For Ubuntu Debug failure:
-   ./scripts/run_ci_local.sh
+   ./scripts/ci.sh
    Check Debug output specifically
 
 3. Common fixes:
@@ -356,7 +356,7 @@ ctest --output-on-failure --verbose
    - Missing #include that worked locally
 
 4. Don't:
-   - Push "fixes" without running scripts/run_ci_local.sh
+   - Push "fixes" without running scripts/ci.sh
    - Add platform-specific workarounds
    - Disable failing tests
    - Relax tolerances to hide issues
@@ -471,10 +471,10 @@ mkdir -p build_cpu && cd build_cpu
 cmake .. -DUSE_GPU_OFFLOAD=OFF
 make -j8
 
-# Run local CI tests
-./scripts/run_ci_local.sh           # Auto-detect GPU, run fast+medium tests
-./scripts/run_ci_local.sh --cpu     # Force CPU build
-./scripts/run_ci_local.sh gpu       # GPU-specific tests only
+# Run CI tests
+./scripts/ci.sh           # Auto-detect GPU, run fast+medium tests
+./scripts/ci.sh --cpu     # Force CPU build
+./scripts/ci.sh gpu       # GPU-specific tests only
 ```
 
 ## Bash Scripting Gotcha
