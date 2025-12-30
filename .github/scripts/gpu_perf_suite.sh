@@ -111,10 +111,10 @@ run_comparison_case "channel_sst_256x512_500" \
              --model sst --dp_dx -0.0001 \
              --output output/perf/channel_sst --num_snapshots 0
 
-# Case 3: Periodic hills baseline (complex geometry)
-run_comparison_case "periodic_hills_baseline_128x96_400" \
-    ./periodic_hills --Nx 128 --Ny 96 --nu 0.001 --max_iter 400 \
-                    --model baseline --num_snapshots 0
+# Case 3: 3D Duct flow (3D geometry test)
+run_comparison_case "duct_baseline_32x64x64_500" \
+    ./duct --Nx 32 --Ny 64 --Nz 64 --nu 0.001 --max_iter 500 \
+           --model baseline --num_snapshots 0
 
 # Print final summary table
 echo ""

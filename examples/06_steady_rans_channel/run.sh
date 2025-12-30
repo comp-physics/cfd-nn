@@ -1,17 +1,18 @@
 #!/bin/bash
 #
-# Run unsteady developing channel simulation
+# Run steady RANS channel simulation
 #
 # Usage: ./run.sh <config>
-#   ./run.sh laminar       (default, coarse grid)
-#   ./run.sh laminar_fine  (fine grid)
+#   ./run.sh baseline   (mixing length model)
+#   ./run.sh gep        (GEP algebraic model)
+#   ./run.sh sst        (SST k-omega transport model)
 #
 # Or run directly:
-#   ./channel --config laminar.cfg
+#   ./channel --config baseline.cfg
 
 set -euo pipefail
 
-CASE="${1:-laminar}"
+CASE="${1:-baseline}"
 EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
@@ -20,7 +21,7 @@ CFG="$EXAMPLE_DIR/${CASE}.cfg"
 OUT="$EXAMPLE_DIR/output/${CASE}/"
 
 echo "======================================"
-echo "  Unsteady Developing Channel"
+echo "  Steady RANS Channel Flow"
 echo "======================================"
 echo ""
 
@@ -50,10 +51,6 @@ echo "Config: $CFG"
 echo "Output: $OUT"
 echo ""
 
-echo "======================================"
-echo "Running unsteady simulation..."
-echo "======================================"
-
 cd "$BUILD_DIR"
 ./channel --config "$CFG" --output "$OUT" "${@:2}"
 
@@ -64,6 +61,6 @@ echo "======================================"
 echo ""
 echo "Results saved to: $OUT"
 echo ""
-echo "To visualize time evolution:"
-echo "  paraview $OUT/developing_channel_*.vtk"
+echo "To visualize:"
+echo "  paraview $OUT/channel_final.vtk"
 echo ""

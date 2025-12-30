@@ -337,9 +337,10 @@ int main(int argc, char** argv) {
         
         // Force laminar for unsteady developing flow
         config.turb_model = TurbulenceModelType::None;
-        
+
         // Initialize with divergence-free perturbation
-        solver.initialize(create_perturbed_channel_field(mesh, 1e-3));
+        std::cout << "Perturbation amplitude: " << config.perturbation_amplitude << "\n";
+        solver.initialize(create_perturbed_channel_field(mesh, config.perturbation_amplitude));
         
     #ifdef USE_GPU_OFFLOAD
         solver.sync_to_gpu();

@@ -27,26 +27,51 @@ u_max ≈ 0.295 * (-dp/dx) * a² / μ
 
 ## Running
 
+### Using run.sh wrapper
+
 ```bash
-# Default run (16x32x32 grid)
-./run.sh
+# Laminar flow, coarse grid (default)
+./run.sh laminar_square
 
-# Custom grid
-NX=32 NY=64 NZ=64 ./run.sh
+# Laminar flow, fine grid
+./run.sh laminar_fine
 
-# More iterations for convergence
-MAX_ITER=50000 ./run.sh
+# Turbulent flow with SST k-omega
+./run.sh turbulent_sst
 ```
 
-## Parameters
+### Running the binary directly
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| NX | 16 | Grid cells in x (streamwise) |
-| NY | 32 | Grid cells in y |
-| NZ | 32 | Grid cells in z |
-| MAX_ITER | 10000 | Maximum solver iterations |
-| NU | 0.01 | Kinematic viscosity |
+```bash
+cd build
+
+# With config file
+./duct --config ../examples/08_duct_flow/laminar_square.cfg
+
+# Override parameters from command line
+./duct --config ../examples/08_duct_flow/laminar_square.cfg --Ny 64 --Nz 64
+```
+
+## Available Configurations
+
+| Config | Grid | Description |
+|--------|------|-------------|
+| `laminar_square.cfg` | 16×32×32 | Coarse grid laminar validation |
+| `laminar_fine.cfg` | 32×64×64 | Fine grid laminar (higher accuracy) |
+| `turbulent_sst.cfg` | 32×64×64 | Turbulent flow with SST k-ω model |
+
+## Configuration Parameters
+
+Key parameters in the `.cfg` files:
+
+```
+Nx = 16             # Grid cells in x (streamwise)
+Ny = 32             # Grid cells in y
+Nz = 32             # Grid cells in z
+nu = 0.01           # Kinematic viscosity
+dp_dx = -1.0        # Pressure gradient
+turb_model = none   # Turbulence model (none, sst, baseline, etc.)
+```
 
 ## Output
 
@@ -61,8 +86,8 @@ The simulation compares the computed centerline velocity against the analytical 
 
 ```bash
 # ParaView
-paraview output/duct_final.vtk
+paraview output/laminar_square/duct_final.vtk
 
 # Plot velocity profile (gnuplot)
-gnuplot -e "splot 'output/duct_profile.dat' u 1:2:3 w pm3d"
+gnuplot -e "splot 'output/laminar_square/duct_profile.dat' u 1:2:3 w pm3d"
 ```

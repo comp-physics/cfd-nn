@@ -232,8 +232,8 @@ The dataset is also available from the original publication:
 ```bash
 python scripts/train_tbnn_mcconkey.py \
     --data_dir mcconkey_data \
-    --case periodic_hills \
-    --output data/models/tbnn_hills
+    --case channel \
+    --output data/models/tbnn_channel
 ```
 
 ### Train MLP
@@ -251,7 +251,7 @@ python scripts/train_mlp_mcconkey.py \
 import numpy as np
 
 # Load data
-data = np.load('mcconkey_data/periodic_hills/train/data.npz')
+data = np.load('mcconkey_data/channel/train/data.npz')
 
 # Get features and labels
 invariants = data['invariants']  # [N, 5]
@@ -286,7 +286,7 @@ basis = data['basis']            # [N, 10, 6] or [N, 4, 3]
 1. **Start Simple**: Train on channel flow first (easiest case)
 2. **Validate Carefully**: Check a priori predictions before running in CFD solver
 3. **Test Generalization**: Train on one Re, test on another
-4. **Cross-Case Testing**: Train on channel, test on periodic hills
+4. **Cross-Case Testing**: Train on channel, test on square duct
 5. **Ensemble Models**: Train multiple models and average predictions
 
 ## Known Issues

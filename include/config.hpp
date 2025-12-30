@@ -78,7 +78,10 @@ struct Config {
     
     // Simulation mode
     SimulationMode simulation_mode = SimulationMode::Steady;
-    
+
+    // Initial conditions (for unsteady/DNS mode)
+    double perturbation_amplitude = 1e-2;  ///< Amplitude of initial perturbations for DNS
+
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
     double nu_t_max = 1.0;      ///< Maximum eddy viscosity (clipping)

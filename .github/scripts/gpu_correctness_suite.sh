@@ -106,22 +106,14 @@ echo "--- Testing Pope Quadratic EARSM ---"
 
 echo ""
 echo "==================================================================="
-echo "  5. Periodic Hills - Complex Geometry"
-echo "==================================================================="
-echo ""
-echo "--- Testing with Baseline model ---"
-./periodic_hills --Nx 64 --Ny 48 --nu 0.001 --max_iter 200 --model baseline --num_snapshots 0
-
-echo ""
-echo "==================================================================="
-echo "  7. CPU/GPU Consistency Validation (Critical)"
+echo "  6. CPU/GPU Consistency Validation (Critical)"
 echo "==================================================================="
 echo ""
 ./test_cpu_gpu_consistency
 
 echo ""
 echo "==================================================================="
-echo "  8. GPU Utilization Validation (Critical)"
+echo "  7. GPU Utilization Validation (Critical)"
 echo "==================================================================="
 echo ""
 echo "Verifying that compute runs on GPU, not CPU..."
@@ -129,7 +121,7 @@ echo "Verifying that compute runs on GPU, not CPU..."
 
 echo ""
 echo "==================================================================="
-echo "  9. Physics Validation (Comprehensive)"
+echo "  8. Physics Validation (Comprehensive)"
 echo "==================================================================="
 echo ""
 ./test_physics_validation
@@ -137,7 +129,7 @@ echo ""
 
 echo ""
 echo "==================================================================="
-echo " 10. Perturbed Channel Flow Test (Poisson validation)"
+echo "  9. Perturbed Channel Flow Test (Poisson validation)"
 echo "==================================================================="
 echo ""
 echo "Testing 2D perturbed channel (validates Poisson solver with non-trivial flow)"

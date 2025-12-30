@@ -2,33 +2,6 @@
 
 This directory contains **validated, ready-to-run examples** demonstrating the capabilities of the CFD-NN solver for turbulence modeling using neural networks.
 
-## Recommended: Geometry-based cases (no per-case README required)
-
-Use **one binary per geometry** and select the case via a config file:
-
-- **Channel** (binary: `channel`)
-  - `./examples/channel/run.sh poiseuille_steady`
-  - `./examples/channel/run.sh retau180_baseline`
-  - `./examples/channel/run.sh retau180_gep`
-  - `./examples/channel/run.sh retau180_sst`
-  - `./examples/channel/run.sh retau180_unsteady_laminar`
-  - `./examples/channel/run.sh retau180_unsteady_laminar_fine`
-
-- **Periodic hills** (binary: `periodic_hills`)
-  - `./examples/periodic_hills/run.sh hills_laminar`
-  - `./examples/periodic_hills/run.sh hills_baseline`
-  - `./examples/periodic_hills/run.sh hills_sst`
-
-Each `run.sh` writes outputs to `examples/<geometry>/output/<case>/` so you don't need to pass `--output` or remember paths.
-
-You can also pass through overrides after the case name, e.g.:
-
-```bash
-./examples/channel/run.sh poiseuille_steady --max_iter 50 --no_write_fields --no_postprocess
-```
-
----
-
 ## Quick Start
 
 ```bash
@@ -136,6 +109,16 @@ Demonstrates full transport equation turbulence modeling with SST k-ω.
 
 Validates 3D solver against analytical solution for duct flow.
 
+**Running**:
+```bash
+./run.sh laminar_square      # Coarse grid (default)
+./run.sh laminar_fine        # Fine grid
+./run.sh turbulent_sst       # Turbulent with SST k-omega
+
+# Or run directly:
+./duct --config laminar_square.cfg
+```
+
 **Key Learning**:
 - 3D mesh setup and BCs
 - Multi-wall boundary conditions
@@ -150,6 +133,16 @@ Validates 3D solver against analytical solution for duct flow.
 **Level**: Intermediate
 
 Demonstrates 3D unsteady simulation with energy tracking.
+
+**Running**:
+```bash
+./run.sh tg_re100           # Re=100 on 32³ (default)
+./run.sh tg_re100_fine      # Re=100 on 64³
+./run.sh tg_re1600          # Re=1600 DNS on 64³
+
+# Or run directly:
+./taylor_green_3d --config tg_re100.cfg
+```
 
 **Key Learning**:
 - 3D periodic domains

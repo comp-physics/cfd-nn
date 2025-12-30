@@ -36,9 +36,18 @@ export CC=nvc
 export CXX=nvc++
 
 # Clean any stale builds
-rm -rf build_gpu
+rm -rf build_cpu build_gpu
+
+# Build CPU reference version (needed for CPU/GPU comparison tests)
+echo "Building CPU reference version..."
+mkdir -p build_cpu
+cd build_cpu
+cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF -DBUILD_TESTS=ON
+make -j8
+cd ..
 
 # Build GPU version
+echo "Building GPU version..."
 mkdir -p build_gpu
 cd build_gpu
 cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON

@@ -3667,12 +3667,14 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         file << "POINT_DATA " << Nx * Ny << "\n";
 
         // Velocity vector field (interpolated from staggered grid to cell centers)
-        file << "VECTORS velocity double\n";
+        // Use 2-component SCALARS for 2D (VTK VECTORS requires 3 components)
+        file << "SCALARS velocity double 2\n";
+        file << "LOOKUP_TABLE default\n";
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                 double u_center = velocity_.u_center(i, j);
                 double v_center = velocity_.v_center(i, j);
-                file << u_center << " " << v_center << " 0\n";
+                file << u_center << " " << v_center << "\n";
             }
         }
 
@@ -3702,6 +3704,87 @@ void RANSSolver::write_vtk(const std::string& filename) const {
                 for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                     file << nu_t_(i, j) << "\n";
                 }
+            }
+        }
+
+        // Individual velocity components as scalars
+        file << "SCALARS u double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << velocity_.u_center(i, j) << "\n";
+            }
+        }
+
+        file << "SCALARS v double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << velocity_.v_center(i, j) << "\n";
+            }
+        }
+
+        // Pressure gradients using central differences
+        // For periodic BCs: wrap indices; for non-periodic: one-sided at boundaries
+        const bool periodic_x = (poisson_bc_x_lo_ == PoissonBC::Periodic);
+        const bool periodic_y = (poisson_bc_y_lo_ == PoissonBC::Periodic);
+
+        // Helper lambdas for pressure gradient computation
+        auto compute_dpdx_2d = [&](int i, int j) -> double {
+            if (periodic_x) {
+                int im = (i == mesh_->i_begin()) ? mesh_->i_end() - 1 : i - 1;
+                int ip = (i == mesh_->i_end() - 1) ? mesh_->i_begin() : i + 1;
+                return (pressure_(ip, j) - pressure_(im, j)) / (2.0 * mesh_->dx);
+            } else {
+                if (i == mesh_->i_begin()) {
+                    return (pressure_(i + 1, j) - pressure_(i, j)) / mesh_->dx;
+                } else if (i == mesh_->i_end() - 1) {
+                    return (pressure_(i, j) - pressure_(i - 1, j)) / mesh_->dx;
+                } else {
+                    return (pressure_(i + 1, j) - pressure_(i - 1, j)) / (2.0 * mesh_->dx);
+                }
+            }
+        };
+
+        auto compute_dpdy_2d = [&](int i, int j) -> double {
+            if (periodic_y) {
+                int jm = (j == mesh_->j_begin()) ? mesh_->j_end() - 1 : j - 1;
+                int jp = (j == mesh_->j_end() - 1) ? mesh_->j_begin() : j + 1;
+                return (pressure_(i, jp) - pressure_(i, jm)) / (2.0 * mesh_->dy);
+            } else {
+                if (j == mesh_->j_begin()) {
+                    return (pressure_(i, j + 1) - pressure_(i, j)) / mesh_->dy;
+                } else if (j == mesh_->j_end() - 1) {
+                    return (pressure_(i, j) - pressure_(i, j - 1)) / mesh_->dy;
+                } else {
+                    return (pressure_(i, j + 1) - pressure_(i, j - 1)) / (2.0 * mesh_->dy);
+                }
+            }
+        };
+
+        // Pressure gradient as 2-component vector
+        file << "SCALARS pressure_gradient double 2\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << compute_dpdx_2d(i, j) << " " << compute_dpdy_2d(i, j) << "\n";
+            }
+        }
+
+        // Pressure gradient components as scalars
+        file << "SCALARS dP_dx double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << compute_dpdx_2d(i, j) << "\n";
+            }
+        }
+
+        file << "SCALARS dP_dy double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << compute_dpdy_2d(i, j) << "\n";
             }
         }
     } else {
@@ -3755,6 +3838,135 @@ void RANSSolver::write_vtk(const std::string& filename) const {
                     for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                         file << nu_t_(i, j, k) << "\n";
                     }
+                }
+            }
+        }
+
+        // Individual velocity components as scalars
+        file << "SCALARS u double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << velocity_.u_center(i, j, k) << "\n";
+                }
+            }
+        }
+
+        file << "SCALARS v double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << velocity_.v_center(i, j, k) << "\n";
+                }
+            }
+        }
+
+        file << "SCALARS w double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << velocity_.w_center(i, j, k) << "\n";
+                }
+            }
+        }
+
+        // Pressure gradients using central differences
+        // For periodic BCs: wrap indices; for non-periodic: one-sided at boundaries
+        const bool periodic_x = (poisson_bc_x_lo_ == PoissonBC::Periodic);
+        const bool periodic_y = (poisson_bc_y_lo_ == PoissonBC::Periodic);
+        const bool periodic_z = (poisson_bc_z_lo_ == PoissonBC::Periodic);
+
+        // Helper lambdas for pressure gradient computation
+        auto compute_dpdx_3d = [&](int i, int j, int k) -> double {
+            if (periodic_x) {
+                int im = (i == mesh_->i_begin()) ? mesh_->i_end() - 1 : i - 1;
+                int ip = (i == mesh_->i_end() - 1) ? mesh_->i_begin() : i + 1;
+                return (pressure_(ip, j, k) - pressure_(im, j, k)) / (2.0 * mesh_->dx);
+            } else {
+                if (i == mesh_->i_begin()) {
+                    return (pressure_(i + 1, j, k) - pressure_(i, j, k)) / mesh_->dx;
+                } else if (i == mesh_->i_end() - 1) {
+                    return (pressure_(i, j, k) - pressure_(i - 1, j, k)) / mesh_->dx;
+                } else {
+                    return (pressure_(i + 1, j, k) - pressure_(i - 1, j, k)) / (2.0 * mesh_->dx);
+                }
+            }
+        };
+
+        auto compute_dpdy_3d = [&](int i, int j, int k) -> double {
+            if (periodic_y) {
+                int jm = (j == mesh_->j_begin()) ? mesh_->j_end() - 1 : j - 1;
+                int jp = (j == mesh_->j_end() - 1) ? mesh_->j_begin() : j + 1;
+                return (pressure_(i, jp, k) - pressure_(i, jm, k)) / (2.0 * mesh_->dy);
+            } else {
+                if (j == mesh_->j_begin()) {
+                    return (pressure_(i, j + 1, k) - pressure_(i, j, k)) / mesh_->dy;
+                } else if (j == mesh_->j_end() - 1) {
+                    return (pressure_(i, j, k) - pressure_(i, j - 1, k)) / mesh_->dy;
+                } else {
+                    return (pressure_(i, j + 1, k) - pressure_(i, j - 1, k)) / (2.0 * mesh_->dy);
+                }
+            }
+        };
+
+        auto compute_dpdz_3d = [&](int i, int j, int k) -> double {
+            if (periodic_z) {
+                int km = (k == mesh_->k_begin()) ? mesh_->k_end() - 1 : k - 1;
+                int kp = (k == mesh_->k_end() - 1) ? mesh_->k_begin() : k + 1;
+                return (pressure_(i, j, kp) - pressure_(i, j, km)) / (2.0 * mesh_->dz);
+            } else {
+                if (k == mesh_->k_begin()) {
+                    return (pressure_(i, j, k + 1) - pressure_(i, j, k)) / mesh_->dz;
+                } else if (k == mesh_->k_end() - 1) {
+                    return (pressure_(i, j, k) - pressure_(i, j, k - 1)) / mesh_->dz;
+                } else {
+                    return (pressure_(i, j, k + 1) - pressure_(i, j, k - 1)) / (2.0 * mesh_->dz);
+                }
+            }
+        };
+
+        // Pressure gradient as vector
+        file << "VECTORS pressure_gradient double\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << compute_dpdx_3d(i, j, k) << " "
+                         << compute_dpdy_3d(i, j, k) << " "
+                         << compute_dpdz_3d(i, j, k) << "\n";
+                }
+            }
+        }
+
+        // Pressure gradient components as scalars
+        file << "SCALARS dP_dx double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << compute_dpdx_3d(i, j, k) << "\n";
+                }
+            }
+        }
+
+        file << "SCALARS dP_dy double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << compute_dpdy_3d(i, j, k) << "\n";
+                }
+            }
+        }
+
+        file << "SCALARS dP_dz double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << compute_dpdz_3d(i, j, k) << "\n";
                 }
             }
         }

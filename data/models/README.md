@@ -8,8 +8,11 @@ Each model has its own subdirectory:
 ```
 data/models/
 +-- mlp_channel_caseholdout/    # Trained MLP for channel flow (scalar eddy viscosity)
++-- mlp_phll_caseholdout/       # Trained MLP for periodic hills (scalar eddy viscosity)*
 +-- tbnn_channel_caseholdout/   # Trained TBNN for channel flow (anisotropy tensor)
-+-- tbnn_phll_caseholdout/      # Trained TBNN for periodic hills (anisotropy tensor)
++-- tbnn_phll_caseholdout/      # Trained TBNN for periodic hills (anisotropy tensor)*
+
+*Periodic hills geometry not currently in solver; models kept for future use.
 ```
 
 Each model directory contains:
@@ -26,9 +29,6 @@ Each model directory contains:
 ```bash
 # Use trained TBNN model for channel flow
 ./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout
-
-# Use trained TBNN model for periodic hills
-./periodic_hills --model nn_tbnn --nn_preset tbnn_phll_caseholdout
 
 # Or specify paths directly
 ./channel --model nn_tbnn --weights data/models/tbnn_channel_caseholdout --scaling data/models/tbnn_channel_caseholdout
@@ -98,6 +98,35 @@ Each model directory contains:
 
 ---
 
+### mlp_phll_caseholdout
+**Type:** MLP (Multi-Layer Perceptron) - Scalar Eddy Viscosity
+**Architecture:** 6 features → 32 → 32 → 1 (ν_t)
+**Training Data:** McConkey et al. (2021) periodic hills dataset with case-holdout validation
+
+> **Note:** The periodic hills geometry is not currently implemented in the solver. This model is kept for:
+> - Future periodic hills implementation
+> - Transfer learning to similar separated flow geometries
+> - Reference for training methodology on complex flows
+
+**Features:** 6 inputs for scalar eddy viscosity prediction (same as mlp_channel)
+
+**Usage (requires periodic hills geometry implementation):**
+```bash
+./channel --model nn_mlp --nn_preset mlp_phll_caseholdout
+```
+
+**Best For:** Fast inference on separated flows (when geometry is implemented)
+
+**Training Details:**
+- Framework: PyTorch
+- Architecture: 6 → 32 → 32 → 1
+- Activations: Tanh (hidden), ReLU (output)
+- Total parameters: 1,313
+
+**Reference:** McConkey, R., Yee, E., & Lien, F. S. (2021). A curated dataset for data-driven turbulence modelling. *Scientific Data*, 8(1), 255.
+
+---
+
 ### tbnn_channel_caseholdout
 **Type:** TBNN (Tensor Basis Neural Network)  
 **Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)  
@@ -126,21 +155,27 @@ Each model directory contains:
 ---
 
 ### tbnn_phll_caseholdout
-**Type:** TBNN (Tensor Basis Neural Network)  
-**Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)  
-**Training Data:** McConkey et al. (2021) periodic hills dataset with case-holdout validation  
-**Training Split:** 
+**Type:** TBNN (Tensor Basis Neural Network)
+**Architecture:** 5 invariants → 64 → 64 → 64 → 4 coefficients (2D)
+**Training Data:** McConkey et al. (2021) periodic hills dataset with case-holdout validation
+**Training Split:**
 - Train: case_0p5, case_0p8, case_1p5
 - Val: case_1p0
 - Test: case_1p2
 
-**Features:** 5 Ling et al. (2016) invariants from normalized strain/rotation tensors  
-**Usage:**
+**Features:** 5 Ling et al. (2016) invariants from normalized strain/rotation tensors
+
+> **Note:** The periodic hills geometry is not currently implemented in the solver. This model is kept for:
+> - Future periodic hills implementation
+> - Transfer learning to similar separated flow geometries
+> - Reference for training methodology on complex flows
+
+**Usage (requires periodic hills geometry implementation):**
 ```bash
 ./channel --model nn_tbnn --nn_preset tbnn_phll_caseholdout
 ```
 
-**Best For:** Separated flows, periodic hills geometry, complex recirculation zones
+**Best For:** Separated flows, periodic hills geometry, complex recirculation zones (when geometry is implemented)
 
 **Training Details:**
 - Framework: PyTorch
@@ -159,14 +194,17 @@ Each model directory contains:
 
 | Model | Type | Training Data | Best For | Parameters | Training Time | Inference Speed |
 |-------|------|---------------|----------|------------|---------------|-----------------|
-| `mlp_channel_caseholdout` | MLP | Channel flow | Fast inference, GPU acceleration, scalar ν_t | 1,313 | 2 min | ⚡ Very Fast |
+| `mlp_channel_caseholdout` | MLP | Channel flow | Fast inference, GPU acceleration, scalar ν_t | 1,313 | 2 min | Very Fast |
 | `tbnn_channel_caseholdout` | TBNN | Channel flow | Physically consistent, anisotropic stresses | 8,964 | 3 min | Moderate |
-| `tbnn_phll_caseholdout` | TBNN | Periodic hills | Separated flows, complex recirculation | 8,964 | 6 min | Moderate |
+| `mlp_phll_caseholdout` | MLP | Periodic hills | Separated flows (fast)* | 1,313 | 2 min | Very Fast |
+| `tbnn_phll_caseholdout` | TBNN | Periodic hills | Separated flows* | 8,964 | 6 min | Moderate |
+
+*Periodic hills geometry not currently implemented in solver; models kept for future use.
 
 **Recommendations:**
 - **For production/real-time applications:** Use `mlp_channel_caseholdout` (fastest, GPU-optimized)
 - **For research/high accuracy:** Use `tbnn_channel_caseholdout` (physically consistent)
-- **For separated flows:** Use `tbnn_phll_caseholdout` (trained on complex geometry)
+- **For separated flows:** `tbnn_phll_caseholdout` available when geometry is implemented
 
 **MLP vs TBNN Trade-offs:**
 - **MLP:** Faster (50x), simpler, GPU-friendly, but less physically consistent

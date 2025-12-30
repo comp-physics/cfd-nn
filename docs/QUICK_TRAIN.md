@@ -28,7 +28,7 @@ bash scripts/download_mcconkey_data.sh
 ```bash
 python scripts/train_tbnn_mcconkey.py \
     --data_dir mcconkey_data \
-    --case periodic_hills \
+    --case channel \
     --output data/models/my_tbnn \
     --epochs 50
 ```
@@ -37,7 +37,7 @@ python scripts/train_tbnn_mcconkey.py \
 
 ```bash
 cd build
-./periodic_hills --model nn_tbnn --nn_preset my_tbnn --max_iter 10000
+./channel --model nn_tbnn --nn_preset my_tbnn --max_iter 10000
 ```
 
 ## Option B: Quick Test with Dummy Data (5 min)
@@ -66,8 +66,8 @@ Best for: Accurate Reynolds stress prediction
 
 ```bash
 python scripts/train_tbnn_mcconkey.py \
-    --case periodic_hills \
-    --output data/models/tbnn_hills \
+    --case channel \
+    --output data/models/tbnn_channel \
     --hidden 64 64 64 \
     --epochs 100
 ```
@@ -78,8 +78,8 @@ Best for: Quick prototyping, faster inference
 
 ```bash
 python scripts/train_mlp_mcconkey.py \
-    --case periodic_hills \
-    --output data/models/mlp_hills \
+    --case channel \
+    --output data/models/mlp_channel \
     --hidden 32 32 \
     --epochs 100
 ```
@@ -88,7 +88,7 @@ python scripts/train_mlp_mcconkey.py \
 
 ```bash
 # Run all available models and compare
-python scripts/run_all_models.py --case periodic_hills --plot
+python scripts/run_all_models.py --case channel --plot
 ```
 
 This will:
@@ -129,7 +129,7 @@ python scripts/train_tbnn_mcconkey.py \
 ### "Model runs but results are bad"
 - Trained on dummy data? --> Download real dataset
 - Need more epochs: `--epochs 200`
-- Try different case: Channel is easier than periodic hills
+- Try different architecture: `--hidden 64 64 64`
 
 ## What You Get
 
@@ -156,7 +156,7 @@ Use in solver: `./channel --model nn_tbnn --nn_preset my_tbnn`
 
 ## Expected Results
 
-On periodic hills with real McConkey data:
+On channel flow with real McConkey data:
 
 | Model | Training Time | Inference Speed | Accuracy vs DNS |
 |-------|---------------|-----------------|-----------------|

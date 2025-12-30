@@ -6,7 +6,7 @@
 # - Trains either TBNN or MLP for a selected case
 #
 # Examples:
-#   bash scripts/train_realdata_local.sh --case periodic_hills --model tbnn --epochs 50 --device cpu
+#   bash scripts/train_realdata_local.sh --case channel --model tbnn --epochs 50 --device cpu
 #   bash scripts/train_realdata_local.sh --case channel --model mlp --epochs 100 --device cpu
 #
 # Notes:
@@ -23,7 +23,7 @@ Usage:
   bash scripts/train_realdata_local.sh [options]
 
 Options:
-  --case CASE         Flow case: periodic_hills | channel | square_duct (default: periodic_hills)
+  --case CASE         Flow case: channel | square_duct (default: channel)
   --model MODEL       Model: tbnn | mlp (default: tbnn)
   --epochs N          Training epochs (default: 50)
   --device DEV        cpu | cuda | mps | auto (default: cpu)
@@ -39,7 +39,7 @@ Options:
 EOF
 }
 
-CASE="periodic_hills"
+CASE="channel"
 MODEL="tbnn"
 EPOCHS="50"
 DEVICE="cpu"

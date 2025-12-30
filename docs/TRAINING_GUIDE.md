@@ -91,11 +91,11 @@ pip install torch numpy pandas scikit-learn matplotlib
 ```bash
 cd scripts/
 
-# Train TBNN on periodic hills
+# Train TBNN on channel flow
 python train_tbnn_mcconkey.py \
     --data_dir ../mcconkey_data \
-    --case periodic_hills \
-    --output ../data/models/tbnn_periodic_hills \
+    --case channel \
+    --output ../data/models/tbnn_channel \
     --epochs 100
 
 # Train on channel flow
@@ -111,7 +111,7 @@ python train_tbnn_mcconkey.py \
 ```bash
 python train_tbnn_mcconkey.py \
     --data_dir ../mcconkey_data \
-    --case periodic_hills \
+    --case channel \
     --output ../data/models/tbnn_custom \
     --epochs 200 \
     --batch_size 512 \
@@ -122,7 +122,7 @@ python train_tbnn_mcconkey.py \
 
 **Parameters**:
 - `--data_dir`: Path to McConkey dataset
-- `--case`: Flow case (periodic_hills, channel, square_duct)
+- `--case`: Flow case (channel, square_duct)
 - `--output`: Where to save trained model
 - `--epochs`: Training epochs (default 100)
 - `--batch_size`: Batch size (default 256)
@@ -193,11 +193,11 @@ python scripts/train_mlp_mcconkey.py \
     --device cuda
 ```
 
-**For periodic hills:**
+**For square duct:**
 ```bash
 python scripts/train_mlp_mcconkey.py \
     --data_dir /path/to/mcconkey_data_processed \
-    --case periodic_hills \
+    --case square_duct \
     --output data/models/mlp_phll_caseholdout \
     --epochs 500 \
     --batch_size 2048 \
@@ -352,7 +352,7 @@ cd build
 After training, the model is automatically exported to C++ format:
 
 ```
-data/models/tbnn_periodic_hills/
+data/models/tbnn_channel/
 ├── layer0_W.txt
 ├── layer0_b.txt
 ├── layer1_W.txt
@@ -372,13 +372,13 @@ data/models/tbnn_periodic_hills/
 cd build/
 
 # Use TBNN model
-./periodic_hills --model nn_tbnn --nn_preset tbnn_periodic_hills
+./channel --model nn_tbnn --nn_preset tbnn_channel
 
 # Use MLP model
-./periodic_hills --model nn_mlp --nn_preset mlp_periodic_hills
+./channel --model nn_mlp --nn_preset mlp_channel
 
 # Compare against baseline
-./periodic_hills --model baseline
+./channel --model baseline
 ```
 
 ### Full Comparison
@@ -386,7 +386,7 @@ cd build/
 ```bash
 # Run all models and compare
 cd scripts/
-python compare_models.py --case periodic_hills
+python compare_models.py --case channel
 ```
 
 This will generate comparison plots of velocity profiles, Reynolds stresses, etc.
@@ -402,12 +402,12 @@ import numpy as np
 import torch
 
 # Load test data
-test_data = np.load('mcconkey_data/periodic_hills/test/data.npz')
+test_data = np.load('mcconkey_data/channel/test/data.npz')
 invariants = test_data['invariants']
 b_true = test_data['anisotropy']
 
 # Load trained model
-model = torch.load('models/tbnn_periodic_hills/model.pth')
+model = torch.load('models/tbnn_channel/model.pth')
 model.eval()
 
 # Predict
@@ -425,7 +425,7 @@ Run the full CFD solver and compare flow fields against DNS:
 1. Run solver with trained model
 2. Compare velocity profiles
 3. Compare Reynolds stresses
-4. Compare separation/reattachment points (for periodic hills)
+4. Compare secondary flow patterns (for duct flow)
 
 ## Expected Results
 
@@ -434,7 +434,7 @@ Based on published literature, you should see:
 ### TBNN (Ling et al. 2016)
 
 - **Channel flow**: ~10-20% improvement over baseline mixing length
-- **Periodic hills**: Better prediction of separation bubble and reattachment
+- **Duct flow**: Better prediction of secondary flow patterns
 - **Training time**: 10-30 minutes on CPU for 10k samples
 
 ### MLP
@@ -473,7 +473,7 @@ If the trained model doesn't improve over baseline:
 1. **Train longer**: Increase `--epochs 200`
 2. **More data**: Use larger subset of McConkey dataset
 3. **Bigger network**: Try `--hidden 128 128 128`
-4. **Different case**: Some flows (channel) are easier than others (periodic hills)
+4. **Different case**: Try different cases in the dataset
 5. **Check feature computation**: Ensure C++ features match Python training features
 
 ## Alternative: Train Without McConkey Dataset
@@ -522,7 +522,7 @@ After training and validating your models:
 
 1. **Document performance** - Add results to `VALIDATION.md`
 2. **Compare against GEP** - Run comparison with your existing GEP model
-3. **Test on multiple cases** - Train on channel, test on periodic hills (generalization)
+3. **Test on multiple cases** - Train on channel, test on duct (generalization)
 4. **Publish results** - You now have a complete ML turbulence modeling framework!
 
 ## Questions?

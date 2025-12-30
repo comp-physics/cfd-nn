@@ -2,21 +2,40 @@
 #
 # Run 3D square duct flow simulation
 #
+# Usage: ./run.sh <config>
+#   ./run.sh laminar_square      (default, coarse grid laminar)
+#   ./run.sh laminar_fine        (fine grid laminar)
+#   ./run.sh turbulent_sst       (turbulent with SST model)
+#
+# Or run directly:
+#   ./duct --config laminar_square.cfg
 
-set -e
+set -euo pipefail
 
+CASE="${1:-laminar_square}"
 EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
-OUTPUT_DIR="$EXAMPLE_DIR/output"
+
+CFG="$EXAMPLE_DIR/${CASE}.cfg"
+OUT="$EXAMPLE_DIR/output/${CASE}/"
 
 echo "=============================================="
 echo "3D Square Duct Flow"
 echo "=============================================="
 echo ""
 
+# List available configs if none found
+if [[ ! -f "$CFG" ]]; then
+    echo "ERROR: Config not found: $CFG"
+    echo ""
+    echo "Available configs:"
+    ls -1 "$EXAMPLE_DIR"/*.cfg 2>/dev/null | xargs -n1 basename | sed 's/\.cfg$//'
+    exit 2
+fi
+
 # Check if solver is built
-if [ ! -f "$BUILD_DIR/duct" ]; then
+if [[ ! -x "$BUILD_DIR/duct" ]]; then
     echo "ERROR: Solver not found at $BUILD_DIR/duct"
     echo "Please build the project first:"
     echo "  cd $PROJECT_ROOT"
@@ -26,36 +45,22 @@ if [ ! -f "$BUILD_DIR/duct" ]; then
 fi
 
 # Create output directory
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$OUT"
 
-# Default parameters (can be overridden via command line)
-NX=${NX:-16}
-NY=${NY:-32}
-NZ=${NZ:-32}
-MAX_ITER=${MAX_ITER:-10000}
-NU=${NU:-0.01}
-
-echo "Configuration:"
-echo "  Grid: ${NX} x ${NY} x ${NZ}"
-echo "  Max iterations: ${MAX_ITER}"
-echo "  Viscosity: ${NU}"
-echo "  Output: $OUTPUT_DIR/"
+echo "Config: $CFG"
+echo "Output: $OUT"
 echo ""
 
 cd "$BUILD_DIR"
-./duct --Nx "$NX" --Ny "$NY" --Nz "$NZ" \
-       --max_iter "$MAX_ITER" \
-       --nu "$NU" \
-       --output "$OUTPUT_DIR/"
+./duct --config "$CFG" --output "$OUT" "${@:2}"
 
 echo ""
 echo "=============================================="
 echo "Simulation complete!"
 echo "=============================================="
 echo ""
-echo "Output files saved to: $OUTPUT_DIR/"
+echo "Output files saved to: $OUT"
 echo ""
-echo "Next steps:"
-echo "  View VTK files in ParaView:"
-echo "    paraview $OUTPUT_DIR/duct_final.vtk"
+echo "View VTK files in ParaView:"
+echo "  paraview $OUT/duct_final.vtk"
 echo ""
