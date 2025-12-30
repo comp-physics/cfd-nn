@@ -28,6 +28,10 @@ using namespace nncfd;
 // Should see small FP differences due to different instruction ordering, FMA, etc.
 constexpr double TOLERANCE = 1e-10;
 
+// Minimum expected difference - if below this, CPU and GPU may be running same code path
+// Machine epsilon for double is ~2.2e-16, so any real FP difference should exceed this
+constexpr double MIN_EXPECTED_DIFF = 1e-14;
+
 //=============================================================================
 // File I/O helpers
 //=============================================================================
@@ -339,8 +343,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         if (!result.within_tolerance(TOLERANCE)) {
             std::cout << "    [FAIL] Exceeds tolerance " << TOLERANCE << "\n";
             all_passed = false;
-        } else if (result.max_abs_diff == 0.0) {
-            std::cout << "    [WARN] Exact match - possibly comparing same backend?\n";
+        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
+            std::cout << "    [WARN] Suspiciously small diff (" << result.max_abs_diff
+                      << " < " << MIN_EXPECTED_DIFF << ") - possibly same backend?\n";
         } else {
             std::cout << "    [PASS]\n";
         }
@@ -363,8 +368,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         if (!result.within_tolerance(TOLERANCE)) {
             std::cout << "    [FAIL] Exceeds tolerance " << TOLERANCE << "\n";
             all_passed = false;
-        } else if (result.max_abs_diff == 0.0) {
-            std::cout << "    [WARN] Exact match - possibly comparing same backend?\n";
+        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
+            std::cout << "    [WARN] Suspiciously small diff (" << result.max_abs_diff
+                      << " < " << MIN_EXPECTED_DIFF << ") - possibly same backend?\n";
         } else {
             std::cout << "    [PASS]\n";
         }
@@ -387,8 +393,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         if (!result.within_tolerance(TOLERANCE)) {
             std::cout << "    [FAIL] Exceeds tolerance " << TOLERANCE << "\n";
             all_passed = false;
-        } else if (result.max_abs_diff == 0.0) {
-            std::cout << "    [WARN] Exact match - possibly comparing same backend?\n";
+        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
+            std::cout << "    [WARN] Suspiciously small diff (" << result.max_abs_diff
+                      << " < " << MIN_EXPECTED_DIFF << ") - possibly same backend?\n";
         } else {
             std::cout << "    [PASS]\n";
         }
@@ -411,8 +418,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         if (!result.within_tolerance(TOLERANCE)) {
             std::cout << "    [FAIL] Exceeds tolerance " << TOLERANCE << "\n";
             all_passed = false;
-        } else if (result.max_abs_diff == 0.0) {
-            std::cout << "    [WARN] Exact match - possibly comparing same backend?\n";
+        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
+            std::cout << "    [WARN] Suspiciously small diff (" << result.max_abs_diff
+                      << " < " << MIN_EXPECTED_DIFF << ") - possibly same backend?\n";
         } else {
             std::cout << "    [PASS]\n";
         }

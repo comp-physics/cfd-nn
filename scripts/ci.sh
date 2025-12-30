@@ -180,6 +180,7 @@ run_test() {
     local test_name=$1
     local test_binary=$2
     local timeout_secs=${3:-120}
+    local env_prefix=${4:-""}  # Optional env vars (e.g., "OMP_TARGET_OFFLOAD=MANDATORY")
 
     if [ ! -f "$test_binary" ]; then
         log_skip "$test_name (not built)"
@@ -199,7 +200,11 @@ run_test() {
 
     local output_file="/tmp/test_output_$$.txt"
     local exit_code=0
-    timeout "$timeout_secs" "$test_binary" > "$output_file" 2>&1 || exit_code=$?
+    if [ -n "$env_prefix" ]; then
+        env $env_prefix timeout "$timeout_secs" "$test_binary" > "$output_file" 2>&1 || exit_code=$?
+    else
+        timeout "$timeout_secs" "$test_binary" > "$output_file" 2>&1 || exit_code=$?
+    fi
 
     if [ $exit_code -eq 0 ]; then
         log_success "$test_name"
@@ -317,9 +322,10 @@ run_cross_build_test() {
     fi
 
     # Run GPU comparison against CPU reference
+    # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
     log_info "  Step 2: Running GPU and comparing against CPU reference..."
     local gpu_exit_code=0
-    timeout "$timeout_secs" "$gpu_binary" --compare-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || gpu_exit_code=$?
+    OMP_TARGET_OFFLOAD=MANDATORY timeout "$timeout_secs" "$gpu_binary" --compare-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || gpu_exit_code=$?
 
     if [ $gpu_exit_code -eq 0 ]; then
         log_success "$test_name"
@@ -431,8 +437,9 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
 
     # GPU utilization test - ensures compute runs on GPU, not CPU
     # Only meaningful for GPU builds (skips gracefully on CPU builds)
+    # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
     if [[ "$USE_GPU" == "ON" ]]; then
-        run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300
+        run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300 "OMP_TARGET_OFFLOAD=MANDATORY"
     fi
 fi
 
