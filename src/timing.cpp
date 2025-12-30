@@ -149,58 +149,6 @@ bool TimingStats::is_gpu_dominant(double threshold) const {
     return gpu_utilization_ratio() >= threshold;
 }
 
-void TimingStats::print_gpu_utilization_summary(std::ostream& os) const {
-    double gpu_time = gpu_kernel_time();
-    double cpu_time = cpu_compute_time();
-    double total = total_compute_time();
-    double ratio = gpu_utilization_ratio();
-
-    os << "\n=== GPU Utilization Summary ===\n";
-    os << std::fixed << std::setprecision(3);
-    os << "GPU kernel time:     " << std::setw(10) << gpu_time << " s\n";
-    os << "CPU compute time:    " << std::setw(10) << cpu_time << " s\n";
-    os << "Total compute time:  " << std::setw(10) << total << " s\n";
-    os << "GPU utilization:     " << std::setw(10) << (ratio * 100.0) << " %\n";
-    os << std::string(40, '-') << "\n";
-
-    // List GPU categories
-    os << "\nGPU kernel breakdown:\n";
-    for (const auto& [name, s] : stats_) {
-        if (is_gpu_category(name)) {
-            os << "  " << std::setw(30) << std::left << name
-               << std::setw(10) << std::right << s.total_time << " s"
-               << " (" << s.num_calls << " calls)\n";
-        }
-    }
-
-    // List CPU compute categories
-    os << "\nCPU compute breakdown:\n";
-    for (const auto& [name, s] : stats_) {
-        if (is_cpu_compute_category(name)) {
-            os << "  " << std::setw(30) << std::left << name
-               << std::setw(10) << std::right << s.total_time << " s"
-               << " (" << s.num_calls << " calls)\n";
-        }
-    }
-    os << "\n";
-}
-
-void TimingStats::assert_gpu_dominant(double threshold, const std::string& context) const {
-    double ratio = gpu_utilization_ratio();
-    if (ratio < threshold) {
-        std::ostringstream oss;
-        oss << "GPU utilization check FAILED";
-        if (!context.empty()) {
-            oss << " (" << context << ")";
-        }
-        oss << ": " << std::fixed << std::setprecision(1)
-            << (ratio * 100.0) << "% < " << (threshold * 100.0) << "% threshold\n";
-        oss << "GPU kernel time: " << gpu_kernel_time() << " s\n";
-        oss << "CPU compute time: " << cpu_compute_time() << " s\n";
-        throw std::runtime_error(oss.str());
-    }
-}
-
 ScopedTimer::ScopedTimer(const std::string& name, bool print_on_exit)
     : name_(name), start_(std::chrono::steady_clock::now()), print_on_exit_(print_on_exit) {}
 

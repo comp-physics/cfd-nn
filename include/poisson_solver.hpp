@@ -67,10 +67,7 @@ private:
     
     /// Compute residual norm
     double compute_residual(const ScalarField& rhs, const ScalarField& p);
-    
-    /// Single SOR iteration
-    void sor_iteration(const ScalarField& rhs, ScalarField& p, double omega);
-    
+
     /// Red-black SOR iteration (better parallelization potential)
     void sor_rb_iteration(const ScalarField& rhs, ScalarField& p, double omega);
 };

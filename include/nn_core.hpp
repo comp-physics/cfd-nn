@@ -88,10 +88,7 @@ public:
     
     /// Load scaling parameters (input normalization)
     void load_scaling(const std::string& means_file, const std::string& stds_file);
-    
-    /// Apply input scaling (CPU)
-    void scale_input(std::vector<double>& x) const;
-    
+
     /// Sync all weights and scaling to GPU (call once after loading)
     void sync_weights_to_gpu();
     

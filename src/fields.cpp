@@ -29,20 +29,6 @@ double ScalarField::max_interior() const {
     return max_val;
 }
 
-double ScalarField::min_interior() const {
-    double min_val = std::numeric_limits<double>::max();
-    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
-    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                min_val = std::min(min_val, (*this)(i, j, k));
-            }
-        }
-    }
-    return min_val;
-}
-
 double ScalarField::norm_L2() const {
     double sum = 0.0;
     int count = 0;
@@ -242,26 +228,6 @@ void VectorField::write(const std::string& filename) const {
 TensorField::TensorField(const Mesh& mesh)
     : xx_(mesh), xy_(mesh), xz_(mesh),
       yy_(mesh), yz_(mesh), zz_(mesh) {}
-
-void TensorField::fill(double xx_val, double xy_val, double yy_val) {
-    // 2D backward compatible - fills 2D components and clears 3D to prevent stale data
-    xx_.fill(xx_val);
-    xy_.fill(xy_val);
-    yy_.fill(yy_val);
-    xz_.fill(0.0);
-    yz_.fill(0.0);
-    zz_.fill(0.0);
-}
-
-void TensorField::fill(double xx_val, double xy_val, double xz_val,
-                       double yy_val, double yz_val, double zz_val) {
-    xx_.fill(xx_val);
-    xy_.fill(xy_val);
-    xz_.fill(xz_val);
-    yy_.fill(yy_val);
-    yz_.fill(yz_val);
-    zz_.fill(zz_val);
-}
 
 } // namespace nncfd
 

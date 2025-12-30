@@ -74,14 +74,6 @@ public:
     /// @return true if GPU utilization >= threshold
     bool is_gpu_dominant(double threshold = 0.8) const;
 
-    /// Print GPU utilization summary for CI
-    void print_gpu_utilization_summary(std::ostream& os = std::cout) const;
-
-    /// Assert GPU utilization meets threshold (throws if not met)
-    /// @param threshold Minimum required GPU utilization
-    /// @param context Description for error message
-    void assert_gpu_dominant(double threshold, const std::string& context = "") const;
-
 private:
     TimingStats() = default;
 

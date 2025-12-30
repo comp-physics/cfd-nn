@@ -205,42 +205,6 @@ double PoissonSolver::compute_residual(const ScalarField& rhs, const ScalarField
     return max_res;
 }
 
-void PoissonSolver::sor_iteration(const ScalarField& rhs, ScalarField& p, double omega) {
-    const double dx = mesh_->dx;
-    const double dy = mesh_->dy;
-    const double dz = mesh_->dz;
-    const double dx2 = dx * dx;
-    const double dy2 = dy * dy;
-    const double dz2 = dz * dz;
-    const bool is_2d = mesh_->is2D();
-
-    // Diagonal coefficient: 2D uses 4 neighbors, 3D uses 6 neighbors
-    double coeff = 2.0 / dx2 + 2.0 / dy2;
-    if (!is_2d) {
-        coeff += 2.0 / dz2;
-    }
-
-    // For 2D, only process k=0 plane (2D data is stored at k=0 by design)
-    const int k_start = is_2d ? 0 : mesh_->k_begin();
-    const int k_stop = is_2d ? 1 : mesh_->k_end();
-
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                double p_old = p(i, j, k);
-                double p_gs = ((p(i+1, j, k) + p(i-1, j, k)) / dx2
-                             + (p(i, j+1, k) + p(i, j-1, k)) / dy2
-                             - rhs(i, j, k));
-                if (!is_2d) {
-                    p_gs += (p(i, j, k+1) + p(i, j, k-1)) / dz2;
-                }
-                p_gs /= coeff;
-                p(i, j, k) = (1.0 - omega) * p_old + omega * p_gs;
-            }
-        }
-    }
-}
-
 void PoissonSolver::sor_rb_iteration(const ScalarField& rhs, ScalarField& p, double omega) {
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;

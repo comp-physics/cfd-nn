@@ -3502,30 +3502,6 @@ void RANSSolver::check_for_nan_inf(int step) const {
     }
 }
 
-void RANSSolver::print_velocity_profile(double x_loc) const {
-    // Find i index closest to x_loc
-    int i_loc = mesh_->i_begin();
-    double min_dist = std::abs(mesh_->x(i_loc) - x_loc);
-    
-    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-        double dist = std::abs(mesh_->x(i) - x_loc);
-        if (dist < min_dist) {
-            min_dist = dist;
-            i_loc = i;
-        }
-    }
-    
-    std::cout << "\nVelocity profile at x = " << mesh_->x(i_loc) << ":\n";
-    std::cout << std::setw(12) << "y" << std::setw(12) << "u" << std::setw(12) << "v" << "\n";
-    
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        std::cout << std::setw(12) << std::fixed << std::setprecision(4) << mesh_->y(j)
-                  << std::setw(12) << velocity_.u(i_loc, j)
-                  << std::setw(12) << velocity_.v(i_loc, j)
-                  << "\n";
-    }
-}
-
 void RANSSolver::write_fields(const std::string& prefix) const {
 #ifdef USE_GPU_OFFLOAD
     // Download solution fields from GPU before writing

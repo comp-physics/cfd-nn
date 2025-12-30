@@ -30,9 +30,8 @@ public:
     /// Fill with constant value
     void fill(double val);
 
-    /// Get min/max values in interior
+    /// Get max value in interior
     double max_interior() const;
-    double min_interior() const;
 
     /// L2 norm of interior values
     double norm_L2() const;
@@ -220,13 +219,6 @@ public:
     const std::vector<double>& yy_data() const { return yy_.data(); }
     const std::vector<double>& yz_data() const { return yz_.data(); }
     const std::vector<double>& zz_data() const { return zz_.data(); }
-
-    /// Fill all components - 2D
-    void fill(double xx_val, double xy_val, double yy_val);
-
-    /// Fill all components - 3D
-    void fill(double xx_val, double xy_val, double xz_val,
-              double yy_val, double yz_val, double zz_val);
 
     const Mesh* mesh() const { return xx_.mesh(); }
 

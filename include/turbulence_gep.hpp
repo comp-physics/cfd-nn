@@ -70,10 +70,6 @@ private:
     bool initialized_ = false;
     
     void ensure_initialized(const Mesh& mesh);
-    
-    /// Compute GEP correction factor based on invariants
-    double compute_gep_factor(double I1_S, double I2_S, double I1_Omega, double I2_Omega,
-                              double y_plus, double Re_d) const;
 };
 
 } // namespace nncfd

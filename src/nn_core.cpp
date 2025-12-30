@@ -585,14 +585,6 @@ void MLP::load_scaling(const std::string& means_file, const std::string& stds_fi
     has_scaling_ = true;
 }
 
-void MLP::scale_input(std::vector<double>& x) const {
-    if (!has_scaling_) return;
-    
-    for (size_t i = 0; i < x.size() && i < input_means_.size(); ++i) {
-        x[i] = (x[i] - input_means_[i]) / input_stds_[i];
-    }
-}
-
 void MLP::add_layer(const DenseLayer& layer, Activation act) {
     layers_.push_back(layer);
     activations_.push_back(act);

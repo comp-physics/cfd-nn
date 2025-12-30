@@ -141,10 +141,7 @@ public:
     
     /// Compute friction Reynolds number Re_tau
     double Re_tau() const;
-    
-    /// Print velocity profile at x = x_loc
-    void print_velocity_profile(double x_loc = 0.0) const;
-    
+
     /// Write fields to files
     void write_fields(const std::string& prefix) const;
     
