@@ -75,6 +75,93 @@ double compute_max_velocity_3d(const Mesh& mesh, const VectorField& velocity) {
     return max_u;
 }
 
+/// Create divergence-free perturbed velocity field for DNS
+/// Uses vector potential A to ensure div(u) = 0: u = curl(A)
+/// Wall factors ensure u = 0 at all walls (y = ±1, z = ±1)
+VectorField create_perturbed_duct_field(const Mesh& mesh, double amplitude = 1e-3) {
+    VectorField vel(mesh);
+
+    const double Lx = mesh.x_max - mesh.x_min;
+    const double Ly = mesh.y_max - mesh.y_min;
+    const double Lz = mesh.z_max - mesh.z_min;
+    const double kx = 2.0 * M_PI / Lx;  // Streamwise wavenumber
+
+    // Wall factors: sin²(π(y-y_min)/Ly) vanishes at y = y_min and y_max
+    // Using vector potential A_z = sin(kx*x) * f_y * f_z
+    //                       A_y = cos(kx*x) * f_y * f_z (phase shift for 3D)
+    // u = ∂A_z/∂y - ∂A_y/∂z, v = -∂A_z/∂x, w = ∂A_y/∂x
+
+    // u-velocity (on x-faces)
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        double z = mesh.z(k);
+        double z_norm = (z - mesh.z_min) / Lz;
+        double fz = std::sin(M_PI * z_norm);
+        double fz2 = fz * fz;
+        double dfz = (M_PI / Lz) * std::sin(2.0 * M_PI * z_norm);  // d(sin²)/dz
+
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j);
+            double y_norm = (y - mesh.y_min) / Ly;
+            double fy = std::sin(M_PI * y_norm);
+            double fy2 = fy * fy;
+            double dfy = (M_PI / Ly) * std::sin(2.0 * M_PI * y_norm);  // d(sin²)/dy
+
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                double x = mesh.xf[i];
+                // u = ∂A_z/∂y - ∂A_y/∂z
+                vel.u(i, j, k) = amplitude * (
+                    std::sin(kx * x) * dfy * fz2 -
+                    std::cos(kx * x) * fy2 * dfz
+                );
+            }
+        }
+    }
+
+    // v-velocity (on y-faces)
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        double z = mesh.z(k);
+        double z_norm = (z - mesh.z_min) / Lz;
+        double fz = std::sin(M_PI * z_norm);
+        double fz2 = fz * fz;
+
+        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+            double y = mesh.yf[j];
+            double y_norm = (y - mesh.y_min) / Ly;
+            double fy = std::sin(M_PI * y_norm);
+            double fy2 = fy * fy;
+
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double x = mesh.x(i);
+                // v = -∂A_z/∂x = -kx * cos(kx*x) * fy² * fz²
+                vel.v(i, j, k) = -amplitude * kx * std::cos(kx * x) * fy2 * fz2;
+            }
+        }
+    }
+
+    // w-velocity (on z-faces)
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+        double z = mesh.zf[k];
+        double z_norm = (z - mesh.z_min) / Lz;
+        double fz = std::sin(M_PI * z_norm);
+        double fz2 = fz * fz;
+
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j);
+            double y_norm = (y - mesh.y_min) / Ly;
+            double fy = std::sin(M_PI * y_norm);
+            double fy2 = fy * fy;
+
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double x = mesh.x(i);
+                // w = ∂A_y/∂x = -kx * sin(kx*x) * fy² * fz²
+                vel.w(i, j, k) = -amplitude * kx * std::sin(kx * x) * fy2 * fz2;
+            }
+        }
+    }
+
+    return vel;
+}
+
 /// Write velocity profile at duct center (y-z plane)
 void write_duct_profile(const std::string& filename, const Mesh& mesh,
                         const VectorField& velocity, double dp_dx, double nu) {
@@ -193,19 +280,27 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Initialize with small perturbation
-    solver.initialize_uniform(0.1 * std::abs(u_center_approx), 0.0);
+    // Determine simulation mode
+    bool is_unsteady = (config.simulation_mode == SimulationMode::Unsteady);
+
+    // Initialize based on simulation mode
+    if (is_unsteady) {
+        // DNS/unsteady: use divergence-free perturbations to seed instability
+        std::cout << "Initializing with divergence-free perturbations for DNS...\n";
+        solver.initialize(create_perturbed_duct_field(mesh, 1e-2));
+    } else {
+        // Steady: start with small uniform velocity
+        solver.initialize_uniform(0.1 * std::abs(u_center_approx), 0.0);
+    }
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
 #endif
 
-    // Determine simulation mode
-    bool is_unsteady = (config.simulation_mode == SimulationMode::Unsteady);
-
     if (is_unsteady) {
-        std::cout << "=== Running UNSTEADY simulation ===\n";
-        std::cout << "Max iterations: " << config.max_iter << "\n\n";
+        std::cout << "=== Running UNSTEADY simulation (DNS) ===\n";
+        std::cout << "Max iterations: " << config.max_iter << "\n";
+        std::cout << "Perturbation amplitude: 1e-2\n\n";
     } else {
         std::cout << "=== Running STEADY solve ===\n";
         std::cout << "Convergence tolerance: " << config.tol << "\n\n";
