@@ -787,6 +787,188 @@ inline void earsm_compute_output(
     nu_t_ptr[idx] = nu_t_loc;
 }
 
+/// Unified WJ EARSM cell kernel - computes beta coefficients and calls output kernel
+/// @param idx  Array index for this cell
+/// @param dudx, dudy, dvdx, dvdy  Velocity gradient arrays
+/// @param k, omega  Turbulence field arrays
+/// @param A1, A2, A3, A4  WJ model constants
+/// @param C_mu  Turbulence model constant (0.09)
+/// @param nu  Molecular viscosity
+/// @param tau_xx, tau_xy, tau_yy  [out] Reynolds stress arrays
+/// @param nu_t  [out] Eddy viscosity array
+inline void earsm_wj_cell_kernel(
+    int idx,
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    double A1, double A2, double A3, double A4, double C_mu, double nu,
+    double* tau_xx, double* tau_xy, double* tau_yy, double* nu_t)
+{
+    // Strain and rotation tensors
+    double Sxx = dudx[idx];
+    double Syy = dvdy[idx];
+    double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
+    double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
+
+    double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+    double Omega_mag = std::sqrt(2.0 * Oxy * Oxy);
+
+    double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
+    double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
+
+    // Compute turbulence Reynolds number for Re_t-based blending
+    double Re_t = k_loc / (nu * omega_loc);
+
+    // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
+    double alpha = 0.5 * (1.0 + std::tanh((Re_t - 10.0) / 5.0));
+
+    double eps = C_mu * k_loc * omega_loc;
+    double tau = k_loc / eps;
+
+    double eta = tau * S_mag;
+    double zeta = tau * Omega_mag;
+
+    double II_S = eta * eta;
+    double II_Omega = zeta * zeta;
+
+    // Solve for N (WJ cubic)
+    double denom = 1.0 + A3 * II_S + A4 * II_Omega;
+    denom = (std::fabs(denom) > 0.1) ? denom : 0.1 * (denom >= 0 ? 1.0 : -1.0);
+    double N = -A1 / denom;
+    N = (N > -10.0) ? N : -10.0;
+    N = (N < 10.0) ? N : 10.0;
+
+    // Compute β coefficients
+    double denom2 = A1 + N;
+    denom2 = (std::fabs(denom2) > 0.01) ? denom2 : 0.01 * (denom2 >= 0 ? 1.0 : -1.0);
+
+    double beta1 = -N / denom2;
+    double beta2 = (II_Omega > 1e-10) ? A2 * N * N / (denom2 * denom2) : 0.0;
+    double beta3 = (II_S > 1e-10) ? A3 * N / denom2 : 0.0;
+
+    // Clamp coefficients
+    beta1 = (beta1 > -10.0) ? beta1 : -10.0;
+    beta1 = (beta1 < 10.0) ? beta1 : 10.0;
+    beta2 = (beta2 > -10.0) ? beta2 : -10.0;
+    beta2 = (beta2 < 10.0) ? beta2 : 10.0;
+    beta3 = (beta3 > -10.0) ? beta3 : -10.0;
+    beta3 = (beta3 < 10.0) ? beta3 : 10.0;
+
+    // Call unified output kernel
+    earsm_compute_output(beta1, beta2, beta3, alpha,
+                         Sxx, Syy, Sxy, Oxy,
+                         tau, k_loc, S_mag, nu,
+                         tau_xx, tau_xy, tau_yy, nu_t, idx);
+}
+
+/// Unified GS EARSM cell kernel
+inline void earsm_gs_cell_kernel(
+    int idx,
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    double C_mu0, double C1, double C2, double eta_max, double C_mu_eps, double nu,
+    double* tau_xx, double* tau_xy, double* tau_yy, double* nu_t)
+{
+    // Strain and rotation
+    double Sxx = dudx[idx];
+    double Syy = dvdy[idx];
+    double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
+    double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
+
+    double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+    double Omega_mag = std::sqrt(2.0 * Oxy * Oxy);
+
+    double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
+    double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
+
+    // Compute turbulence Reynolds number for Re_t-based blending
+    double Re_t = k_loc / (nu * omega_loc);
+
+    // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
+    double alpha = 0.5 * (1.0 + std::tanh((Re_t - 10.0) / 5.0));
+
+    double eps = C_mu_eps * k_loc * omega_loc;
+    double tau = k_loc / eps;
+
+    double eta = tau * S_mag;
+    double zeta = tau * Omega_mag;
+
+    // Regularization
+    double reg = 1.0 + (eta * eta) / (eta_max * eta_max);
+    double C_mu_eff = C_mu0 / reg;
+
+    // Rotation correction
+    double rot_factor = 1.0;
+    if (eta > 1e-10) {
+        double ratio = zeta / eta;
+        rot_factor = 1.0 / (1.0 + 0.1 * ratio * ratio);
+    }
+
+    // Coefficients
+    double beta1 = -C_mu_eff * rot_factor;
+    double beta2 = C1 * C_mu_eff * C_mu_eff;
+    double beta3 = C2 * C_mu_eff;
+
+    // Clamp
+    beta1 = (beta1 > -5.0) ? beta1 : -5.0;
+    beta1 = (beta1 < 5.0) ? beta1 : 5.0;
+    beta2 = (beta2 > -5.0) ? beta2 : -5.0;
+    beta2 = (beta2 < 5.0) ? beta2 : 5.0;
+    beta3 = (beta3 > -5.0) ? beta3 : -5.0;
+    beta3 = (beta3 < 5.0) ? beta3 : 5.0;
+
+    earsm_compute_output(beta1, beta2, beta3, alpha,
+                         Sxx, Syy, Sxy, Oxy,
+                         tau, k_loc, S_mag, nu,
+                         tau_xx, tau_xy, tau_yy, nu_t, idx);
+}
+
+/// Unified Pope EARSM cell kernel
+inline void earsm_pope_cell_kernel(
+    int idx,
+    const double* dudx, const double* dudy,
+    const double* dvdx, const double* dvdy,
+    const double* k, const double* omega,
+    double C_mu, double C1, double C2, double nu,
+    double* tau_xx, double* tau_xy, double* tau_yy, double* nu_t)
+{
+    double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
+    double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
+
+    // Compute turbulence Reynolds number for Re_t-based blending
+    double Re_t = k_loc / (nu * omega_loc);
+
+    // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
+    double alpha = 0.5 * (1.0 + std::tanh((Re_t - 10.0) / 5.0));
+
+    // Strain and rotation
+    double Sxx = dudx[idx];
+    double Syy = dvdy[idx];
+    double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
+    double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
+
+    double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+
+    double eps = C_mu * k_loc * omega_loc;
+    double tau = k_loc / eps;
+    double eta = tau * S_mag;
+
+    // Regularization
+    double reg = 1.0 + 0.01 * eta * eta;
+    double C_mu_eff = C_mu / reg;
+
+    // Pope model: simple quadratic coefficients
+    double beta1 = -C_mu_eff;
+    double beta2 = C2 * eta;
+    double beta3 = C1 * eta;
+
+    earsm_compute_output(beta1, beta2, beta3, alpha,
+                         Sxx, Syy, Sxy, Oxy,
+                         tau, k_loc, S_mag, nu,
+                         tau_xx, tau_xy, tau_yy, nu_t, idx);
+}
+
 #ifdef USE_GPU_OFFLOAD
 #pragma omp end declare target
 #endif
@@ -809,14 +991,15 @@ void compute_earsm_wj_full_gpu(
     int Nx, int Ny, int Ng, int stride,
     double nu, const WJConstants& constants)
 {
-#ifdef USE_GPU_OFFLOAD
     const double A1 = constants.A1();
     const double A2 = constants.A2();
     const double A3 = constants.A3();
     const double A4 = constants.A4();
     const double C_mu = 0.09;
     const size_t total_size = stride * (Ny + 2*Ng);
-    
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: parallel execution using unified kernel
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
@@ -826,71 +1009,22 @@ void compute_earsm_wj_full_gpu(
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
-            
-            // Strain and rotation tensors
-            double Sxx = dudx[idx];
-            double Syy = dvdy[idx];
-            double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
-            double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
-            
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-            
-            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
-            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
-            
-            // Compute turbulence Reynolds number for Re_t-based blending
-            double Re_t = k_loc / (nu * omega_loc);
-            
-            // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
-            // Use tanh for C-infinity smooth transition, avoiding hard switches
-            double alpha = 0.5 * (1.0 + tanh((Re_t - 10.0) / 5.0));
-            
-            double eps = C_mu * k_loc * omega_loc;
-            double tau = k_loc / eps;
-            
-            double eta = tau * S_mag;
-            double zeta = tau * Omega_mag;
-            
-            double II_S = eta * eta;
-            double II_Omega = zeta * zeta;
-            
-            // Solve for N (WJ cubic)
-            double denom = 1.0 + A3 * II_S + A4 * II_Omega;
-            denom = (fabs(denom) > 0.1) ? denom : 0.1 * (denom >= 0 ? 1.0 : -1.0);
-            double N = -A1 / denom;
-            N = (N > -10.0) ? N : -10.0;
-            N = (N < 10.0) ? N : 10.0;
-            
-            // Compute β coefficients
-            double denom2 = A1 + N;
-            denom2 = (fabs(denom2) > 0.01) ? denom2 : 0.01 * (denom2 >= 0 ? 1.0 : -1.0);
-            
-            double beta1 = -N / denom2;
-            double beta2 = (II_Omega > 1e-10) ? A2 * N * N / (denom2 * denom2) : 0.0;
-            double beta3 = (II_S > 1e-10) ? A3 * N / denom2 : 0.0;
-            
-            // Clamp coefficients
-            beta1 = (beta1 > -10.0) ? beta1 : -10.0;
-            beta1 = (beta1 < 10.0) ? beta1 : 10.0;
-            beta2 = (beta2 > -10.0) ? beta2 : -10.0;
-            beta2 = (beta2 < 10.0) ? beta2 : 10.0;
-            beta3 = (beta3 > -10.0) ? beta3 : -10.0;
-            beta3 = (beta3 < 10.0) ? beta3 : 10.0;
-
-            // Call unified output kernel (handles Re_t blending, tensor basis, stresses, nu_t)
-            earsm_compute_output(beta1, beta2, beta3, alpha,
-                                 Sxx, Syy, Sxy, Oxy,
-                                 tau, k_loc, S_mag, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t, idx);
+            earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                 A1, A2, A3, A4, C_mu, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t);
         }
     }
 #else
-    (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)k; (void)omega; (void)nu_t;
-    (void)tau_xx; (void)tau_xy; (void)tau_yy;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride;
-    (void)nu; (void)constants;
+    // Host path: sequential execution using same unified kernel
+    (void)total_size;
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * stride + i;
+            earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                 A1, A2, A3, A4, C_mu, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t);
+        }
+    }
 #endif
 }
 
@@ -903,14 +1037,15 @@ void compute_earsm_gs_full_gpu(
     int Nx, int Ny, int Ng, int stride,
     double nu, const GSConstants& constants)
 {
-#ifdef USE_GPU_OFFLOAD
     const double C_mu0 = constants.C_mu;
     const double C1 = constants.C1;
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
     const double C_mu_eps = 0.09;
     const size_t total_size = stride * (Ny + 2*Ng);
-    
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: parallel execution using unified kernel
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
@@ -920,68 +1055,22 @@ void compute_earsm_gs_full_gpu(
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
-            
-            // Strain and rotation
-            double Sxx = dudx[idx];
-            double Syy = dvdy[idx];
-            double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
-            double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
-            
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-            
-            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
-            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
-            
-            // Compute turbulence Reynolds number for Re_t-based blending
-            double Re_t = k_loc / (nu * omega_loc);
-            
-            // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
-            double alpha = 0.5 * (1.0 + tanh((Re_t - 10.0) / 5.0));
-            
-            double eps = C_mu_eps * k_loc * omega_loc;
-            double tau = k_loc / eps;
-            
-            double eta = tau * S_mag;
-            double zeta = tau * Omega_mag;
-            
-            // Regularization
-            double reg = 1.0 + (eta * eta) / (eta_max * eta_max);
-            double C_mu_eff = C_mu0 / reg;
-            
-            // Rotation correction
-            double rot_factor = 1.0;
-            if (eta > 1e-10) {
-                double ratio = zeta / eta;
-                rot_factor = 1.0 / (1.0 + 0.1 * ratio * ratio);
-            }
-            
-            // Coefficients
-            double beta1 = -C_mu_eff * rot_factor;
-            double beta2 = C1 * C_mu_eff * C_mu_eff;
-            double beta3 = C2 * C_mu_eff;
-            
-            // Clamp
-            beta1 = (beta1 > -5.0) ? beta1 : -5.0;
-            beta1 = (beta1 < 5.0) ? beta1 : 5.0;
-            beta2 = (beta2 > -5.0) ? beta2 : -5.0;
-            beta2 = (beta2 < 5.0) ? beta2 : 5.0;
-            beta3 = (beta3 > -5.0) ? beta3 : -5.0;
-            beta3 = (beta3 < 5.0) ? beta3 : 5.0;
-
-            // Call unified output kernel (handles Re_t blending, tensor basis, stresses, nu_t)
-            earsm_compute_output(beta1, beta2, beta3, alpha,
-                                 Sxx, Syy, Sxy, Oxy,
-                                 tau, k_loc, S_mag, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t, idx);
+            earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                 C_mu0, C1, C2, eta_max, C_mu_eps, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t);
         }
     }
 #else
-    (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)k; (void)omega; (void)nu_t;
-    (void)tau_xx; (void)tau_xy; (void)tau_yy;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride;
-    (void)nu; (void)constants;
+    // Host path: sequential execution using same unified kernel
+    (void)total_size;
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * stride + i;
+            earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                 C_mu0, C1, C2, eta_max, C_mu_eps, nu,
+                                 tau_xx, tau_xy, tau_yy, nu_t);
+        }
+    }
 #endif
 }
 
@@ -994,10 +1083,11 @@ void compute_earsm_pope_full_gpu(
     int Nx, int Ny, int Ng, int stride,
     double nu, double C1, double C2)
 {
-#ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     const size_t total_size = stride * (Ny + 2*Ng);
 
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: parallel execution using unified kernel
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
@@ -1007,50 +1097,22 @@ void compute_earsm_pope_full_gpu(
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
-
-            double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
-            double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
-
-            // Compute turbulence Reynolds number for Re_t-based blending
-            double Re_t = k_loc / (nu * omega_loc);
-
-            // Smooth blending: alpha=0 (Boussinesq) when Re_t~0, alpha=1 (full EARSM) when Re_t>>1
-            double alpha = 0.5 * (1.0 + tanh((Re_t - 10.0) / 5.0));
-
-            // Strain and rotation
-            double Sxx = dudx[idx];
-            double Syy = dvdy[idx];
-            double Sxy = 0.5 * (dudy[idx] + dvdx[idx]);
-            double Oxy = 0.5 * (dudy[idx] - dvdx[idx]);
-
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-
-            double eps = C_mu * k_loc * omega_loc;
-            double tau = k_loc / eps;
-            double eta = tau * S_mag;
-
-            // Regularization
-            double reg = 1.0 + 0.01 * eta * eta;
-            double C_mu_eff = C_mu / reg;
-
-            // Pope model: simple quadratic coefficients
-            double beta1 = -C_mu_eff;
-            double beta2 = C2 * eta;
-            double beta3 = C1 * eta;
-
-            // Call unified output kernel (handles Re_t blending, tensor basis, stresses, nu_t)
-            earsm_compute_output(beta1, beta2, beta3, alpha,
-                                 Sxx, Syy, Sxy, Oxy,
-                                 tau, k_loc, S_mag, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t, idx);
+            earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                   C_mu, C1, C2, nu,
+                                   tau_xx, tau_xy, tau_yy, nu_t);
         }
     }
 #else
-    (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)k; (void)omega; (void)nu_t;
-    (void)tau_xx; (void)tau_xy; (void)tau_yy;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride;
-    (void)nu; (void)C1; (void)C2;
+    // Host path: sequential execution using same unified kernel
+    (void)total_size;
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        for (int i = Ng; i < Ng + Nx; ++i) {
+            const int idx = j * stride + i;
+            earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                   C_mu, C1, C2, nu,
+                                   tau_xx, tau_xy, tau_yy, nu_t);
+        }
+    }
 #endif
 }
 
