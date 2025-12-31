@@ -1,33 +1,6 @@
 # Claude Code Rules for CFD-NN Project
 
-## Core Principles
-
-### Minimal Scope & Token Usage
-- Goal: Minimal token usage and minimal code churn
-- Default scope: <= 3 files and <= 200 LOC touched
-- If more needed: STOP and ask with proposed file list + why (<= 4 bullets)
-- Output: Default to unified diff only. If text needed: <= 4 bullets, 1 sentence each
-- Do NOT: Scan entire repository, create new markdown/doc files unless explicitly asked
-- SLURM jobs: Always submit using the embers QOS
-
-### Behavior Guidelines
-- When unsure, ask 1 targeted question instead of exploring widely
-- Keep existing style/conventions; no large renames/reformats unless asked
-- Do NOT scan the entire repository by default
-
 ## Debugging Protocol
-
-### Lean Debugging: Packets Only
-- Never request full logs. Use packets only.
-- Do not proceed with diagnosis until the relevant packet output is provided.
-
-### Result Packet Format (ask for only this)
-1. Exact command
-2. Where it ran (OS/arch + compiler/runtime versions if relevant)
-3. Exit status (code/signal)
-4. First error block + <= 40 lines context
-5. Tail: stderr <= 120 lines, stdout <= 80 lines
-6. File:line references
 
 ### Preferred Commands
 - GitHub CI: Run ./tools/ci_packet.sh <runid> via terminal tool (if <runid> missing, run ./tools/ci_packet.sh)
