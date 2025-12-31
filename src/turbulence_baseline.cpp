@@ -20,6 +20,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 namespace nncfd {
 
@@ -329,28 +330,48 @@ void MixingLengthModel::update(
     
     u_tau = std::max(u_tau, 1e-10);  // Avoid division by zero
 
-    // CPU path
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double y_wall = mesh.wall_distance(i, j);
-            double y_plus = y_wall * u_tau / nu_;
-            
-            // Use same formulation as GPU (single expression)
-            double damping = 1.0 - std::exp(-y_plus / A_plus_);
-            
-            double l_mix = kappa_ * y_wall * damping;
-            // Use same min operation as GPU
-            if (l_mix > 0.5 * delta_) {
-                l_mix = 0.5 * delta_;
-            }
-            
-            double Sxx = dudx_(i, j);
-            double Syy = dvdy_(i, j);
-            double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
-            double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
-            nu_t(i, j) = l_mix * l_mix * S_mag;
+    // Host execution using unified kernel
+    const int stride = mesh.total_Nx();
+    const int Nx = mesh.Nx;
+    const int Ng = mesh.Nghost;
+
+    // Get raw pointers from gradient fields
+    const double* dudx_ptr = dudx_.data().data();
+    const double* dudy_ptr = dudy_.data().data();
+    const double* dvdx_ptr = dvdx_.data().data();
+    const double* dvdy_ptr = dvdy_.data().data();
+    double* nu_t_ptr = nu_t.data().data();
+
+    // Create wall_distance buffer for unified kernel
+    const size_t total_cells = (size_t)mesh.total_Nx() * mesh.total_Ny();
+    std::vector<double> wall_dist_buf(total_cells, 0.0);
+    for (int j = 0; j < mesh.total_Ny(); ++j) {
+        for (int i = 0; i < mesh.total_Nx(); ++i) {
+            const int idx = j * stride + i;
+            wall_dist_buf[idx] = mesh.wall_distance(i, j);
         }
+    }
+    const double* wall_dist_ptr = wall_dist_buf.data();
+
+    // Model constants for kernel
+    const double nu_local = nu_;
+    const double kappa_local = kappa_;
+    const double A_plus_local = A_plus_;
+    const double delta_local = delta_;
+
+    // Single pass using unified kernel
+    const int n_cells = Nx * mesh.Ny;
+    for (int idx = 0; idx < n_cells; ++idx) {
+        const int i = idx % Nx + Ng;
+        const int j = idx / Nx + Ng;
+        const int cell_idx = j * stride + i;
+
+        mixing_length_cell_kernel(
+            cell_idx, u_tau, nu_local,
+            kappa_local, A_plus_local, delta_local,
+            wall_dist_ptr[cell_idx],
+            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+            nu_t_ptr);
     }
 }
 
