@@ -112,14 +112,15 @@ ensure_build() {
     log_info "Ensuring $build_name build in $build_dir..."
     mkdir -p "$build_dir"
 
-    # Save current directory
-    local orig_dir=$(pwd)
+    # Save current directory (SC2155: declare and assign separately)
+    local orig_dir
+    orig_dir=$(pwd)
     cd "$build_dir"
 
     # Configure if not already configured
     if [ ! -f "CMakeCache.txt" ]; then
         log_info "  Configuring $build_name build..."
-        if ! cmake "$PROJECT_DIR" -DUSE_GPU_OFFLOAD=${gpu_offload} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
+        if ! cmake "$PROJECT_DIR" -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=${gpu_offload} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
             log_failure "$build_name cmake configuration failed"
             cat cmake_output.log | tail -20 | sed 's/^/    /'
             cd "$orig_dir"

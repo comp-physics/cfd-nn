@@ -510,7 +510,14 @@ int main(int argc, char* argv[]) {
         std::cout << "Tolerance: " << std::scientific << TOLERANCE << "\n\n";
 
         if (!dump_prefix.empty()) {
+#ifdef USE_GPU_OFFLOAD
+            std::cerr << "ERROR: --dump-prefix requires CPU build (USE_GPU_OFFLOAD=OFF)\n";
+            std::cerr << "       GPU builds should use --compare-prefix to compare against CPU reference.\n";
+            std::cerr << "       To generate reference data, rebuild with -DUSE_GPU_OFFLOAD=OFF\n";
+            return 1;
+#else
             return run_dump_mode(dump_prefix);
+#endif
         } else if (!compare_prefix.empty()) {
             return run_compare_mode(compare_prefix);
         } else {
