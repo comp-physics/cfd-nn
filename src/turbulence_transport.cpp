@@ -18,12 +18,176 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #endif
 
 namespace nncfd {
+
+// ============================================================================
+// Unified SST k-ω Transport Cell Kernel - compiles for both CPU and GPU
+// ============================================================================
+#ifdef USE_GPU_OFFLOAD
+#pragma omp declare target
+#endif
+
+/// Compute SST k-ω transport update for a single cell
+/// This kernel computes all SST physics: gradients, F1 blending, production,
+/// advection, diffusion, cross-diffusion, and time integration.
+///
+/// @param cell_idx       Cell indices: center, +x, -x, +y, -y
+/// @param u_idx, v_idx   Velocity face indices for gradient computation
+/// @param u_ptr, v_ptr   Velocity face arrays (MAC grid)
+/// @param k_ptr          TKE array (read)
+/// @param omega_ptr      Specific dissipation array (read)
+/// @param nu_t_ptr       Eddy viscosity array (read)
+/// @param wall_dist_ptr  Wall distance array
+/// @param dx, dy, dt     Grid spacing and time step
+/// @param inv_2dx, inv_2dy  Precomputed gradient factors
+/// @param dx2, dy2       Precomputed dx², dy²
+/// @param nu             Molecular viscosity
+/// @param beta_star, beta1, beta2, alpha1, alpha2  SST constants
+/// @param sigma_k1, sigma_k2, sigma_omega1, sigma_omega2  SST diffusion constants
+/// @param k_min, k_max, omega_min, omega_max, CD_min  Limiting constants
+/// @param k_new_out, omega_new_out  [out] Updated values
+inline void sst_transport_cell_kernel(
+    // Cell indices
+    int idx_c, int idx_ip, int idx_im, int idx_jp, int idx_jm,
+    // Velocity face indices
+    int u_idx_ip, int u_idx_im, int u_idx_jp, int u_idx_jm,
+    int v_idx_ip, int v_idx_im, int v_idx_jp, int v_idx_jm,
+    int u_idx_c, int u_idx_c1, int v_idx_c, int v_idx_c1,
+    // Data pointers
+    const double* u_ptr, const double* v_ptr,
+    const double* k_ptr, const double* omega_ptr,
+    const double* nu_t_ptr, const double* wall_dist_ptr,
+    // Grid parameters
+    double dx, double dy, double dt,
+    double inv_2dx, double inv_2dy, double dx2, double dy2,
+    // Model constants
+    double nu, double beta_star, double beta1, double beta2,
+    double alpha1, double alpha2, double sigma_k1, double sigma_k2,
+    double sigma_omega1, double sigma_omega2,
+    double k_min, double k_max, double omega_min, double omega_max, double CD_min,
+    // Outputs
+    double& k_new_out, double& omega_new_out)
+{
+    // Velocity gradients from MAC grid
+    double dudx_v = (u_ptr[u_idx_ip] - u_ptr[u_idx_im]) * inv_2dx;
+    double dudy_v = (u_ptr[u_idx_jp] - u_ptr[u_idx_jm]) * inv_2dy;
+    double dvdx_v = (v_ptr[v_idx_ip] - v_ptr[v_idx_im]) * inv_2dx;
+    double dvdy_v = (v_ptr[v_idx_jp] - v_ptr[v_idx_jm]) * inv_2dy;
+
+    // Cell-centered velocity (interpolate from faces)
+    double u_c = 0.5 * (u_ptr[u_idx_c] + u_ptr[u_idx_c1]);
+    double v_c = 0.5 * (v_ptr[v_idx_c] + v_ptr[v_idx_c1]);
+
+    // Get cell values with limiting
+    double k_c = k_ptr[idx_c];
+    double omega_c = omega_ptr[idx_c];
+    double y_wall = wall_dist_ptr[idx_c];
+    double nu_t_c = nu_t_ptr[idx_c];
+
+    k_c = (k_c > k_min) ? k_c : k_min;
+    omega_c = (omega_c > omega_min) ? omega_c : omega_min;
+    double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
+    nu_t_c = (nu_t_c > 0.0) ? nu_t_c : 0.0;
+
+    // Strain rate magnitude squared
+    double Sxx = dudx_v;
+    double Syy = dvdy_v;
+    double Sxy = 0.5 * (dudy_v + dvdx_v);
+    double S2 = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+
+    // Gradients for cross-diffusion and F1
+    double dkdx = (k_ptr[idx_ip] - k_ptr[idx_im]) * inv_2dx;
+    double dkdy = (k_ptr[idx_jp] - k_ptr[idx_jm]) * inv_2dy;
+    double domegadx = (omega_ptr[idx_ip] - omega_ptr[idx_im]) * inv_2dx;
+    double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_2dy;
+
+    // Cross-diffusion term for F1 calculation
+    double CD_omega = 2.0 * sigma_omega2 / omega_c * (dkdx * domegadx + dkdy * domegady);
+    CD_omega = (CD_omega > CD_min) ? CD_omega : CD_min;
+
+    // F1 blending function
+    double sqrt_k = std::sqrt(k_c);
+    double arg1_1 = sqrt_k / (beta_star * omega_c * y_safe);
+    double arg1_2 = 500.0 * nu / (y_safe * y_safe * omega_c);
+    double arg1_3 = 4.0 * sigma_omega2 * k_c / (CD_omega * y_safe * y_safe);
+    double arg1 = arg1_1;
+    arg1 = (arg1 > arg1_2) ? arg1 : arg1_2;
+    arg1 = (arg1 < arg1_3) ? arg1 : arg1_3;
+    double F1 = std::tanh(arg1 * arg1 * arg1 * arg1);
+
+    // Blended constants
+    double beta = F1 * beta1 + (1.0 - F1) * beta2;
+    double alpha = F1 * alpha1 + (1.0 - F1) * alpha2;
+    double sigma_k = F1 * sigma_k1 + (1.0 - F1) * sigma_k2;
+    double sigma_omega = F1 * sigma_omega1 + (1.0 - F1) * sigma_omega2;
+
+    // Effective diffusivities
+    double nu_k = nu + sigma_k * nu_t_c;
+    double nu_omega_eff = nu + sigma_omega * nu_t_c;
+
+    // Production (limited)
+    double P_k = 2.0 * nu_t_c * S2;
+    double P_k_limit = 10.0 * beta_star * k_c * omega_c;
+    P_k = (P_k < P_k_limit) ? P_k : P_k_limit;
+
+    // Advection (upwind)
+    double adv_k, adv_omega;
+    if (u_c >= 0) {
+        adv_k = u_c * (k_c - k_ptr[idx_im]) / dx;
+        adv_omega = u_c * (omega_c - omega_ptr[idx_im]) / dx;
+    } else {
+        adv_k = u_c * (k_ptr[idx_ip] - k_c) / dx;
+        adv_omega = u_c * (omega_ptr[idx_ip] - omega_c) / dx;
+    }
+    if (v_c >= 0) {
+        adv_k += v_c * (k_c - k_ptr[idx_jm]) / dy;
+        adv_omega += v_c * (omega_c - omega_ptr[idx_jm]) / dy;
+    } else {
+        adv_k += v_c * (k_ptr[idx_jp] - k_c) / dy;
+        adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) / dy;
+    }
+
+    // Diffusion (central difference)
+    double diff_k = nu_k * ((k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2
+                          + (k_ptr[idx_jp] - 2.0*k_c + k_ptr[idx_jm]) / dy2);
+    double diff_omega = nu_omega_eff * ((omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2
+                                       + (omega_ptr[idx_jp] - 2.0*omega_c + omega_ptr[idx_jm]) / dy2);
+
+    // Cross-diffusion term for omega equation
+    double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c
+              * (dkdx * domegadx + dkdy * domegady);
+    CD = (CD > 0.0) ? CD : 0.0;
+
+    // RHS
+    double rhs_k = P_k - beta_star * k_c * omega_c + diff_k - adv_k;
+    double rhs_omega = alpha * (omega_c / k_c) * P_k
+                     - beta * omega_c * omega_c
+                     + diff_omega - adv_omega + CD;
+
+    // Time integration (explicit Euler)
+    double k_new = k_c + dt * rhs_k;
+    double omega_new = omega_c + dt * rhs_omega;
+
+    // Clipping
+    k_new = (k_new > k_min) ? k_new : k_min;
+    k_new = (k_new < k_max) ? k_new : k_max;
+    omega_new = (omega_new > omega_min) ? omega_new : omega_min;
+    omega_new = (omega_new < omega_max) ? omega_new : omega_max;
+
+    k_new_out = k_new;
+    omega_new_out = omega_new;
+}
+
+#ifdef USE_GPU_OFFLOAD
+#pragma omp end declare target
+#endif
+// ============================================================================
 
 // ============================================================================
 // Boussinesq Closure Implementation
@@ -559,24 +723,25 @@ void SSTKOmegaTransport::advance_turbulence(
         const int u_stride = device_view->u_stride;
         const int v_stride = device_view->v_stride;
         
-        // Fused SST transport kernel (all on GPU, no staging)
+        // GPU kernel: SST k-ω transport using unified kernel
         #pragma omp target teams distribute parallel for \
             map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], \
                          k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size], \
                          nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
         for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
-            int i = cell_idx % Nx;
-            int j = cell_idx / Nx;
-            int ii = i + Ng;
-            int jj = j + Ng;
-            
-            int idx_c = jj * cell_stride + ii;
-            int idx_ip = jj * cell_stride + (ii + 1);
-            int idx_im = jj * cell_stride + (ii - 1);
-            int idx_jp = (jj + 1) * cell_stride + ii;
-            int idx_jm = (jj - 1) * cell_stride + ii;
-            
-            // Velocity gradients from MAC grid
+            const int i = cell_idx % Nx;
+            const int j = cell_idx / Nx;
+            const int ii = i + Ng;
+            const int jj = j + Ng;
+
+            // Cell indices
+            const int idx_c = jj * cell_stride + ii;
+            const int idx_ip = jj * cell_stride + (ii + 1);
+            const int idx_im = jj * cell_stride + (ii - 1);
+            const int idx_jp = (jj + 1) * cell_stride + ii;
+            const int idx_jm = (jj - 1) * cell_stride + ii;
+
+            // Velocity face indices for gradients
             const int u_idx_ip = jj * u_stride + (ii + 1);
             const int u_idx_im = jj * u_stride + (ii - 1);
             const int u_idx_jp = (jj + 1) * u_stride + ii;
@@ -585,110 +750,27 @@ void SSTKOmegaTransport::advance_turbulence(
             const int v_idx_im = jj * v_stride + (ii - 1);
             const int v_idx_jp = (jj + 1) * v_stride + ii;
             const int v_idx_jm = (jj - 1) * v_stride + ii;
-            
-            double dudx_v = (u_ptr[u_idx_ip] - u_ptr[u_idx_im]) * inv_2dx;
-            double dudy_v = (u_ptr[u_idx_jp] - u_ptr[u_idx_jm]) * inv_2dy;
-            double dvdx_v = (v_ptr[v_idx_ip] - v_ptr[v_idx_im]) * inv_2dx;
-            double dvdy_v = (v_ptr[v_idx_jp] - v_ptr[v_idx_jm]) * inv_2dy;
-            
-            // Get cell-centered velocity (interpolate from faces)
-            double u_c = 0.5 * (u_ptr[jj * u_stride + ii] + u_ptr[jj * u_stride + (ii+1)]);
-            double v_c = 0.5 * (v_ptr[jj * v_stride + ii] + v_ptr[(jj+1) * v_stride + ii]);
-            
-            double k_c = k_ptr[idx_c];
-            double omega_c = omega_ptr[idx_c];
-            double y_wall = wall_dist_ptr[idx_c];
-            double nu_t_c = nu_t_ptr[idx_c];
-            
-            k_c = (k_c > k_min) ? k_c : k_min;
-            omega_c = (omega_c > omega_min) ? omega_c : omega_min;
-            double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
-            nu_t_c = (nu_t_c > 0.0) ? nu_t_c : 0.0;
-            
-            // Strain rate
-            double Sxx = dudx_v;
-            double Syy = dvdy_v;
-            double Sxy = 0.5 * (dudy_v + dvdx_v);
-            double S2 = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
-            
-            // Cross-diffusion for F1
-            double dkdx = (k_ptr[idx_ip] - k_ptr[idx_im]) * inv_2dx;
-            double dkdy = (k_ptr[idx_jp] - k_ptr[idx_jm]) * inv_2dy;
-            double domegadx = (omega_ptr[idx_ip] - omega_ptr[idx_im]) * inv_2dx;
-            double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_2dy;
-            
-            double CD_omega = 2.0 * sigma_omega2 / omega_c * (dkdx * domegadx + dkdy * domegady);
-            CD_omega = (CD_omega > CD_min) ? CD_omega : CD_min;
-            
-            // F1 blending
-            double sqrt_k = sqrt(k_c);
-            double arg1_1 = sqrt_k / (beta_star * omega_c * y_safe);
-            double arg1_2 = 500.0 * nu / (y_safe * y_safe * omega_c);
-            double arg1_3 = 4.0 * sigma_omega2 * k_c / (CD_omega * y_safe * y_safe);
-            double arg1 = arg1_1;
-            arg1 = (arg1 > arg1_2) ? arg1 : arg1_2;
-            arg1 = (arg1 < arg1_3) ? arg1 : arg1_3;
-            double F1 = tanh(arg1 * arg1 * arg1 * arg1);
-            
-            // Blended constants
-            double beta = F1 * beta1 + (1.0 - F1) * beta2;
-            double alpha = F1 * alpha1 + (1.0 - F1) * alpha2;
-            double sigma_k = F1 * sigma_k1 + (1.0 - F1) * sigma_k2;
-            double sigma_omega = F1 * sigma_omega1 + (1.0 - F1) * sigma_omega2;
-            
-            // Effective diffusivities
-            double nu_k = nu + sigma_k * nu_t_c;
-            double nu_omega_eff = nu + sigma_omega * nu_t_c;
-            
-            // Production (limited)
-            double P_k = 2.0 * nu_t_c * S2;
-            double P_k_limit = 10.0 * beta_star * k_c * omega_c;
-            P_k = (P_k < P_k_limit) ? P_k : P_k_limit;
-            
-            // Advection (upwind)
-            double adv_k, adv_omega;
-            if (u_c >= 0) {
-                adv_k = u_c * (k_c - k_ptr[idx_im]) / dx;
-                adv_omega = u_c * (omega_c - omega_ptr[idx_im]) / dx;
-            } else {
-                adv_k = u_c * (k_ptr[idx_ip] - k_c) / dx;
-                adv_omega = u_c * (omega_ptr[idx_ip] - omega_c) / dx;
-            }
-            if (v_c >= 0) {
-                adv_k += v_c * (k_c - k_ptr[idx_jm]) / dy;
-                adv_omega += v_c * (omega_c - omega_ptr[idx_jm]) / dy;
-            } else {
-                adv_k += v_c * (k_ptr[idx_jp] - k_c) / dy;
-                adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) / dy;
-            }
-            
-            // Diffusion
-            double diff_k = nu_k * ((k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2
-                                  + (k_ptr[idx_jp] - 2.0*k_c + k_ptr[idx_jm]) / dy2);
-            double diff_omega = nu_omega_eff * ((omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2
-                                              + (omega_ptr[idx_jp] - 2.0*omega_c + omega_ptr[idx_jm]) / dy2);
-            
-            // Cross-diffusion term for omega equation
-            double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c 
-                      * (dkdx * domegadx + dkdy * domegady);
-            CD = (CD > 0.0) ? CD : 0.0;
-            
-            // RHS
-            double rhs_k = P_k - beta_star * k_c * omega_c + diff_k - adv_k;
-            double rhs_omega = alpha * (omega_c / k_c) * P_k 
-                             - beta * omega_c * omega_c
-                             + diff_omega - adv_omega + CD;
-            
-            // Update
-            double k_new = k_c + dt * rhs_k;
-            double omega_new = omega_c + dt * rhs_omega;
-            
-            // Clip
-            k_new = (k_new > k_min) ? k_new : k_min;
-            k_new = (k_new < k_max) ? k_new : k_max;
-            omega_new = (omega_new > omega_min) ? omega_new : omega_min;
-            omega_new = (omega_new < omega_max) ? omega_new : omega_max;
-            
+
+            // Velocity face indices for cell-center interpolation
+            const int u_idx_c = jj * u_stride + ii;
+            const int u_idx_c1 = jj * u_stride + (ii + 1);
+            const int v_idx_c = jj * v_stride + ii;
+            const int v_idx_c1 = (jj + 1) * v_stride + ii;
+
+            // Call unified kernel
+            double k_new, omega_new;
+            sst_transport_cell_kernel(
+                idx_c, idx_ip, idx_im, idx_jp, idx_jm,
+                u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
+                v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
+                u_idx_c, u_idx_c1, v_idx_c, v_idx_c1,
+                u_ptr, v_ptr, k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+                dx, dy, dt, inv_2dx, inv_2dy, dx2, dy2,
+                nu, beta_star, beta1, beta2, alpha1, alpha2,
+                sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
+                k_min, k_max, omega_min, omega_max, CD_min,
+                k_new, omega_new);
+
             k_ptr[idx_c] = k_new;
             omega_ptr[idx_c] = omega_new;
         }
@@ -714,114 +796,98 @@ void SSTKOmegaTransport::advance_turbulence(
     (void)device_view;
 #endif
     
-    // CPU implementation
-    compute_velocity_gradients(mesh, velocity);
-    compute_blending_functions(mesh, k, omega);
-    compute_production(mesh, nu_t_prev);
-    
-    // Build effective diffusivities with blending
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double F1 = F1_(i, j);
-            double sigma_k = F1 * constants_.sigma_k1 + (1.0 - F1) * constants_.sigma_k2;
-            double sigma_omega = F1 * constants_.sigma_omega1 + (1.0 - F1) * constants_.sigma_omega2;
-            
-            double nu_t_loc = std::max(0.0, nu_t_prev(i, j));
-            nu_k_(i, j) = nu_ + sigma_k * nu_t_loc;
-            nu_omega_(i, j) = nu_ + sigma_omega * nu_t_loc;
-        }
-    }
-    
-    // Compute advection terms (upwind)
+    // CPU implementation using unified kernel (same code path as GPU)
+    const int cell_stride = mesh.total_Nx();
+    const int u_stride = mesh.total_Nx() + 1;
+    const int v_stride = mesh.total_Nx();
+
     const double dx = mesh.dx;
     const double dy = mesh.dy;
-    
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double u = velocity.u(i, j);
-            double v = velocity.v(i, j);
-            
-            // k advection
-            double dkdx = (u >= 0) ? (k(i,j) - k(i-1,j)) / dx : (k(i+1,j) - k(i,j)) / dx;
-            double dkdy = (v >= 0) ? (k(i,j) - k(i,j-1)) / dy : (k(i,j+1) - k(i,j)) / dy;
-            adv_k_(i, j) = u * dkdx + v * dkdy;
-            
-            // omega advection
-            double domegadx = (u >= 0) ? (omega(i,j) - omega(i-1,j)) / dx : (omega(i+1,j) - omega(i,j)) / dx;
-            double domegady = (v >= 0) ? (omega(i,j) - omega(i,j-1)) / dy : (omega(i,j+1) - omega(i,j)) / dy;
-            adv_omega_(i, j) = u * domegadx + v * domegady;
-        }
-    }
-    
-    // Compute diffusion terms
     const double dx2 = dx * dx;
     const double dy2 = dy * dy;
-    
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // k diffusion
-            double nu_e = 0.5 * (nu_k_(i, j) + nu_k_(i+1, j));
-            double nu_w = 0.5 * (nu_k_(i, j) + nu_k_(i-1, j));
-            double nu_n = 0.5 * (nu_k_(i, j) + nu_k_(i, j+1));
-            double nu_s = 0.5 * (nu_k_(i, j) + nu_k_(i, j-1));
-            
-            diff_k_(i, j) = (nu_e * (k(i+1,j) - k(i,j)) - nu_w * (k(i,j) - k(i-1,j))) / dx2
-                          + (nu_n * (k(i,j+1) - k(i,j)) - nu_s * (k(i,j) - k(i,j-1))) / dy2;
-            
-            // omega diffusion
-            nu_e = 0.5 * (nu_omega_(i, j) + nu_omega_(i+1, j));
-            nu_w = 0.5 * (nu_omega_(i, j) + nu_omega_(i-1, j));
-            nu_n = 0.5 * (nu_omega_(i, j) + nu_omega_(i, j+1));
-            nu_s = 0.5 * (nu_omega_(i, j) + nu_omega_(i, j-1));
-            
-            diff_omega_(i, j) = (nu_e * (omega(i+1,j) - omega(i,j)) - nu_w * (omega(i,j) - omega(i-1,j))) / dx2
-                              + (nu_n * (omega(i,j+1) - omega(i,j)) - nu_s * (omega(i,j) - omega(i,j-1))) / dy2;
+    const double inv_2dx = 1.0 / (2.0 * dx);
+    const double inv_2dy = 1.0 / (2.0 * dy);
+
+    // Get raw pointers from fields
+    const double* u_ptr = velocity.u_data().data();
+    const double* v_ptr = velocity.v_data().data();
+    double* k_ptr = k.data().data();
+    double* omega_ptr = omega.data().data();
+    const double* nu_t_ptr = nu_t_prev.data().data();
+
+    // Create wall_distance buffer for unified kernel
+    const size_t total_cells = (size_t)mesh.total_Nx() * mesh.total_Ny();
+    std::vector<double> wall_dist_buf(total_cells, 0.0);
+    for (int j = 0; j < mesh.total_Ny(); ++j) {
+        for (int i = 0; i < mesh.total_Nx(); ++i) {
+            const int idx = j * cell_stride + i;
+            wall_dist_buf[idx] = mesh.wall_distance(i, j);
         }
     }
-    
-    // Time integration (explicit Euler)
+    const double* wall_dist_ptr = wall_dist_buf.data();
+
+    // Model constants
+    const double nu = nu_;
+    const double beta_star = constants_.beta_star;
+    const double beta1 = constants_.beta1;
+    const double beta2 = constants_.beta2;
+    const double alpha1 = constants_.alpha1;
+    const double alpha2 = constants_.alpha2;
+    const double sigma_k1 = constants_.sigma_k1;
+    const double sigma_k2 = constants_.sigma_k2;
+    const double sigma_omega1 = constants_.sigma_omega1;
+    const double sigma_omega2 = constants_.sigma_omega2;
+    const double k_min = constants_.k_min;
+    const double k_max = constants_.k_max;
+    const double omega_min = constants_.omega_min;
+    const double omega_max = constants_.omega_max;
+    const double CD_min = constants_.CD_omega_min;
+
+    // Single pass using unified kernel
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double F1 = F1_(i, j);
-            double k_old = std::max(constants_.k_min, k(i, j));
-            double omega_old = std::max(constants_.omega_min, omega(i, j));
-            
-            // Blended constants
-            double beta = F1 * constants_.beta1 + (1.0 - F1) * constants_.beta2;
-            double alpha = F1 * constants_.alpha1 + (1.0 - F1) * constants_.alpha2;
-            double sigma_omega2 = constants_.sigma_omega2;
-            
-            // Limit production
-            double P_k = std::min(P_k_(i, j), 10.0 * constants_.beta_star * k_old * omega_old);
-            
-            // k equation: ∂k/∂t = P_k - β*kω + diff - adv
-            double rhs_k = P_k - constants_.beta_star * k_old * omega_old 
-                         + diff_k_(i, j) - adv_k_(i, j);
-            
-            // ω equation: ∂ω/∂t = α(ω/k)P_k - βω² + diff - adv + CD
-            // Cross-diffusion term
-            double dkdx = (k(i+1, j) - k(i-1, j)) / (2.0 * dx);
-            double dkdy = (k(i, j+1) - k(i, j-1)) / (2.0 * dy);
-            double domegadx = (omega(i+1, j) - omega(i-1, j)) / (2.0 * dx);
-            double domegady = (omega(i, j+1) - omega(i, j-1)) / (2.0 * dy);
-            double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_old 
-                      * (dkdx * domegadx + dkdy * domegady);
-            CD = std::max(CD, 0.0);  // Only positive cross-diffusion
-            
-            double rhs_omega = alpha * (omega_old / k_old) * P_k 
-                             - beta * omega_old * omega_old
-                             + diff_omega_(i, j) - adv_omega_(i, j) + CD;
-            
-            // Update
-            double k_new = k_old + dt * rhs_k;
-            double omega_new = omega_old + dt * rhs_omega;
-            
-            // Clipping
-            k(i, j) = std::min(std::max(k_new, constants_.k_min), constants_.k_max);
-            omega(i, j) = std::min(std::max(omega_new, constants_.omega_min), constants_.omega_max);
+            // Cell indices
+            const int idx_c = j * cell_stride + i;
+            const int idx_ip = j * cell_stride + (i + 1);
+            const int idx_im = j * cell_stride + (i - 1);
+            const int idx_jp = (j + 1) * cell_stride + i;
+            const int idx_jm = (j - 1) * cell_stride + i;
+
+            // Velocity face indices for gradients
+            const int u_idx_ip = j * u_stride + (i + 1);
+            const int u_idx_im = j * u_stride + (i - 1);
+            const int u_idx_jp = (j + 1) * u_stride + i;
+            const int u_idx_jm = (j - 1) * u_stride + i;
+            const int v_idx_ip = j * v_stride + (i + 1);
+            const int v_idx_im = j * v_stride + (i - 1);
+            const int v_idx_jp = (j + 1) * v_stride + i;
+            const int v_idx_jm = (j - 1) * v_stride + i;
+
+            // Velocity face indices for cell-center interpolation
+            const int u_idx_c = j * u_stride + i;
+            const int u_idx_c1 = j * u_stride + (i + 1);
+            const int v_idx_c = j * v_stride + i;
+            const int v_idx_c1 = (j + 1) * v_stride + i;
+
+            // Call unified kernel (same code path as GPU)
+            double k_new, omega_new;
+            sst_transport_cell_kernel(
+                idx_c, idx_ip, idx_im, idx_jp, idx_jm,
+                u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
+                v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
+                u_idx_c, u_idx_c1, v_idx_c, v_idx_c1,
+                u_ptr, v_ptr, k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+                dx, dy, dt, inv_2dx, inv_2dy, dx2, dy2,
+                nu, beta_star, beta1, beta2, alpha1, alpha2,
+                sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
+                k_min, k_max, omega_min, omega_max, CD_min,
+                k_new, omega_new);
+
+            k_ptr[idx_c] = k_new;
+            omega_ptr[idx_c] = omega_new;
         }
     }
-    
+
     // Apply wall boundary conditions
     apply_wall_bc_k(mesh, k);
     apply_wall_bc_omega(mesh, omega, k);

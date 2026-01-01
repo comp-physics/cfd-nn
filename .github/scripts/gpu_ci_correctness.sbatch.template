@@ -55,11 +55,11 @@ make -j8
 cd ..
 
 # Make scripts executable
-chmod +x scripts/run_ci_local.sh
+chmod +x scripts/ci.sh
 chmod +x scripts/check_code_sharing.sh
 
 # Run the full CI test suite (GPU mode is default)
-./scripts/run_ci_local.sh full
+./scripts/ci.sh full
 
 echo ""
 echo "[PASS] GPU Correctness Suite completed successfully"

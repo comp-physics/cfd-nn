@@ -4436,7 +4436,44 @@ void RANSSolver::sync_transport_from_gpu() {
 }
 
 TurbulenceDeviceView RANSSolver::get_device_view() const {
-    return TurbulenceDeviceView();  // Returns invalid view (all nullptrs)
+    // CPU build: return host pointers (following get_solver_view() pattern)
+    TurbulenceDeviceView view;
+
+    // Velocity field (staggered, use same pattern as get_solver_view)
+    view.u_face = const_cast<double*>(velocity_.u_data().data());
+    view.v_face = const_cast<double*>(velocity_.v_data().data());
+    view.u_stride = velocity_.u_stride();
+    view.v_stride = velocity_.v_stride();
+
+    // Turbulence fields (cell-centered)
+    view.k = const_cast<double*>(k_.data().data());
+    view.omega = const_cast<double*>(omega_.data().data());
+    view.nu_t = const_cast<double*>(nu_t_.data().data());
+    view.cell_stride = mesh_->total_Nx();
+
+    // Reynolds stress tensor
+    view.tau_xx = const_cast<double*>(tau_ij_.xx_data().data());
+    view.tau_xy = const_cast<double*>(tau_ij_.xy_data().data());
+    view.tau_yy = const_cast<double*>(tau_ij_.yy_data().data());
+
+    // Gradient scratch buffers
+    view.dudx = const_cast<double*>(dudx_.data().data());
+    view.dudy = const_cast<double*>(dudy_.data().data());
+    view.dvdx = const_cast<double*>(dvdx_.data().data());
+    view.dvdy = const_cast<double*>(dvdy_.data().data());
+
+    // Wall distance
+    view.wall_distance = const_cast<double*>(wall_distance_.data().data());
+
+    // Mesh parameters
+    view.Nx = mesh_->Nx;
+    view.Ny = mesh_->Ny;
+    view.Ng = mesh_->Nghost;
+    view.dx = mesh_->dx;
+    view.dy = mesh_->dy;
+    view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
+
+    return view;
 }
 
 SolverDeviceView RANSSolver::get_solver_view() const {

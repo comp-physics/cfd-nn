@@ -20,10 +20,18 @@
 #include <vector>
 #include <climits>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 using namespace nncfd;
 
 // Tolerance for CPU vs GPU comparison
 constexpr double TOLERANCE = 1e-10;
+
+// Minimum expected difference - if below this, CPU and GPU may be running same code path
+// Machine epsilon for double is ~2.2e-16, so any real FP difference should exceed this
+constexpr double MIN_EXPECTED_DIFF = 1e-14;
 
 //=============================================================================
 // File I/O helpers
@@ -263,6 +271,27 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     std::cout << "=== GPU Comparison Mode ===\n";
     std::cout << "Reference prefix: " << prefix << "\n\n";
 
+    // Verify GPU is actually accessible (not just compiled with offload)
+    const int num_devices = omp_get_num_devices();
+    std::cout << "GPU devices available: " << num_devices << "\n";
+    if (num_devices == 0) {
+        std::cerr << "ERROR: No GPU devices found. Cannot run GPU comparison.\n";
+        return 1;
+    }
+
+    // Verify target regions actually execute on GPU (not host fallback)
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    {
+        on_device = !omp_is_initial_device();
+    }
+    if (!on_device) {
+        std::cerr << "ERROR: Target region executed on host, not GPU.\n";
+        std::cerr << "       Check GPU drivers and OMP_TARGET_OFFLOAD settings.\n";
+        return 1;
+    }
+    std::cout << "GPU execution verified: YES\n\n";
+
     // Verify reference files exist
     if (!file_exists(prefix + "_pressure.dat")) {
         std::cerr << "ERROR: Reference file not found: " << prefix << "_pressure.dat\n";
@@ -329,8 +358,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     if (!result.within_tolerance(TOLERANCE)) {
         std::cout << "[FAILURE] GPU results differ from CPU reference beyond tolerance " << TOLERANCE << "\n";
         return 1;
-    } else if (result.max_abs_diff == 0.0) {
-        std::cout << "[WARN] Exact match (0.0 difference) - possibly comparing same backend?\n";
+    } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
+        std::cout << "[WARN] Suspiciously small diff (" << result.max_abs_diff
+                  << " < " << MIN_EXPECTED_DIFF << ") - possibly same backend?\n";
         std::cout << "[SUCCESS] Results match within tolerance\n";
         return 0;
     } else {

@@ -20,6 +20,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 namespace nncfd {
 
@@ -262,7 +263,7 @@ void MixingLengthModel::update(
         double* nu_t_ptr = device_view->nu_t;
         double* wall_dist_ptr = device_view->wall_distance;
         
-        // GPU kernel: compute mixing length eddy viscosity
+        // GPU kernel: compute mixing length eddy viscosity using unified kernel
         // Use map(present:...) since these are solver-mapped host pointers
         #pragma omp target teams distribute parallel for \
             map(present: dudx_ptr[0:cell_total_size], dudy_ptr[0:cell_total_size], \
@@ -272,28 +273,14 @@ void MixingLengthModel::update(
             const int i = idx % Nx + Ng;  // interior i (add ghost offset)
             const int j = idx / Nx + Ng;  // interior j (add ghost offset)
             const int cell_idx = j * stride + i;
-            
-            // Get wall distance
-            const double y_wall = wall_dist_ptr[cell_idx];
-            
-            // Compute strain rate magnitude
-            const double Sxx = dudx_ptr[cell_idx];
-            const double Syy = dvdy_ptr[cell_idx];
-            const double Sxy = 0.5 * (dudy_ptr[cell_idx] + dvdx_ptr[cell_idx]);
-            const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
-            // y+ and van Driest damping
-            const double y_plus = y_wall * u_tau / nu_local;
-            const double damping = 1.0 - exp(-y_plus / A_plus_local);
-            
-            // Mixing length (capped at delta/2)
-            double l_mix = kappa_local * y_wall * damping;
-            if (l_mix > 0.5 * delta_local) {
-                l_mix = 0.5 * delta_local;
-            }
-            
-            // Eddy viscosity
-            nu_t_ptr[cell_idx] = l_mix * l_mix * S_mag;
+
+            // Call unified kernel (same code path as CPU)
+            mixing_length_cell_kernel(
+                cell_idx, u_tau, nu_local,
+                kappa_local, A_plus_local, delta_local,
+                wall_dist_ptr[cell_idx],
+                dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+                nu_t_ptr);
         }
         
         // Done! nu_t is now on GPU, will be synced by solver when needed
@@ -343,28 +330,50 @@ void MixingLengthModel::update(
     
     u_tau = std::max(u_tau, 1e-10);  // Avoid division by zero
 
-    // CPU path
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double y_wall = mesh.wall_distance(i, j);
-            double y_plus = y_wall * u_tau / nu_;
-            
-            // Use same formulation as GPU (single expression)
-            double damping = 1.0 - std::exp(-y_plus / A_plus_);
-            
-            double l_mix = kappa_ * y_wall * damping;
-            // Use same min operation as GPU
-            if (l_mix > 0.5 * delta_) {
-                l_mix = 0.5 * delta_;
+    // Host execution using unified kernel
+    const int stride = mesh.total_Nx();
+    const int Nx = mesh.Nx;
+    const int Ng = mesh.Nghost;
+
+    // Get raw pointers from gradient fields
+    const double* dudx_ptr = dudx_.data().data();
+    const double* dudy_ptr = dudy_.data().data();
+    const double* dvdx_ptr = dvdx_.data().data();
+    const double* dvdy_ptr = dvdy_.data().data();
+    double* nu_t_ptr = nu_t.data().data();
+
+    // Cache wall distances in member variable (computed once, reused each call)
+    const int total_cells = mesh.total_Nx() * mesh.total_Ny();
+    if (y_wall_flat_.empty() || static_cast<int>(y_wall_flat_.size()) != total_cells) {
+        y_wall_flat_.resize(total_cells, 0.0);
+        for (int j = 0; j < mesh.total_Ny(); ++j) {
+            for (int i = 0; i < mesh.total_Nx(); ++i) {
+                const int idx = j * stride + i;
+                y_wall_flat_[idx] = mesh.wall_distance(i, j);
             }
-            
-            double Sxx = dudx_(i, j);
-            double Syy = dvdy_(i, j);
-            double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
-            double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
-            nu_t(i, j) = l_mix * l_mix * S_mag;
         }
+    }
+    const double* wall_dist_ptr = y_wall_flat_.data();
+
+    // Model constants for kernel
+    const double nu_local = nu_;
+    const double kappa_local = kappa_;
+    const double A_plus_local = A_plus_;
+    const double delta_local = delta_;
+
+    // Single pass using unified kernel
+    const int n_cells = Nx * mesh.Ny;
+    for (int idx = 0; idx < n_cells; ++idx) {
+        const int i = idx % Nx + Ng;
+        const int j = idx / Nx + Ng;
+        const int cell_idx = j * stride + i;
+
+        mixing_length_cell_kernel(
+            cell_idx, u_tau, nu_local,
+            kappa_local, A_plus_local, delta_local,
+            wall_dist_ptr[cell_idx],
+            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+            nu_t_ptr);
     }
 }
 
