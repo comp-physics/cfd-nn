@@ -22,6 +22,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cassert>
+#include <cstring>
 
 #ifdef GPU_PROFILE_TRANSFERS
 #include <chrono>
@@ -1055,6 +1056,13 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     mg_poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                               PoissonBC::Neumann, PoissonBC::Neumann);
 
+#ifdef USE_HYPRE
+    // Initialize HYPRE PFMG solver
+    hypre_poisson_solver_ = std::make_unique<HyprePoissonSolver>(mesh);
+    hypre_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                   PoissonBC::Neumann, PoissonBC::Neumann);
+#endif
+
 #ifdef USE_GPU_OFFLOAD
     // Fail-fast if GPU offload is enabled but no device is available
     gpu::verify_device_available();
@@ -1115,9 +1123,19 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     if (!mesh_->is2D()) {
         poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
         mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            hypre_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        }
+#endif
     } else {
         poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
         mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            hypre_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+        }
+#endif
     }
 }
 
@@ -2946,27 +2964,82 @@ double RANSSolver::step() {
         }();
         
         int cycles = 0;
+        double final_residual = 0.0;
+
+        // Diagnostic: log which Poisson path is taken (once per path)
+        static bool hypre_cuda_logged = false;
+        static bool hypre_host_logged = false;
+
+#ifdef USE_HYPRE
+        if (use_hypre_ && hypre_poisson_solver_) {
+#ifdef USE_GPU_OFFLOAD
+            if (gpu_ready_ && hypre_poisson_solver_->using_cuda()) {
+                // GPU-RESIDENT PATH: hypre solves directly on device
+                if (!hypre_cuda_logged) {
+                    std::cout << "[Poisson] Using HYPRE solve_device() (CUDA)\n";
+                    hypre_cuda_logged = true;
+                }
+                cycles = hypre_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                final_residual = hypre_poisson_solver_->residual();
+            } else
+#endif
+            {
+                // Host path: sync data to host, solve, sync back
+                if (!hypre_host_logged) {
+                    std::cout << "[Poisson] Using HYPRE solve() (host)\n";
+                    hypre_host_logged = true;
+                }
+#ifdef USE_GPU_OFFLOAD
+                if (gpu_ready_) {
+                    #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
+                    std::memcpy(rhs_poisson_.data().data(), rhs_poisson_ptr_, field_total_size_ * sizeof(double));
+                }
+#endif
+                cycles = hypre_poisson_solver_->solve(rhs_poisson_, pressure_correction_, pcfg);
+                final_residual = hypre_poisson_solver_->residual();
+#ifdef USE_GPU_OFFLOAD
+                if (gpu_ready_) {
+                    std::memcpy(pressure_corr_ptr_, pressure_correction_.data().data(), field_total_size_ * sizeof(double));
+                    #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
+                }
+#endif
+            }
+        } else
+#endif
 #ifdef USE_GPU_OFFLOAD
         if (gpu_ready_ && use_multigrid_) {
             // GPU-RESIDENT PATH: solve directly on device without host staging
             // This eliminates the DtoH/HtoD transfers that happened in the old path
+            static bool mg_device_logged = false;
+            if (!mg_device_logged) {
+                std::cout << "[Poisson] Using MULTIGRID solve_device()\n";
+                mg_device_logged = true;
+            }
             cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+            final_residual = mg_poisson_solver_.residual();
         } else
 #endif
         {
             // Host path (or GPU with host staging for non-multigrid)
+            static bool host_logged = false;
+            if (!host_logged) {
+                std::cout << "[Poisson] Using HOST path\n";
+                host_logged = true;
+            }
             if (use_multigrid_) {
                 cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+                final_residual = mg_poisson_solver_.residual();
             } else {
                 cycles = poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+                final_residual = poisson_solver_.residual();
             }
         }
-        
+
         // Print cycle count diagnostics if enabled
         if (poisson_diagnostics && (iter_ % poisson_diagnostics_interval == 0)) {
-            std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles 
-                      << " residual=" << std::scientific << std::setprecision(15) 
-                      << mg_poisson_solver_.residual() << "\n";
+            std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles
+                      << " residual=" << std::scientific << std::setprecision(15)
+                      << final_residual << "\n";
         }
         
         NVTX_POP();

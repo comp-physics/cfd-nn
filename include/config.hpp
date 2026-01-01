@@ -109,6 +109,7 @@ struct Config {
     int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
+    bool use_hypre = false;     ///< Use HYPRE PFMG solver instead of multigrid
     
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

@@ -4,6 +4,9 @@
 #include "fields.hpp"
 #include "poisson_solver.hpp"
 #include "poisson_solver_multigrid.hpp"
+#ifdef USE_HYPRE
+#include "poisson_solver_hypre.hpp"
+#endif
 #include "turbulence_model.hpp"
 #include "config.hpp"
 #include <memory>
@@ -81,7 +84,15 @@ public:
     
     /// Set body force (pressure gradient equivalent)
     void set_body_force(double fx, double fy, double fz = 0.0);
-    
+
+#ifdef USE_HYPRE
+    /// Enable/disable HYPRE PFMG Poisson solver
+    /// When enabled, uses HYPRE's parallel semicoarsening multigrid
+    /// instead of the built-in geometric multigrid
+    void set_use_hypre(bool use) { use_hypre_ = use; }
+    bool using_hypre() const { return use_hypre_; }
+#endif
+
     /// Initialize velocity field
     void initialize(const VectorField& initial_velocity);
     void initialize_uniform(double u0, double v0);
@@ -194,6 +205,10 @@ private:
     // Solvers
     PoissonSolver poisson_solver_;
     MultigridPoissonSolver mg_poisson_solver_;
+#ifdef USE_HYPRE
+    std::unique_ptr<HyprePoissonSolver> hypre_poisson_solver_;
+    bool use_hypre_ = false;  // Use hypre PFMG when enabled
+#endif
     std::unique_ptr<TurbulenceModel> turb_model_;
     bool use_multigrid_ = true;  // Use multigrid by default for speed
     

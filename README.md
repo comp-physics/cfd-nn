@@ -274,6 +274,26 @@ $$r_{2h}^{I,J} = \frac{1}{16}\begin{bmatrix}1 & 2 & 1 \\ 2 & 4 & 2 \\ 1 & 2 & 1\
 - V-cycles to convergence: 5-15 (vs 1000-10000 SOR iterations)
 - Speedup: **10-100x faster** than SOR for large grids
 
+#### 3. HYPRE PFMG (GPU-Accelerated)
+
+For maximum GPU performance, the solver supports [HYPRE](https://github.com/hypre-space/hypre)'s PFMG (Parallel Semicoarsening Multigrid) solver with CUDA backend:
+
+**Performance (NVIDIA H200 GPU):**
+
+| Grid Size | HYPRE PFMG | Built-in Multigrid | Speedup |
+|-----------|------------|-------------------|---------|
+| 32³       | 5.4 ms     | 52 ms             | **9.7x**  |
+| 64³       | 5.4 ms     | 58 ms             | **10.8x** |
+| 128³      | 8.0 ms     | 66 ms             | **8.2x**  |
+
+**Key features:**
+- Entire multigrid solve runs on GPU via CUDA kernels
+- Automatic download and build via CMake FetchContent
+- Unified memory integration with OpenMP target offload
+- Weighted Jacobi smoothing (GPU-parallel)
+
+See `docs/HYPRE_POISSON_SOLVER.md` for detailed documentation.
+
 ### Time Integration
 
 **Explicit Euler** with adaptive time stepping:
@@ -569,9 +589,24 @@ CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON
 make -j8
 ```
 
+**Build with GPU + HYPRE PFMG (fastest Poisson solver):**
+```bash
+mkdir build_hypre && cd build_hypre
+CC=nvc CXX=nvc++ cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DUSE_GPU_OFFLOAD=ON \
+    -DUSE_HYPRE=ON
+make -j8
+
+# Run with HYPRE solver
+./channel --poisson_solver hypre --Nx 64 --Ny 128 --Nz 64 --model baseline
+```
+
+HYPRE is automatically downloaded and built by CMake. See `docs/HYPRE_POISSON_SOLVER.md` for details.
+
 **GPU-accelerated components:**
 - Momentum equation (advection, diffusion)
-- Pressure Poisson solver (multigrid V-cycles)
+- Pressure Poisson solver (multigrid V-cycles, or HYPRE PFMG with 8-10x speedup)
 - Turbulence transport equations (k, ω)
 - EARSM tensor basis computations
 - Feature invariant calculations

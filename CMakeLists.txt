@@ -19,6 +19,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # GPU offload option (must be set before finding OpenMP)
 option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
+# Hypre solver option (requires CUDA toolkit)
+option(USE_HYPRE "Enable HYPRE PFMG Poisson solver" OFF)
+
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
@@ -35,6 +38,53 @@ if(USE_GPU_OFFLOAD)
     endif()
 endif()
 
+# Hypre configuration - download and build from source with CUDA support
+if(USE_HYPRE)
+    message(STATUS "HYPRE solver ENABLED - downloading and building from source")
+
+    # Enable CUDA language for hypre build
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    message(STATUS "  CUDA Toolkit version: ${CUDAToolkit_VERSION}")
+    message(STATUS "  CUDA include dir: ${CUDAToolkit_INCLUDE_DIRS}")
+
+    # Detect GPU architecture if not specified
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        # Default to Hopper (H200)
+        set(CMAKE_CUDA_ARCHITECTURES "90" CACHE STRING "CUDA architectures")
+    endif()
+    message(STATUS "  CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+
+    include(FetchContent)
+    FetchContent_Declare(
+        hypre
+        GIT_REPOSITORY https://github.com/hypre-space/hypre.git
+        GIT_TAG v2.31.0
+        SOURCE_SUBDIR src
+    )
+
+    # Configure hypre build options before FetchContent_MakeAvailable
+    # FORCE these options to ensure they take effect in the subproject
+    # Note: hypre uses HYPRE_WITH_CUDA (not HYPRE_ENABLE_CUDA)
+    set(HYPRE_WITH_CUDA ON CACHE BOOL "Enable CUDA support in HYPRE" FORCE)
+    set(HYPRE_ENABLE_UNIFIED_MEMORY ON CACHE BOOL "Use unified memory for GPU-CPU sharing" FORCE)
+    set(HYPRE_ENABLE_GPU_PROFILING OFF CACHE BOOL "Disable GPU profiling" FORCE)
+    set(HYPRE_CUDA_SM "90" CACHE STRING "CUDA SM architecture for H200" FORCE)
+
+    # Disable features we don't need
+    set(HYPRE_WITH_MPI OFF CACHE BOOL "Disable MPI (single-node only)" FORCE)
+    set(HYPRE_WITH_OPENMP OFF CACHE BOOL "Use CUDA instead of OpenMP for GPU" FORCE)
+    set(HYPRE_ENABLE_SHARED OFF CACHE BOOL "Build static library" FORCE)
+    set(HYPRE_ENABLE_MIXEDINT OFF CACHE BOOL "Use consistent integer types" FORCE)
+    set(HYPRE_PRINT_ERRORS ON CACHE BOOL "Print error messages" FORCE)
+    set(HYPRE_ENABLE_BIGINT OFF CACHE BOOL "Use 32-bit integers" FORCE)
+
+    FetchContent_MakeAvailable(hypre)
+
+    message(STATUS "  HYPRE source dir: ${hypre_SOURCE_DIR}")
+    message(STATUS "  HYPRE binary dir: ${hypre_BINARY_DIR}")
+endif()
+
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
@@ -48,9 +98,14 @@ if(USE_GPU_OFFLOAD)
     # Detect compiler and set appropriate flags
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
         # NVIDIA HPC SDK - best for NVIDIA GPUs
-        # No -gpu=ccXX specified - will auto-detect at runtime or use PTX JIT
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu")
-        message(STATUS "Using NVIDIA HPC SDK GPU offloading")
+        # Specify GPU architecture explicitly for reliability
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc90")
+        # Add -cuda for OpenMP+CUDA interoperability (needed for hypre CUDA backend)
+        if(USE_HYPRE)
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")
+            message(STATUS "  Added -cuda for OpenMP+CUDA interop with HYPRE")
+        endif()
+        message(STATUS "Using NVIDIA HPC SDK GPU offloading (cc90)")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         # Clang/LLVM with CUDA backend (auto-detect GPU arch)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=nvptx64-nvidia-cuda")
@@ -104,6 +159,18 @@ if(USE_GPU_OFFLOAD)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
     target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
+endif()
+
+# Add HYPRE Poisson solver when enabled
+if(USE_HYPRE)
+    target_sources(nn_cfd_core PRIVATE src/poisson_solver_hypre.cpp)
+    target_include_directories(nn_cfd_core PUBLIC ${hypre_SOURCE_DIR}/src)
+    target_include_directories(nn_cfd_core PUBLIC ${hypre_BINARY_DIR})
+    target_link_libraries(nn_cfd_core HYPRE)
+    # Link CUDA runtime for hypre's CUDA backend
+    target_link_libraries(nn_cfd_core CUDA::cudart)
+    target_compile_definitions(nn_cfd_core PUBLIC USE_HYPRE)
+    message(STATUS "  HYPRE Poisson solver added to nn_cfd_core")
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -326,6 +393,14 @@ if(BUILD_TESTS)
     add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
+
+    # HYPRE all BC configurations test
+    if(USE_HYPRE)
+        add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
+        target_link_libraries(test_hypre_all_bcs nn_cfd_core)
+        add_test(NAME HypreAllBCsTest COMMAND test_hypre_all_bcs)
+
+    endif()
 endif()
 
 # Installation

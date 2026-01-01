@@ -187,46 +187,67 @@ void Config::load(const std::string& filename) {
 }
 
 void Config::parse_args(int argc, char** argv) {
+    // Helper to get argument value (handles both --key=value and --key value)
+    auto get_value = [&](int& i, const std::string& arg, const std::string& key) -> std::string {
+        // Check for --key=value format
+        if (arg.rfind(key + "=", 0) == 0) {
+            return arg.substr(key.length() + 1);
+        }
+        // Check for --key value format
+        if (arg == key && i + 1 < argc) {
+            return argv[++i];
+        }
+        return "";
+    };
+
+    // Helper to check for flag-style arguments (--flag)
+    auto is_flag = [](const std::string& arg, const std::string& key) -> bool {
+        return arg == key;
+    };
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        
-        if (arg == "--config" && i + 1 < argc) {
-            load(argv[++i]);
-        } else if (arg == "--Nx" && i + 1 < argc) {
-            Nx = std::stoi(argv[++i]);
-        } else if (arg == "--Ny" && i + 1 < argc) {
-            Ny = std::stoi(argv[++i]);
-        } else if (arg == "--Nz" && i + 1 < argc) {
-            Nz = std::stoi(argv[++i]);
-        } else if (arg == "--z_min" && i + 1 < argc) {
-            z_min = std::stod(argv[++i]);
-        } else if (arg == "--z_max" && i + 1 < argc) {
-            z_max = std::stod(argv[++i]);
-        } else if (arg == "--stretch_z") {
+        std::string val;
+
+        if ((val = get_value(i, arg, "--config")) != "") {
+            load(val);
+        } else if ((val = get_value(i, arg, "--Nx")) != "") {
+            Nx = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--Ny")) != "") {
+            Ny = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--Nz")) != "") {
+            Nz = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--z_min")) != "") {
+            z_min = std::stod(val);
+        } else if ((val = get_value(i, arg, "--z_max")) != "") {
+            z_max = std::stod(val);
+        } else if (is_flag(arg, "--stretch_z")) {
             stretch_z = true;
-        } else if (arg == "--stretch_beta_z" && i + 1 < argc) {
-            stretch_beta_z = std::stod(argv[++i]);
-        } else if (arg == "--Re" && i + 1 < argc) {
-            Re = std::stod(argv[++i]);
+        } else if ((val = get_value(i, arg, "--stretch_beta_z")) != "") {
+            stretch_beta_z = std::stod(val);
+        } else if ((val = get_value(i, arg, "--Re")) != "") {
+            Re = std::stod(val);
             Re_specified = true;
-        } else if (arg == "--nu" && i + 1 < argc) {
-            nu = std::stod(argv[++i]);
+        } else if ((val = get_value(i, arg, "--nu")) != "") {
+            nu = std::stod(val);
             nu_specified = true;
-        } else if (arg == "--dp_dx" && i + 1 < argc) {
-            dp_dx = std::stod(argv[++i]);
+        } else if ((val = get_value(i, arg, "--dp_dx")) != "") {
+            dp_dx = std::stod(val);
             dp_dx_specified = true;
-        } else if (arg == "--dt" && i + 1 < argc) {
-            dt = std::stod(argv[++i]);
-        } else if (arg == "--max_iter" && i + 1 < argc) {
-            max_iter = std::stoi(argv[++i]);
-        } else if (arg == "--tol" && i + 1 < argc) {
-            tol = std::stod(argv[++i]);
-        } else if (arg == "--poisson_tol" && i + 1 < argc) {
-            poisson_tol = std::stod(argv[++i]);
-        } else if (arg == "--poisson_max_iter" && i + 1 < argc) {
-            poisson_max_iter = std::stoi(argv[++i]);
-        } else if (arg == "--model" && i + 1 < argc) {
-            std::string model = argv[++i];
+        } else if ((val = get_value(i, arg, "--dt")) != "") {
+            dt = std::stod(val);
+        } else if ((val = get_value(i, arg, "--max_iter")) != "") {
+            max_iter = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--tol")) != "") {
+            tol = std::stod(val);
+        } else if ((val = get_value(i, arg, "--poisson_tol")) != "") {
+            poisson_tol = std::stod(val);
+        } else if ((val = get_value(i, arg, "--poisson_max_iter")) != "") {
+            poisson_max_iter = std::stoi(val);
+        } else if (is_flag(arg, "--use_hypre")) {
+            use_hypre = true;
+        } else if ((val = get_value(i, arg, "--model")) != "") {
+            std::string model = val;
             if (model == "none" || model == "laminar") {
                 turb_model = TurbulenceModelType::None;
             } else if (model == "baseline") {
@@ -248,47 +269,45 @@ void Config::parse_args(int argc, char** argv) {
             } else if (model == "earsm_pope" || model == "pope") {
                 turb_model = TurbulenceModelType::EARSM_Pope;
             }
-        } else if (arg == "--weights" && i + 1 < argc) {
-            nn_weights_path = argv[++i];
-        } else if (arg == "--scaling" && i + 1 < argc) {
-            nn_scaling_path = argv[++i];
-        } else if (arg == "--nn_preset" && i + 1 < argc) {
-            nn_preset = argv[++i];
-        } else if (arg == "--output" && i + 1 < argc) {
-            output_dir = argv[++i];
-        } else if (arg == "--num_snapshots" && i + 1 < argc) {
-            num_snapshots = std::stoi(argv[++i]);
-        } else if (arg == "--verbose") {
+        } else if ((val = get_value(i, arg, "--weights")) != "") {
+            nn_weights_path = val;
+        } else if ((val = get_value(i, arg, "--scaling")) != "") {
+            nn_scaling_path = val;
+        } else if ((val = get_value(i, arg, "--nn_preset")) != "") {
+            nn_preset = val;
+        } else if ((val = get_value(i, arg, "--output")) != "") {
+            output_dir = val;
+        } else if ((val = get_value(i, arg, "--num_snapshots")) != "") {
+            num_snapshots = std::stoi(val);
+        } else if (is_flag(arg, "--verbose")) {
             verbose = true;
-        } else if (arg == "--quiet") {
+        } else if (is_flag(arg, "--quiet")) {
             verbose = false;
-        } else if (arg == "--no_postprocess") {
+        } else if (is_flag(arg, "--no_postprocess")) {
             postprocess = false;
-        } else if (arg == "--no_write_fields") {
+        } else if (is_flag(arg, "--no_write_fields")) {
             write_fields = false;
-        } else if (arg == "--stretch") {
+        } else if (is_flag(arg, "--stretch")) {
             stretch_y = true;
-        } else if (arg == "--adaptive_dt") {
+        } else if (is_flag(arg, "--adaptive_dt")) {
             adaptive_dt = true;
-        } else if (arg == "--CFL" && i + 1 < argc) {
-            CFL_max = std::stod(argv[++i]);
-        } else if (arg == "--scheme" && i + 1 < argc) {
-            std::string scheme = argv[++i];
-            if (scheme == "upwind") {
+        } else if ((val = get_value(i, arg, "--CFL")) != "") {
+            CFL_max = std::stod(val);
+        } else if ((val = get_value(i, arg, "--scheme")) != "") {
+            if (val == "upwind") {
                 convective_scheme = ConvectiveScheme::Upwind;
             } else {
                 convective_scheme = ConvectiveScheme::Central;
             }
-        } else if (arg == "--simulation_mode" && i + 1 < argc) {
-            std::string mode = argv[++i];
-            if (mode == "unsteady") {
+        } else if ((val = get_value(i, arg, "--simulation_mode")) != "") {
+            if (val == "unsteady") {
                 simulation_mode = SimulationMode::Unsteady;
             } else {
                 simulation_mode = SimulationMode::Steady;
             }
-        } else if (arg == "--perturbation_amplitude" && i + 1 < argc) {
-            perturbation_amplitude = std::stod(argv[++i]);
-        } else if (arg == "--help" || arg == "-h") {
+        } else if ((val = get_value(i, arg, "--perturbation_amplitude")) != "") {
+            perturbation_amplitude = std::stod(val);
+        } else if (is_flag(arg, "--help") || is_flag(arg, "-h")) {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
                       << "  --config FILE     Load config file\n"
@@ -307,6 +326,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --tol T           Convergence tolerance for steady solve\n"
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
                       << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
+                      << "  --use_hypre       Use HYPRE PFMG solver (requires USE_HYPRE build)\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"
@@ -333,7 +353,7 @@ void Config::parse_args(int argc, char** argv) {
             std::exit(0);
         }
     }
-    
+
     finalize();
 }
 
