@@ -77,6 +77,7 @@ void MultigridPoissonSolver::create_hierarchy() {
     }
 
     // Coarsen until we reach ~8x8(x8) grid
+    // Deeper hierarchies give better convergence per V-cycle
     if (is_2d) {
         while (Nx > 8 && Ny > 8) {
             Nx /= 2;
@@ -800,16 +801,14 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
 void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     NVTX_SCOPE_MG("mg:prolongate");
 
-    // Bilinear/trilinear interpolation from coarse to fine grid
+    // Owner-computes trilinear interpolation: each fine cell computes its own value
+    // by reading from neighboring coarse cells. No atomics needed!
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& coarse = *levels_[coarse_level];
     auto& fine = *levels_[coarse_level - 1];
     const bool is_2d = fine.is2D();
 
     const int Ng = 1;
-    const int Nx_c = coarse.Nx;
-    const int Ny_c = coarse.Ny;
-    const int Nz_c = coarse.Nz;
     const int Nx_f = fine.Nx;
     const int Ny_f = fine.Ny;
     const int Nz_f = fine.Nz;
@@ -830,132 +829,79 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
 #endif
 
     if (is_2d) {
-        // 2D: bilinear interpolation
+        // 2D owner-computes bilinear interpolation
+        // Each fine cell reads from up to 4 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
             map(present: u_coarse[0:size_c], u_fine[0:size_f])
 #endif
-        for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
-            for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
-                int i_f = 2 * (i_c - Ng) + Ng;
-                int j_f = 2 * (j_c - Ng) + Ng;
+        for (int j_f = Ng; j_f < Ny_f + Ng; ++j_f) {
+            for (int i_f = Ng; i_f < Nx_f + Ng; ++i_f) {
+                // Find base coarse cell and position within coarse cell pair
+                int i_c = (i_f - Ng) / 2 + Ng;
+                int j_c = (j_f - Ng) / 2 + Ng;
+                int di = (i_f - Ng) & 1;  // 0 = coincident, 1 = midpoint
+                int dj = (j_f - Ng) & 1;
+
+                // Interpolation weights: 0.5*d gives 0.0 or 0.5
+                double wx1 = 0.5 * di;
+                double wx0 = 1.0 - wx1;
+                double wy1 = 0.5 * dj;
+                double wy0 = 1.0 - wy1;
+
                 int idx_c = j_c * stride_c + i_c;
+
+                // Bilinear interpolation from 4 coarse neighbors
+                double correction = wx0 * wy0 * u_coarse[idx_c]
+                                  + wx1 * wy0 * u_coarse[idx_c + 1]
+                                  + wx0 * wy1 * u_coarse[idx_c + stride_c]
+                                  + wx1 * wy1 * u_coarse[idx_c + 1 + stride_c];
+
                 int idx_f = j_f * stride_f + i_f;
-
-                double val_c = u_coarse[idx_c];
-
-                // Direct injection to coarse points (no race - exactly one writer)
-                u_fine[idx_f] += val_c;
-
-                // Interpolate to fine points (shared - need atomic for GPU)
-                if (i_f + 1 < Nx_f + Ng) {
-                    double val_east = u_coarse[idx_c + 1];
-                    double contrib = 0.5 * (val_c + val_east);
-#ifdef USE_GPU_OFFLOAD
-                    #pragma omp atomic update
-#endif
-                    u_fine[idx_f + 1] += contrib;
-                }
-                if (j_f + 1 < Ny_f + Ng) {
-                    double val_north = u_coarse[idx_c + stride_c];
-                    double contrib = 0.5 * (val_c + val_north);
-#ifdef USE_GPU_OFFLOAD
-                    #pragma omp atomic update
-#endif
-                    u_fine[idx_f + stride_f] += contrib;
-                }
-                if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng) {
-                    double val_east = u_coarse[idx_c + 1];
-                    double val_north = u_coarse[idx_c + stride_c];
-                    double val_ne = u_coarse[idx_c + 1 + stride_c];
-                    double contrib = 0.25 * (val_c + val_east + val_north + val_ne);
-#ifdef USE_GPU_OFFLOAD
-                    #pragma omp atomic update
-#endif
-                    u_fine[idx_f + 1 + stride_f] += contrib;
-                }
+                u_fine[idx_f] += correction;
             }
         }
     } else {
-        // 3D: trilinear interpolation
+        // 3D owner-computes trilinear interpolation
+        // Each fine cell reads from up to 8 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
             map(present: u_coarse[0:size_c], u_fine[0:size_f])
 #endif
-        for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
-            for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
-                for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
-                    int i_f = 2 * (i_c - Ng) + Ng;
-                    int j_f = 2 * (j_c - Ng) + Ng;
-                    int k_f = 2 * (k_c - Ng) + Ng;
+        for (int k_f = Ng; k_f < Nz_f + Ng; ++k_f) {
+            for (int j_f = Ng; j_f < Ny_f + Ng; ++j_f) {
+                for (int i_f = Ng; i_f < Nx_f + Ng; ++i_f) {
+                    // Find base coarse cell and position within coarse cell pair
+                    int i_c = (i_f - Ng) / 2 + Ng;
+                    int j_c = (j_f - Ng) / 2 + Ng;
+                    int k_c = (k_f - Ng) / 2 + Ng;
+                    int di = (i_f - Ng) & 1;  // 0 = coincident, 1 = midpoint
+                    int dj = (j_f - Ng) & 1;
+                    int dk = (k_f - Ng) & 1;
+
+                    // Interpolation weights
+                    double wx1 = 0.5 * di;
+                    double wx0 = 1.0 - wx1;
+                    double wy1 = 0.5 * dj;
+                    double wy0 = 1.0 - wy1;
+                    double wz1 = 0.5 * dk;
+                    double wz0 = 1.0 - wz1;
+
                     int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
+
+                    // Trilinear interpolation from 8 coarse neighbors
+                    double correction =
+                        wx0 * wy0 * wz0 * u_coarse[idx_c]
+                      + wx1 * wy0 * wz0 * u_coarse[idx_c + 1]
+                      + wx0 * wy1 * wz0 * u_coarse[idx_c + stride_c]
+                      + wx1 * wy1 * wz0 * u_coarse[idx_c + 1 + stride_c]
+                      + wx0 * wy0 * wz1 * u_coarse[idx_c + plane_stride_c]
+                      + wx1 * wy0 * wz1 * u_coarse[idx_c + 1 + plane_stride_c]
+                      + wx0 * wy1 * wz1 * u_coarse[idx_c + stride_c + plane_stride_c]
+                      + wx1 * wy1 * wz1 * u_coarse[idx_c + 1 + stride_c + plane_stride_c];
+
                     int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
-
-                    double val_c = u_coarse[idx_c];
-
-                    // Direct injection to coincident point (no race - exactly one writer)
-                    u_fine[idx_f] += val_c;
-
-                    // Interpolate to 3 face-midpoints (shared - need atomic for GPU)
-                    if (i_f + 1 < Nx_f + Ng) {
-                        double contrib = 0.5 * (val_c + u_coarse[idx_c + 1]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + 1] += contrib;
-                    }
-                    if (j_f + 1 < Ny_f + Ng) {
-                        double contrib = 0.5 * (val_c + u_coarse[idx_c + stride_c]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + stride_f] += contrib;
-                    }
-                    if (k_f + 1 < Nz_f + Ng) {
-                        double contrib = 0.5 * (val_c + u_coarse[idx_c + plane_stride_c]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + plane_stride_f] += contrib;
-                    }
-
-                    // Interpolate to 3 edge-midpoints (shared - need atomic for GPU)
-                    if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng) {
-                        double contrib = 0.25 * (val_c + u_coarse[idx_c + 1]
-                            + u_coarse[idx_c + stride_c] + u_coarse[idx_c + 1 + stride_c]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + 1 + stride_f] += contrib;
-                    }
-                    if (i_f + 1 < Nx_f + Ng && k_f + 1 < Nz_f + Ng) {
-                        double contrib = 0.25 * (val_c + u_coarse[idx_c + 1]
-                            + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + 1 + plane_stride_c]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + 1 + plane_stride_f] += contrib;
-                    }
-                    if (j_f + 1 < Ny_f + Ng && k_f + 1 < Nz_f + Ng) {
-                        double contrib = 0.25 * (val_c + u_coarse[idx_c + stride_c]
-                            + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + stride_c + plane_stride_c]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + stride_f + plane_stride_f] += contrib;
-                    }
-
-                    // Interpolate to cell-center (shared - need atomic for GPU)
-                    if (i_f + 1 < Nx_f + Ng && j_f + 1 < Ny_f + Ng && k_f + 1 < Nz_f + Ng) {
-                        double contrib = 0.125 * (val_c + u_coarse[idx_c + 1]
-                            + u_coarse[idx_c + stride_c] + u_coarse[idx_c + 1 + stride_c]
-                            + u_coarse[idx_c + plane_stride_c] + u_coarse[idx_c + 1 + plane_stride_c]
-                            + u_coarse[idx_c + stride_c + plane_stride_c] + u_coarse[idx_c + 1 + stride_c + plane_stride_c]);
-#ifdef USE_GPU_OFFLOAD
-                        #pragma omp atomic update
-#endif
-                        u_fine[idx_f + 1 + stride_f + plane_stride_f] += contrib;
-                    }
+                    u_fine[idx_f] += correction;
                 }
             }
         }
@@ -975,7 +921,7 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
 
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - solve directly
-        // Reduced from 100 to 40 iterations for better performance
+        // 40 iterations is sufficient for 8³ grid
         solve_coarsest(40);
         return;
     }
@@ -1027,11 +973,10 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     
     // Recursive call to coarser level
     vcycle(level + 1, nu1, nu2);
-    
-    // Prolongate correction
+
+    // Prolongate correction and apply boundary conditions
+    // (BC needed before post-smoothing reads ghost cells)
     prolongate_correction(level + 1);
-    
-    // Apply boundary conditions
     apply_bc(level);
 
     // Post-smoothing (more iterations for better convergence)
