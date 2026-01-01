@@ -342,16 +342,18 @@ void MixingLengthModel::update(
     const double* dvdy_ptr = dvdy_.data().data();
     double* nu_t_ptr = nu_t.data().data();
 
-    // Create wall_distance buffer for unified kernel
-    const size_t total_cells = (size_t)mesh.total_Nx() * mesh.total_Ny();
-    std::vector<double> wall_dist_buf(total_cells, 0.0);
-    for (int j = 0; j < mesh.total_Ny(); ++j) {
-        for (int i = 0; i < mesh.total_Nx(); ++i) {
-            const int idx = j * stride + i;
-            wall_dist_buf[idx] = mesh.wall_distance(i, j);
+    // Cache wall distances in member variable (computed once, reused each call)
+    const int total_cells = mesh.total_Nx() * mesh.total_Ny();
+    if (y_wall_flat_.empty() || static_cast<int>(y_wall_flat_.size()) != total_cells) {
+        y_wall_flat_.resize(total_cells, 0.0);
+        for (int j = 0; j < mesh.total_Ny(); ++j) {
+            for (int i = 0; i < mesh.total_Nx(); ++i) {
+                const int idx = j * stride + i;
+                y_wall_flat_[idx] = mesh.wall_distance(i, j);
+            }
         }
     }
-    const double* wall_dist_ptr = wall_dist_buf.data();
+    const double* wall_dist_ptr = y_wall_flat_.data();
 
     // Model constants for kernel
     const double nu_local = nu_;
