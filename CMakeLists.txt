@@ -400,6 +400,10 @@ if(BUILD_TESTS)
         target_link_libraries(test_hypre_all_bcs nn_cfd_core)
         add_test(NAME HypreAllBCsTest COMMAND test_hypre_all_bcs)
 
+        # HYPRE validation test - compares HYPRE vs Multigrid
+        add_executable(test_hypre_validation tests/test_hypre_validation.cpp)
+        target_link_libraries(test_hypre_validation nn_cfd_core)
+        add_test(NAME HypreValidationTest COMMAND test_hypre_validation)
     endif()
 endif()
 

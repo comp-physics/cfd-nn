@@ -261,6 +261,62 @@ cfg.verbose = true;  // Prints iteration counts and residuals
 | `include/poisson_solver_hypre.hpp` | HYPRE solver class declaration |
 | `src/poisson_solver_hypre.cpp` | HYPRE solver implementation |
 | `CMakeLists.txt` (lines 42-86) | HYPRE build configuration |
+| `tests/test_hypre_all_bcs.cpp` | HYPRE initialization test |
+| `tests/test_hypre_validation.cpp` | HYPRE vs Multigrid comparison test |
+
+## Testing
+
+### Running HYPRE Tests
+
+HYPRE tests require building with the `USE_HYPRE=ON` flag:
+
+```bash
+# Build with HYPRE enabled
+mkdir build_hypre && cd build_hypre
+CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_HYPRE=ON -DBUILD_TESTS=ON
+make -j8
+
+# Run HYPRE tests
+./test_hypre_all_bcs      # Initialization test
+./test_hypre_validation   # HYPRE vs Multigrid comparison
+```
+
+### CI Integration
+
+The CI script supports HYPRE testing with the `--hypre` flag:
+
+```bash
+# Run full test suite with HYPRE
+./scripts/ci.sh --hypre full
+
+# Run only HYPRE tests
+./scripts/ci.sh --hypre hypre
+```
+
+### Test Descriptions
+
+| Test | Description |
+|------|-------------|
+| `test_hypre_all_bcs` | Verifies HYPRE initialization with different BC configurations |
+| `test_hypre_validation` | Compares HYPRE and Multigrid solver results on 3D channel/duct flows |
+
+### Cross-Build Comparison
+
+The `test_hypre_validation` test supports cross-build comparison for CI:
+
+```bash
+# Generate CPU HYPRE reference (requires CPU build with USE_HYPRE=ON)
+./test_hypre_validation --dump-prefix /path/to/ref
+
+# Compare GPU HYPRE against reference (requires GPU build with USE_HYPRE=ON)
+./test_hypre_validation --compare-prefix /path/to/ref
+```
+
+### Known Limitations
+
+1. **ScalarField-based `solve()` method**: The `solve(ScalarField&, ScalarField&)` method has known issues in CUDA mode. Use the `solve_device()` path (which is automatically used by the solver integration) for production.
+
+2. **Test tolerance**: The validation tests compare HYPRE and Multigrid solutions with tolerance 1e-6. Both solvers should produce nearly identical results for well-posed problems.
 
 ## References
 

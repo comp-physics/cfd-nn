@@ -1061,6 +1061,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     hypre_poisson_solver_ = std::make_unique<HyprePoissonSolver>(mesh);
     hypre_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                                    PoissonBC::Neumann, PoissonBC::Neumann);
+    // Use HYPRE if configured
+    use_hypre_ = config.use_hypre;
 #endif
 
 #ifdef USE_GPU_OFFLOAD
