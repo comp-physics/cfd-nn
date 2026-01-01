@@ -96,18 +96,6 @@ data/models/test_*
 !data/models/*_caseholdout/
 !data/models/README.md
 
-# Temp files
-ML_COMPARISON_SUMMARY.txt
-ML_TRAINING_COMPLETE.md
-QUICK_WIN_RESULTS.md
-TRAINING_SUCCESS.md
-PROJECT_STATUS.md
-FINAL_RESULTS.md
-*_SUMMARY.md
-*_RESULTS.md
-*_STATUS.md
-*_COMPLETE.md
-
 *.err
 *.out
 build_*
@@ -126,8 +114,6 @@ logs/
 .cache/
 compile_commands.json
 
-CLUSTER_QUICKSTART.md
-CLUSTER_TRANSFER_GUIDE.md
 data/models/tbnn_channel_real/
 data/models/tbnn_hills_real/
 generate_channel_npz.py
