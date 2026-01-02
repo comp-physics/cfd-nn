@@ -525,6 +525,133 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
     const int Ng = 1;
     const bool is_2d = grid.is2D();
 
+#ifdef USE_GPU_OFFLOAD
+    // GPU path for residual BCs
+    if (gpu_ready_) {
+        const size_t total_size = level_sizes_[level];
+        double* r_ptr = r_ptrs_[level];
+        const int stride = Nx + 2*Ng;
+
+        // Convert BCs to integers for GPU
+        const int bc_x_lo = static_cast<int>(bc_x_lo_);
+        const int bc_x_hi = static_cast<int>(bc_x_hi_);
+        const int bc_y_lo = static_cast<int>(bc_y_lo_);
+        const int bc_y_hi = static_cast<int>(bc_y_hi_);
+        const int bc_z_lo = static_cast<int>(bc_z_lo_);
+        const int bc_z_hi = static_cast<int>(bc_z_hi_);
+
+        if (is_2d) {
+            // 2D GPU path for residual
+            // x-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: r_ptr[0:total_size])
+            for (int j = 0; j < Ny + 2; ++j) {
+                int idx = j * stride;
+                // Left boundary (i=0)
+                if (bc_x_lo == 2) { // Periodic
+                    r_ptr[idx] = r_ptr[idx + Nx];
+                } else { // Neumann/Dirichlet: zero ghost
+                    r_ptr[idx] = 0.0;
+                }
+                // Right boundary (i=Nx+1)
+                if (bc_x_hi == 2) { // Periodic
+                    r_ptr[idx + Nx + Ng] = r_ptr[idx + Ng];
+                } else {
+                    r_ptr[idx + Nx + Ng] = 0.0;
+                }
+            }
+
+            // y-direction boundaries
+            #pragma omp target teams distribute parallel for \
+                map(present: r_ptr[0:total_size])
+            for (int i = 0; i < Nx + 2; ++i) {
+                // Bottom boundary (j=0)
+                if (bc_y_lo == 2) { // Periodic
+                    r_ptr[i] = r_ptr[Ny * stride + i];
+                } else {
+                    r_ptr[i] = 0.0;
+                }
+                // Top boundary (j=Ny+1)
+                if (bc_y_hi == 2) { // Periodic
+                    r_ptr[(Ny + Ng) * stride + i] = r_ptr[Ng * stride + i];
+                } else {
+                    r_ptr[(Ny + Ng) * stride + i] = 0.0;
+                }
+            }
+        } else {
+            // 3D GPU path for residual - unified kernel matching apply_bc
+            const int plane_stride = stride * (Ny + 2*Ng);
+            const int Nx_g = Nx + 2*Ng;
+            const int Ny_g = Ny + 2*Ng;
+            const int Nz_g = Nz + 2*Ng;
+            const int n_total_g = Nx_g * Ny_g * Nz_g;
+
+            #pragma omp target teams distribute parallel for \
+                map(present: r_ptr[0:total_size]) \
+                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, bc_y_lo, bc_y_hi, bc_z_lo, bc_z_hi)
+            for (int idx_g = 0; idx_g < n_total_g; ++idx_g) {
+                int i = idx_g % Nx_g;
+                int j = (idx_g / Nx_g) % Ny_g;
+                int k = idx_g / (Nx_g * Ny_g);
+
+                // Skip interior points
+                if (i >= Ng && i < Nx + Ng && j >= Ng && j < Ny + Ng && k >= Ng && k < Nz + Ng) {
+                    continue;
+                }
+
+                int cell_idx = k * plane_stride + j * stride + i;
+
+                // X-direction boundaries (residual: zero for non-periodic)
+                if (i < Ng) { // Left boundary
+                    if (bc_x_lo == 2) { // Periodic
+                        r_ptr[cell_idx] = r_ptr[k * plane_stride + j * stride + (i + Nx)];
+                    } else {
+                        r_ptr[cell_idx] = 0.0;
+                    }
+                } else if (i >= Nx + Ng) { // Right boundary
+                    if (bc_x_hi == 2) { // Periodic
+                        r_ptr[cell_idx] = r_ptr[k * plane_stride + j * stride + (i - Nx)];
+                    } else {
+                        r_ptr[cell_idx] = 0.0;
+                    }
+                }
+
+                // Y-direction boundaries (may overwrite x-boundary corners)
+                if (j < Ng) { // Bottom boundary
+                    if (bc_y_lo == 2) { // Periodic
+                        r_ptr[cell_idx] = r_ptr[k * plane_stride + (j + Ny) * stride + i];
+                    } else {
+                        r_ptr[cell_idx] = 0.0;
+                    }
+                } else if (j >= Ny + Ng) { // Top boundary
+                    if (bc_y_hi == 2) { // Periodic
+                        r_ptr[cell_idx] = r_ptr[k * plane_stride + (j - Ny) * stride + i];
+                    } else {
+                        r_ptr[cell_idx] = 0.0;
+                    }
+                }
+
+                // Z-direction boundaries (may overwrite x/y-boundary corners)
+                if (k < Ng) { // Back boundary
+                    if (bc_z_lo == 2) { // Periodic
+                        r_ptr[cell_idx] = r_ptr[(k + Nz) * plane_stride + j * stride + i];
+                    } else {
+                        r_ptr[cell_idx] = 0.0;
+                    }
+                } else if (k >= Nz + Ng) { // Front boundary
+                    if (bc_z_hi == 2) { // Periodic
+                        r_ptr[cell_idx] = r_ptr[(k - Nz) * plane_stride + j * stride + i];
+                    } else {
+                        r_ptr[cell_idx] = 0.0;
+                    }
+                }
+            }
+        }
+        return;  // GPU path done
+    }
+#endif
+
+    // CPU fallback path
     // Similar logic to apply_bc but on grid.r instead of grid.u
     if (is_2d) {
         // 2D CPU path for residual
@@ -739,20 +866,31 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                 }
             }
         }
-        // No per-iteration BC update - ghost error is O(h), acceptable for smoother
-    }
-
-    // If odd iterations, final result is in tmp_ptr, need to copy back to u_ptr
-    if (iterations % 2 == 1) {
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)
-        for (size_t idx = 0; idx < total_size; ++idx) {
-            u_ptr[idx] = tmp_ptr[idx];
+        // Apply BCs after each iteration for proper convergence
+        // After even iter: result in tmp_ptr, after odd iter: result in u_ptr
+        // Copy result back to u_ptr and apply_bc to ensure correct ghost values
+        if (iter % 2 == 0) {
+            // Result is in tmp_ptr, copy to u_ptr then apply BCs
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+            for (size_t idx = 0; idx < total_size; ++idx) {
+                u_ptr[idx] = tmp_ptr[idx];
+            }
+        }
+        apply_bc(level);
+        // If we just copied tmp->u and applied BCs, copy BCs back to tmp
+        if (iter % 2 == 0 && iter + 1 < iterations) {
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+            for (size_t idx = 0; idx < total_size; ++idx) {
+                tmp_ptr[idx] = u_ptr[idx];
+            }
         }
     }
 
-    // Apply BCs once at the end (caller may also call apply_bc)
-    apply_bc(level);
+    // Final result should be in u_ptr
+    // If odd iterations, final was written to u_ptr directly, BC already applied
+    // If even iterations, we copied tmp->u and applied BCs in loop
 #else
     // CPU fallback - use standard Jacobi with BCs
     auto& u = grid.u;

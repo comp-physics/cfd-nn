@@ -1069,7 +1069,6 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     // FFT1D: requires periodic x OR z (exactly one) with uniform spacing
     bool fft_applicable = false;
     bool fft1d_applicable = false;
-    int fft1d_periodic_dir = 0;  // 0 = x periodic, 2 = z periodic
 
     // Check which FFT solver is applicable (actual BCs set later via set_velocity_bc)
     // For now, assume defaults: periodic x,z - will be updated in set_velocity_bc
@@ -1099,7 +1098,6 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
                                            PoissonBC::Neumann, PoissonBC::Neumann,
                                            PoissonBC::Neumann, PoissonBC::Neumann);
             fft1d_applicable = true;
-            fft1d_periodic_dir = 0;
         } catch (const std::exception& e) {
             std::cerr << "[Solver] FFT1D solver initialization failed: " << e.what() << "\n";
         }
@@ -1302,7 +1300,6 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 
     // 1D FFT requires periodic in EXACTLY ONE of x or z
     bool fft1d_compatible = (periodic_x != periodic_z) && !mesh_->is2D();
-    int fft1d_dir = periodic_x ? 0 : 2;  // 0 = x periodic, 2 = z periodic
 
     if (fft_poisson_solver_) {
         if (fft_compatible) {

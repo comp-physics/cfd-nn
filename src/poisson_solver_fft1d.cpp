@@ -573,7 +573,6 @@ void FFT1DPoissonSolver::solve_helmholtz_2d(int iterations, double omega) {
     const int total = N_modes_ * N_yz_;
     const int block = 256;
     const int grid = (total + block - 1) / block;
-    const int grid_m0 = (N_yz_ + block - 1) / block;  // Grid for m=0 only
 
     // Grid spacing coefficients
     double ay, az;
