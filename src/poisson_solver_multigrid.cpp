@@ -77,9 +77,9 @@ void MultigridPoissonSolver::create_hierarchy() {
     }
 
     // Coarsen until we reach minimum grid size
-    // Keep deep hierarchy for good convergence (fewer V-cycles needed)
-    // The real GPU optimization is switching to fused Jacobi smoother
-    constexpr int MIN_COARSE_SIZE = 8;
+    // Stop at 32³ to avoid tiny-kernel regime where OMP target overhead dominates
+    // With 32³ coarsest, projection mode with 3-5 V-cycles is effective
+    constexpr int MIN_COARSE_SIZE = 32;
 
     if (is_2d) {
         while (Nx > MIN_COARSE_SIZE && Ny > MIN_COARSE_SIZE) {
@@ -1072,24 +1072,17 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
     if (level == static_cast<int>(levels_.size()) - 1) {
-        // Coarsest level - solve directly
-        // Use weighted Jacobi at coarsest level for GPU efficiency
-        // (1 target region per iteration instead of 2 for RB-SOR)
-        smooth_jacobi(level, 40, 0.8);  // 40 iterations, omega=0.8 for damped Jacobi
+        // Coarsest level - bounded solve, not "exact"
+        // With MIN_COARSE_SIZE=32, coarsest is 32³ which is still a real grid
+        // 10 Jacobi iterations is enough for projection-mode MG
+        smooth_jacobi(level, 10, 0.8);
         return;
     }
 
-    // Adaptive omega based on grid size for stability
-    // Optimal SOR omega ≈ 2/(1+sin(π/N)), but we use more conservative values
-    // to ensure stability with periodic BCs and deep hierarchies
-    auto& grid = *levels_[level];
-    const int N = std::min({grid.Nx, grid.Ny, grid.Nz});
-    double omega = 1.5;  // Default for large grids
-    if (N <= 16) omega = 1.3;
-    if (N <= 8) omega = 1.0;
-
-    // Pre-smoothing (RB-SOR for reliable convergence)
-    smooth(level, nu1, omega);
+    // Pre-smoothing with weighted Jacobi
+    // Jacobi has 1 target region per iteration (vs 2 for RB-SOR)
+    // omega=0.8 (damped Jacobi) for stability
+    smooth_jacobi(level, nu1, 0.8);
     
     // Compute residual
     compute_residual(level);
@@ -1132,8 +1125,10 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     prolongate_correction(level + 1);
     apply_bc(level);
 
-    // Post-smoothing (RB-SOR for reliable convergence)
-    smooth(level, nu2, omega);
+    // Post-smoothing with weighted Jacobi (projection mode: nu2=0 skips this)
+    if (nu2 > 0) {
+        smooth_jacobi(level, nu2, 0.8);
+    }
 }
 
 double MultigridPoissonSolver::compute_max_residual(int level) {
@@ -1313,22 +1308,16 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     
     apply_bc(0);
     
-    // Perform V-cycles until converged
-    // Interpret cfg.max_iter as "max Poisson iterations per solve".
-    // For multigrid, one V-cycle is one iteration, so cfg.max_iter directly
-    // bounds the number of cycles. If cfg.max_iter <= 0, fall back to 10.
-    const int max_cycles = (cfg.max_iter > 0) ? cfg.max_iter : 10;
-    
-    int cycle = 0;
-    for (; cycle < max_cycles; ++cycle) {
-        vcycle(0, 2, 2);  // Reduced from (3,3) to (2,2) for better performance
-        
-        // Check convergence after each cycle
-        residual_ = compute_max_residual(0);
-        
-        if (residual_ < cfg.tol) {
-            break;
-        }
+    // Projection-mode MG: fixed number of V-cycles, no per-cycle residual check
+    // This is appropriate for pressure projection where "good enough" suffices
+    // and per-cycle residual computation adds significant overhead
+    //
+    // nu1=1, nu2=0: one pre-smooth sweep, no post-smooth (projection style)
+    // 3-5 V-cycles is typically sufficient for projection
+    const int projection_cycles = 3;  // Fixed V-cycles for projection mode
+
+    for (int cycle = 0; cycle < projection_cycles; ++cycle) {
+        vcycle(0, 1, 0);  // Projection mode: nu1=1, nu2=0
     }
     
     // Final residual
@@ -1372,7 +1361,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         }
     }
 
-    return cycle + 1;
+    return projection_cycles;  // Fixed number of V-cycles in projection mode
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -1409,32 +1398,16 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     
     apply_bc(0);
     
-    // Perform V-cycles until converged (all operations already on device)
-    // Interpret cfg.max_iter as "max Poisson iterations per solve".
-    // For multigrid, one V-cycle is one iteration, so cfg.max_iter directly
-    // bounds the number of cycles. If cfg.max_iter <= 0, fall back to 10.
-    const int max_cycles = (cfg.max_iter > 0) ? cfg.max_iter : 10;
-    
-    // Configurable residual monitoring interval (check every N cycles)
-    // Only copy residual back to CPU when checking (reduces DtoH transfers)
-    static const char* env_check_interval = std::getenv("NNCFD_POISSON_RESIDUAL_CHECK_INTERVAL");
-    const int check_interval = env_check_interval ? std::atoi(env_check_interval) : 1;
-    
-    int cycle = 0;
-    for (; cycle < max_cycles; ++cycle) {
-        vcycle(0, 2, 2);  // Reduced from (3,3) to (2,2) for better performance
-        
-        // Only check convergence every 'check_interval' cycles (or on last cycle)
-        bool should_check = (cycle % check_interval == 0) || (cycle == max_cycles - 1);
-        
-        if (should_check) {
-            // Compute residual on GPU, then copy result to CPU for convergence check
-            residual_ = compute_max_residual(0);
-            
-            if (residual_ < cfg.tol) {
-                break;
-            }
-        }
+    // Projection-mode MG: fixed number of V-cycles, no per-cycle residual check
+    // This is appropriate for pressure projection where "good enough" suffices
+    // and per-cycle residual computation adds significant overhead
+    //
+    // nu1=1, nu2=0: one pre-smooth sweep, no post-smooth (projection style)
+    // 3-5 V-cycles is typically sufficient for projection
+    const int projection_cycles = 3;  // Fixed V-cycles for projection mode
+
+    for (int cycle = 0; cycle < projection_cycles; ++cycle) {
+        vcycle(0, 1, 0);  // Projection mode: nu1=1, nu2=0
     }
     
     // Final residual (always compute at end for diagnostics)
@@ -1461,7 +1434,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         p_present[idx] = u_dev[idx];
     }
 
-    return cycle + 1;
+    return projection_cycles;  // Fixed number of V-cycles in projection mode
 }
 
 void MultigridPoissonSolver::initialize_gpu_buffers() {
