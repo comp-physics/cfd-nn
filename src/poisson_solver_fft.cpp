@@ -823,7 +823,7 @@ void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
 // CUDA Kernel Launchers (run on stream_ for GPU-resident operation)
 // ============================================================================
 
-void FFTPoissonSolver::launch_pack_and_sum(double* rhs_ptr) {
+void FFTPoissonSolver::launch_pack_and_sum(double* rhs_dev) {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Nz = mesh_->Nz;
@@ -831,33 +831,26 @@ void FFTPoissonSolver::launch_pack_and_sum(double* rhs_ptr) {
     const int Nx_full = Nx + 2 * Ng;
     const int Ny_full = Ny + 2 * Ng;
     const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
-    const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
 
-    // Use OMP target for pack (rhs_ptr is OMP-mapped, not directly usable by CUDA kernels)
-    // OMP target runs on default stream (0), we'll sync with events
-    double* packed = rhs_packed_;
-    double sum = 0.0;
+    // PURE CUDA: rhs_dev is already a CUDA device pointer (via omp_get_mapped_ptr)
+    const int block_size = 256;
+    const int num_blocks = (n_total + block_size - 1) / block_size;
 
-    #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum) \
-        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
-    for (int i = 0; i < Nx; ++i) {
-        for (int k = 0; k < Nz; ++k) {
-            for (int j = 0; j < Ny; ++j) {
-                // Source index with ghosts: [k+Ng][j+Ng][i+Ng]
-                const size_t src_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
-                                       (j + Ng) * Nx_full + (i + Ng);
-                // Destination: [(i*Nz + k)][j] with j fastest
-                const size_t dst_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
-                double val = rhs_ptr[src_idx];
-                packed[dst_idx] = val;
-                sum += val;
-            }
-        }
+    // Allocate/resize partial sums buffer if needed
+    if (g_partial_sums_size < static_cast<size_t>(num_blocks)) {
+        if (g_partial_sums) cudaFree(g_partial_sums);
+        cudaMalloc(&g_partial_sums, sizeof(double) * num_blocks);
+        g_partial_sums_size = num_blocks;
     }
 
-    // Store sum to device (OMP target implicit sync means sum is now valid on host)
-    // Copy to device for use by subtract_mean kernel
-    cudaMemcpyAsync(sum_dev_, &sum, sizeof(double), cudaMemcpyHostToDevice, stream_);
+    // Launch pack + partial sum kernel on stream_
+    kernel_pack_and_partial_sum<<<num_blocks, block_size, 0, stream_>>>(
+        rhs_dev, rhs_packed_, g_partial_sums,
+        Nx, Ny, Nz, Ng, Nx_full, Ny_full);
+
+    // Launch final reduction kernel to compute total sum into sum_dev_
+    kernel_final_reduce<<<1, 256, 0, stream_>>>(
+        g_partial_sums, sum_dev_, num_blocks);
 }
 
 void FFTPoissonSolver::launch_subtract_mean(size_t n_total) {
@@ -869,70 +862,24 @@ void FFTPoissonSolver::launch_subtract_mean(size_t n_total) {
         rhs_packed_, sum_dev_, n_total);
 }
 
-void FFTPoissonSolver::launch_unpack_and_bc(double* p_ptr) {
+void FFTPoissonSolver::launch_unpack_and_bc(double* p_dev) {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Nz = mesh_->Nz;
     const int Ng = mesh_->Nghost;
     const int Nx_full = Nx + 2 * Ng;
     const int Ny_full = Ny + 2 * Ng;
-    const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
+    const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
     const double norm = 1.0 / (Nx * Nz);  // FFT normalization
 
-    double* packed = p_packed_;
+    // PURE CUDA: p_dev is already a CUDA device pointer (via omp_get_mapped_ptr)
+    const int block_size = 256;
+    const int num_blocks = (n_total + block_size - 1) / block_size;
 
-    // Use OMP target for unpack (p_ptr is OMP-mapped, not directly usable by CUDA kernels)
-    // FUSED: Unpack interior + fill all ghost cells in one pass
-    #pragma omp target teams distribute parallel for collapse(3) \
-        map(present: p_ptr[0:total_size]) is_device_ptr(packed)
-    for (int i = 0; i < Nx; ++i) {
-        for (int k = 0; k < Nz; ++k) {
-            for (int j = 0; j < Ny; ++j) {
-                // Source: [(i*Nz + k)][j] with j fastest
-                const size_t src_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
-                const double val = packed[src_idx] * norm;
-
-                // Destination with ghosts: [k+Ng][j+Ng][i+Ng]
-                const size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
-                                       (j + Ng) * Nx_full + (i + Ng);
-                p_ptr[dst_idx] = val;
-
-                // Fill x-ghosts for boundary cells (periodic)
-                if (i == 0) {
-                    // x_lo ghost: copy from x_hi interior (i=Nx-1)
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + 0] =
-                        packed[static_cast<size_t>((Nx - 1) * Nz + k) * Ny + j] * norm;
-                }
-                if (i == Nx - 1) {
-                    // x_hi ghost: copy from x_lo interior (i=0)
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Nx + Ng)] =
-                        packed[static_cast<size_t>(0 * Nz + k) * Ny + j] * norm;
-                }
-
-                // Fill y-ghosts for boundary cells (Neumann: dp/dy=0)
-                if (j == 0) {
-                    // y_lo ghost: copy from first interior row
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + 0 * Nx_full + (i + Ng)] = val;
-                }
-                if (j == Ny - 1) {
-                    // y_hi ghost: copy from last interior row
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + (Ny + Ng) * Nx_full + (i + Ng)] = val;
-                }
-
-                // Fill z-ghosts for boundary cells (periodic)
-                if (k == 0) {
-                    // z_lo ghost: copy from z_hi interior (k=Nz-1)
-                    p_ptr[0 * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
-                        packed[static_cast<size_t>(i * Nz + (Nz - 1)) * Ny + j] * norm;
-                }
-                if (k == Nz - 1) {
-                    // z_hi ghost: copy from z_lo interior (k=0)
-                    p_ptr[(Nz + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
-                        packed[static_cast<size_t>(i * Nz + 0) * Ny + j] * norm;
-                }
-            }
-        }
-    }
+    // Launch unpack + BC kernel on stream_
+    kernel_unpack_and_bc<<<num_blocks, block_size, 0, stream_>>>(
+        p_packed_, p_dev,
+        Nx, Ny, Nz, Ng, Nx_full, Ny_full, norm);
 }
 
 int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
@@ -946,29 +893,25 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
     const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
 
     // ========================================================================
-    // HYBRID OMP/CUDA SOLVE: OMP for pack/unpack, CUDA for FFT/tridiag
+    // PURE CUDA SOLVE: All operations on stream_ (no OMP target regions)
     // ========================================================================
     //
-    // Data flow:
-    //   rhs_ptr → [OMP pack+sum] → [CUDA subtract_mean+cuFFT+cuSPARSE] → [OMP unpack+BC] → p_ptr
+    // Data flow (all on stream_):
+    //   rhs_dev → [pack+sum] → [subtract_mean] → [cuFFT R2C] →
+    //   [cuSPARSE tridiag] → [cuFFT C2R] → [unpack+BC] → p_dev
     //
-    // Synchronization:
-    //   - OMP target regions run on stream 0 with implicit sync
-    //   - cuFFT/cuSPARSE run on stream_
-    //   - Events used for stream-to-stream ordering
+    // No inter-stream sync needed - everything runs on stream_
     // ========================================================================
 
-    // Step 1: Pack RHS + compute sum (OMP target on stream 0)
-    // Returns host sum, copies to sum_dev_ via cudaMemcpyAsync on stream_
-    launch_pack_and_sum(rhs_ptr);
+    // Convert OMP-mapped host pointers to CUDA device pointers
+    int device = omp_get_default_device();
+    double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_ptr, device));
+    double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_ptr, device));
 
-    // Record event after OMP pack completes (OMP target has implicit sync)
-    // This ensures rhs_packed_ data is visible to stream_
-    cudaEventRecord(ev_pack_done_, 0);
-    cudaStreamWaitEvent(stream_, ev_pack_done_, 0);
+    // Step 1: Pack RHS + compute sum (CUDA kernel on stream_)
+    launch_pack_and_sum(rhs_dev);
 
-    // Step 2: Subtract mean from packed RHS (CUDA kernel, stream_)
-    // Note: cudaMemcpyAsync in launch_pack_and_sum is on stream_, so it's ordered
+    // Step 2: Subtract mean from packed RHS (CUDA kernel on stream_)
     launch_subtract_mean(n_total);
 
     // Step 3: Forward 2D FFT (R2C) - runs on stream_
@@ -1061,15 +1004,12 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
         throw std::runtime_error("cuFFT C2R failed");
     }
 
-    // Record event when stream_ work (FFT) is complete
-    // Make stream 0 (OMP) wait for it before unpack
-    cudaEventRecord(ev_fft_done_, stream_);
-    cudaStreamWaitEvent(0, ev_fft_done_, 0);
+    // Step 6: Unpack solution + apply BCs (CUDA kernel on stream_)
+    launch_unpack_and_bc(p_dev);
 
-    // Step 6: Unpack solution + apply BCs (OMP target on stream 0)
-    launch_unpack_and_bc(p_ptr);
-
-    // OMP target has implicit sync, so p_ptr is ready when we return
+    // Sync stream_ to ensure data is visible to caller (OMP may use it next)
+    // This is the only sync point - all work was on stream_
+    cudaStreamSynchronize(stream_);
 
     residual_ = 0.0;  // Direct solver, no residual
     return 1;  // "1 iteration" for a direct solver
