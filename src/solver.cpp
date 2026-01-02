@@ -1242,6 +1242,26 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
         }
 #endif
     }
+
+    // Re-check FFT applicability after BC update
+    // FFT requires periodic in BOTH x and z directions
+#ifdef USE_FFT_POISSON
+    if (fft_poisson_solver_) {
+        bool periodic_x = (p_x_lo == PoissonBC::Periodic && p_x_hi == PoissonBC::Periodic);
+        bool periodic_z = (p_z_lo == PoissonBC::Periodic && p_z_hi == PoissonBC::Periodic);
+        bool fft_compatible = periodic_x && periodic_z && !mesh_->is2D();
+
+        if (fft_compatible) {
+            // Update FFT solver BCs
+            fft_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        } else if (selected_solver_ == PoissonSolverType::FFT) {
+            // FFT was selected but BCs are now incompatible - switch to MG
+            std::cerr << "[Poisson] Warning: FFT solver incompatible with BCs "
+                      << "(requires periodic x AND z). Switching to MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+        }
+    }
+#endif
 }
 
 void RANSSolver::set_body_force(double fx, double fy, double fz) {
