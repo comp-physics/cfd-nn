@@ -1,0 +1,733 @@
+#ifdef USE_GPU_OFFLOAD
+
+#include "poisson_solver_fft1d.hpp"
+#include <iostream>
+#include <cmath>
+#include <stdexcept>
+
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#include <cuda_runtime.h>
+#endif
+
+namespace nncfd {
+
+// ============================================================================
+// CUDA Kernels
+// ============================================================================
+
+#ifdef USE_GPU_OFFLOAD
+
+// Pack kernel: ghost layout -> packed x-lines
+// Thread mapping: tid indexes packed array linearly, decompose to (i, j, k)
+// Coalesced: consecutive threads vary i first
+__global__ void kernel_pack_ghost_to_lines(
+    const double* __restrict__ rhs_ghost,
+    double* __restrict__ in_pack,
+    double* __restrict__ partial_sums,
+    int Nx, int Ny, int Nz,
+    int stride, int plane_stride)
+{
+    extern __shared__ double sdata[];
+
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = Nx * Ny * Nz;
+
+    double local_sum = 0.0;
+
+    if (tid < total) {
+        const int i = tid % Nx;
+        const int b = tid / Nx;      // b = j*Nz + k
+        const int j = b / Nz;
+        const int k = b - j * Nz;
+
+        // Ghost index: (k+1)*plane_stride + (j+1)*stride + (i+1)
+        const size_t g = (size_t)(k + 1) * (size_t)plane_stride
+                       + (size_t)(j + 1) * (size_t)stride
+                       + (size_t)(i + 1);
+
+        double val = rhs_ghost[g];
+
+        // Packed index: b*Nx + i
+        in_pack[(size_t)b * (size_t)Nx + (size_t)i] = val;
+        local_sum = val;
+    }
+
+    // Block reduction for mean computation
+    sdata[threadIdx.x] = local_sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        partial_sums[blockIdx.x] = sdata[0];
+    }
+}
+
+// Final reduction kernel
+__global__ void kernel_reduce_sum(
+    const double* __restrict__ partial_sums,
+    double* __restrict__ sum_out,
+    int num_blocks)
+{
+    extern __shared__ double sdata[];
+
+    double sum = 0.0;
+    for (int i = threadIdx.x; i < num_blocks; i += blockDim.x) {
+        sum += partial_sums[i];
+    }
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        sum_out[0] = sdata[0];
+    }
+}
+
+// Subtract mean from packed array
+__global__ void kernel_subtract_mean(
+    double* __restrict__ in_pack,
+    const double* __restrict__ sum_dev,
+    int total)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < total) {
+        double mean = sum_dev[0] / (double)total;
+        in_pack[tid] -= mean;
+    }
+}
+
+// Unpack kernel: packed x-lines -> ghost layout with normalization
+__global__ void kernel_unpack_lines_to_ghost(
+    const double* __restrict__ out_pack,
+    double* __restrict__ p_ghost,
+    int Nx, int Ny, int Nz,
+    int stride, int plane_stride,
+    double invNx)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = Nx * Ny * Nz;
+    if (tid >= total) return;
+
+    const int i = tid % Nx;
+    const int b = tid / Nx;      // b = j*Nz + k
+    const int j = b / Nz;
+    const int k = b - j * Nz;
+
+    const size_t g = (size_t)(k + 1) * (size_t)plane_stride
+                   + (size_t)(j + 1) * (size_t)stride
+                   + (size_t)(i + 1);
+
+    p_ghost[g] = out_pack[(size_t)b * (size_t)Nx + (size_t)i] * invNx;
+}
+
+// 2D Helmholtz Jacobi iteration kernel
+// Processes all modes in parallel
+// Layout: p_hat[m * N_yz + j * Nz + k] where k is fastest
+// For Neumann BCs: fold ghost contribution into diagonal
+__global__ void kernel_helmholtz_jacobi_2d(
+    const double* __restrict__ rhs_real,
+    const double* __restrict__ rhs_imag,
+    const double* __restrict__ p_real_in,
+    const double* __restrict__ p_imag_in,
+    double* __restrict__ p_real_out,
+    double* __restrict__ p_imag_out,
+    const double* __restrict__ lambda,
+    int N_modes, int Ny, int Nz,
+    double ay, double az,
+    double omega,
+    int bc_y_lo, int bc_y_hi,
+    int bc_z_lo, int bc_z_hi)
+{
+    // Thread indexes into [m, j, k] space
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = N_modes * Ny * Nz;
+    if (tid >= total) return;
+
+    const int k = tid % Nz;
+    const int rem = tid / Nz;
+    const int j = rem % Ny;
+    const int m = rem / Ny;
+
+    const int N_yz = Ny * Nz;
+    const int idx = m * N_yz + j * Nz + k;
+
+    // Compute diagonal (SPD form)
+    // Interior: D = 2*ay + 2*az + lambda[m]
+    double D = 2.0 * ay + 2.0 * az + lambda[m];
+
+    // Boundary adjustments (fold ghost into diagonal)
+    // Neumann: reduce D by missing neighbor coefficient
+    bool at_y_lo = (j == 0);
+    bool at_y_hi = (j == Ny - 1);
+    bool at_z_lo = (k == 0);
+    bool at_z_hi = (k == Nz - 1);
+
+    if (at_y_lo && bc_y_lo == 1) D -= ay;  // Neumann
+    if (at_y_hi && bc_y_hi == 1) D -= ay;
+    if (at_z_lo && bc_z_lo == 1) D -= az;
+    if (at_z_hi && bc_z_hi == 1) D -= az;
+
+    // For m=0 with all-Neumann, D could be very small -> pin p[0,0]=0
+    // This is handled separately; here we just ensure D > 0
+    if (D < 1e-14) D = 1e-14;
+
+    double inv_D = 1.0 / D;
+
+    // Compute Ap for both real and imaginary parts
+    // A = D*I - ay*(N+S) - az*(E+W) in SPD form
+    // But we compute: residual = b - Ap, update = omega * residual / D
+
+    double p_r = p_real_in[idx];
+    double p_i = p_imag_in[idx];
+
+    // Neighbor contributions (handle boundaries)
+    double sum_r = 0.0, sum_i = 0.0;
+
+    // South (j-1)
+    if (j > 0) {
+        int idx_s = m * N_yz + (j-1) * Nz + k;
+        sum_r += ay * p_real_in[idx_s];
+        sum_i += ay * p_imag_in[idx_s];
+    }
+    // North (j+1)
+    if (j < Ny - 1) {
+        int idx_n = m * N_yz + (j+1) * Nz + k;
+        sum_r += ay * p_real_in[idx_n];
+        sum_i += ay * p_imag_in[idx_n];
+    }
+    // West (k-1)
+    if (k > 0) {
+        int idx_w = m * N_yz + j * Nz + (k-1);
+        sum_r += az * p_real_in[idx_w];
+        sum_i += az * p_imag_in[idx_w];
+    }
+    // East (k+1)
+    if (k < Nz - 1) {
+        int idx_e = m * N_yz + j * Nz + (k+1);
+        sum_r += az * p_real_in[idx_e];
+        sum_i += az * p_imag_in[idx_e];
+    }
+
+    // Ap = D*p - sum_neighbors
+    double Ap_r = D * p_r - sum_r;
+    double Ap_i = D * p_i - sum_i;
+
+    // Residual = b - Ap
+    double res_r = rhs_real[idx] - Ap_r;
+    double res_i = rhs_imag[idx] - Ap_i;
+
+    // Jacobi update: p_new = p + omega * res / D
+    p_real_out[idx] = p_r + omega * res_r * inv_D;
+    p_imag_out[idx] = p_i + omega * res_i * inv_D;
+}
+
+// Pin m=0, (j=0, k=0) to zero for gauge
+__global__ void kernel_pin_zero_mode(
+    double* __restrict__ p_real,
+    double* __restrict__ p_imag,
+    int N_yz)
+{
+    // Mode m=0 is at index 0..N_yz-1
+    // Pin (j=0, k=0) which is index 0
+    p_real[0] = 0.0;
+    p_imag[0] = 0.0;
+}
+
+// Convert complex array to split real/imag
+__global__ void kernel_complex_to_split(
+    const cufftDoubleComplex* __restrict__ c,
+    double* __restrict__ real,
+    double* __restrict__ imag,
+    int total)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    real[tid] = c[tid].x;
+    imag[tid] = c[tid].y;
+}
+
+// Convert complex array to split real/imag with negation
+__global__ void kernel_complex_to_split_negate(
+    const cufftDoubleComplex* __restrict__ c,
+    double* __restrict__ real,
+    double* __restrict__ imag,
+    int total)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    real[tid] = -c[tid].x;
+    imag[tid] = -c[tid].y;
+}
+
+// Convert split real/imag to complex array
+__global__ void kernel_split_to_complex(
+    const double* __restrict__ real,
+    const double* __restrict__ imag,
+    cufftDoubleComplex* __restrict__ c,
+    int total)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    c[tid].x = real[tid];
+    c[tid].y = imag[tid];
+}
+
+#endif // USE_GPU_OFFLOAD
+
+// ============================================================================
+// FFT1DPoissonSolver Implementation
+// ============================================================================
+
+FFT1DPoissonSolver::FFT1DPoissonSolver(const Mesh& mesh, int periodic_dir)
+    : mesh_(&mesh)
+    , periodic_dir_(periodic_dir)
+    , Nx_(mesh.Nx)
+    , Ny_(mesh.Ny)
+    , Nz_(mesh.Nz)
+    , dx_(mesh.dx)
+    , dy_(mesh.dy)
+    , dz_(mesh.dz)
+{
+    if (mesh.is2D()) {
+        throw std::runtime_error("FFT1DPoissonSolver requires 3D mesh");
+    }
+
+    if (periodic_dir != 0 && periodic_dir != 2) {
+        throw std::runtime_error("periodic_dir must be 0 (x) or 2 (z)");
+    }
+
+    // Set up dimensions based on periodic direction
+    if (periodic_dir_ == 0) {
+        // x is periodic
+        N_periodic_ = Nx_;
+        d_periodic_ = dx_;
+        N_yz_ = Ny_ * Nz_;
+    } else {
+        // z is periodic
+        N_periodic_ = Nz_;
+        d_periodic_ = dz_;
+        N_yz_ = Nx_ * Ny_;
+    }
+
+    N_modes_ = N_periodic_ / 2 + 1;
+
+#ifdef USE_GPU_OFFLOAD
+    initialize_fft();
+    initialize_eigenvalues();
+#endif
+}
+
+FFT1DPoissonSolver::~FFT1DPoissonSolver() {
+#ifdef USE_GPU_OFFLOAD
+    cleanup();
+#endif
+}
+
+void FFT1DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
+                                 PoissonBC y_lo, PoissonBC y_hi,
+                                 PoissonBC z_lo, PoissonBC z_hi) {
+    if (periodic_dir_ == 0) {
+        // x must be periodic
+        if (x_lo != PoissonBC::Periodic || x_hi != PoissonBC::Periodic) {
+            throw std::runtime_error("FFT1DPoissonSolver: x must be periodic when periodic_dir=0");
+        }
+        bc_y_lo_ = y_lo;
+        bc_y_hi_ = y_hi;
+        bc_z_lo_ = z_lo;
+        bc_z_hi_ = z_hi;
+    } else {
+        // z must be periodic
+        if (z_lo != PoissonBC::Periodic || z_hi != PoissonBC::Periodic) {
+            throw std::runtime_error("FFT1DPoissonSolver: z must be periodic when periodic_dir=2");
+        }
+        bc_x_lo_ = x_lo;
+        bc_x_hi_ = x_hi;
+        bc_y_lo_ = y_lo;
+        bc_y_hi_ = y_hi;
+    }
+}
+
+bool FFT1DPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
+                                      PoissonBC y_lo, PoissonBC y_hi,
+                                      PoissonBC z_lo, PoissonBC z_hi,
+                                      bool uniform_x, bool uniform_z,
+                                      bool is_3d) {
+    if (!is_3d) return false;
+
+    bool x_periodic = (x_lo == PoissonBC::Periodic && x_hi == PoissonBC::Periodic);
+    bool z_periodic = (z_lo == PoissonBC::Periodic && z_hi == PoissonBC::Periodic);
+
+    // Exactly one of x,z must be periodic
+    if (x_periodic == z_periodic) return false;  // Both or neither
+
+    // The periodic direction must have uniform spacing
+    if (x_periodic && !uniform_x) return false;
+    if (z_periodic && !uniform_z) return false;
+
+    return true;
+}
+
+#ifdef USE_GPU_OFFLOAD
+
+void FFT1DPoissonSolver::initialize_fft() {
+    // Create CUDA stream
+    cudaStreamCreate(&stream_);
+
+    const int batch = N_yz_;
+    const int N = N_periodic_;
+
+    // Allocate packed buffers
+    size_t pack_size = (size_t)batch * N;
+    size_t hat_size = (size_t)N_modes_ * N_yz_;
+
+    cudaMalloc(&in_pack_, pack_size * sizeof(double));
+    cudaMalloc(&out_pack_, pack_size * sizeof(double));
+    cudaMalloc(&rhs_hat_, hat_size * sizeof(cufftDoubleComplex));
+    cudaMalloc(&p_hat_, hat_size * sizeof(cufftDoubleComplex));
+
+    // Allocate work buffers for split real/imag
+    cudaMalloc(&work_real_, hat_size * sizeof(double));
+    cudaMalloc(&work_imag_, hat_size * sizeof(double));
+
+    // Allocate eigenvalue array
+    cudaMalloc(&lambda_, N_modes_ * sizeof(double));
+
+    // Allocate reduction buffers
+    int block = 256;
+    num_blocks_ = ((int)pack_size + block - 1) / block;
+    cudaMalloc(&partial_sums_, num_blocks_ * sizeof(double));
+    cudaMalloc(&sum_dev_, sizeof(double));
+
+    // Create cuFFT plans
+    // Forward: D2Z (real to complex)
+    // Layout: input is [batch][N], output is [mode][batch] (mode-major)
+
+    int rank = 1;
+    int n[1] = { N };
+    int inembed[1] = { N };
+    int onembed[1] = { N_modes_ };
+
+    // Input: istride=1 (contiguous x-lines), idist=N (next batch)
+    int istride = 1;
+    int idist = N;
+
+    // Output: ostride=N_yz (mode-major), odist=1 (batches contiguous)
+    int ostride = N_yz_;
+    int odist = 1;
+
+    cufftResult result = cufftPlanMany(&fft_plan_r2c_, rank, n,
+                                        inembed, istride, idist,
+                                        onembed, ostride, odist,
+                                        CUFFT_D2Z, batch);
+    if (result != CUFFT_SUCCESS) {
+        throw std::runtime_error("Failed to create cuFFT D2Z plan");
+    }
+    cufftSetStream(fft_plan_r2c_, stream_);
+
+    // Inverse: Z2D (complex to real)
+    // Input is mode-major, output is batch-major
+    int istride_c = N_yz_;
+    int idist_c = 1;
+    int ostride_r = 1;
+    int odist_r = N;
+
+    result = cufftPlanMany(&fft_plan_c2r_, rank, n,
+                           onembed, istride_c, idist_c,
+                           inembed, ostride_r, odist_r,
+                           CUFFT_Z2D, batch);
+    if (result != CUFFT_SUCCESS) {
+        throw std::runtime_error("Failed to create cuFFT Z2D plan");
+    }
+    cufftSetStream(fft_plan_c2r_, stream_);
+
+    plans_created_ = true;
+
+    std::cout << "[FFT1DPoissonSolver] Initialized (periodic_dir=" << periodic_dir_
+              << ", N=" << N << ", modes=" << N_modes_ << ", batch=" << batch << ")\n";
+}
+
+void FFT1DPoissonSolver::initialize_eigenvalues() {
+    // Precompute discrete eigenvalues: lambda[m] = (2 - 2*cos(2*pi*m/N)) / h^2
+    const int N = N_periodic_;
+    const double h2 = d_periodic_ * d_periodic_;
+
+    std::vector<double> lambda_host(N_modes_);
+    for (int m = 0; m < N_modes_; ++m) {
+        double theta = 2.0 * M_PI * m / N;
+        lambda_host[m] = (2.0 - 2.0 * std::cos(theta)) / h2;
+    }
+
+    cudaMemcpy(lambda_, lambda_host.data(), N_modes_ * sizeof(double), cudaMemcpyHostToDevice);
+}
+
+void FFT1DPoissonSolver::cleanup() {
+    if (plans_created_) {
+        cufftDestroy(fft_plan_r2c_);
+        cufftDestroy(fft_plan_c2r_);
+    }
+    if (stream_) cudaStreamDestroy(stream_);
+    if (in_pack_) cudaFree(in_pack_);
+    if (out_pack_) cudaFree(out_pack_);
+    if (rhs_hat_) cudaFree(rhs_hat_);
+    if (p_hat_) cudaFree(p_hat_);
+    if (work_real_) cudaFree(work_real_);
+    if (work_imag_) cudaFree(work_imag_);
+    if (lambda_) cudaFree(lambda_);
+    if (partial_sums_) cudaFree(partial_sums_);
+    if (sum_dev_) cudaFree(sum_dev_);
+}
+
+void FFT1DPoissonSolver::solve_helmholtz_2d(int iterations, double omega) {
+    const int total = N_modes_ * N_yz_;
+    const int block = 256;
+    const int grid = (total + block - 1) / block;
+
+    // Grid spacing coefficients
+    double ay, az;
+    int Ny_solve, Nz_solve;
+    int bc_y_lo_int, bc_y_hi_int, bc_z_lo_int, bc_z_hi_int;
+
+    if (periodic_dir_ == 0) {
+        // x periodic: solve in (y,z) plane
+        ay = 1.0 / (dy_ * dy_);
+        az = 1.0 / (dz_ * dz_);
+        Ny_solve = Ny_;
+        Nz_solve = Nz_;
+        bc_y_lo_int = static_cast<int>(bc_y_lo_);
+        bc_y_hi_int = static_cast<int>(bc_y_hi_);
+        bc_z_lo_int = static_cast<int>(bc_z_lo_);
+        bc_z_hi_int = static_cast<int>(bc_z_hi_);
+    } else {
+        // z periodic: solve in (x,y) plane
+        // Reinterpret: "y" in kernel = x, "z" in kernel = y
+        ay = 1.0 / (dx_ * dx_);
+        az = 1.0 / (dy_ * dy_);
+        Ny_solve = Nx_;
+        Nz_solve = Ny_;
+        bc_y_lo_int = static_cast<int>(bc_x_lo_);
+        bc_y_hi_int = static_cast<int>(bc_x_hi_);
+        bc_z_lo_int = static_cast<int>(bc_y_lo_);
+        bc_z_hi_int = static_cast<int>(bc_y_hi_);
+    }
+
+    // Ping-pong buffers for Jacobi iteration
+    double* p_real_in = work_real_;
+    double* p_imag_in = work_imag_;
+    double* p_real_out;
+    double* p_imag_out;
+
+    // We need a second set of buffers for ping-pong
+    // Reuse rhs storage after first iteration (RHS is consumed)
+    // Actually, let's allocate temporary or use p_hat as second buffer
+    // For simplicity, use device-side allocation (or we can allocate in init)
+
+    // Simpler approach: just do in-place with synchronization
+    // Or: use rhs as ping buffer, work as pong buffer
+
+    // Initialize solution to zero
+    cudaMemsetAsync(work_real_, 0, total * sizeof(double), stream_);
+    cudaMemsetAsync(work_imag_, 0, total * sizeof(double), stream_);
+
+    // Convert RHS from complex to split
+    // rhs_hat is the input, we need it in split form
+    // Let's use p_hat as temporary for RHS split storage
+    double* rhs_real = nullptr;
+    double* rhs_imag = nullptr;
+    cudaError_t err;
+    err = cudaMalloc(&rhs_real, total * sizeof(double));
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] cudaMalloc rhs_real failed: " << cudaGetErrorString(err) << "\n";
+        return;
+    }
+    err = cudaMalloc(&rhs_imag, total * sizeof(double));
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] cudaMalloc rhs_imag failed: " << cudaGetErrorString(err) << "\n";
+        cudaFree(rhs_real);
+        return;
+    }
+
+    // Convert and NEGATE the RHS: we solve (-L_yz + λ*I) * p = -rhs
+    // This makes the system SPD for Jacobi iteration
+    kernel_complex_to_split_negate<<<grid, block, 0, stream_>>>(rhs_hat_, rhs_real, rhs_imag, total);
+
+    // For ping-pong, we need two solution buffers
+    // Use work_real_/work_imag_ as buffer A, allocate buffer B
+    double* p_real_B = nullptr;
+    double* p_imag_B = nullptr;
+    err = cudaMalloc(&p_real_B, total * sizeof(double));
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] cudaMalloc p_real_B failed: " << cudaGetErrorString(err) << "\n";
+        cudaFree(rhs_real); cudaFree(rhs_imag);
+        return;
+    }
+    err = cudaMalloc(&p_imag_B, total * sizeof(double));
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] cudaMalloc p_imag_B failed: " << cudaGetErrorString(err) << "\n";
+        cudaFree(rhs_real); cudaFree(rhs_imag); cudaFree(p_real_B);
+        return;
+    }
+    cudaMemsetAsync(p_real_B, 0, total * sizeof(double), stream_);
+    cudaMemsetAsync(p_imag_B, 0, total * sizeof(double), stream_);
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        if (iter % 2 == 0) {
+            p_real_in = work_real_;
+            p_imag_in = work_imag_;
+            p_real_out = p_real_B;
+            p_imag_out = p_imag_B;
+        } else {
+            p_real_in = p_real_B;
+            p_imag_in = p_imag_B;
+            p_real_out = work_real_;
+            p_imag_out = work_imag_;
+        }
+
+        kernel_helmholtz_jacobi_2d<<<grid, block, 0, stream_>>>(
+            rhs_real, rhs_imag,
+            p_real_in, p_imag_in,
+            p_real_out, p_imag_out,
+            lambda_,
+            N_modes_, Ny_solve, Nz_solve,
+            ay, az, omega,
+            bc_y_lo_int, bc_y_hi_int, bc_z_lo_int, bc_z_hi_int
+        );
+
+        // Pin m=0, (0,0) to zero for gauge (every iteration for stability)
+        kernel_pin_zero_mode<<<1, 1, 0, stream_>>>(p_real_out, p_imag_out, N_yz_);
+    }
+
+    // Final result location: after N iterations, last write was at iter=N-1
+    // If (N-1) is even, output is in p_real_B; if (N-1) is odd, output is in work_real_
+    // Equivalently: if N is odd, output is in p_real_B
+    double* final_real = (iterations % 2 == 1) ? p_real_B : work_real_;
+    double* final_imag = (iterations % 2 == 1) ? p_imag_B : work_imag_;
+
+    // Convert back to complex in p_hat
+    kernel_split_to_complex<<<grid, block, 0, stream_>>>(final_real, final_imag, p_hat_, total);
+
+    // Cleanup temporary allocations
+    cudaFree(rhs_real);
+    cudaFree(rhs_imag);
+    cudaFree(p_real_B);
+    cudaFree(p_imag_B);
+}
+
+int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
+    const int stride = Nx_ + 2;
+    const int plane_stride = (Nx_ + 2) * (Ny_ + 2);
+    const int total_interior = Nx_ * Ny_ * Nz_;
+
+    const int block = 256;
+    const int grid = (total_interior + block - 1) / block;
+    const size_t smem = block * sizeof(double);
+
+    // Convert OMP-mapped host pointers to CUDA device pointers
+    int device = omp_get_default_device();
+    double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_ptr, device));
+    double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_ptr, device));
+
+    // Debug: check pointers
+    if (!rhs_dev || !p_dev || !in_pack_ || !out_pack_ || !rhs_hat_ || !p_hat_) {
+        std::cerr << "[FFT1D] ERROR: null pointer detected\n";
+        std::cerr << "  rhs_dev=" << rhs_dev << " p_dev=" << p_dev << "\n";
+        std::cerr << "  in_pack_=" << in_pack_ << " out_pack_=" << out_pack_ << "\n";
+        std::cerr << "  rhs_hat_=" << rhs_hat_ << " p_hat_=" << p_hat_ << "\n";
+        return -1;
+    }
+
+    cudaError_t err;
+
+    // 1. Pack RHS from ghost layout to contiguous x-lines + compute sum for mean
+    kernel_pack_ghost_to_lines<<<grid, block, smem, stream_>>>(
+        rhs_dev, in_pack_, partial_sums_,
+        Nx_, Ny_, Nz_, stride, plane_stride
+    );
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] kernel_pack_ghost_to_lines failed: " << cudaGetErrorString(err) << "\n";
+        return -1;
+    }
+
+    // 2. Reduce partial sums to get total sum
+    kernel_reduce_sum<<<1, 256, 256 * sizeof(double), stream_>>>(
+        partial_sums_, sum_dev_, num_blocks_
+    );
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] kernel_reduce_sum failed: " << cudaGetErrorString(err) << "\n";
+        return -1;
+    }
+
+    // 3. Subtract mean from packed RHS (for compatibility with singular Poisson)
+    kernel_subtract_mean<<<grid, block, 0, stream_>>>(
+        in_pack_, sum_dev_, total_interior
+    );
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] kernel_subtract_mean failed: " << cudaGetErrorString(err) << "\n";
+        return -1;
+    }
+
+    // 4. Forward FFT: real -> complex (mode-major output)
+    cufftResult fft_result = cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
+    if (fft_result != CUFFT_SUCCESS) {
+        std::cerr << "[FFT1D] cufftExecD2Z failed: " << fft_result << "\n";
+        return -1;
+    }
+
+    // 5. Solve 2D Helmholtz for each mode
+    int iterations = 20;  // Jacobi iterations for 2D Helmholtz (tuned for stability)
+    double omega = 0.8;   // Damped Jacobi
+
+    solve_helmholtz_2d(iterations, omega);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] solve_helmholtz_2d failed: " << cudaGetErrorString(err) << "\n";
+        return -1;
+    }
+
+    // 6. Inverse FFT: complex -> real
+    fft_result = cufftExecZ2D(fft_plan_c2r_, p_hat_, out_pack_);
+    if (fft_result != CUFFT_SUCCESS) {
+        std::cerr << "[FFT1D] cufftExecZ2D failed: " << fft_result << "\n";
+        return -1;
+    }
+
+    // 7. Unpack from packed layout to ghost layout with normalization
+    double invNx = 1.0 / (double)N_periodic_;
+    kernel_unpack_lines_to_ghost<<<grid, block, 0, stream_>>>(
+        out_pack_, p_dev,
+        Nx_, Ny_, Nz_, stride, plane_stride,
+        invNx
+    );
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] kernel_unpack_lines_to_ghost failed: " << cudaGetErrorString(err) << "\n";
+        return -1;
+    }
+
+    // 8. Synchronize
+    cudaStreamSynchronize(stream_);
+
+    // Return total iterations across all modes (approximate)
+    return iterations * N_modes_;
+}
+
+#endif // USE_GPU_OFFLOAD
+
+} // namespace nncfd
+
+#endif // USE_GPU_OFFLOAD (outer guard)

@@ -269,6 +269,8 @@ void Config::parse_args(int argc, char** argv) {
                 poisson_solver = PoissonSolverType::Auto;
             } else if (val == "fft") {
                 poisson_solver = PoissonSolverType::FFT;
+            } else if (val == "fft1d") {
+                poisson_solver = PoissonSolverType::FFT1D;
             } else if (val == "hypre") {
                 poisson_solver = PoissonSolverType::HYPRE;
             } else if (val == "mg" || val == "multigrid") {
@@ -363,9 +365,10 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --tol T           Convergence tolerance for steady solve\n"
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
                       << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
-                      << "  --poisson S       Poisson solver (auto, fft, hypre, mg)\n"
-                      << "                      auto: FFT if applicable -> HYPRE if available -> MG\n"
-                      << "                      fft: FFT-hybrid (requires periodic x/z, uniform dx/dz)\n"
+                      << "  --poisson S       Poisson solver (auto, fft, fft1d, hypre, mg)\n"
+                      << "                      auto: FFT -> FFT1D -> HYPRE -> MG\n"
+                      << "                      fft: 2D FFT (requires periodic x AND z, uniform dx/dz)\n"
+                      << "                      fft1d: 1D FFT + 2D Helmholtz (periodic x OR z, uniform dx)\n"
                       << "                      hypre: HYPRE PFMG (requires USE_HYPRE build)\n"
                       << "                      mg: native geometric multigrid\n"
                       << "  --use_hypre       [deprecated] Same as --poisson=hypre\n"

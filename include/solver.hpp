@@ -9,6 +9,7 @@
 #endif
 #ifdef USE_FFT_POISSON
 #include "poisson_solver_fft.hpp"
+#include "poisson_solver_fft1d.hpp"
 #endif
 #include "turbulence_model.hpp"
 #include "config.hpp"
@@ -213,7 +214,8 @@ private:
     std::unique_ptr<HyprePoissonSolver> hypre_poisson_solver_;
 #endif
 #ifdef USE_FFT_POISSON
-    std::unique_ptr<FFTPoissonSolver> fft_poisson_solver_;
+    std::unique_ptr<FFTPoissonSolver> fft_poisson_solver_;      // 2D FFT (periodic x AND z)
+    std::unique_ptr<FFT1DPoissonSolver> fft1d_poisson_solver_;  // 1D FFT (periodic x OR z)
 #endif
     PoissonSolverType selected_solver_ = PoissonSolverType::MG;  // Actually selected solver (after auto)
     std::unique_ptr<TurbulenceModel> turb_model_;

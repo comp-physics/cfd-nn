@@ -178,10 +178,12 @@ if(USE_GPU_OFFLOAD)
     # cuFFT is part of CUDA toolkit
     find_package(CUDAToolkit QUIET)
     if(CUDAToolkit_FOUND)
-        target_sources(nn_cfd_core PRIVATE src/poisson_solver_fft.cpp)
+        target_sources(nn_cfd_core PRIVATE
+            src/poisson_solver_fft.cpp
+            src/poisson_solver_fft1d.cpp)
         target_link_libraries(nn_cfd_core CUDA::cufft CUDA::cusparse CUDA::cudart)
         target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
-        message(STATUS "  FFT Poisson solver added (cuFFT + cuSPARSE)")
+        message(STATUS "  FFT Poisson solvers added (2D FFT + 1D FFT + cuSPARSE)")
     endif()
 endif()
 

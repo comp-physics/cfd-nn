@@ -1064,38 +1064,64 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 #endif
 
 #ifdef USE_FFT_POISSON
-    // Initialize FFT-hybrid solver for periodic x/z cases
-    // Supports 3D with periodic x/z and uniform dx/dz (y can be stretched)
+    // Initialize FFT solvers for periodic cases
+    // FFT (2D): requires periodic x AND z with uniform spacing
+    // FFT1D: requires periodic x OR z (exactly one) with uniform spacing
     bool fft_applicable = false;
+    bool fft1d_applicable = false;
+    int fft1d_periodic_dir = 0;  // 0 = x periodic, 2 = z periodic
+
+    // Check which FFT solver is applicable (actual BCs set later via set_velocity_bc)
+    // For now, assume defaults: periodic x,z - will be updated in set_velocity_bc
     bool periodic_xz = true;  // Default for channel: periodic x/z
     bool uniform_xz = true;   // Default for channel: uniform x/z spacing
 
-    if (periodic_xz && uniform_xz && !mesh.is2D()) {
+    if (!mesh.is2D()) {
+        // Try 2D FFT first (periodic x AND z)
+        if (periodic_xz && uniform_xz) {
+            try {
+                fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
+                fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                             PoissonBC::Neumann, PoissonBC::Neumann,
+                                             PoissonBC::Periodic, PoissonBC::Periodic);
+                fft_applicable = true;
+            } catch (const std::exception& e) {
+                std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
+            }
+        }
+
+        // Also initialize 1D FFT solver (for cases like duct flow)
+        // Will be used if 2D FFT becomes incompatible after BC update
         try {
-            fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
-            fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                                         PoissonBC::Neumann, PoissonBC::Neumann,
-                                         PoissonBC::Periodic, PoissonBC::Periodic);
-            fft_applicable = true;
+            // Default to x-periodic (duct flow typical case)
+            fft1d_poisson_solver_ = std::make_unique<FFT1DPoissonSolver>(mesh, 0);
+            fft1d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                           PoissonBC::Neumann, PoissonBC::Neumann,
+                                           PoissonBC::Neumann, PoissonBC::Neumann);
+            fft1d_applicable = true;
+            fft1d_periodic_dir = 0;
         } catch (const std::exception& e) {
-            std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
+            std::cerr << "[Solver] FFT1D solver initialization failed: " << e.what() << "\n";
         }
     }
 #endif
 
     // ========================================================================
     // Poisson Solver Auto-Selection
-    // Priority: FFT (if applicable) → HYPRE (if available) → MG
+    // Priority: FFT (periodic x+z) → FFT1D (periodic x OR z) → HYPRE → MG
     // ========================================================================
     PoissonSolverType requested = config.poisson_solver;
     std::string selection_reason;
 
     if (requested == PoissonSolverType::Auto) {
-        // Auto-select: FFT > HYPRE > MG
+        // Auto-select: FFT > FFT1D > HYPRE > MG
 #ifdef USE_FFT_POISSON
         if (fft_applicable) {
             selected_solver_ = PoissonSolverType::FFT;
             selection_reason = "auto: periodic(x,z) + uniform(dx,dz) + 3D";
+        } else if (fft1d_applicable) {
+            selected_solver_ = PoissonSolverType::FFT1D;
+            selection_reason = "auto: periodic(x) + uniform(dx) + 3D (1D FFT)";
         } else
 #endif
 #ifdef USE_HYPRE
@@ -1116,6 +1142,11 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         } else {
             std::cerr << "[Solver] Warning: FFT requested but not applicable "
                       << "(requires 3D, periodic x/z, uniform dx/dz). Falling back to ";
+            if (fft1d_applicable) {
+                selected_solver_ = PoissonSolverType::FFT1D;
+                std::cerr << "FFT1D.\n";
+                selection_reason = "fallback from FFT: using FFT1D";
+            } else
 #ifdef USE_HYPRE
             if (hypre_poisson_solver_) {
                 selected_solver_ = PoissonSolverType::HYPRE;
@@ -1140,6 +1171,23 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 #endif
         selection_reason = "fallback from FFT: not built";
 #endif
+    } else if (requested == PoissonSolverType::FFT1D) {
+#ifdef USE_FFT_POISSON
+        if (fft1d_applicable) {
+            selected_solver_ = PoissonSolverType::FFT1D;
+            selection_reason = "explicit: user requested FFT1D";
+        } else {
+            std::cerr << "[Solver] Warning: FFT1D requested but not applicable. ";
+            selected_solver_ = PoissonSolverType::MG;
+            std::cerr << "Using MG.\n";
+            selection_reason = "fallback from FFT1D: not applicable";
+        }
+#else
+        std::cerr << "[Solver] Warning: FFT1D requested but USE_FFT_POISSON not built. ";
+        selected_solver_ = PoissonSolverType::MG;
+        std::cerr << "Using MG.\n";
+        selection_reason = "fallback from FFT1D: not built";
+#endif
     } else if (requested == PoissonSolverType::HYPRE) {
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
@@ -1163,6 +1211,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
     // Log the selection
     const char* solver_name = (selected_solver_ == PoissonSolverType::FFT) ? "FFT" :
+                              (selected_solver_ == PoissonSolverType::FFT1D) ? "FFT1D" :
                               (selected_solver_ == PoissonSolverType::HYPRE) ? "HYPRE" : "MG";
     std::cout << "[Poisson] selected=" << solver_name
               << " reason=" << selection_reason
@@ -1243,21 +1292,44 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 #endif
     }
 
-    // Re-check FFT applicability after BC update
-    // FFT requires periodic in BOTH x and z directions
+    // Re-check FFT/FFT1D applicability after BC update
 #ifdef USE_FFT_POISSON
-    if (fft_poisson_solver_) {
-        bool periodic_x = (p_x_lo == PoissonBC::Periodic && p_x_hi == PoissonBC::Periodic);
-        bool periodic_z = (p_z_lo == PoissonBC::Periodic && p_z_hi == PoissonBC::Periodic);
-        bool fft_compatible = periodic_x && periodic_z && !mesh_->is2D();
+    bool periodic_x = (p_x_lo == PoissonBC::Periodic && p_x_hi == PoissonBC::Periodic);
+    bool periodic_z = (p_z_lo == PoissonBC::Periodic && p_z_hi == PoissonBC::Periodic);
 
+    // 2D FFT requires periodic in BOTH x and z
+    bool fft_compatible = periodic_x && periodic_z && !mesh_->is2D();
+
+    // 1D FFT requires periodic in EXACTLY ONE of x or z
+    bool fft1d_compatible = (periodic_x != periodic_z) && !mesh_->is2D();
+    int fft1d_dir = periodic_x ? 0 : 2;  // 0 = x periodic, 2 = z periodic
+
+    if (fft_poisson_solver_) {
         if (fft_compatible) {
             // Update FFT solver BCs
             fft_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
         } else if (selected_solver_ == PoissonSolverType::FFT) {
-            // FFT was selected but BCs are now incompatible - switch to MG
-            std::cerr << "[Poisson] Warning: FFT solver incompatible with BCs "
-                      << "(requires periodic x AND z). Switching to MG.\n";
+            // FFT was selected but BCs are now incompatible
+            if (fft1d_compatible && fft1d_poisson_solver_) {
+                std::cerr << "[Poisson] Warning: FFT solver incompatible with BCs "
+                          << "(requires periodic x AND z). Switching to FFT1D.\n";
+                selected_solver_ = PoissonSolverType::FFT1D;
+            } else {
+                std::cerr << "[Poisson] Warning: FFT solver incompatible with BCs "
+                          << "(requires periodic x AND z). Switching to MG.\n";
+                selected_solver_ = PoissonSolverType::MG;
+            }
+        }
+    }
+
+    if (fft1d_poisson_solver_) {
+        if (fft1d_compatible) {
+            // Update FFT1D solver BCs
+            fft1d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        } else if (selected_solver_ == PoissonSolverType::FFT1D) {
+            // FFT1D was selected but BCs are now incompatible - switch to MG
+            std::cerr << "[Poisson] Warning: FFT1D solver incompatible with BCs "
+                      << "(requires periodic in exactly one of x or z). Switching to MG.\n";
             selected_solver_ = PoissonSolverType::MG;
         }
     }
@@ -3108,6 +3180,16 @@ double RANSSolver::step() {
                         }
                         cycles = fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
                         final_residual = fft_poisson_solver_->residual();
+                    }
+                    break;
+                case PoissonSolverType::FFT1D:
+                    if (fft1d_poisson_solver_) {
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using FFT1D solve_device() (1D cuFFT + 2D Helmholtz)\n";
+                            solver_logged = true;
+                        }
+                        cycles = fft1d_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        final_residual = fft1d_poisson_solver_->residual();
                     }
                     break;
 #endif
