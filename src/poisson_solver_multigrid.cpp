@@ -77,8 +77,8 @@ void MultigridPoissonSolver::create_hierarchy() {
     }
 
     // Coarsen until we reach minimum grid size
-    // Stop at 32³ to avoid tiny-kernel regime where OMP target overhead dominates
-    // With 32³ coarsest, projection mode with 3-5 V-cycles is effective
+    // Stop at 32 to avoid tiny-kernel regime where OMP target overhead dominates
+    // With 32 coarsest, projection mode with 3-5 V-cycles is effective
     constexpr int MIN_COARSE_SIZE = 32;
 
     if (is_2d) {
@@ -516,10 +516,130 @@ void MultigridPoissonSolver::apply_bc(int level) {
 }
 
 void MultigridPoissonSolver::apply_bc_to_residual(int level) {
-    // No-op: Ghost cells are left zero-initialized. The restriction stencil is robust
-    // to this, and the multigrid algorithm expects zero ghost contributions.
-    // Empirically, applying BCs here degrades convergence rates.
-    (void)level;
+    // Apply boundary conditions to the residual array for proper restriction
+    // The 9-point restriction stencil reads from ghost cells, so they must be set
+    auto& grid = *levels_[level];
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int Ng = 1;
+    const bool is_2d = grid.is2D();
+
+    // Similar logic to apply_bc but on grid.r instead of grid.u
+    if (is_2d) {
+        // 2D CPU path for residual
+        // x-direction boundaries
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            // Left boundary
+            switch (bc_x_lo_) {
+                case PoissonBC::Periodic:
+                    grid.r(0, j) = grid.r(Nx, j);
+                    break;
+                case PoissonBC::Neumann:
+                case PoissonBC::Dirichlet:
+                    grid.r(0, j) = 0.0;  // Zero ghost for Neumann/Dirichlet residual
+                    break;
+            }
+            // Right boundary
+            switch (bc_x_hi_) {
+                case PoissonBC::Periodic:
+                    grid.r(Nx + Ng, j) = grid.r(Ng, j);
+                    break;
+                case PoissonBC::Neumann:
+                case PoissonBC::Dirichlet:
+                    grid.r(Nx + Ng, j) = 0.0;
+                    break;
+            }
+        }
+        // y-direction boundaries
+        for (int i = 0; i < Nx + 2*Ng; ++i) {
+            // Bottom boundary
+            switch (bc_y_lo_) {
+                case PoissonBC::Periodic:
+                    grid.r(i, 0) = grid.r(i, Ny);
+                    break;
+                case PoissonBC::Neumann:
+                case PoissonBC::Dirichlet:
+                    grid.r(i, 0) = 0.0;
+                    break;
+            }
+            // Top boundary
+            switch (bc_y_hi_) {
+                case PoissonBC::Periodic:
+                    grid.r(i, Ny + Ng) = grid.r(i, Ng);
+                    break;
+                case PoissonBC::Neumann:
+                case PoissonBC::Dirichlet:
+                    grid.r(i, Ny + Ng) = 0.0;
+                    break;
+            }
+        }
+    } else {
+        // 3D CPU path for residual
+        // x-direction
+        for (int k = 0; k < Nz + 2*Ng; ++k) {
+            for (int j = 0; j < Ny + 2*Ng; ++j) {
+                switch (bc_x_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.r(0, j, k) = grid.r(Nx, j, k);
+                        break;
+                    default:
+                        grid.r(0, j, k) = 0.0;
+                        break;
+                }
+                switch (bc_x_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.r(Nx + Ng, j, k) = grid.r(Ng, j, k);
+                        break;
+                    default:
+                        grid.r(Nx + Ng, j, k) = 0.0;
+                        break;
+                }
+            }
+        }
+        // y-direction
+        for (int k = 0; k < Nz + 2*Ng; ++k) {
+            for (int i = 0; i < Nx + 2*Ng; ++i) {
+                switch (bc_y_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.r(i, 0, k) = grid.r(i, Ny, k);
+                        break;
+                    default:
+                        grid.r(i, 0, k) = 0.0;
+                        break;
+                }
+                switch (bc_y_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.r(i, Ny + Ng, k) = grid.r(i, Ng, k);
+                        break;
+                    default:
+                        grid.r(i, Ny + Ng, k) = 0.0;
+                        break;
+                }
+            }
+        }
+        // z-direction
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            for (int i = 0; i < Nx + 2*Ng; ++i) {
+                switch (bc_z_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.r(i, j, 0) = grid.r(i, j, Nz);
+                        break;
+                    default:
+                        grid.r(i, j, 0) = 0.0;
+                        break;
+                }
+                switch (bc_z_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.r(i, j, Nz + Ng) = grid.r(i, j, Ng);
+                        break;
+                    default:
+                        grid.r(i, j, Nz + Ng) = 0.0;
+                        break;
+                }
+            }
+        }
+    }
 }
 
 void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double omega) {
@@ -666,8 +786,10 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
             }
             std::swap(u, r);
         }
+        // Apply BCs after each iteration to ensure ghost cells have correct values
+        // This is essential for iterative convergence, especially with periodic BCs
+        apply_bc(level);
     }
-    apply_bc(level);
 #endif
 }
 
@@ -1072,10 +1194,10 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
     if (level == static_cast<int>(levels_.size()) - 1) {
-        // Coarsest level - bounded solve, not "exact"
-        // With MIN_COARSE_SIZE=32, coarsest is 32³ which is still a real grid
-        // 10 Jacobi iterations is enough for projection-mode MG
-        smooth_jacobi(level, 10, 0.8);
+        // Coarsest level - solve more accurately
+        // With MIN_COARSE_SIZE=32, coarsest is 32x32 which needs more iterations
+        // For proper MG convergence, coarsest level needs good approximate solve
+        smooth_jacobi(level, 200, 0.8);
         return;
     }
 
@@ -1087,8 +1209,9 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     // Compute residual
     compute_residual(level);
 
-    // Note: apply_bc_to_residual() is intentionally skipped here.
-    // The multigrid algorithm expects zero ghost contributions in the residual.
+    // Apply BCs to residual ghost cells for proper 9-point restriction
+    // This is essential for periodic BCs where ghost cells must wrap around
+    apply_bc_to_residual(level);
 
     // Restrict to coarse grid
     restrict_residual(level);
