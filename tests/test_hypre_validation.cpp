@@ -256,7 +256,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
 
     // Run with Multigrid
     std::cout << "  Running with Multigrid...\n";
-    config.use_hypre = false;
+    config.poisson_solver = PoissonSolverType::MG;
     RANSSolver solver_mg(mesh, config);
 
     // Verify solver selection
@@ -285,7 +285,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
 
     // Run with HYPRE - same initial condition
     std::cout << "  Running with HYPRE...\n";
-    config.use_hypre = true;
+    config.poisson_solver = PoissonSolverType::HYPRE;
     RANSSolver solver_hypre(mesh, config);
 
     // Verify solver selection
@@ -438,7 +438,7 @@ bool test_hypre_vs_multigrid_3d_duct() {
 
     // Run with Multigrid
     std::cout << "  Running with Multigrid...\n";
-    config.use_hypre = false;
+    config.poisson_solver = PoissonSolverType::MG;
     RANSSolver solver_mg(mesh, config);
 
     // Verify solver selection
@@ -462,7 +462,7 @@ bool test_hypre_vs_multigrid_3d_duct() {
 
     // Run with HYPRE
     std::cout << "  Running with HYPRE...\n";
-    config.use_hypre = true;
+    config.poisson_solver = PoissonSolverType::HYPRE;
     RANSSolver solver_hypre(mesh, config);
 
     // Verify solver selection
@@ -541,7 +541,7 @@ void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int 
     config.verbose = false;
     config.postprocess = false;
     config.write_fields = false;
-    config.use_hypre = true;  // Always use HYPRE for this test
+    config.poisson_solver = PoissonSolverType::HYPRE;  // Always use HYPRE for this test
 }
 
 int run_dump_mode(const std::string& prefix) {

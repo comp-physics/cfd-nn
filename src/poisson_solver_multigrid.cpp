@@ -1308,18 +1308,18 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     
     apply_bc(0);
     
-    // Projection-mode MG: fixed number of V-cycles, no per-cycle residual check
-    // This is appropriate for pressure projection where "good enough" suffices
-    // and per-cycle residual computation adds significant overhead
-    //
-    // nu1=1, nu2=0: one pre-smooth sweep, no post-smooth (projection style)
-    // 3-5 V-cycles is typically sufficient for projection
-    const int projection_cycles = 3;  // Fixed V-cycles for projection mode
+    // MG V-cycles: use cfg.max_iter to control number of V-cycles
+    // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
+    // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    const int num_cycles = cfg.max_iter;
+    const bool accurate_mode = (num_cycles > 5);
+    const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
+    const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
 
-    for (int cycle = 0; cycle < projection_cycles; ++cycle) {
-        vcycle(0, 1, 0);  // Projection mode: nu1=1, nu2=0
+    for (int cycle = 0; cycle < num_cycles; ++cycle) {
+        vcycle(0, nu1, nu2);
     }
-    
+
     // Final residual
     residual_ = compute_max_residual(0);
     
@@ -1361,7 +1361,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         }
     }
 
-    return projection_cycles;  // Fixed number of V-cycles in projection mode
+    return num_cycles;  // Number of V-cycles executed
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -1397,19 +1397,19 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     }
     
     apply_bc(0);
-    
-    // Projection-mode MG: fixed number of V-cycles, no per-cycle residual check
-    // This is appropriate for pressure projection where "good enough" suffices
-    // and per-cycle residual computation adds significant overhead
-    //
-    // nu1=1, nu2=0: one pre-smooth sweep, no post-smooth (projection style)
-    // 3-5 V-cycles is typically sufficient for projection
-    const int projection_cycles = 3;  // Fixed V-cycles for projection mode
 
-    for (int cycle = 0; cycle < projection_cycles; ++cycle) {
-        vcycle(0, 1, 0);  // Projection mode: nu1=1, nu2=0
+    // MG V-cycles: use cfg.max_iter to control number of V-cycles
+    // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
+    // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    const int num_cycles = cfg.max_iter;
+    const bool accurate_mode = (num_cycles > 5);
+    const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
+    const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
+
+    for (int cycle = 0; cycle < num_cycles; ++cycle) {
+        vcycle(0, nu1, nu2);
     }
-    
+
     // Final residual (always compute at end for diagnostics)
     residual_ = compute_max_residual(0);
     
@@ -1434,7 +1434,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         p_present[idx] = u_dev[idx];
     }
 
-    return projection_cycles;  // Fixed number of V-cycles in projection mode
+    return num_cycles;  // Number of V-cycles executed
 }
 
 void MultigridPoissonSolver::initialize_gpu_buffers() {

@@ -115,7 +115,7 @@ struct Config {
     
     // Poisson solver
     double poisson_tol = 1e-6;
-    int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve
+    int poisson_max_iter = 5;  ///< MG V-cycles per solve (5 for projection, increase for accurate solve)
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     PoissonSolverType poisson_solver = PoissonSolverType::Auto;  ///< Poisson solver selection
