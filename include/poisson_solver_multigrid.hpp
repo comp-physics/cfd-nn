@@ -104,6 +104,7 @@ private:
     // Core multigrid operations
     void create_hierarchy();
     void smooth(int level, int iterations, double omega = 1.8);
+    void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
     void compute_residual(int level);
     void restrict_residual(int fine_level);
     void prolongate_correction(int coarse_level);
@@ -123,6 +124,7 @@ private:
     std::vector<double*> u_ptrs_;  // Device pointers for u at each level
     std::vector<double*> f_ptrs_;  // Device pointers for f at each level
     std::vector<double*> r_ptrs_;  // Device pointers for r at each level
+    std::vector<double*> tmp_ptrs_;  // Scratch buffer for Jacobi ping-pong
     std::vector<size_t> level_sizes_;  // Total size for each level
     
     void initialize_gpu_buffers();
