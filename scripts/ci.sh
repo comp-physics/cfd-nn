@@ -508,9 +508,9 @@ if [[ "$USE_HYPRE" == "ON" ]]; then
         if [[ "$USE_GPU" == "ON" ]] && check_gpu_available; then
             log_info "Running HYPRE cross-build comparison (requires both CPU and GPU HYPRE builds)..."
 
-            local cpu_hypre_dir="${PROJECT_DIR}/build_cpu_hypre"
-            local gpu_hypre_dir="${PROJECT_DIR}/build_gpu_hypre"
-            local ref_dir="${PROJECT_DIR}/build_gpu_hypre/hypre_reference"
+            cpu_hypre_dir="${PROJECT_DIR}/build_cpu_hypre"
+            gpu_hypre_dir="${PROJECT_DIR}/build_gpu_hypre"
+            ref_dir="${PROJECT_DIR}/build_gpu_hypre/hypre_reference"
             mkdir -p "$ref_dir"
 
             # Ensure CPU HYPRE build exists
@@ -520,7 +520,7 @@ if [[ "$USE_HYPRE" == "ON" ]]; then
                 FAILED_TESTS="${FAILED_TESTS}\n  - HYPRE CPU build"
             else
                 # Generate CPU HYPRE reference
-                local output_file="/tmp/hypre_ref_$$.txt"
+                output_file="/tmp/hypre_ref_$$.txt"
                 if timeout 180 "$cpu_hypre_dir/test_hypre_validation" --dump-prefix "${ref_dir}/hypre" > "$output_file" 2>&1; then
                     log_success "HYPRE CPU reference generated"
 
