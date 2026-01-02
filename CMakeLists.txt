@@ -100,11 +100,10 @@ if(USE_GPU_OFFLOAD)
         # NVIDIA HPC SDK - best for NVIDIA GPUs
         # Specify GPU architecture explicitly for reliability
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc90")
-        # Add -cuda for OpenMP+CUDA interoperability (needed for hypre CUDA backend)
-        if(USE_HYPRE)
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")
-            message(STATUS "  Added -cuda for OpenMP+CUDA interop with HYPRE")
-        endif()
+        # Add -cuda for OpenMP+CUDA interoperability
+        # Required for: hypre CUDA backend, FFT solver CUDA kernels
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")
+        message(STATUS "  Added -cuda for OpenMP+CUDA interop")
         message(STATUS "Using NVIDIA HPC SDK GPU offloading (cc90)")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         # Clang/LLVM with CUDA backend (auto-detect GPU arch)

@@ -12,6 +12,184 @@
 
 namespace nncfd {
 
+// ============================================================================
+// CUDA Kernels for GPU-resident FFT solver operations
+// These run on stream_ to avoid OMP↔CUDA interop overhead
+// ============================================================================
+
+#ifdef USE_GPU_OFFLOAD
+
+// Block-level reduction using shared memory + warp shuffle
+__device__ __forceinline__ double warpReduceSum(double val) {
+    for (int offset = 16; offset > 0; offset /= 2) {
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    }
+    return val;
+}
+
+__device__ __forceinline__ double blockReduceSum(double val) {
+    static __shared__ double shared[32];  // One per warp
+    int lane = threadIdx.x % 32;
+    int wid = threadIdx.x / 32;
+
+    val = warpReduceSum(val);
+
+    if (lane == 0) shared[wid] = val;
+    __syncthreads();
+
+    // First warp reduces across warps
+    val = (threadIdx.x < blockDim.x / 32) ? shared[lane] : 0.0;
+    if (wid == 0) val = warpReduceSum(val);
+
+    return val;
+}
+
+// Kernel: Pack RHS from ghost layout to FFT layout + compute partial sums
+// Input layout:  rhs_ptr[k+Ng][j+Ng][i+Ng]  (ghost cells, field ordering)
+// Output layout: packed[(i*Nz + k)*Ny + j]  (cuFFT interleaved batches)
+// Also: each block writes its partial sum to partial_sums[]
+__global__ void kernel_pack_and_partial_sum(
+    const double* __restrict__ rhs_ptr,
+    double* __restrict__ packed,
+    double* __restrict__ partial_sums,
+    int Nx, int Ny, int Nz, int Ng, int Nx_full, int Ny_full)
+{
+    const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    double local_sum = 0.0;
+
+    if (idx < n_total) {
+        // Decode linear index to (i, k, j) in FFT order
+        // Layout: [(i*Nz + k)][j] with j fastest
+        int j = idx % Ny;
+        size_t mode = idx / Ny;
+        int k = mode % Nz;
+        int i = mode / Nz;
+
+        // Source index with ghosts: [k+Ng][j+Ng][i+Ng]
+        size_t src_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
+                         (j + Ng) * Nx_full + (i + Ng);
+
+        double val = rhs_ptr[src_idx];
+        packed[idx] = val;
+        local_sum = val;
+    }
+
+    // Block-level reduction
+    double block_sum = blockReduceSum(local_sum);
+
+    // Thread 0 writes block partial sum
+    if (threadIdx.x == 0) {
+        partial_sums[blockIdx.x] = block_sum;
+    }
+}
+
+// Kernel: Final reduction of partial sums + compute mean
+// Reduces partial_sums[num_blocks] -> sum_dev[0]
+__global__ void kernel_final_reduce(
+    const double* __restrict__ partial_sums,
+    double* __restrict__ sum_dev,
+    int num_blocks)
+{
+    double local_sum = 0.0;
+    for (int i = threadIdx.x; i < num_blocks; i += blockDim.x) {
+        local_sum += partial_sums[i];
+    }
+
+    double block_sum = blockReduceSum(local_sum);
+
+    if (threadIdx.x == 0) {
+        sum_dev[0] = block_sum;
+    }
+}
+
+// Kernel: Subtract mean from packed RHS (reads sum from sum_dev)
+__global__ void kernel_subtract_mean(
+    double* __restrict__ packed,
+    const double* __restrict__ sum_dev,
+    size_t n_total)
+{
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n_total) {
+        double mean = sum_dev[0] / static_cast<double>(n_total);
+        packed[idx] -= mean;
+    }
+}
+
+// Kernel: Unpack solution + apply all BCs in single pass
+// Input layout:  packed[(i*Nz + k)*Ny + j]  (cuFFT interleaved batches)
+// Output layout: p_ptr[k+Ng][j+Ng][i+Ng]    (ghost cells, field ordering)
+// Also fills: x-ghosts (periodic), y-ghosts (Neumann), z-ghosts (periodic)
+__global__ void kernel_unpack_and_bc(
+    const double* __restrict__ packed,
+    double* __restrict__ p_ptr,
+    int Nx, int Ny, int Nz, int Ng, int Nx_full, int Ny_full,
+    double norm)
+{
+    const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < n_total) {
+        // Decode linear index to (i, k, j) in FFT order
+        int j = idx % Ny;
+        size_t mode = idx / Ny;
+        int k = mode % Nz;
+        int i = mode / Nz;
+
+        double val = packed[idx] * norm;
+
+        // Destination with ghosts: [k+Ng][j+Ng][i+Ng]
+        size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
+                         (j + Ng) * Nx_full + (i + Ng);
+        p_ptr[dst_idx] = val;
+
+        // Fill x-ghosts (periodic) - boundary threads only
+        if (i == 0) {
+            // x_lo ghost: copy from x_hi interior (i=Nx-1)
+            size_t src_mode = static_cast<size_t>(Nx - 1) * Nz + k;
+            double src_val = packed[src_mode * Ny + j] * norm;
+            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + 0] = src_val;
+        }
+        if (i == Nx - 1) {
+            // x_hi ghost: copy from x_lo interior (i=0)
+            size_t src_mode = static_cast<size_t>(0) * Nz + k;
+            double src_val = packed[src_mode * Ny + j] * norm;
+            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Nx + Ng)] = src_val;
+        }
+
+        // Fill y-ghosts (Neumann: dp/dy=0) - boundary threads only
+        if (j == 0) {
+            // y_lo ghost: copy from first interior row
+            p_ptr[(k + Ng) * Nx_full * Ny_full + 0 * Nx_full + (i + Ng)] = val;
+        }
+        if (j == Ny - 1) {
+            // y_hi ghost: copy from last interior row
+            p_ptr[(k + Ng) * Nx_full * Ny_full + (Ny + Ng) * Nx_full + (i + Ng)] = val;
+        }
+
+        // Fill z-ghosts (periodic) - boundary threads only
+        if (k == 0) {
+            // z_lo ghost: copy from z_hi interior (k=Nz-1)
+            size_t src_mode = static_cast<size_t>(i) * Nz + (Nz - 1);
+            double src_val = packed[src_mode * Ny + j] * norm;
+            p_ptr[0 * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
+        }
+        if (k == Nz - 1) {
+            // z_hi ghost: copy from z_lo interior (k=0)
+            size_t src_mode = static_cast<size_t>(i) * Nz + 0;
+            double src_val = packed[src_mode * Ny + j] * norm;
+            p_ptr[(Nz + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
+        }
+    }
+}
+
+// Scratch buffer for partial sums (allocated once, reused)
+static double* g_partial_sums = nullptr;
+static size_t g_partial_sums_size = 0;
+
+#endif // USE_GPU_OFFLOAD
+
 FFTPoissonSolver::FFTPoissonSolver(const Mesh& mesh)
     : mesh_(&mesh) {
 #ifdef USE_GPU_OFFLOAD
@@ -30,7 +208,10 @@ FFTPoissonSolver::~FFTPoissonSolver() {
         cufftDestroy(fft_plan_c2r_);
     }
     if (cusparse_handle_) cusparseDestroy(cusparse_handle_);
+    if (ev_pack_done_) cudaEventDestroy(ev_pack_done_);
+    if (ev_fft_done_) cudaEventDestroy(ev_fft_done_);
     if (stream_) cudaStreamDestroy(stream_);
+    if (sum_dev_) cudaFree(sum_dev_);
     if (fft_work_area_) cudaFree(fft_work_area_);
     if (rhs_packed_) cudaFree(rhs_packed_);
     if (p_packed_) cudaFree(p_packed_);
@@ -110,6 +291,14 @@ void FFTPoissonSolver::initialize_fft() {
     // Create dedicated CUDA stream for entire Poisson solve
     // This allows async execution and avoids default stream ordering constraints
     cudaStreamCreate(&stream_);
+
+    // Create CUDA events for stream-to-stream synchronization (no host blocking)
+    // cudaEventDisableTiming avoids GPU timestamp overhead
+    cudaEventCreateWithFlags(&ev_pack_done_, cudaEventDisableTiming);
+    cudaEventCreateWithFlags(&ev_fft_done_, cudaEventDisableTiming);
+
+    // Allocate device scalar for sum (avoids host transfer during mean computation)
+    cudaMalloc(&sum_dev_, sizeof(double));
 
     // Create cuFFT plans for batched 2D FFT with OPTIMIZED LAYOUT
     //
@@ -397,6 +586,8 @@ void FFTPoissonSolver::solve_tridiagonal_cusparse() {
     );
 
     if (status != CUSPARSE_STATUS_SUCCESS) {
+        std::cerr << "[FFT Solver] cuSPARSE error code: " << status << "\n";
+        std::cerr << "  Ny=" << Ny << ", n_modes=" << n_modes << "\n";
         throw std::runtime_error("cuSPARSE gtsv2StridedBatch failed");
     }
 
@@ -628,6 +819,122 @@ void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
     }
 }
 
+// ============================================================================
+// CUDA Kernel Launchers (run on stream_ for GPU-resident operation)
+// ============================================================================
+
+void FFTPoissonSolver::launch_pack_and_sum(double* rhs_ptr) {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int Nx_full = Nx + 2 * Ng;
+    const int Ny_full = Ny + 2 * Ng;
+    const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
+    const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
+
+    // Use OMP target for pack (rhs_ptr is OMP-mapped, not directly usable by CUDA kernels)
+    // OMP target runs on default stream (0), we'll sync with events
+    double* packed = rhs_packed_;
+    double sum = 0.0;
+
+    #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum) \
+        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
+    for (int i = 0; i < Nx; ++i) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                // Source index with ghosts: [k+Ng][j+Ng][i+Ng]
+                const size_t src_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
+                                       (j + Ng) * Nx_full + (i + Ng);
+                // Destination: [(i*Nz + k)][j] with j fastest
+                const size_t dst_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
+                double val = rhs_ptr[src_idx];
+                packed[dst_idx] = val;
+                sum += val;
+            }
+        }
+    }
+
+    // Store sum to device (OMP target implicit sync means sum is now valid on host)
+    // Copy to device for use by subtract_mean kernel
+    cudaMemcpyAsync(sum_dev_, &sum, sizeof(double), cudaMemcpyHostToDevice, stream_);
+}
+
+void FFTPoissonSolver::launch_subtract_mean(size_t n_total) {
+    const int block_size = 256;
+    const int num_blocks = (n_total + block_size - 1) / block_size;
+
+    // Launch subtract mean kernel on stream_
+    kernel_subtract_mean<<<num_blocks, block_size, 0, stream_>>>(
+        rhs_packed_, sum_dev_, n_total);
+}
+
+void FFTPoissonSolver::launch_unpack_and_bc(double* p_ptr) {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int Nx_full = Nx + 2 * Ng;
+    const int Ny_full = Ny + 2 * Ng;
+    const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
+    const double norm = 1.0 / (Nx * Nz);  // FFT normalization
+
+    double* packed = p_packed_;
+
+    // Use OMP target for unpack (p_ptr is OMP-mapped, not directly usable by CUDA kernels)
+    // FUSED: Unpack interior + fill all ghost cells in one pass
+    #pragma omp target teams distribute parallel for collapse(3) \
+        map(present: p_ptr[0:total_size]) is_device_ptr(packed)
+    for (int i = 0; i < Nx; ++i) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                // Source: [(i*Nz + k)][j] with j fastest
+                const size_t src_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
+                const double val = packed[src_idx] * norm;
+
+                // Destination with ghosts: [k+Ng][j+Ng][i+Ng]
+                const size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
+                                       (j + Ng) * Nx_full + (i + Ng);
+                p_ptr[dst_idx] = val;
+
+                // Fill x-ghosts for boundary cells (periodic)
+                if (i == 0) {
+                    // x_lo ghost: copy from x_hi interior (i=Nx-1)
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + 0] =
+                        packed[static_cast<size_t>((Nx - 1) * Nz + k) * Ny + j] * norm;
+                }
+                if (i == Nx - 1) {
+                    // x_hi ghost: copy from x_lo interior (i=0)
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Nx + Ng)] =
+                        packed[static_cast<size_t>(0 * Nz + k) * Ny + j] * norm;
+                }
+
+                // Fill y-ghosts for boundary cells (Neumann: dp/dy=0)
+                if (j == 0) {
+                    // y_lo ghost: copy from first interior row
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + 0 * Nx_full + (i + Ng)] = val;
+                }
+                if (j == Ny - 1) {
+                    // y_hi ghost: copy from last interior row
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + (Ny + Ng) * Nx_full + (i + Ng)] = val;
+                }
+
+                // Fill z-ghosts for boundary cells (periodic)
+                if (k == 0) {
+                    // z_lo ghost: copy from z_hi interior (k=Nz-1)
+                    p_ptr[0 * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
+                        packed[static_cast<size_t>(i * Nz + (Nz - 1)) * Ny + j] * norm;
+                }
+                if (k == Nz - 1) {
+                    // z_hi ghost: copy from z_lo interior (k=0)
+                    p_ptr[(Nz + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
+                        packed[static_cast<size_t>(i * Nz + 0) * Ny + j] * norm;
+                }
+            }
+        }
+    }
+}
+
 int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
     if (!initialized_) {
         throw std::runtime_error("FFTPoissonSolver not initialized");
@@ -636,38 +943,49 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Nz = mesh_->Nz;
-    const int Nz_complex = Nz / 2 + 1;
-
-    // Step 1: Pack RHS and compute sum in one fused pass
-    // FUSED: pack + reduction eliminates one kernel launch
     const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
-    double sum = pack_rhs_with_sum(rhs_ptr);
 
-    // Step 1b: Subtract mean to enforce mean(rhs) = 0 for nullspace handling
-    // This ensures the system is consistent for pure Neumann/periodic BCs
-    const double mean = sum / static_cast<double>(n_total);
-    subtract_mean(mean);
+    // ========================================================================
+    // HYBRID OMP/CUDA SOLVE: OMP for pack/unpack, CUDA for FFT/tridiag
+    // ========================================================================
+    //
+    // Data flow:
+    //   rhs_ptr → [OMP pack+sum] → [CUDA subtract_mean+cuFFT+cuSPARSE] → [OMP unpack+BC] → p_ptr
+    //
+    // Synchronization:
+    //   - OMP target regions run on stream 0 with implicit sync
+    //   - cuFFT/cuSPARSE run on stream_
+    //   - Events used for stream-to-stream ordering
+    // ========================================================================
 
-    // Sync to ensure OMP target (default stream) completes before cuFFT (stream_)
-    cudaDeviceSynchronize();
+    // Step 1: Pack RHS + compute sum (OMP target on stream 0)
+    // Returns host sum, copies to sum_dev_ via cudaMemcpyAsync on stream_
+    launch_pack_and_sum(rhs_ptr);
 
-    // Step 2: Forward 2D FFT (R2C) - runs on stream_
+    // Record event after OMP pack completes (OMP target has implicit sync)
+    // This ensures rhs_packed_ data is visible to stream_
+    cudaEventRecord(ev_pack_done_, 0);
+    cudaStreamWaitEvent(stream_, ev_pack_done_, 0);
+
+    // Step 2: Subtract mean from packed RHS (CUDA kernel, stream_)
+    // Note: cudaMemcpyAsync in launch_pack_and_sum is on stream_, so it's ordered
+    launch_subtract_mean(n_total);
+
+    // Step 3: Forward 2D FFT (R2C) - runs on stream_
     cufftResult result = cufftExecD2Z(fft_plan_r2c_, rhs_packed_, rhs_hat_);
     if (result != CUFFT_SUCCESS) {
         throw std::runtime_error("cuFFT R2C failed");
     }
-    // NO SYNC NEEDED: cuFFT and cuSPARSE both run on stream_, ordering is automatic
 
-    // Step 3: Solve tridiagonal systems in y for each Fourier mode (kx, kz)
-    // The system for mode (kx, kz) is:
-    //   (L_y - (λ_x + λ_z) I) p_hat = rhs_hat
-    // where L_y is the tridiagonal second-derivative operator in y
-
+    // Step 4: Solve tridiagonal systems in y for each Fourier mode
+    // cuSPARSE runs on stream_, ordering is automatic (no sync needed)
     if (use_cusparse_) {
-        // Use cuSPARSE batched tridiagonal solver (reference implementation)
         solve_tridiagonal_cusparse();
     } else {
-        // Use custom Thomas algorithm
+        // Legacy OMP Thomas algorithm (slower, kept for reference)
+        // This path requires syncs and is not recommended
+        cudaStreamSynchronize(stream_);
+
         cufftDoubleComplex* rhs_h = rhs_hat_;
         cufftDoubleComplex* p_h = p_hat_;
         double* lam_x = lambda_x_;
@@ -678,43 +996,27 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
         double* work_c = work_c_;
         double* work_d_r = work_d_real_;
         double* work_d_i = work_d_imag_;
+        const int Nz_complex = Nz / 2 + 1;
 
-        // Thomas algorithm using global workspace arrays
-        // Forward sweep: for each j from 0 to Ny-1, compute c'[j] and d'[j]
         for (int j = 0; j < Ny; ++j) {
             const int j_local = j;
             #pragma omp target teams distribute parallel for collapse(2) \
                 is_device_ptr(rhs_h, lam_x, lam_z, aS, aN, diag_base, work_c, work_d_r, work_d_i)
             for (int kx = 0; kx < Nx; ++kx) {
                 for (int kz = 0; kz < Nz_complex; ++kz) {
-                    // Index for workspace: [mode][j] where mode = kx * Nz_complex + kz
                     const size_t mode_idx = static_cast<size_t>(kx) * Nz_complex + kz;
                     const size_t work_idx = mode_idx * Ny + j_local;
-                    // Index for FFT arrays: [j][mode]
                     const size_t rhs_idx = static_cast<size_t>(j_local) * Nx * Nz_complex + mode_idx;
-
-                    // Eigenvalue shift
                     double shift = lam_x[kx] + lam_z[kz];
                     bool is_zero_mode = (kx == 0 && kz == 0);
-
-                    // Tridiagonal coefficients
                     double diag = diag_base[j_local] - shift;
                     double lower = (j_local > 0) ? aS[j_local] : 0.0;
                     double upper = (j_local < Ny - 1) ? aN[j_local] : 0.0;
-
-                    // Get RHS values
                     double rhs_r = rhs_h[rhs_idx].x;
                     double rhs_i = rhs_h[rhs_idx].y;
-
-                    // For zero mode, pin j=0 to zero
                     if (is_zero_mode && j_local == 0) {
-                        diag = 1.0;
-                        lower = 0.0;
-                        upper = 0.0;
-                        rhs_r = 0.0;
-                        rhs_i = 0.0;
+                        diag = 1.0; lower = 0.0; upper = 0.0; rhs_r = 0.0; rhs_i = 0.0;
                     }
-
                     if (j_local == 0) {
                         work_c[work_idx] = upper / diag;
                         work_d_r[work_idx] = rhs_r / diag;
@@ -729,8 +1031,6 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
                 }
             }
         }
-
-        // Backward substitution: for each j from Ny-1 down to 0
         for (int j = Ny - 1; j >= 0; --j) {
             const int j_local = j;
             #pragma omp target teams distribute parallel for collapse(2) \
@@ -740,7 +1040,6 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
                     const size_t mode_idx = static_cast<size_t>(kx) * Nz_complex + kz;
                     const size_t work_idx = mode_idx * Ny + j_local;
                     const size_t out_idx = static_cast<size_t>(j_local) * Nx * Nz_complex + mode_idx;
-
                     if (j_local == Ny - 1) {
                         p_h[out_idx].x = work_d_r[work_idx];
                         p_h[out_idx].y = work_d_i[work_idx];
@@ -755,18 +1054,22 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
         cudaDeviceSynchronize();
     }
 
-    // Step 4: Inverse 2D FFT (C2R) to get real solution - runs on stream_
-    // OPTIMIZED: Read from rhs_hat_ (contains solution from in-place cuSPARSE solve)
+    // Step 5: Inverse 2D FFT (C2R) - runs on stream_
+    // Read from rhs_hat_ (contains solution from in-place cuSPARSE solve)
     result = cufftExecZ2D(fft_plan_c2r_, rhs_hat_, p_packed_);
     if (result != CUFFT_SUCCESS) {
         throw std::runtime_error("cuFFT C2R failed");
     }
-    // Sync stream_ only (not entire device) before OMP target (default stream)
-    cudaStreamSynchronize(stream_);
 
-    // Step 5+6 FUSED: Unpack solution + apply BCs in single kernel
-    // This eliminates 3 separate BC kernels and improves memory access
-    unpack_and_apply_bc(p_ptr);
+    // Record event when stream_ work (FFT) is complete
+    // Make stream 0 (OMP) wait for it before unpack
+    cudaEventRecord(ev_fft_done_, stream_);
+    cudaStreamWaitEvent(0, ev_fft_done_, 0);
+
+    // Step 6: Unpack solution + apply BCs (OMP target on stream 0)
+    launch_unpack_and_bc(p_ptr);
+
+    // OMP target has implicit sync, so p_ptr is ready when we return
 
     residual_ = 0.0;  // Direct solver, no residual
     return 1;  // "1 iteration" for a direct solver

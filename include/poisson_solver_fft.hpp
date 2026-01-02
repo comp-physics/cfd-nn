@@ -60,6 +60,15 @@ private:
     // Dedicated CUDA stream for entire Poisson solve
     cudaStream_t stream_ = nullptr;
 
+    // CUDA events for stream-to-stream synchronization (no host blocking)
+    // ev_pack_done_: signals OMP pack kernels completed (stream 0 -> stream_)
+    // ev_fft_done_: signals cuFFT/cuSPARSE completed (stream_ -> stream 0)
+    cudaEvent_t ev_pack_done_ = nullptr;
+    cudaEvent_t ev_fft_done_ = nullptr;
+
+    // Device-resident sum for mean subtraction (avoids host scalar transfer)
+    double* sum_dev_ = nullptr;
+
     // cuFFT plans
     cufftHandle fft_plan_r2c_;  // Forward: Real to Complex
     cufftHandle fft_plan_c2r_;  // Inverse: Complex to Real
@@ -116,19 +125,36 @@ private:
     // Compute tridiagonal coefficients for y-direction
     void compute_tridiagonal_coeffs();
 
+    // ==================== CUDA Kernel Launchers ====================
+    // These run on stream_ for full GPU-resident operation (no host scalars)
+
+    // Pack RHS from ghost-cell layout to packed layout + compute sum on device
+    // Writes sum to sum_dev_ (device scalar) - no host transfer!
+    void launch_pack_and_sum(double* rhs_ptr);
+
+    // Subtract mean from packed RHS (reads sum from sum_dev_)
+    void launch_subtract_mean(size_t n_total);
+
+    // Unpack solution + apply all BCs in single kernel
+    void launch_unpack_and_bc(double* p_ptr);
+
+    // ==================== Legacy OMP Functions (kept for reference) ====================
     // Pack RHS from ghost-cell layout to packed layout (on GPU)
     void pack_rhs(double* rhs_ptr);
 
     // Pack RHS and return sum (fused pack + reduction for mean subtraction)
+    // DEPRECATED: Use launch_pack_and_sum() to avoid host scalar transfer
     double pack_rhs_with_sum(double* rhs_ptr);
 
     // Subtract mean from packed RHS (for nullspace handling)
+    // DEPRECATED: Use launch_subtract_mean() for device-resident mean
     void subtract_mean(double mean);
 
     // Unpack solution from packed layout to ghost-cell layout (on GPU)
     void unpack_solution(double* p_ptr);
 
     // Fused unpack + BC application (single kernel)
+    // DEPRECATED: Use launch_unpack_and_bc() for stream_ execution
     void unpack_and_apply_bc(double* p_ptr);
 
     // Apply boundary conditions to ghost cells (on GPU)
