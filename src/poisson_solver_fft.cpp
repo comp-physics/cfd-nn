@@ -30,6 +30,8 @@ FFTPoissonSolver::~FFTPoissonSolver() {
         cufftDestroy(fft_plan_c2r_);
     }
     if (cusparse_handle_) cusparseDestroy(cusparse_handle_);
+    if (stream_) cudaStreamDestroy(stream_);
+    if (fft_work_area_) cudaFree(fft_work_area_);
     if (rhs_packed_) cudaFree(rhs_packed_);
     if (p_packed_) cudaFree(p_packed_);
     if (rhs_hat_) cudaFree(rhs_hat_);
@@ -105,6 +107,10 @@ void FFTPoissonSolver::initialize_fft() {
     cudaMallocManaged(&work_d_real_, sizeof(double) * work_size);
     cudaMallocManaged(&work_d_imag_, sizeof(double) * work_size);
 
+    // Create dedicated CUDA stream for entire Poisson solve
+    // This allows async execution and avoids default stream ordering constraints
+    cudaStreamCreate(&stream_);
+
     // Create cuFFT plans for batched 2D FFT with OPTIMIZED LAYOUT
     //
     // Goal: Produce output in [mode][j] layout where mode = kx*Nz_complex + kz
@@ -134,23 +140,57 @@ void FFTPoissonSolver::initialize_fft() {
     int odist = 1;
     int batch = Ny;
 
-    cufftResult result = cufftPlanMany(&fft_plan_r2c_, 2, n,
-                                        inembed, istride, idist,
-                                        onembed, ostride, odist,
-                                        CUFFT_D2Z, batch);
+    // Create plans with auto-allocation DISABLED to prevent per-solve allocation
+    cufftResult result = cufftCreate(&fft_plan_r2c_);
     if (result != CUFFT_SUCCESS) {
-        throw std::runtime_error("Failed to create cuFFT R2C plan");
+        throw std::runtime_error("Failed to create cuFFT R2C handle");
+    }
+    result = cufftSetAutoAllocation(fft_plan_r2c_, 0);  // Disable auto work area
+    if (result != CUFFT_SUCCESS) {
+        throw std::runtime_error("Failed to disable cuFFT R2C auto allocation");
     }
 
-    result = cufftPlanMany(&fft_plan_c2r_, 2, n,
-                            onembed, ostride, odist,
-                            inembed, istride, idist,
-                            CUFFT_Z2D, batch);
+    result = cufftCreate(&fft_plan_c2r_);
     if (result != CUFFT_SUCCESS) {
-        throw std::runtime_error("Failed to create cuFFT C2R plan");
+        throw std::runtime_error("Failed to create cuFFT C2R handle");
     }
+    result = cufftSetAutoAllocation(fft_plan_c2r_, 0);  // Disable auto work area
+    if (result != CUFFT_SUCCESS) {
+        throw std::runtime_error("Failed to disable cuFFT C2R auto allocation");
+    }
+
+    // Create plans and query work sizes
+    size_t r2c_work_size = 0, c2r_work_size = 0;
+    result = cufftMakePlanMany(fft_plan_r2c_, 2, n,
+                                inembed, istride, idist,
+                                onembed, ostride, odist,
+                                CUFFT_D2Z, batch, &r2c_work_size);
+    if (result != CUFFT_SUCCESS) {
+        throw std::runtime_error("Failed to make cuFFT R2C plan");
+    }
+
+    result = cufftMakePlanMany(fft_plan_c2r_, 2, n,
+                                onembed, ostride, odist,
+                                inembed, istride, idist,
+                                CUFFT_Z2D, batch, &c2r_work_size);
+    if (result != CUFFT_SUCCESS) {
+        throw std::runtime_error("Failed to make cuFFT C2R plan");
+    }
+
+    // Allocate unified work area (max of both plans)
+    fft_work_size_ = std::max(r2c_work_size, c2r_work_size);
+    if (fft_work_size_ > 0) {
+        cudaMalloc(&fft_work_area_, fft_work_size_);
+        cufftSetWorkArea(fft_plan_r2c_, fft_work_area_);
+        cufftSetWorkArea(fft_plan_c2r_, fft_work_area_);
+    }
+
+    // Set stream for cuFFT (both plans use same stream)
+    cufftSetStream(fft_plan_r2c_, stream_);
+    cufftSetStream(fft_plan_c2r_, stream_);
 
     plans_created_ = true;
+    std::cout << "[FFTPoissonSolver] cuFFT work area: " << fft_work_size_ << " bytes (locked)\n";
 
     // Compute eigenvalues and tridiagonal coefficients
     compute_eigenvalues();
@@ -241,6 +281,9 @@ void FFTPoissonSolver::initialize_cusparse() {
         return;
     }
 
+    // Set cuSPARSE to use same stream as cuFFT for proper ordering
+    cusparseSetStream(cusparse_handle_, stream_);
+
     // Allocate complex tridiagonal arrays for cuSPARSE
     // For gtsv2StridedBatch: each batch has m elements, batchStride=Ny
     // Total: n_modes batches, each of size Ny
@@ -329,28 +372,18 @@ void FFTPoissonSolver::solve_tridiagonal_cusparse() {
     const int Nz_complex = Nz / 2 + 1;
     const int n_modes = Nx * Nz_complex;
 
-    cufftDoubleComplex* rhs_h = rhs_hat_;
-
     // Tridiagonal matrices (tri_dl_, tri_d_, tri_du_) are precomputed at init
 
-    // Step 1: Copy RHS to solution array (cuSPARSE solves in-place)
-    // OPTIMIZED: cuFFT now outputs directly in [mode][j] layout matching cuSPARSE!
-    // Just need to copy and apply zero-mode fix for j=0 (idx=0)
-    cufftDoubleComplex* x = p_hat_;
-    const size_t total_size = static_cast<size_t>(n_modes) * Ny;
+    // OPTIMIZED: Solve in-place in rhs_hat_ - eliminates D2D memcpy!
+    // cuSPARSE gtsv2StridedBatch overwrites input with solution.
+    // cuFFT C2R will then read solution directly from rhs_hat_.
+    cufftDoubleComplex* x = rhs_hat_;
 
-    #pragma omp target teams distribute parallel for is_device_ptr(rhs_h, x)
-    for (size_t idx = 0; idx < total_size; ++idx) {
-        // Copy RHS, fixing zero mode (mode=0, j=0 → idx=0) to enforce pinned value
-        if (idx == 0) {
-            x[0].x = 0.0;
-            x[0].y = 0.0;
-        } else {
-            x[idx] = rhs_h[idx];
-        }
-    }
+    // Fix zero mode (mode=0, j=0): set x[0] to 0 (pinned value for singularity)
+    // cudaMemsetAsync on stream_ to zero out the first element (16 bytes)
+    cudaMemsetAsync(x, 0, sizeof(cufftDoubleComplex), stream_);
 
-    // Step 2: Call cuSPARSE batched tridiagonal solver
+    // Call cuSPARSE batched tridiagonal solver (runs on stream_)
     cusparseStatus_t status = cusparseZgtsv2StridedBatch(
         cusparse_handle_,
         Ny,              // m: system size
@@ -367,8 +400,54 @@ void FFTPoissonSolver::solve_tridiagonal_cusparse() {
         throw std::runtime_error("cuSPARSE gtsv2StridedBatch failed");
     }
 
-    // OPTIMIZED: No Step 4 needed - cuSPARSE output is already in [mode][j] layout
-    // which matches what cuFFT inverse expects (istride=Ny, idist=1)
+    // OPTIMIZED: Solution is now in rhs_hat_, which cuFFT C2R will read from.
+    // No copy needed since we eliminated the intermediate p_hat_ buffer for solve.
+}
+
+double FFTPoissonSolver::pack_rhs_with_sum(double* rhs_ptr) {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int Nx_full = Nx + 2 * Ng;
+    const int Ny_full = Ny + 2 * Ng;
+    const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
+
+    double* packed = rhs_packed_;
+
+    // FUSED: Pack from [k][j][i] with ghosts to [(i*Nz+k)][j] and compute sum
+    // This fuses pack + sum into one kernel pass for better performance
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum) \
+        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
+    for (int i = 0; i < Nx; ++i) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                // Source index with ghosts: [k+Ng][j+Ng][i+Ng]
+                const size_t src_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
+                                       (j + Ng) * Nx_full + (i + Ng);
+                // Destination: [(i*Nz + k)][j] with j fastest
+                const size_t dst_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
+                double val = rhs_ptr[src_idx];
+                packed[dst_idx] = val;
+                sum += val;
+            }
+        }
+    }
+    return sum;
+}
+
+void FFTPoissonSolver::subtract_mean(double mean) {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
+    double* rhs_p = rhs_packed_;
+
+    #pragma omp target teams distribute parallel for is_device_ptr(rhs_p)
+    for (size_t i = 0; i < n_total; ++i) {
+        rhs_p[i] -= mean;
+    }
 }
 
 void FFTPoissonSolver::pack_rhs(double* rhs_ptr) {
@@ -426,6 +505,72 @@ void FFTPoissonSolver::unpack_solution(double* p_ptr) {
                 const size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
                                        (j + Ng) * Nx_full + (i + Ng);
                 p_ptr[dst_idx] = packed[src_idx] * norm;
+            }
+        }
+    }
+}
+
+void FFTPoissonSolver::unpack_and_apply_bc(double* p_ptr) {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int Nx_full = Nx + 2 * Ng;
+    const int Ny_full = Ny + 2 * Ng;
+    const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
+    const double norm = 1.0 / (Nx * Nz);  // FFT normalization
+
+    double* packed = p_packed_;
+
+    // FUSED: Unpack interior + fill all ghost cells in one pass
+    // This eliminates 3 separate BC kernels and improves memory access
+    #pragma omp target teams distribute parallel for collapse(3) \
+        map(present: p_ptr[0:total_size]) is_device_ptr(packed)
+    for (int i = 0; i < Nx; ++i) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                // Source: [(i*Nz + k)][j] with j fastest
+                const size_t src_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
+                const double val = packed[src_idx] * norm;
+
+                // Destination with ghosts: [k+Ng][j+Ng][i+Ng]
+                const size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
+                                       (j + Ng) * Nx_full + (i + Ng);
+                p_ptr[dst_idx] = val;
+
+                // Fill x-ghosts for boundary cells (periodic)
+                if (i == 0) {
+                    // x_lo ghost: copy from x_hi interior (i=Nx-1)
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + 0] =
+                        packed[static_cast<size_t>((Nx - 1) * Nz + k) * Ny + j] * norm;
+                }
+                if (i == Nx - 1) {
+                    // x_hi ghost: copy from x_lo interior (i=0)
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Nx + Ng)] =
+                        packed[static_cast<size_t>(0 * Nz + k) * Ny + j] * norm;
+                }
+
+                // Fill y-ghosts for boundary cells (Neumann: dp/dy=0)
+                if (j == 0) {
+                    // y_lo ghost: copy from first interior row
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + 0 * Nx_full + (i + Ng)] = val;
+                }
+                if (j == Ny - 1) {
+                    // y_hi ghost: copy from last interior row
+                    p_ptr[(k + Ng) * Nx_full * Ny_full + (Ny + Ng) * Nx_full + (i + Ng)] = val;
+                }
+
+                // Fill z-ghosts for boundary cells (periodic)
+                if (k == 0) {
+                    // z_lo ghost: copy from z_hi interior (k=Nz-1)
+                    p_ptr[0 * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
+                        packed[static_cast<size_t>(i * Nz + (Nz - 1)) * Ny + j] * norm;
+                }
+                if (k == Nz - 1) {
+                    // z_hi ghost: copy from z_lo interior (k=0)
+                    p_ptr[(Nz + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
+                        packed[static_cast<size_t>(i * Nz + 0) * Ny + j] * norm;
+                }
             }
         }
     }
@@ -493,39 +638,25 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
     const int Nz = mesh_->Nz;
     const int Nz_complex = Nz / 2 + 1;
 
-    // Step 1: Pack RHS from ghost layout to FFT-friendly layout [j][i][k]
-    pack_rhs(rhs_ptr);
-    cudaDeviceSynchronize();
+    // Step 1: Pack RHS and compute sum in one fused pass
+    // FUSED: pack + reduction eliminates one kernel launch
+    const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
+    double sum = pack_rhs_with_sum(rhs_ptr);
 
-    // Step 1b: Enforce mean(rhs) = 0 for nullspace handling
+    // Step 1b: Subtract mean to enforce mean(rhs) = 0 for nullspace handling
     // This ensures the system is consistent for pure Neumann/periodic BCs
-    {
-        const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
-        double* rhs_p = rhs_packed_;
+    const double mean = sum / static_cast<double>(n_total);
+    subtract_mean(mean);
 
-        // Compute sum using reduction
-        double sum = 0.0;
-        #pragma omp target teams distribute parallel for reduction(+:sum) \
-            is_device_ptr(rhs_p)
-        for (size_t i = 0; i < n_total; ++i) {
-            sum += rhs_p[i];
-        }
-
-        // Subtract mean from all values
-        const double mean = sum / static_cast<double>(n_total);
-        #pragma omp target teams distribute parallel for is_device_ptr(rhs_p)
-        for (size_t i = 0; i < n_total; ++i) {
-            rhs_p[i] -= mean;
-        }
-    }
+    // Sync to ensure OMP target (default stream) completes before cuFFT (stream_)
     cudaDeviceSynchronize();
 
-    // Step 2: Forward 2D FFT (R2C) for each y-plane
+    // Step 2: Forward 2D FFT (R2C) - runs on stream_
     cufftResult result = cufftExecD2Z(fft_plan_r2c_, rhs_packed_, rhs_hat_);
     if (result != CUFFT_SUCCESS) {
         throw std::runtime_error("cuFFT R2C failed");
     }
-    cudaDeviceSynchronize();
+    // NO SYNC NEEDED: cuFFT and cuSPARSE both run on stream_, ordering is automatic
 
     // Step 3: Solve tridiagonal systems in y for each Fourier mode (kx, kz)
     // The system for mode (kx, kz) is:
@@ -624,18 +755,18 @@ int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poisson
         cudaDeviceSynchronize();
     }
 
-    // Step 4: Inverse 2D FFT (C2R) to get real solution
-    result = cufftExecZ2D(fft_plan_c2r_, p_hat_, p_packed_);
+    // Step 4: Inverse 2D FFT (C2R) to get real solution - runs on stream_
+    // OPTIMIZED: Read from rhs_hat_ (contains solution from in-place cuSPARSE solve)
+    result = cufftExecZ2D(fft_plan_c2r_, rhs_hat_, p_packed_);
     if (result != CUFFT_SUCCESS) {
         throw std::runtime_error("cuFFT C2R failed");
     }
-    cudaDeviceSynchronize();
+    // Sync stream_ only (not entire device) before OMP target (default stream)
+    cudaStreamSynchronize(stream_);
 
-    // Step 5: Unpack solution to ghost-cell layout (includes FFT normalization)
-    unpack_solution(p_ptr);
-
-    // Step 6: Apply boundary conditions to ghost cells
-    apply_bc_device(p_ptr);
+    // Step 5+6 FUSED: Unpack solution + apply BCs in single kernel
+    // This eliminates 3 separate BC kernels and improves memory access
+    unpack_and_apply_bc(p_ptr);
 
     residual_ = 0.0;  // Direct solver, no residual
     return 1;  // "1 iteration" for a direct solver

@@ -7,6 +7,7 @@
 #ifdef USE_GPU_OFFLOAD
 #include <cufft.h>
 #include <cusparse.h>
+#include <cuda_runtime.h>
 #endif
 
 namespace nncfd {
@@ -56,10 +57,17 @@ private:
     PoissonBC bc_y_hi_ = PoissonBC::Neumann;
 
 #ifdef USE_GPU_OFFLOAD
+    // Dedicated CUDA stream for entire Poisson solve
+    cudaStream_t stream_ = nullptr;
+
     // cuFFT plans
     cufftHandle fft_plan_r2c_;  // Forward: Real to Complex
     cufftHandle fft_plan_c2r_;  // Inverse: Complex to Real
     bool plans_created_ = false;
+
+    // cuFFT work area (locked to prevent per-solve allocation)
+    void* fft_work_area_ = nullptr;
+    size_t fft_work_size_ = 0;
 
     // Device buffers
     double* rhs_packed_ = nullptr;      // Packed RHS without ghosts (Nx*Ny*Nz)
@@ -111,8 +119,17 @@ private:
     // Pack RHS from ghost-cell layout to packed layout (on GPU)
     void pack_rhs(double* rhs_ptr);
 
+    // Pack RHS and return sum (fused pack + reduction for mean subtraction)
+    double pack_rhs_with_sum(double* rhs_ptr);
+
+    // Subtract mean from packed RHS (for nullspace handling)
+    void subtract_mean(double mean);
+
     // Unpack solution from packed layout to ghost-cell layout (on GPU)
     void unpack_solution(double* p_ptr);
+
+    // Fused unpack + BC application (single kernel)
+    void unpack_and_apply_bc(double* p_ptr);
 
     // Apply boundary conditions to ghost cells (on GPU)
     void apply_bc_device(double* p_ptr);
