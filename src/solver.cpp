@@ -1061,33 +1061,112 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     hypre_poisson_solver_ = std::make_unique<HyprePoissonSolver>(mesh);
     hypre_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                                    PoissonBC::Neumann, PoissonBC::Neumann);
-    // Use HYPRE if configured
-    use_hypre_ = config.use_hypre;
 #endif
 
 #ifdef USE_FFT_POISSON
     // Initialize FFT-hybrid solver for periodic x/z cases
-    // Currently only supports uniform grids (no stretching in any direction)
-    // TODO: Extend to support stretched y-direction with proper coefficient computation
+    // Supports 3D with periodic x/z and uniform dx/dz (y can be stretched)
+    bool fft_applicable = false;
     bool periodic_xz = true;  // Default for channel: periodic x/z
-    bool uniform_all = !config.stretch_y && !config.stretch_z;
+    bool uniform_xz = true;   // Default for channel: uniform x/z spacing
 
-    if (periodic_xz && uniform_all && !mesh.is2D()) {
+    if (periodic_xz && uniform_xz && !mesh.is2D()) {
         try {
             fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
             fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                                          PoissonBC::Neumann, PoissonBC::Neumann,
                                          PoissonBC::Periodic, PoissonBC::Periodic);
-            use_fft_ = config.use_fft;  // Use FFT if configured
-            if (use_fft_) {
-                std::cout << "[Solver] FFT Poisson solver enabled (periodic x/z, uniform spacing)\n";
-            }
+            fft_applicable = true;
         } catch (const std::exception& e) {
             std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
-            use_fft_ = false;
         }
     }
 #endif
+
+    // ========================================================================
+    // Poisson Solver Auto-Selection
+    // Priority: FFT (if applicable) → HYPRE (if available) → MG
+    // ========================================================================
+    PoissonSolverType requested = config.poisson_solver;
+    std::string selection_reason;
+
+    if (requested == PoissonSolverType::Auto) {
+        // Auto-select: FFT > HYPRE > MG
+#ifdef USE_FFT_POISSON
+        if (fft_applicable) {
+            selected_solver_ = PoissonSolverType::FFT;
+            selection_reason = "auto: periodic(x,z) + uniform(dx,dz) + 3D";
+        } else
+#endif
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            selected_solver_ = PoissonSolverType::HYPRE;
+            selection_reason = "auto: FFT not applicable, HYPRE available";
+        } else
+#endif
+        {
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason = "auto: fallback to multigrid";
+        }
+    } else if (requested == PoissonSolverType::FFT) {
+#ifdef USE_FFT_POISSON
+        if (fft_applicable) {
+            selected_solver_ = PoissonSolverType::FFT;
+            selection_reason = "explicit: user requested FFT";
+        } else {
+            std::cerr << "[Solver] Warning: FFT requested but not applicable "
+                      << "(requires 3D, periodic x/z, uniform dx/dz). Falling back to ";
+#ifdef USE_HYPRE
+            if (hypre_poisson_solver_) {
+                selected_solver_ = PoissonSolverType::HYPRE;
+                std::cerr << "HYPRE.\n";
+                selection_reason = "fallback from FFT: not applicable";
+            } else
+#endif
+            {
+                selected_solver_ = PoissonSolverType::MG;
+                std::cerr << "MG.\n";
+                selection_reason = "fallback from FFT: not applicable";
+            }
+        }
+#else
+        std::cerr << "[Solver] Warning: FFT requested but USE_FFT_POISSON not built. ";
+#ifdef USE_HYPRE
+        selected_solver_ = PoissonSolverType::HYPRE;
+        std::cerr << "Using HYPRE.\n";
+#else
+        selected_solver_ = PoissonSolverType::MG;
+        std::cerr << "Using MG.\n";
+#endif
+        selection_reason = "fallback from FFT: not built";
+#endif
+    } else if (requested == PoissonSolverType::HYPRE) {
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            selected_solver_ = PoissonSolverType::HYPRE;
+            selection_reason = "explicit: user requested HYPRE";
+        } else {
+            std::cerr << "[Solver] Warning: HYPRE initialization failed. Using MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason = "fallback from HYPRE: init failed";
+        }
+#else
+        std::cerr << "[Solver] Warning: HYPRE requested but USE_HYPRE not built. Using MG.\n";
+        selected_solver_ = PoissonSolverType::MG;
+        selection_reason = "fallback from HYPRE: not built";
+#endif
+    } else {
+        // PoissonSolverType::MG
+        selected_solver_ = PoissonSolverType::MG;
+        selection_reason = "explicit: user requested MG";
+    }
+
+    // Log the selection
+    const char* solver_name = (selected_solver_ == PoissonSolverType::FFT) ? "FFT" :
+                              (selected_solver_ == PoissonSolverType::HYPRE) ? "HYPRE" : "MG";
+    std::cout << "[Poisson] selected=" << solver_name
+              << " reason=" << selection_reason
+              << " dims=" << mesh.Nx << "x" << mesh.Ny << "x" << mesh.Nz << "\n";
 
 #ifdef USE_GPU_OFFLOAD
     // Fail-fast if GPU offload is enabled but no device is available
@@ -2992,77 +3071,69 @@ double RANSSolver::step() {
         int cycles = 0;
         double final_residual = 0.0;
 
-        // Diagnostic: log which Poisson path is taken (once per path)
-        static bool fft_logged = false;
-        static bool hypre_cuda_logged = false;
-        static bool hypre_host_logged = false;
+        // Dispatch to selected Poisson solver
+        // Note: Selection was done at init time; we just execute the selected path here
+        static bool solver_logged = false;
 
+#ifdef USE_GPU_OFFLOAD
+        if (gpu_ready_) {
+            // GPU path based on selected solver
+            switch (selected_solver_) {
 #ifdef USE_FFT_POISSON
-        // FFT solver: fastest for periodic x/z cases (direct solver)
-        if (use_fft_ && fft_poisson_solver_ && gpu_ready_) {
-            if (!fft_logged) {
-                std::cout << "[Poisson] Using FFT-hybrid solve_device() (cuFFT)\n";
-                fft_logged = true;
-            }
-            cycles = fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-            final_residual = fft_poisson_solver_->residual();
-        } else
+                case PoissonSolverType::FFT:
+                    if (fft_poisson_solver_) {
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using FFT solve_device() (cuFFT+cuSPARSE)\n";
+                            solver_logged = true;
+                        }
+                        cycles = fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        final_residual = fft_poisson_solver_->residual();
+                    }
+                    break;
 #endif
 #ifdef USE_HYPRE
-        if (use_hypre_ && hypre_poisson_solver_) {
-#ifdef USE_GPU_OFFLOAD
-            if (gpu_ready_ && hypre_poisson_solver_->using_cuda()) {
-                // GPU-RESIDENT PATH: hypre solves directly on device
-                if (!hypre_cuda_logged) {
-                    std::cout << "[Poisson] Using HYPRE solve_device() (CUDA)\n";
-                    hypre_cuda_logged = true;
-                }
-                cycles = hypre_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-                final_residual = hypre_poisson_solver_->residual();
-            } else
+                case PoissonSolverType::HYPRE:
+                    if (hypre_poisson_solver_) {
+                        if (hypre_poisson_solver_->using_cuda()) {
+                            if (!solver_logged) {
+                                std::cout << "[Poisson] Using HYPRE solve_device() (CUDA)\n";
+                                solver_logged = true;
+                            }
+                            cycles = hypre_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                            final_residual = hypre_poisson_solver_->residual();
+                        } else {
+                            // HYPRE host fallback with GPU staging
+                            if (!solver_logged) {
+                                std::cout << "[Poisson] Using HYPRE solve() (host, GPU staging)\n";
+                                solver_logged = true;
+                            }
+                            #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
+                            std::memcpy(rhs_poisson_.data().data(), rhs_poisson_ptr_, field_total_size_ * sizeof(double));
+                            cycles = hypre_poisson_solver_->solve(rhs_poisson_, pressure_correction_, pcfg);
+                            final_residual = hypre_poisson_solver_->residual();
+                            std::memcpy(pressure_corr_ptr_, pressure_correction_.data().data(), field_total_size_ * sizeof(double));
+                            #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
+                        }
+                    }
+                    break;
 #endif
-            {
-                // Host path: sync data to host, solve, sync back
-                if (!hypre_host_logged) {
-                    std::cout << "[Poisson] Using HYPRE solve() (host)\n";
-                    hypre_host_logged = true;
-                }
-#ifdef USE_GPU_OFFLOAD
-                if (gpu_ready_) {
-                    #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
-                    std::memcpy(rhs_poisson_.data().data(), rhs_poisson_ptr_, field_total_size_ * sizeof(double));
-                }
-#endif
-                cycles = hypre_poisson_solver_->solve(rhs_poisson_, pressure_correction_, pcfg);
-                final_residual = hypre_poisson_solver_->residual();
-#ifdef USE_GPU_OFFLOAD
-                if (gpu_ready_) {
-                    std::memcpy(pressure_corr_ptr_, pressure_correction_.data().data(), field_total_size_ * sizeof(double));
-                    #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
-                }
-#endif
+                case PoissonSolverType::MG:
+                default:
+                    if (!solver_logged) {
+                        std::cout << "[Poisson] Using MG solve_device()\n";
+                        solver_logged = true;
+                    }
+                    cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                    final_residual = mg_poisson_solver_.residual();
+                    break;
             }
-        } else
-#endif
-#ifdef USE_GPU_OFFLOAD
-        if (gpu_ready_ && use_multigrid_) {
-            // GPU-RESIDENT PATH: solve directly on device without host staging
-            // This eliminates the DtoH/HtoD transfers that happened in the old path
-            static bool mg_device_logged = false;
-            if (!mg_device_logged) {
-                std::cout << "[Poisson] Using MULTIGRID solve_device()\n";
-                mg_device_logged = true;
-            }
-            cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-            final_residual = mg_poisson_solver_.residual();
         } else
 #endif
         {
-            // Host path (or GPU with host staging for non-multigrid)
-            static bool host_logged = false;
-            if (!host_logged) {
+            // Host path
+            if (!solver_logged) {
                 std::cout << "[Poisson] Using HOST path\n";
-                host_logged = true;
+                solver_logged = true;
             }
             if (use_multigrid_) {
                 cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);

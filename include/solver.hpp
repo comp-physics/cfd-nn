@@ -88,12 +88,13 @@ public:
     /// Set body force (pressure gradient equivalent)
     void set_body_force(double fx, double fy, double fz = 0.0);
 
+    /// Get the selected Poisson solver type (after auto-selection)
+    PoissonSolverType poisson_solver_type() const { return selected_solver_; }
+
 #ifdef USE_HYPRE
-    /// Enable/disable HYPRE PFMG Poisson solver
-    /// When enabled, uses HYPRE's parallel semicoarsening multigrid
-    /// instead of the built-in geometric multigrid
-    void set_use_hypre(bool use) { use_hypre_ = use; }
-    bool using_hypre() const { return use_hypre_; }
+    /// Enable/disable HYPRE PFMG Poisson solver (legacy API, prefer --poisson=hypre)
+    void set_use_hypre(bool use) { if (use) selected_solver_ = PoissonSolverType::HYPRE; }
+    bool using_hypre() const { return selected_solver_ == PoissonSolverType::HYPRE; }
 #endif
 
     /// Initialize velocity field
@@ -210,12 +211,11 @@ private:
     MultigridPoissonSolver mg_poisson_solver_;
 #ifdef USE_HYPRE
     std::unique_ptr<HyprePoissonSolver> hypre_poisson_solver_;
-    bool use_hypre_ = false;  // Use hypre PFMG when enabled
 #endif
 #ifdef USE_FFT_POISSON
     std::unique_ptr<FFTPoissonSolver> fft_poisson_solver_;
-    bool use_fft_ = false;  // Use FFT solver when x/z are periodic and uniform
 #endif
+    PoissonSolverType selected_solver_ = PoissonSolverType::MG;  // Actually selected solver (after auto)
     std::unique_ptr<TurbulenceModel> turb_model_;
     bool use_multigrid_ = true;  // Use multigrid by default for speed
     

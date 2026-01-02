@@ -280,20 +280,8 @@ int main(int argc, char** argv) {
         std::cout << "dx = " << mesh.dx << ", dy = " << mesh.dy << "\n\n";
     }
     
-    // Create solver
+    // Create solver (Poisson solver selection handled internally via config.poisson_solver)
     RANSSolver solver(mesh, config);
-
-#ifdef USE_HYPRE
-    // Enable HYPRE PFMG solver if requested
-    if (config.use_hypre) {
-        solver.set_use_hypre(true);
-        std::cout << "[Config] Using HYPRE PFMG Poisson solver\n";
-    }
-#else
-    if (config.use_hypre) {
-        std::cerr << "Warning: --use_hypre specified but USE_HYPRE not enabled in build\n";
-    }
-#endif
 
     // Set boundary conditions
     VelocityBC bc;

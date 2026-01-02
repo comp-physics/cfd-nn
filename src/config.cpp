@@ -182,8 +182,26 @@ void Config::load(const std::string& filename) {
     poisson_tol = get_double("poisson_tol", poisson_tol);
     poisson_max_iter = get_int("poisson_max_iter", poisson_max_iter);
     poisson_omega = get_double("poisson_omega", poisson_omega);
-    use_hypre = get_bool("use_hypre", use_hypre);
-    use_fft = get_bool("use_fft", use_fft);
+
+    // Parse poisson_solver: auto, fft, hypre, mg
+    std::string solver_str = get_string("poisson_solver", "auto");
+    if (solver_str == "auto") {
+        poisson_solver = PoissonSolverType::Auto;
+    } else if (solver_str == "fft") {
+        poisson_solver = PoissonSolverType::FFT;
+    } else if (solver_str == "hypre") {
+        poisson_solver = PoissonSolverType::HYPRE;
+    } else if (solver_str == "mg" || solver_str == "multigrid") {
+        poisson_solver = PoissonSolverType::MG;
+    }
+
+    // Legacy flags (for backward compatibility)
+    if (get_bool("use_hypre", false)) {
+        poisson_solver = PoissonSolverType::HYPRE;
+    }
+    if (get_bool("use_fft", false)) {
+        poisson_solver = PoissonSolverType::FFT;
+    }
 
     finalize();
 }
@@ -246,10 +264,25 @@ void Config::parse_args(int argc, char** argv) {
             poisson_tol = std::stod(val);
         } else if ((val = get_value(i, arg, "--poisson_max_iter")) != "") {
             poisson_max_iter = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--poisson")) != "") {
+            if (val == "auto") {
+                poisson_solver = PoissonSolverType::Auto;
+            } else if (val == "fft") {
+                poisson_solver = PoissonSolverType::FFT;
+            } else if (val == "hypre") {
+                poisson_solver = PoissonSolverType::HYPRE;
+            } else if (val == "mg" || val == "multigrid") {
+                poisson_solver = PoissonSolverType::MG;
+            } else {
+                std::cerr << "Warning: Unknown --poisson value '" << val << "', using auto\n";
+                poisson_solver = PoissonSolverType::Auto;
+            }
         } else if (is_flag(arg, "--use_hypre")) {
-            use_hypre = true;
+            // Legacy flag (backward compatibility)
+            poisson_solver = PoissonSolverType::HYPRE;
         } else if (is_flag(arg, "--use_fft")) {
-            use_fft = true;
+            // Legacy flag (backward compatibility)
+            poisson_solver = PoissonSolverType::FFT;
         } else if ((val = get_value(i, arg, "--model")) != "") {
             std::string model = val;
             if (model == "none" || model == "laminar") {
@@ -330,8 +363,13 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --tol T           Convergence tolerance for steady solve\n"
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
                       << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
-                      << "  --use_hypre       Use HYPRE PFMG solver (requires USE_HYPRE build)\n"
-                      << "  --use_fft         Use FFT-hybrid solver (for periodic x/z cases)\n"
+                      << "  --poisson S       Poisson solver (auto, fft, hypre, mg)\n"
+                      << "                      auto: FFT if applicable -> HYPRE if available -> MG\n"
+                      << "                      fft: FFT-hybrid (requires periodic x/z, uniform dx/dz)\n"
+                      << "                      hypre: HYPRE PFMG (requires USE_HYPRE build)\n"
+                      << "                      mg: native geometric multigrid\n"
+                      << "  --use_hypre       [deprecated] Same as --poisson=hypre\n"
+                      << "  --use_fft         [deprecated] Same as --poisson=fft\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"
