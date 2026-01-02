@@ -1065,6 +1065,30 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     use_hypre_ = config.use_hypre;
 #endif
 
+#ifdef USE_FFT_POISSON
+    // Initialize FFT-hybrid solver for periodic x/z cases
+    // Currently only supports uniform grids (no stretching in any direction)
+    // TODO: Extend to support stretched y-direction with proper coefficient computation
+    bool periodic_xz = true;  // Default for channel: periodic x/z
+    bool uniform_all = !config.stretch_y && !config.stretch_z;
+
+    if (periodic_xz && uniform_all && !mesh.is2D()) {
+        try {
+            fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
+            fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                         PoissonBC::Neumann, PoissonBC::Neumann,
+                                         PoissonBC::Periodic, PoissonBC::Periodic);
+            use_fft_ = config.use_fft;  // Use FFT if configured
+            if (use_fft_) {
+                std::cout << "[Solver] FFT Poisson solver enabled (periodic x/z, uniform spacing)\n";
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
+            use_fft_ = false;
+        }
+    }
+#endif
+
 #ifdef USE_GPU_OFFLOAD
     // Fail-fast if GPU offload is enabled but no device is available
     gpu::verify_device_available();
@@ -2969,9 +2993,21 @@ double RANSSolver::step() {
         double final_residual = 0.0;
 
         // Diagnostic: log which Poisson path is taken (once per path)
+        static bool fft_logged = false;
         static bool hypre_cuda_logged = false;
         static bool hypre_host_logged = false;
 
+#ifdef USE_FFT_POISSON
+        // FFT solver: fastest for periodic x/z cases (direct solver)
+        if (use_fft_ && fft_poisson_solver_ && gpu_ready_) {
+            if (!fft_logged) {
+                std::cout << "[Poisson] Using FFT-hybrid solve_device() (cuFFT)\n";
+                fft_logged = true;
+            }
+            cycles = fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+            final_residual = fft_poisson_solver_->residual();
+        } else
+#endif
 #ifdef USE_HYPRE
         if (use_hypre_ && hypre_poisson_solver_) {
 #ifdef USE_GPU_OFFLOAD

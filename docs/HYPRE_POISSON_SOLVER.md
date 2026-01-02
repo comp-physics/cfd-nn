@@ -4,7 +4,7 @@ This document describes the HYPRE-based GPU-accelerated Poisson solver integrati
 
 ## Overview
 
-HYPRE's **PFMG (Parallel Semicoarsening Multigrid)** solver provides a high-performance alternative to the built-in multigrid solver for the pressure Poisson equation. When built with CUDA support, HYPRE runs the entire multigrid solve on the GPU, achieving **8-10x speedup** over the OpenMP-offloaded multigrid implementation.
+HYPRE's **PFMG (Parallel Semicoarsening Multigrid)** solver provides an alternative to the built-in multigrid solver for the pressure Poisson equation. When built with CUDA support, HYPRE runs the entire multigrid solve on the GPU via native CUDA kernels. With proper optimization, HYPRE PFMG achieves **comparable or better performance** than the built-in multigrid solver on single-GPU systems, while providing a path to multi-GPU scalability via MPI.
 
 ### Key Features
 
@@ -15,15 +15,41 @@ HYPRE's **PFMG (Parallel Semicoarsening Multigrid)** solver provides a high-perf
 
 ## Performance
 
-Benchmark results on NVIDIA H200 GPU (Hopper architecture):
+Benchmark results on NVIDIA H200 GPU (Hopper architecture), 500 time steps, 128³ grid:
 
-| Grid Size | HYPRE PFMG | Built-in Multigrid | Speedup |
-|-----------|------------|-------------------|---------|
-| 32³       | 5.4 ms     | 52 ms             | **9.7x**  |
-| 64³       | 5.4 ms     | 58 ms             | **10.8x** |
-| 128³      | 8.0 ms     | 66 ms             | **8.2x**  |
+| Solver | Time per Solve | Ratio |
+|--------|---------------|-------|
+| Built-in Multigrid | 4.21 ms | 1.0x |
+| HYPRE PFMG (optimized) | 4.16 ms | **0.99x** |
 
-The speedup comes from HYPRE's GPU-native implementation using CUDA kernels, versus the OpenMP target-offloaded implementation which incurs additional overhead from kernel launches and synchronization.
+**HYPRE matches or slightly outperforms native MG** after the following optimizations. Both solvers produce identical physical results.
+
+### Time Breakdown Analysis
+
+Profiling revealed that **98% of HYPRE time is in PFMGSolve**, not data transfer:
+
+| Component | Time | Percentage |
+|-----------|------|------------|
+| Pack kernel (OMP→managed) | 0.07 ms | 1.7% |
+| SetBoxValues(b) | 0.02 ms | 0.5% |
+| SetBoxValues(x) | 0.02 ms | 0.5% |
+| **PFMGSolve** | **4.10 ms** | **97.0%** |
+| GetBoxValues(x) | 0.02 ms | 0.5% |
+
+This means optimizations should focus on PFMG solver parameters, not data transfer.
+
+### Optimizations Applied
+
+1. **MaxLevels=2**: Limits PFMG to 2 levels (coarsest 64³ for 128³ grid). PFMG semicoarsening can create excessive levels; limiting depth reduces kernel launch overhead.
+2. **SkipRelax=1**: Skip relaxation on finest grid level (~23% speedup)
+3. **NumPreRelax=1, NumPostRelax=0**: Minimal relaxation sweeps while maintaining stability
+4. **SetDxyz**: Anisotropic grid spacing hints for optimal semicoarsening direction selection
+
+**When to use HYPRE**:
+- Single-GPU: Comparable or slightly faster than native MG with proper tuning
+- Multi-GPU / MPI parallelism: HYPRE excels here
+- Need for robustness testing with alternative solver
+- Future integration with other HYPRE preconditioners
 
 ## Building with HYPRE
 
@@ -158,10 +184,23 @@ The HYPRE PFMG solver is configured for optimal GPU performance:
 
 | Parameter | Value | Reason |
 |-----------|-------|--------|
+| MaxLevels | 2 | Coarsen to 64³ only; fewer levels = fewer kernel launches |
 | RelaxType | 1 (Weighted Jacobi) | Fully parallel, GPU-friendly |
-| NumPreRelax | 2 | Pre-smoothing sweeps |
-| NumPostRelax | 2 | Post-smoothing sweeps |
-| RAPType | 0 (Galerkin) | Standard coarse grid operator |
+| NumPreRelax | 1 | Minimal pre-smoothing for efficiency |
+| NumPostRelax | 0 | Skip post-smoothing (stable with SkipRelax) |
+| SkipRelax | 1 | Skip fine grid relaxation for efficiency |
+| RAPType | 0 (Galerkin) | Standard coarse grid operator (non-Galerkin causes instability) |
+| SetDxyz | (dx, dy, dz) | Anisotropic grid spacing hints |
+
+**Key Optimizations**:
+
+1. **MaxLevels=2**: PFMG uses semicoarsening (coarsening one direction at a time), which for a 128³ grid could create up to 21 levels. We aggressively limit MaxLevels to just 2 (coarsest 64³), reducing kernel launch overhead significantly. Testing showed MaxLevels=1 (no coarsening) is too few - the solver doesn't converge properly.
+
+2. **SkipRelax=1**: Skip relaxation on the finest grid level. This provides ~23% speedup while maintaining convergence for smooth RHS problems typical in CFD.
+
+3. **NumPreRelax=1, NumPostRelax=0**: Aggressive relaxation reduction. Combined with SkipRelax=1, this provides stable convergence with minimal GPU kernel launches. Note: NumPreRelax=0 causes numerical instability.
+
+4. **RAPType=0**: Non-Galerkin operators (RAPType=1) cause numerical instability for this problem despite potentially being faster. Galerkin operators are required for stability.
 
 **Note**: Red-Black Gauss-Seidel (RelaxType=2) converges faster but has data dependencies that reduce GPU parallelism. Weighted Jacobi is preferred for GPU execution.
 

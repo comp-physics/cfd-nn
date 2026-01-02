@@ -173,6 +173,19 @@ if(USE_HYPRE)
     message(STATUS "  HYPRE Poisson solver added to nn_cfd_core")
 endif()
 
+# Add FFT-hybrid Poisson solver (for periodic x/z cases)
+# Requires GPU offload and cuFFT
+if(USE_GPU_OFFLOAD)
+    # cuFFT is part of CUDA toolkit
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        target_sources(nn_cfd_core PRIVATE src/poisson_solver_fft.cpp)
+        target_link_libraries(nn_cfd_core CUDA::cufft CUDA::cusparse CUDA::cudart)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
+        message(STATUS "  FFT Poisson solver added (cuFFT + cuSPARSE)")
+    endif()
+endif()
+
 # Suppress unknown pragma warnings in CPU builds
 if(NOT USE_GPU_OFFLOAD AND SUPPRESS_UNKNOWN_OMP_PRAGMAS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

@@ -182,7 +182,9 @@ void Config::load(const std::string& filename) {
     poisson_tol = get_double("poisson_tol", poisson_tol);
     poisson_max_iter = get_int("poisson_max_iter", poisson_max_iter);
     poisson_omega = get_double("poisson_omega", poisson_omega);
-    
+    use_hypre = get_bool("use_hypre", use_hypre);
+    use_fft = get_bool("use_fft", use_fft);
+
     finalize();
 }
 
@@ -246,6 +248,8 @@ void Config::parse_args(int argc, char** argv) {
             poisson_max_iter = std::stoi(val);
         } else if (is_flag(arg, "--use_hypre")) {
             use_hypre = true;
+        } else if (is_flag(arg, "--use_fft")) {
+            use_fft = true;
         } else if ((val = get_value(i, arg, "--model")) != "") {
             std::string model = val;
             if (model == "none" || model == "laminar") {
@@ -327,6 +331,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
                       << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
                       << "  --use_hypre       Use HYPRE PFMG solver (requires USE_HYPRE build)\n"
+                      << "  --use_fft         Use FFT-hybrid solver (for periodic x/z cases)\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"

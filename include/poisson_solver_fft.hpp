@@ -1,0 +1,122 @@
+#pragma once
+
+#include "mesh.hpp"
+#include "fields.hpp"
+#include "poisson_solver.hpp"
+
+#ifdef USE_GPU_OFFLOAD
+#include <cufft.h>
+#include <cusparse.h>
+#endif
+
+namespace nncfd {
+
+/// FFT-hybrid Poisson solver for periodic x/z, wall-bounded y
+/// Uses 2D FFT in x-z + batched tridiagonal solves in y
+/// Optimal for channel/duct flows with uniform spacing in periodic directions
+class FFTPoissonSolver {
+public:
+    explicit FFTPoissonSolver(const Mesh& mesh);
+    ~FFTPoissonSolver();
+
+    // Non-copyable
+    FFTPoissonSolver(const FFTPoissonSolver&) = delete;
+    FFTPoissonSolver& operator=(const FFTPoissonSolver&) = delete;
+
+    /// Set boundary conditions (must be periodic in x/z, Neumann or Dirichlet in y)
+    void set_bc(PoissonBC x_lo, PoissonBC x_hi,
+                PoissonBC y_lo, PoissonBC y_hi,
+                PoissonBC z_lo, PoissonBC z_hi);
+
+    /// Check if this solver is suitable for the given BC configuration
+    static bool is_suitable(PoissonBC x_lo, PoissonBC x_hi,
+                           PoissonBC y_lo, PoissonBC y_hi,
+                           PoissonBC z_lo, PoissonBC z_hi,
+                           bool uniform_x, bool uniform_z);
+
+    /// Solve nabla^2 p = rhs on device
+    /// rhs_ptr and p_ptr are device pointers with ghost cells
+    /// Returns 1 (direct solver, no iterations)
+    int solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg = PoissonConfig());
+
+    /// Get final residual (always 0 for direct solver)
+    double residual() const { return residual_; }
+
+    /// Check if solver is using GPU
+    bool using_gpu() const { return using_gpu_; }
+
+private:
+    const Mesh* mesh_;
+    bool using_gpu_ = false;
+    bool initialized_ = false;
+    double residual_ = 0.0;
+
+    // Boundary conditions (y only - x/z must be periodic)
+    PoissonBC bc_y_lo_ = PoissonBC::Neumann;
+    PoissonBC bc_y_hi_ = PoissonBC::Neumann;
+
+#ifdef USE_GPU_OFFLOAD
+    // cuFFT plans
+    cufftHandle fft_plan_r2c_;  // Forward: Real to Complex
+    cufftHandle fft_plan_c2r_;  // Inverse: Complex to Real
+    bool plans_created_ = false;
+
+    // Device buffers
+    double* rhs_packed_ = nullptr;      // Packed RHS without ghosts (Nx*Ny*Nz)
+    double* p_packed_ = nullptr;        // Packed solution without ghosts (Nx*Ny*Nz)
+    cufftDoubleComplex* rhs_hat_ = nullptr;  // FFT of RHS (Nx*(Nz/2+1)*Ny)
+    cufftDoubleComplex* p_hat_ = nullptr;    // FFT of solution (Nx*(Nz/2+1)*Ny)
+
+    // Precomputed eigenvalues for x and z directions
+    double* lambda_x_ = nullptr;  // Eigenvalues for x (size Nx)
+    double* lambda_z_ = nullptr;  // Eigenvalues for z (size Nz/2+1)
+
+    // Tridiagonal coefficients for y-direction (stretched grid support)
+    double* tri_lower_ = nullptr;   // Lower diagonal aS(j), size Ny
+    double* tri_upper_ = nullptr;   // Upper diagonal aN(j), size Ny
+    double* tri_diag_base_ = nullptr;  // Base diagonal -(aS+aN), size Ny
+
+    // Workspace for Thomas algorithm (size Nx * Nz_complex * Ny each)
+    double* work_c_ = nullptr;      // c' values
+    double* work_d_real_ = nullptr; // d' real part
+    double* work_d_imag_ = nullptr; // d' imaginary part
+
+    // cuSPARSE support for reference/debugging
+    cusparseHandle_t cusparse_handle_ = nullptr;
+    bool use_cusparse_ = true;  // cuSPARSE is 6x faster than custom Thomas
+    void* cusparse_buffer_ = nullptr;
+    size_t cusparse_buffer_size_ = 0;
+
+    // Complex tridiagonal coefficients for cuSPARSE (per mode)
+    // Each mode (kx, kz) has its own diagonal with eigenvalue shift
+    cufftDoubleComplex* tri_dl_ = nullptr;  // Lower diagonal (Ny-1 per batch)
+    cufftDoubleComplex* tri_d_ = nullptr;   // Main diagonal (Ny per batch)
+    cufftDoubleComplex* tri_du_ = nullptr;  // Upper diagonal (Ny-1 per batch)
+
+    // Initialize cuFFT plans and buffers
+    void initialize_fft();
+
+    // Initialize cuSPARSE
+    void initialize_cusparse();
+
+    // Solve tridiagonal using cuSPARSE (reference implementation)
+    void solve_tridiagonal_cusparse();
+
+    // Compute eigenvalues for periodic directions
+    void compute_eigenvalues();
+
+    // Compute tridiagonal coefficients for y-direction
+    void compute_tridiagonal_coeffs();
+
+    // Pack RHS from ghost-cell layout to packed layout (on GPU)
+    void pack_rhs(double* rhs_ptr);
+
+    // Unpack solution from packed layout to ghost-cell layout (on GPU)
+    void unpack_solution(double* p_ptr);
+
+    // Apply boundary conditions to ghost cells (on GPU)
+    void apply_bc_device(double* p_ptr);
+#endif
+};
+
+} // namespace nncfd

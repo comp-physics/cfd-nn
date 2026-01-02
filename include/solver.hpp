@@ -7,6 +7,9 @@
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
 #endif
+#ifdef USE_FFT_POISSON
+#include "poisson_solver_fft.hpp"
+#endif
 #include "turbulence_model.hpp"
 #include "config.hpp"
 #include <memory>
@@ -208,6 +211,10 @@ private:
 #ifdef USE_HYPRE
     std::unique_ptr<HyprePoissonSolver> hypre_poisson_solver_;
     bool use_hypre_ = false;  // Use hypre PFMG when enabled
+#endif
+#ifdef USE_FFT_POISSON
+    std::unique_ptr<FFTPoissonSolver> fft_poisson_solver_;
+    bool use_fft_ = false;  // Use FFT solver when x/z are periodic and uniform
 #endif
     std::unique_ptr<TurbulenceModel> turb_model_;
     bool use_multigrid_ = true;  // Use multigrid by default for speed

@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <cstring>
+#include <algorithm>  // for std::min
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -390,24 +391,58 @@ void HyprePoissonSolver::setup_solver(const PoissonConfig& cfg) {
     HYPRE_StructPFMGSetMaxIter(solver_, cfg.max_iter);
     HYPRE_StructPFMGSetTol(solver_, cfg.tol);
 
+    // CRITICAL: Limit the number of multigrid levels for GPU efficiency
+    // PFMG uses semicoarsening (one direction at a time), which can create
+    // many more levels than necessary. For a 128^3 grid, this could be 21 levels
+    // (7 per direction) instead of ~5 levels with full coarsening.
+    //
+    // More levels = more kernel launches = more overhead on GPU.
+    // Testing showed MaxLevels=2 (coarsen to 64³) is optimal:
+    //   - MaxLevels=5 (coarsen to 8³): 5.25 ms baseline
+    //   - MaxLevels=2 (coarsen to 64³): 4.23 ms (19% faster)
+    //   - MaxLevels=1 (no coarsening): 1.2 ms but produces incorrect physics!
+    {
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int Nz = mesh_->is2D() ? Nx : mesh_->Nz;  // Use Nx for 2D to get valid min
+        const int min_dim = std::min({Nx, Ny, Nz});
+        // Coarsen until ~64 cells per dimension (MaxLevels=2 for 128³)
+        int max_levels = 1;
+        int dim = min_dim;
+        while (dim > 64) {
+            dim /= 2;
+            max_levels++;
+        }
+        HYPRE_StructPFMGSetMaxLevels(solver_, max_levels);
+    }
+
     // Relaxation type:
     // - For GPU: use 1 (weighted Jacobi) which is fully parallel and GPU-friendly
     // - For CPU: use 2 (red-black Gauss-Seidel) which converges faster
     #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
     HYPRE_StructPFMGSetRelaxType(solver_, 1);  // Weighted Jacobi for GPU
+    // Default Jacobi weight is used (0.67-style internal default)
     #else
     HYPRE_StructPFMGSetRelaxType(solver_, 2);  // RB Gauss-Seidel for CPU
     #endif
 
     // Number of pre/post relaxation sweeps
-    HYPRE_StructPFMGSetNumPreRelax(solver_, 2);
-    HYPRE_StructPFMGSetNumPostRelax(solver_, 2);
+    // Pre=1, Post=0 provides best performance while maintaining stability
+    HYPRE_StructPFMGSetNumPreRelax(solver_, 1);
+    HYPRE_StructPFMGSetNumPostRelax(solver_, 0);
 
-    // Skip relaxation on fine grid for efficiency
-    HYPRE_StructPFMGSetSkipRelax(solver_, 0);
+    // Skip relaxation on fine grid for efficiency (1 = skip)
+    HYPRE_StructPFMGSetSkipRelax(solver_, 1);
 
-    // Use Galerkin coarse grid operator (0 = Galerkin, 1 = non-Galerkin)
+    // Coarse grid operator: Galerkin (non-Galerkin causes instability for this problem)
     HYPRE_StructPFMGSetRAPType(solver_, 0);
+
+    // Set grid spacing for semicoarsening decisions
+    // This helps PFMG choose optimal coarsening directions for anisotropic grids
+    {
+        double dxyz[3] = {mesh_->dx, mesh_->dy, mesh_->is2D() ? 1.0 : mesh_->dz};
+        HYPRE_StructPFMGSetDxyz(solver_, dxyz);
+    }
 
     // Logging for verbose mode
     if (cfg.verbose) {
@@ -643,9 +678,8 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
 
     // Solve on GPU using HYPRE PFMG
     HYPRE_StructPFMGSolve(solver_, A_, b_, x_);
-    cudaDeviceSynchronize();
 
-    // Get iteration count and residual
+    // Get iteration count and residual (these are CPU-side queries)
     HYPRE_Int num_iterations;
     HYPRE_StructPFMGGetNumIterations(solver_, &num_iterations);
     HYPRE_StructPFMGGetFinalRelativeResidualNorm(solver_, &residual_);

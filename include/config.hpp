@@ -110,7 +110,8 @@ struct Config {
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     bool use_hypre = false;     ///< Use HYPRE PFMG solver instead of multigrid
-    
+    bool use_fft = false;       ///< Use FFT-hybrid solver (for periodic x/z cases)
+
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks
     int turb_guard_interval = 5;            ///< Check every N steps (performance)
