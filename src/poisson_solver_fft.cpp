@@ -105,38 +105,34 @@ void FFTPoissonSolver::initialize_fft() {
     cudaMallocManaged(&work_d_real_, sizeof(double) * work_size);
     cudaMallocManaged(&work_d_imag_, sizeof(double) * work_size);
 
-    // Create cuFFT plans for batched 2D FFT
-    // We do 2D FFT in x-z for each y-plane
-    // Input layout: rhs_packed[k + Nz * (i + Nx * j)] for (i,j,k) = (x,y,z)
-    // But we need contiguous x-z planes for each y, so we'll reorder
+    // Create cuFFT plans for batched 2D FFT with OPTIMIZED LAYOUT
+    //
+    // Goal: Produce output in [mode][j] layout where mode = kx*Nz_complex + kz
+    // This eliminates the transpose needed for cuSPARSE tridiagonal solves.
+    //
+    // cuFFT output indexing formula:
+    //   out[b*odist + (x*onembed[1] + z)*ostride]
+    //
+    // We want: out[mode*Ny + j] = out[(kx*Nz_complex + kz)*Ny + j]
+    // Setting odist=1, ostride=Ny, onembed[1]=Nz_complex:
+    //   out[j*1 + (kx*Nz_complex + kz)*Ny] = out[j + mode*Ny] ✓
+    //
+    // Similarly for input: idist=1, istride=Ny, inembed[1]=Nz
+    //   in[j*1 + (i*Nz + k)*Ny] = in[(i*Nz + k)*Ny + j]
+    // This is the "interleaved batches" layout with j varying fastest.
 
-    // For the FFT, we want data organized as [y][x][z] so each y-plane is contiguous
-    // Current layout is [k][j][i] = [z][y][x], need to transpose
-
-    // Actually, let's use a different approach: create many-rank plan
-    // that handles non-contiguous data via advanced interface
-
-    // For simplicity, use batch of 1D FFTs or reorganize data
-    // Let's use the standard approach: transpose to [y][x][z], FFT, transpose back
-
-    // Simpler approach: since cuFFT supports strided batched transforms,
-    // use cufftPlanMany to handle the striding
-
-    // Data layout after packing: p_packed[k * Nx * Ny + j * Nx + i] for (i,j,k)
-    // We want 2D FFT over (i,k) for each j
-
-    // Using cufftPlanMany for 2D R2C with batch over y
-    int n[2] = {Nx, Nz};  // Dimensions to transform
+    int n[2] = {Nx, Nz};  // Dimensions to transform (2D FFT over x-z)
     int inembed[2] = {Nx, Nz};
     int onembed[2] = {Nx, Nz_complex};
-    int istride = 1;  // Stride between elements in innermost dimension
-    int ostride = 1;
-    int idist = Nx * Nz;  // Distance between batches (each y-plane)
-    int odist = Nx * Nz_complex;
-    int batch = Ny;
 
-    // Note: This assumes data is organized as [j][i][k] = [y][x][z]
-    // We'll need to reorganize from [k][j][i] during pack
+    // OPTIMIZED: Interleaved layout for direct cuSPARSE compatibility
+    // Input:  rhs_packed[(i*Nz + k)*Ny + j]  with j fastest
+    // Output: rhs_hat[mode*Ny + j]           with j fastest
+    int istride = Ny;   // Stride between consecutive (x,z) elements
+    int ostride = Ny;   // Same for output
+    int idist = 1;      // Distance between y-batches (j and j+1 differ by 1)
+    int odist = 1;
+    int batch = Ny;
 
     cufftResult result = cufftPlanMany(&fft_plan_r2c_, 2, n,
                                         inembed, istride, idist,
@@ -274,16 +270,9 @@ void FFTPoissonSolver::initialize_cusparse() {
 
     cudaMalloc(&cusparse_buffer_, cusparse_buffer_size_);
     std::cout << "[FFTPoissonSolver] cuSPARSE buffer: " << cusparse_buffer_size_ << " bytes\n";
-}
 
-void FFTPoissonSolver::solve_tridiagonal_cusparse() {
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Nz = mesh_->Nz;
-    const int Nz_complex = Nz / 2 + 1;
-    const int n_modes = Nx * Nz_complex;
-
-    cufftDoubleComplex* rhs_h = rhs_hat_;
+    // Precompute tridiagonal matrices - they never change between solves!
+    // The eigenvalue shift depends only on mode (kx, kz), not on the RHS
     double* lam_x = lambda_x_;
     double* lam_z = lambda_z_;
     double* aS = tri_lower_;
@@ -293,16 +282,13 @@ void FFTPoissonSolver::solve_tridiagonal_cusparse() {
     cufftDoubleComplex* d = tri_d_;
     cufftDoubleComplex* du = tri_du_;
 
-    // Step 1: Build complex tridiagonal matrices for each mode (kx, kz)
-    // cuSPARSE expects: dl[batch*Ny + j], d[batch*Ny + j], du[batch*Ny + j]
-    // where batch = kx * Nz_complex + kz
     #pragma omp target teams distribute parallel for collapse(3) \
         is_device_ptr(dl, d, du, lam_x, lam_z, aS, aN, diag_base)
     for (int kx = 0; kx < Nx; ++kx) {
         for (int kz = 0; kz < Nz_complex; ++kz) {
             for (int j = 0; j < Ny; ++j) {
-                const size_t batch = static_cast<size_t>(kx) * Nz_complex + kz;
-                const size_t idx = batch * Ny + j;
+                const size_t mode = static_cast<size_t>(kx) * Nz_complex + kz;
+                const size_t idx = mode * Ny + j;
 
                 // Eigenvalue shift
                 double shift = lam_x[kx] + lam_z[kz];
@@ -333,36 +319,38 @@ void FFTPoissonSolver::solve_tridiagonal_cusparse() {
         }
     }
     cudaDeviceSynchronize();
+    std::cout << "[FFTPoissonSolver] Precomputed tridiagonal matrices\n";
+}
 
-    // Step 2: Reorganize RHS for cuSPARSE layout
-    // Current layout: rhs_hat[j * Nx * Nz_complex + kx * Nz_complex + kz]
-    // cuSPARSE needs: x[batch * Ny + j] where batch = kx * Nz_complex + kz
-    // We'll solve in-place on p_hat which we'll use as work array
+void FFTPoissonSolver::solve_tridiagonal_cusparse() {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Nz_complex = Nz / 2 + 1;
+    const int n_modes = Nx * Nz_complex;
+
+    cufftDoubleComplex* rhs_h = rhs_hat_;
+
+    // Tridiagonal matrices (tri_dl_, tri_d_, tri_du_) are precomputed at init
+
+    // Step 1: Copy RHS to solution array (cuSPARSE solves in-place)
+    // OPTIMIZED: cuFFT now outputs directly in [mode][j] layout matching cuSPARSE!
+    // Just need to copy and apply zero-mode fix for j=0 (idx=0)
     cufftDoubleComplex* x = p_hat_;
+    const size_t total_size = static_cast<size_t>(n_modes) * Ny;
 
-    #pragma omp target teams distribute parallel for collapse(3) \
-        is_device_ptr(rhs_h, x)
-    for (int kx = 0; kx < Nx; ++kx) {
-        for (int kz = 0; kz < Nz_complex; ++kz) {
-            for (int j = 0; j < Ny; ++j) {
-                const size_t batch = static_cast<size_t>(kx) * Nz_complex + kz;
-                const size_t src_idx = static_cast<size_t>(j) * Nx * Nz_complex + batch;
-                const size_t dst_idx = batch * Ny + j;
-
-                // For zero mode (0,0) at j=0, set RHS to 0 (pinned value)
-                bool is_zero_mode = (kx == 0 && kz == 0);
-                if (is_zero_mode && j == 0) {
-                    x[dst_idx].x = 0.0;
-                    x[dst_idx].y = 0.0;
-                } else {
-                    x[dst_idx] = rhs_h[src_idx];
-                }
-            }
+    #pragma omp target teams distribute parallel for is_device_ptr(rhs_h, x)
+    for (size_t idx = 0; idx < total_size; ++idx) {
+        // Copy RHS, fixing zero mode (mode=0, j=0 → idx=0) to enforce pinned value
+        if (idx == 0) {
+            x[0].x = 0.0;
+            x[0].y = 0.0;
+        } else {
+            x[idx] = rhs_h[idx];
         }
     }
-    cudaDeviceSynchronize();
 
-    // Step 3: Call cuSPARSE batched tridiagonal solver
+    // Step 2: Call cuSPARSE batched tridiagonal solver
     cusparseStatus_t status = cusparseZgtsv2StridedBatch(
         cusparse_handle_,
         Ny,              // m: system size
@@ -378,34 +366,9 @@ void FFTPoissonSolver::solve_tridiagonal_cusparse() {
     if (status != CUSPARSE_STATUS_SUCCESS) {
         throw std::runtime_error("cuSPARSE gtsv2StridedBatch failed");
     }
-    cudaDeviceSynchronize();
 
-    // Step 4: Reorganize solution back to FFT layout
-    // cuSPARSE layout: x[batch * Ny + j]
-    // FFT layout: p_hat[j * Nx * Nz_complex + batch]
-    // Since we solved in p_hat (which is x), we need to do an in-place transpose
-    // Use rhs_hat as temp storage
-    cufftDoubleComplex* temp = rhs_hat_;
-
-    #pragma omp target teams distribute parallel for collapse(3) \
-        is_device_ptr(x, temp)
-    for (int kx = 0; kx < Nx; ++kx) {
-        for (int kz = 0; kz < Nz_complex; ++kz) {
-            for (int j = 0; j < Ny; ++j) {
-                const size_t batch = static_cast<size_t>(kx) * Nz_complex + kz;
-                const size_t src_idx = batch * Ny + j;
-                const size_t dst_idx = static_cast<size_t>(j) * Nx * Nz_complex + batch;
-                temp[dst_idx] = x[src_idx];
-            }
-        }
-    }
-
-    // Copy back to p_hat
-    #pragma omp target teams distribute parallel for is_device_ptr(x, temp)
-    for (size_t i = 0; i < static_cast<size_t>(Nx) * Nz_complex * Ny; ++i) {
-        x[i] = temp[i];
-    }
-    cudaDeviceSynchronize();
+    // OPTIMIZED: No Step 4 needed - cuSPARSE output is already in [mode][j] layout
+    // which matches what cuFFT inverse expects (istride=Ny, idist=1)
 }
 
 void FFTPoissonSolver::pack_rhs(double* rhs_ptr) {
@@ -419,17 +382,19 @@ void FFTPoissonSolver::pack_rhs(double* rhs_ptr) {
 
     double* packed = rhs_packed_;
 
-    // Reorganize from [k][j][i] with ghosts to [j][i][k] without ghosts
+    // OPTIMIZED LAYOUT: Pack from [k][j][i] with ghosts to [(i*Nz+k)][j] without ghosts
+    // This matches the cuFFT interleaved input layout: rhs_packed[(i*Nz + k)*Ny + j]
+    // with j varying fastest, enabling direct cuSPARSE compatibility after FFT.
     #pragma omp target teams distribute parallel for collapse(3) \
         map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            for (int k = 0; k < Nz; ++k) {
+    for (int i = 0; i < Nx; ++i) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
                 // Source index with ghosts: [k+Ng][j+Ng][i+Ng]
                 const size_t src_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
                                        (j + Ng) * Nx_full + (i + Ng);
-                // Destination index: [j][i][k] for FFT-friendly layout
-                const size_t dst_idx = static_cast<size_t>(j) * Nx * Nz + i * Nz + k;
+                // Destination: [(i*Nz + k)][j] with j fastest
+                const size_t dst_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
                 packed[dst_idx] = rhs_ptr[src_idx];
             }
         }
@@ -448,13 +413,16 @@ void FFTPoissonSolver::unpack_solution(double* p_ptr) {
 
     double* packed = p_packed_;
 
-    // Reorganize from [j][i][k] back to [k][j][i] with ghosts
+    // OPTIMIZED LAYOUT: Unpack from [(i*Nz+k)][j] back to [k][j][i] with ghosts
+    // This matches the cuFFT interleaved output: p_packed[(i*Nz + k)*Ny + j]
     #pragma omp target teams distribute parallel for collapse(3) \
         map(present: p_ptr[0:total_size]) is_device_ptr(packed)
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            for (int k = 0; k < Nz; ++k) {
-                const size_t src_idx = static_cast<size_t>(j) * Nx * Nz + i * Nz + k;
+    for (int i = 0; i < Nx; ++i) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                // Source: [(i*Nz + k)][j] with j fastest
+                const size_t src_idx = static_cast<size_t>(i * Nz + k) * Ny + j;
+                // Destination with ghosts: [k+Ng][j+Ng][i+Ng]
                 const size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
                                        (j + Ng) * Nx_full + (i + Ng);
                 p_ptr[dst_idx] = packed[src_idx] * norm;
