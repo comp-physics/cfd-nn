@@ -438,6 +438,26 @@ if(BUILD_TESTS)
     add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
     target_link_libraries(test_endurance_stability nn_cfd_core)
     add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
+
+    # Manufactured solution Poisson correctness test - catches "solver runs but wrong"
+    add_executable(test_poisson_manufactured tests/test_poisson_manufactured.cpp)
+    target_link_libraries(test_poisson_manufactured nn_cfd_core)
+    add_test(NAME PoissonManufacturedTest COMMAND test_poisson_manufactured)
+
+    # Dirichlet/mixed-BC Poisson test - validates BC handling
+    add_executable(test_poisson_dirichlet_mixed tests/test_poisson_dirichlet_mixed.cpp)
+    target_link_libraries(test_poisson_dirichlet_mixed nn_cfd_core)
+    add_test(NAME PoissonDirichletMixedTest COMMAND test_poisson_dirichlet_mixed)
+
+    # Repeatability envelope test - catches race conditions and nondeterminism
+    add_executable(test_repeatability tests/test_repeatability.cpp)
+    target_link_libraries(test_repeatability nn_cfd_core)
+    add_test(NAME RepeatabilityTest COMMAND test_repeatability)
+
+    # Performance regression sentinel - catches catastrophic slowdowns
+    add_executable(test_perf_sentinel tests/test_perf_sentinel.cpp)
+    target_link_libraries(test_perf_sentinel nn_cfd_core)
+    add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
 endif()
 
 # Installation

@@ -40,13 +40,28 @@ PROJECT_DIR="${SCRIPT_DIR}/.."
 #   2. Auto-detect from nvidia-smi (first GPU's compute_cap)
 #   3. Fallback to 80 (A100/Ampere) - conservative default
 # Examples: A100=80, H100/H200=90
+GPU_CC_SOURCE="env"
 if [[ -z "${GPU_CC:-}" ]]; then
+    GPU_CC_SOURCE="auto"
     if command -v nvidia-smi &> /dev/null; then
         # Query compute capability (e.g., "8.0" -> "80", "9.0" -> "90")
         GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+        if [[ -z "$GPU_CC" ]]; then
+            # nvidia-smi exists but returned empty (MIG mode, no GPU visible, etc.)
+            GPU_CC_SOURCE="fallback"
+        fi
+    else
+        GPU_CC_SOURCE="fallback"
     fi
     # Fallback to 80 (A100/Ampere) if detection fails
     GPU_CC=${GPU_CC:-80}
+fi
+
+# Validate GPU_CC is a reasonable value (2-digit number in range 60-100)
+if ! [[ "$GPU_CC" =~ ^[0-9]+$ ]] || [[ "$GPU_CC" -lt 60 ]] || [[ "$GPU_CC" -gt 100 ]]; then
+    echo "ERROR: Invalid GPU_CC value: '$GPU_CC' (expected 60-100, e.g., 80 for A100, 90 for H100)"
+    echo "       Set GPU_CC explicitly: GPU_CC=90 ./scripts/ci.sh"
+    exit 1
 fi
 
 # Parse flags
@@ -439,6 +454,16 @@ fi
 
 log_section "CI Test Suite: $TEST_SUITE"
 echo "Build directory: $BUILD_DIR"
+
+# Report GPU_CC detection status
+if [[ "$USE_GPU" == "ON" ]]; then
+    echo "GPU compute capability: cc$GPU_CC (source: $GPU_CC_SOURCE)"
+    if [[ "$GPU_CC_SOURCE" == "fallback" ]]; then
+        log_info "WARNING: GPU_CC auto-detection failed (no GPU visible?)"
+        log_info "         Using fallback cc$GPU_CC - may cause runtime errors if wrong"
+        log_info "         Set GPU_CC explicitly for cross-compile: GPU_CC=90 ./scripts/ci.sh"
+    fi
+fi
 echo ""
 
 # Run paradigm check first (always)
