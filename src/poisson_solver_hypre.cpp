@@ -11,6 +11,11 @@
 #include <omp.h>
 #endif
 
+// Include CUDA runtime for cudaDeviceSynchronize when HYPRE uses CUDA
+#if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
+#include <cuda_runtime.h>
+#endif
+
 namespace nncfd {
 
 // Static flag to track if HYPRE has been initialized globally
@@ -330,11 +335,14 @@ void HyprePoissonSolver::setup_solver(const PoissonConfig& cfg) {
 
     // Configure PFMG parameters - different settings for 2D vs 3D
     if (mesh_->is2D()) {
-        // 2D: Use settings that match working standalone HYPRE 2D test
-        // - RelaxType 2 (RB GS) works on GPU despite not being "officially" recommended
-        // - Pre=2, Post=2 for good smoothing
-        // - Don't limit levels - let HYPRE decide
-        HYPRE_StructPFMGSetRelaxType(solver_, 2);  // RB Gauss-Seidel
+        // 2D: Use GPU-appropriate relaxation type
+        // CRITICAL: RB Gauss-Seidel (type 2) can cause instability on GPU for certain
+        // problem types (e.g., fully periodic). Use Weighted Jacobi (type 1) for GPU.
+        #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
+        HYPRE_StructPFMGSetRelaxType(solver_, 1);  // Weighted Jacobi for GPU
+        #else
+        HYPRE_StructPFMGSetRelaxType(solver_, 2);  // RB Gauss-Seidel for CPU
+        #endif
         HYPRE_StructPFMGSetNumPreRelax(solver_, 2);
         HYPRE_StructPFMGSetNumPostRelax(solver_, 2);
         // Note: Don't set MaxLevels, SkipRelax, or RAPType for 2D - use defaults

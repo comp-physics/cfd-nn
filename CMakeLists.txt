@@ -49,10 +49,11 @@ if(USE_HYPRE)
     message(STATUS "  CUDA include dir: ${CUDAToolkit_INCLUDE_DIRS}")
 
     # Detect GPU architecture if not specified
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # Default to Hopper (H200)
-        set(CMAKE_CUDA_ARCHITECTURES "90" CACHE STRING "CUDA architectures")
+    # Default to Ampere (A100=sm80). Use -DGPU_CC=90 for Hopper (H100)
+    if(NOT DEFINED GPU_CC)
+        set(GPU_CC "80" CACHE STRING "GPU compute capability (80=A100, 90=H100)")
     endif()
+    set(CMAKE_CUDA_ARCHITECTURES "${GPU_CC}" CACHE STRING "CUDA architectures" FORCE)
     message(STATUS "  CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
     include(FetchContent)
@@ -69,7 +70,7 @@ if(USE_HYPRE)
     set(HYPRE_WITH_CUDA ON CACHE BOOL "Enable CUDA support in HYPRE" FORCE)
     set(HYPRE_ENABLE_UNIFIED_MEMORY ON CACHE BOOL "Use unified memory for GPU-CPU sharing" FORCE)
     set(HYPRE_ENABLE_GPU_PROFILING OFF CACHE BOOL "Disable GPU profiling" FORCE)
-    set(HYPRE_CUDA_SM "90" CACHE STRING "CUDA SM architecture for H200" FORCE)
+    set(HYPRE_CUDA_SM "${GPU_CC}" CACHE STRING "CUDA SM architecture" FORCE)
 
     # Disable features we don't need
     set(HYPRE_WITH_MPI OFF CACHE BOOL "Disable MPI (single-node only)" FORCE)
@@ -98,13 +99,16 @@ if(USE_GPU_OFFLOAD)
     # Detect compiler and set appropriate flags
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
         # NVIDIA HPC SDK - best for NVIDIA GPUs
-        # Specify GPU architecture explicitly for reliability
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc90")
+        # GPU compute capability: cc80=A100, cc90=H100 (default: cc80 for A100)
+        if(NOT DEFINED GPU_CC)
+            set(GPU_CC "80" CACHE STRING "GPU compute capability (80=A100, 90=H100)")
+        endif()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc${GPU_CC}")
         # Add -cuda for OpenMP+CUDA interoperability
         # Required for: hypre CUDA backend, FFT solver CUDA kernels
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")
         message(STATUS "  Added -cuda for OpenMP+CUDA interop")
-        message(STATUS "Using NVIDIA HPC SDK GPU offloading (cc90)")
+        message(STATUS "Using NVIDIA HPC SDK GPU offloading (cc${GPU_CC})")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         # Clang/LLVM with CUDA backend (auto-detect GPU arch)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=nvptx64-nvidia-cuda")

@@ -1331,6 +1331,28 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
         }
     }
 #endif
+
+#ifdef USE_HYPRE
+    // Check HYPRE compatibility with current BCs
+    // KNOWN ISSUE: HYPRE GPU (CUDA) has numerical instability with 2D problems
+    // that have periodic Y-direction BCs. Fall back to MG for these cases.
+    // The issue manifests as NaN after ~10 time steps.
+    // 3D works fine, and 2D with x-periodic + y-walls (channel) works fine.
+    // But 2D with y-periodic (spanwise or fully periodic) fails.
+    {
+        bool hypre_periodic_y = (p_y_lo == PoissonBC::Periodic && p_y_hi == PoissonBC::Periodic);
+        bool y_periodic_2d = mesh_->is2D() && hypre_periodic_y;
+
+        if (selected_solver_ == PoissonSolverType::HYPRE && y_periodic_2d) {
+#ifdef USE_GPU_OFFLOAD
+            // Fall back to MG for 2D with y-periodic on GPU
+            std::cerr << "[Poisson] Warning: HYPRE GPU has known issues with 2D y-periodic. "
+                      << "Switching to MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+#endif
+        }
+    }
+#endif
 }
 
 void RANSSolver::set_body_force(double fx, double fy, double fz) {

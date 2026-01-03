@@ -194,6 +194,10 @@ void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int 
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
+    // IMPORTANT: Force MG solver on both CPU and GPU builds to ensure fair comparison.
+    // FFT solver is only available on GPU, so using different solvers would cause
+    // large differences unrelated to CPU/GPU code sharing.
+    config.poisson_solver = PoissonSolverType::MG;
 }
 
 void initialize_poiseuille_ic(RANSSolver& solver, const Mesh& mesh) {
