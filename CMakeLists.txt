@@ -473,6 +473,11 @@ if(BUILD_TESTS)
     add_executable(test_poisson_cross_solver tests/test_poisson_cross_solver.cpp)
     target_link_libraries(test_poisson_cross_solver nn_cfd_core)
     add_test(NAME PoissonCrossSolverTest COMMAND test_poisson_cross_solver)
+
+    # Projection method invariants test - validates time-stepper coupling
+    add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
+    target_link_libraries(test_projection_invariants nn_cfd_core)
+    add_test(NAME ProjectionInvariantsTest COMMAND test_projection_invariants)
 endif()
 
 # Installation

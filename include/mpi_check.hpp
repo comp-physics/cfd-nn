@@ -18,73 +18,71 @@ namespace nncfd {
 
 /// @brief Check if running under MPI and return detected rank count
 /// @return Number of detected ranks (0 if not running under MPI, 1 if single rank)
+///
+/// Note: Only checks MPI-specific environment variables, NOT generic SLURM vars.
+/// SLURM_NTASKS is always set in SLURM allocations but doesn't mean MPI is active.
+/// We only want to warn when actually running with mpirun/srun with MPI.
 inline int detect_mpi_ranks() {
-    // Check common MPI environment variables for world size
+    // Check MPI-specific environment variables only (set by mpirun/mpiexec)
     const char* ompi_size = std::getenv("OMPI_COMM_WORLD_SIZE");      // OpenMPI
     const char* mvapich_size = std::getenv("MV2_COMM_WORLD_SIZE");    // MVAPICH
     const char* mpich_size = std::getenv("PMI_SIZE");                 // MPICH/PMI
-    const char* slurm_ntasks = std::getenv("SLURM_NTASKS");           // SLURM
+
+    // Note: SLURM_NTASKS is intentionally NOT checked here.
+    // It's set for all SLURM jobs, not just MPI jobs.
+    // We only detect actual MPI usage via MPI library env vars.
 
     int nranks = 0;
     if (ompi_size) nranks = std::atoi(ompi_size);
     else if (mvapich_size) nranks = std::atoi(mvapich_size);
     else if (mpich_size) nranks = std::atoi(mpich_size);
-    else if (slurm_ntasks) nranks = std::atoi(slurm_ntasks);
 
     return nranks;
 }
 
 /// @brief Get the current rank (0-based), or 0 if not running under MPI
+/// Only uses MPI-specific env vars (not SLURM_PROCID which is always set)
 inline int detect_mpi_rank() {
     const char* ompi_rank = std::getenv("OMPI_COMM_WORLD_RANK");
     const char* mvapich_rank = std::getenv("MV2_COMM_WORLD_RANK");
     const char* pmi_rank = std::getenv("PMI_RANK");
-    const char* slurm_procid = std::getenv("SLURM_PROCID");
 
     if (ompi_rank) return std::atoi(ompi_rank);
     if (mvapich_rank) return std::atoi(mvapich_rank);
     if (pmi_rank) return std::atoi(pmi_rank);
-    if (slurm_procid) return std::atoi(slurm_procid);
 
     return 0;
 }
 
 /// @brief Check for MPI environment and warn if multiple ranks detected
 /// @param caller_name Name of the calling component (for logging)
-/// @return true if MPI warning was issued
+/// @return true if MPI warning was issued (world_size > 1)
+/// @note Only warns when world_size > 1. A single-rank MPI job (world_size=1)
+///       or non-MPI environment (world_size=0) will NOT trigger a warning.
 inline bool warn_if_mpi_detected(const std::string& caller_name = "Solver") {
     int nranks = detect_mpi_ranks();
     int rank = detect_mpi_rank();
 
+    // Only warn if world_size > 1 (actual multi-rank job)
+    // Single-rank or non-MPI environments are fine
     if (nranks > 1) {
         // Only warn from rank 0 to avoid spam
         if (rank == 0) {
             std::cerr << "\n"
                 << "================================================================\n"
-                << "  WARNING: Multiple MPI ranks detected (" << nranks << " ranks)\n"
+                << "  WARNING: Multi-rank MPI not supported (world_size=" << nranks << ")\n"
                 << "================================================================\n"
                 << "\n"
-                << "  This code uses single-node GPU parallelism via OpenMP target.\n"
-                << "  MPI parallelism is NOT supported.\n"
+                << "  This code uses GPU parallelism, not MPI domain decomposition.\n"
+                << "  Each rank runs the FULL simulation independently.\n"
                 << "\n"
-                << "  Detected configuration:\n"
-                << "    - Running as " << nranks << " MPI ranks\n"
-                << "    - This rank: " << rank << "\n"
+                << "  Detected: world_size=" << nranks << ", rank=" << rank << "\n"
                 << "\n"
-                << "  Problems you may encounter:\n"
-                << "    - Each rank runs the FULL simulation (no domain decomposition)\n"
-                << "    - Memory usage multiplied by rank count\n"
-                << "    - HYPRE solver uses MPI_COMM_SELF (no rank communication)\n"
-                << "    - Results may be incorrect or duplicated\n"
+                << "  Run with single rank:\n"
+                << "    ./channel input.yaml\n"
+                << "    # or: mpirun -np 1 ./channel input.yaml\n"
                 << "\n"
-                << "  Recommended action:\n"
-                << "    Run without mpirun/mpiexec:\n"
-                << "      ./channel input.yaml\n"
-                << "\n"
-                << "  Or use a single rank:\n"
-                << "      mpirun -np 1 ./channel input.yaml\n"
-                << "\n"
-                << "  Caller: " << caller_name << "\n"
+                << "  [" << caller_name << "]\n"
                 << "================================================================\n\n";
         }
         return true;
@@ -94,6 +92,7 @@ inline bool warn_if_mpi_detected(const std::string& caller_name = "Solver") {
 
 /// @brief Check MPI environment and exit if multiple ranks (strict mode)
 /// @param caller_name Name of the calling component (for logging)
+/// @note Only exits when world_size > 1. Single-rank or non-MPI is allowed.
 inline void enforce_single_rank(const std::string& caller_name = "Solver") {
     int nranks = detect_mpi_ranks();
     int rank = detect_mpi_rank();
@@ -102,13 +101,12 @@ inline void enforce_single_rank(const std::string& caller_name = "Solver") {
         if (rank == 0) {
             std::cerr << "\n"
                 << "================================================================\n"
-                << "  ERROR: Multiple MPI ranks not supported (" << nranks << " ranks)\n"
+                << "  ERROR: Multi-rank MPI not supported (world_size=" << nranks << ")\n"
                 << "================================================================\n"
                 << "\n"
-                << "  This code is designed for single-node GPU parallelism.\n"
-                << "  Please run without mpirun/mpiexec.\n"
+                << "  Run with single rank: ./channel input.yaml\n"
                 << "\n"
-                << "  Caller: " << caller_name << "\n"
+                << "  [" << caller_name << "]\n"
                 << "================================================================\n\n";
         }
         std::exit(1);
