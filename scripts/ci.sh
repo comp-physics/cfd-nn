@@ -35,14 +35,17 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
-# GPU compute capability: auto-detect from nvidia-smi, or use GPU_CC env var
+# GPU compute capability detection (precedence):
+#   1. GPU_CC env var if set (e.g., GPU_CC=90 ./scripts/ci.sh)
+#   2. Auto-detect from nvidia-smi (first GPU's compute_cap)
+#   3. Fallback to 80 (A100/Ampere) - conservative default
 # Examples: A100=80, H100/H200=90
 if [[ -z "${GPU_CC:-}" ]]; then
     if command -v nvidia-smi &> /dev/null; then
         # Query compute capability (e.g., "8.0" -> "80", "9.0" -> "90")
         GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
     fi
-    # Fallback to 80 (A100/Ampere) if detection fails - conservative default
+    # Fallback to 80 (A100/Ampere) if detection fails
     GPU_CC=${GPU_CC:-80}
 fi
 

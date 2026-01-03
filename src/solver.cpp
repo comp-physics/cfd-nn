@@ -1345,9 +1345,8 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 
         if (selected_solver_ == PoissonSolverType::HYPRE && y_periodic_2d) {
 #ifdef USE_GPU_OFFLOAD
-            // Fall back to MG for 2D with y-periodic on GPU
-            std::cerr << "[Poisson] Warning: HYPRE GPU has known issues with 2D y-periodic. "
-                      << "Switching to MG.\n";
+            // Fall back to MG for 2D with y-periodic on GPU (HYPRE CUDA instability)
+            std::cerr << "[Poisson] HYPRE->MG fallback: 2D y-periodic + GPU\n";
             selected_solver_ = PoissonSolverType::MG;
 #endif
         }
