@@ -16,6 +16,7 @@
 #include "timing.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
+#include "mpi_check.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -1044,6 +1045,10 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , use_multigrid_(true)
     , current_dt_(config.dt)
 {
+    // Check for MPI environment and warn if multiple ranks detected
+    // (this code uses GPU parallelism, not MPI distribution)
+    warn_if_mpi_detected("RANSSolver");
+
     // Precompute wall distance (once, then stays on GPU if enabled)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -1109,53 +1114,52 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     // Priority: FFT (periodic x+z) → FFT1D (periodic x OR z) → HYPRE → MG
     // ========================================================================
     PoissonSolverType requested = config.poisson_solver;
-    std::string selection_reason;
 
     if (requested == PoissonSolverType::Auto) {
         // Auto-select: FFT > FFT1D > HYPRE > MG
 #ifdef USE_FFT_POISSON
         if (fft_applicable) {
             selected_solver_ = PoissonSolverType::FFT;
-            selection_reason = "auto: periodic(x,z) + uniform(dx,dz) + 3D";
+            selection_reason_ ="auto: periodic(x,z) + uniform(dx,dz) + 3D";
         } else if (fft1d_applicable) {
             selected_solver_ = PoissonSolverType::FFT1D;
-            selection_reason = "auto: periodic(x) + uniform(dx) + 3D (1D FFT)";
+            selection_reason_ ="auto: periodic(x) + uniform(dx) + 3D (1D FFT)";
         } else
 #endif
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
             selected_solver_ = PoissonSolverType::HYPRE;
-            selection_reason = "auto: FFT not applicable, HYPRE available";
+            selection_reason_ ="auto: FFT not applicable, HYPRE available";
         } else
 #endif
         {
             selected_solver_ = PoissonSolverType::MG;
-            selection_reason = "auto: fallback to multigrid";
+            selection_reason_ ="auto: fallback to multigrid";
         }
     } else if (requested == PoissonSolverType::FFT) {
 #ifdef USE_FFT_POISSON
         if (fft_applicable) {
             selected_solver_ = PoissonSolverType::FFT;
-            selection_reason = "explicit: user requested FFT";
+            selection_reason_ ="explicit: user requested FFT";
         } else {
             std::cerr << "[Solver] Warning: FFT requested but not applicable "
                       << "(requires 3D, periodic x/z, uniform dx/dz). Falling back to ";
             if (fft1d_applicable) {
                 selected_solver_ = PoissonSolverType::FFT1D;
                 std::cerr << "FFT1D.\n";
-                selection_reason = "fallback from FFT: using FFT1D";
+                selection_reason_ ="fallback from FFT: using FFT1D";
             } else
 #ifdef USE_HYPRE
             if (hypre_poisson_solver_) {
                 selected_solver_ = PoissonSolverType::HYPRE;
                 std::cerr << "HYPRE.\n";
-                selection_reason = "fallback from FFT: not applicable";
+                selection_reason_ ="fallback from FFT: not applicable";
             } else
 #endif
             {
                 selected_solver_ = PoissonSolverType::MG;
                 std::cerr << "MG.\n";
-                selection_reason = "fallback from FFT: not applicable";
+                selection_reason_ ="fallback from FFT: not applicable";
             }
         }
 #else
@@ -1167,44 +1171,44 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         selected_solver_ = PoissonSolverType::MG;
         std::cerr << "Using MG.\n";
 #endif
-        selection_reason = "fallback from FFT: not built";
+        selection_reason_ ="fallback from FFT: not built";
 #endif
     } else if (requested == PoissonSolverType::FFT1D) {
 #ifdef USE_FFT_POISSON
         if (fft1d_applicable) {
             selected_solver_ = PoissonSolverType::FFT1D;
-            selection_reason = "explicit: user requested FFT1D";
+            selection_reason_ ="explicit: user requested FFT1D";
         } else {
             std::cerr << "[Solver] Warning: FFT1D requested but not applicable. ";
             selected_solver_ = PoissonSolverType::MG;
             std::cerr << "Using MG.\n";
-            selection_reason = "fallback from FFT1D: not applicable";
+            selection_reason_ ="fallback from FFT1D: not applicable";
         }
 #else
         std::cerr << "[Solver] Warning: FFT1D requested but USE_FFT_POISSON not built. ";
         selected_solver_ = PoissonSolverType::MG;
         std::cerr << "Using MG.\n";
-        selection_reason = "fallback from FFT1D: not built";
+        selection_reason_ ="fallback from FFT1D: not built";
 #endif
     } else if (requested == PoissonSolverType::HYPRE) {
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
             selected_solver_ = PoissonSolverType::HYPRE;
-            selection_reason = "explicit: user requested HYPRE";
+            selection_reason_ ="explicit: user requested HYPRE";
         } else {
             std::cerr << "[Solver] Warning: HYPRE initialization failed. Using MG.\n";
             selected_solver_ = PoissonSolverType::MG;
-            selection_reason = "fallback from HYPRE: init failed";
+            selection_reason_ ="fallback from HYPRE: init failed";
         }
 #else
         std::cerr << "[Solver] Warning: HYPRE requested but USE_HYPRE not built. Using MG.\n";
         selected_solver_ = PoissonSolverType::MG;
-        selection_reason = "fallback from HYPRE: not built";
+        selection_reason_ ="fallback from HYPRE: not built";
 #endif
     } else {
         // PoissonSolverType::MG
         selected_solver_ = PoissonSolverType::MG;
-        selection_reason = "explicit: user requested MG";
+        selection_reason_ ="explicit: user requested MG";
     }
 
     // Log the selection
@@ -1212,7 +1216,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
                               (selected_solver_ == PoissonSolverType::FFT1D) ? "FFT1D" :
                               (selected_solver_ == PoissonSolverType::HYPRE) ? "HYPRE" : "MG";
     std::cout << "[Poisson] selected=" << solver_name
-              << " reason=" << selection_reason
+              << " reason=" << selection_reason_
               << " dims=" << mesh.Nx << "x" << mesh.Ny << "x" << mesh.Nz << "\n";
 
 #ifdef USE_GPU_OFFLOAD

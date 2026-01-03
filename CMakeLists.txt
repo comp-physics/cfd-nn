@@ -458,6 +458,21 @@ if(BUILD_TESTS)
     add_executable(test_perf_sentinel tests/test_perf_sentinel.cpp)
     target_link_libraries(test_perf_sentinel nn_cfd_core)
     add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
+
+    # Stretched/anisotropic grid test - validates MG/HYPRE on high aspect ratio cells
+    add_executable(test_poisson_stretched_grid tests/test_poisson_stretched_grid.cpp)
+    target_link_libraries(test_poisson_stretched_grid nn_cfd_core)
+    add_test(NAME PoissonStretchedGridTest COMMAND test_poisson_stretched_grid)
+
+    # Nullspace/gauge handling test - validates singular Poisson (pure Neumann/periodic)
+    add_executable(test_poisson_nullspace tests/test_poisson_nullspace.cpp)
+    target_link_libraries(test_poisson_nullspace nn_cfd_core)
+    add_test(NAME PoissonNullspaceTest COMMAND test_poisson_nullspace)
+
+    # Cross-solver consistency test - validates all solvers produce equivalent results
+    add_executable(test_poisson_cross_solver tests/test_poisson_cross_solver.cpp)
+    target_link_libraries(test_poisson_cross_solver nn_cfd_core)
+    add_test(NAME PoissonCrossSolverTest COMMAND test_poisson_cross_solver)
 endif()
 
 # Installation
