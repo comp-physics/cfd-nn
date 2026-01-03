@@ -47,10 +47,11 @@ make -j8
 cd ..
 
 # Build GPU version
+# Note: H200 requires cc90 (Hopper architecture)
 echo "Building GPU version..."
 mkdir -p build_gpu
 cd build_gpu
-cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON -DGPU_CC=90
 make -j8
 cd ..
 

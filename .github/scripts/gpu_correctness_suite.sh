@@ -36,7 +36,8 @@ echo "==================================================================="
 echo ""
 
 echo "=== CMake Configuration ==="
-CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
+# H200 requires cc90 (Hopper architecture)
+CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
 echo ""
 echo "=== CMake Configuration Summary ==="
 grep -E "GPU offload|CXX compiler|OpenMP|NVIDIA" cmake_config.log || echo "No GPU-related config found"

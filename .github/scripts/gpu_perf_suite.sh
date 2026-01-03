@@ -47,7 +47,8 @@ rm -rf build_gpu
 mkdir -p build_gpu
 cd build_gpu
 echo "=== CMake Configuration ==="
-CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON 2>&1 | tee cmake_config.log
+# H200 requires cc90 (Hopper architecture)
+CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
 echo ""
 echo "=== Building ==="
 make -j8
