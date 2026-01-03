@@ -194,9 +194,10 @@ void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int 
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
-    // IMPORTANT: Force MG solver on both CPU and GPU builds to ensure fair comparison.
-    // FFT solver is only available on GPU, so using different solvers would cause
-    // large differences unrelated to CPU/GPU code sharing.
+    // IMPORTANT: Force MG solver to validate CPU/GPU determinism.
+    // This test checks that identical code produces identical results on both backends.
+    // FFT solver is GPU-only, so auto-selection would compare different algorithms
+    // rather than testing code sharing. We explicitly use MG on both.
     config.poisson_solver = PoissonSolverType::MG;
 }
 

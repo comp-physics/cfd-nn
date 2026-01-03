@@ -35,8 +35,16 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
-# GPU compute capability (default: 90 for H200/Hopper, use 80 for A100/Ampere)
-GPU_CC=${GPU_CC:-90}
+# GPU compute capability: auto-detect from nvidia-smi, or use GPU_CC env var
+# Examples: A100=80, H100/H200=90
+if [[ -z "${GPU_CC:-}" ]]; then
+    if command -v nvidia-smi &> /dev/null; then
+        # Query compute capability (e.g., "8.0" -> "80", "9.0" -> "90")
+        GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+    fi
+    # Fallback to 80 (A100/Ampere) if detection fails - conservative default
+    GPU_CC=${GPU_CC:-80}
+fi
 
 # Parse flags
 USE_GPU=ON
