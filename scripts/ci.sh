@@ -35,6 +35,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
+# GPU compute capability (default: 90 for H200/Hopper, use 80 for A100/Ampere)
+GPU_CC=${GPU_CC:-90}
+
 # Parse flags
 USE_GPU=ON
 # HYPRE is enabled by default for GPU builds (best performance)
@@ -159,7 +162,11 @@ ensure_build() {
     # Configure if not already configured
     if [ ! -f "CMakeCache.txt" ]; then
         log_info "  Configuring $build_name build..."
-        if ! cmake "$PROJECT_DIR" -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=${gpu_offload} -DUSE_HYPRE=${use_hypre} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
+        local gpu_cc_flag=""
+        if [[ "$gpu_offload" == "ON" ]]; then
+            gpu_cc_flag="-DGPU_CC=${GPU_CC}"
+        fi
+        if ! cmake "$PROJECT_DIR" -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=${gpu_offload} -DUSE_HYPRE=${use_hypre} ${gpu_cc_flag} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
             log_failure "$build_name cmake configuration failed"
             cat cmake_output.log | tail -20 | sed 's/^/    /'
             cd "$orig_dir"
@@ -395,7 +402,11 @@ if [ ! -d "$BUILD_DIR" ]; then
     log_info "Build directory not found. Creating and building..."
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
-    cmake .. -DUSE_GPU_OFFLOAD=${USE_GPU} -DUSE_HYPRE=${USE_HYPRE} -DBUILD_TESTS=ON
+    GPU_CC_FLAG=""
+    if [[ "$USE_GPU" == "ON" ]]; then
+        GPU_CC_FLAG="-DGPU_CC=${GPU_CC}"
+    fi
+    cmake .. -DUSE_GPU_OFFLOAD=${USE_GPU} -DUSE_HYPRE=${USE_HYPRE} ${GPU_CC_FLAG} -DBUILD_TESTS=ON
     make -j"$(nproc)"
     cd "$PROJECT_DIR"
 fi
