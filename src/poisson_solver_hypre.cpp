@@ -11,11 +11,6 @@
 #include <omp.h>
 #endif
 
-// For CUDA managed memory allocation (works with unified memory)
-#if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-#include <cuda_runtime.h>
-#endif
-
 namespace nncfd {
 
 // Static flag to track if HYPRE has been initialized globally
@@ -33,17 +28,7 @@ HyprePoissonSolver::HyprePoissonSolver(const Mesh& mesh)
 }
 
 HyprePoissonSolver::~HyprePoissonSolver() {
-    // Clean up device buffers (using cudaFree for managed memory)
-#if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-    if (rhs_device_) {
-        cudaFree(rhs_device_);
-        rhs_device_ = nullptr;
-    }
-    if (x_device_) {
-        cudaFree(x_device_);
-        x_device_ = nullptr;
-    }
-#endif
+    // Host buffers (rhs_host_, x_host_) are automatically cleaned up by vector destructor
 
     // Clean up HYPRE objects in reverse order of creation
     if (solver_) HYPRE_StructPFMGDestroy(solver_);
@@ -82,23 +67,19 @@ void HyprePoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
 void HyprePoissonSolver::initialize_hypre() {
     // Initialize HYPRE (only once globally)
     if (!hypre_initialized) {
-        // Ensure CUDA context is ready before HYPRE initialization
-        #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-        cudaSetDevice(0);
-        cudaFree(0);  // Force context creation
-        #endif
-
         HYPRE_Init();
 
         #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-        // Initialize HYPRE's device subsystem with unified memory
-        // Key: HYPRE was built with HYPRE_USING_UNIFIED_MEMORY=1, so we can
-        // pass cudaMallocManaged pointers which work with both OMP and HYPRE CUDA
+        // Initialize HYPRE's device subsystem
+        // KEY: Use HOST memory for vectors, but DEVICE execution for solve.
+        // HYPRE handles internal transfers. Using MEMORY_DEVICE with SetBoxValues
+        // doesn't work correctly (data isn't copied properly), but HOST+EXEC_DEVICE
+        // allows HYPRE to manage GPU execution internally while we use simple host pointers.
         HYPRE_DeviceInitialize();
-        HYPRE_SetMemoryLocation(HYPRE_MEMORY_DEVICE);
+        HYPRE_SetMemoryLocation(HYPRE_MEMORY_HOST);
         HYPRE_SetExecutionPolicy(HYPRE_EXEC_DEVICE);
         using_cuda_ = true;
-        std::cout << "[HyprePoissonSolver] CUDA backend enabled (unified memory)\n";
+        std::cout << "[HyprePoissonSolver] CUDA backend enabled (HOST memory, DEVICE execution)\n";
         #else
         // Use HOST memory for CPU-based solve
         HYPRE_SetMemoryLocation(HYPRE_MEMORY_HOST);
@@ -131,18 +112,11 @@ void HyprePoissonSolver::initialize_hypre() {
     const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
     device_buffer_size_ = static_cast<size_t>(Nx) * Ny * Nz;
 
-#if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-    if (using_cuda_) {
-        // Allocate MANAGED memory - accessible from both host and device
-        // Works with both OpenMP target (is_device_ptr) and HYPRE CUDA
-        cudaError_t err1 = cudaMallocManaged(&rhs_device_, device_buffer_size_ * sizeof(double));
-        cudaError_t err2 = cudaMallocManaged(&x_device_, device_buffer_size_ * sizeof(double));
-
-        if (err1 != cudaSuccess || err2 != cudaSuccess) {
-            throw std::runtime_error("Failed to allocate managed memory for HYPRE buffers");
-        }
-    }
-#endif
+    // Allocate host-side staging buffers for HYPRE
+    // Since we use HYPRE_MEMORY_HOST + HYPRE_EXEC_DEVICE, HYPRE handles
+    // the GPU transfers internally - we just need host buffers for SetBoxValues
+    rhs_host_.resize(device_buffer_size_);
+    x_host_.resize(device_buffer_size_);
 
     // Create HYPRE objects
     create_grid();
@@ -303,20 +277,13 @@ void HyprePoissonSolver::compute_laplacian_coefficients() {
         }
     }
 
-    // Handle singular case (all Neumann/Periodic) by pinning one cell
-    if (needs_nullspace_handling()) {
-        // Pin cell (0,0,0): set diagonal=1, off-diagonals=0
-        double* c = &coeffs_[0];
-        c[STENCIL_CENTER] = 1.0;
-        c[STENCIL_WEST] = 0.0;
-        c[STENCIL_EAST] = 0.0;
-        c[STENCIL_SOUTH] = 0.0;
-        c[STENCIL_NORTH] = 0.0;
-        if (!mesh_->is2D()) {
-            c[STENCIL_BACK] = 0.0;
-            c[STENCIL_FRONT] = 0.0;
-        }
-    }
+    // NOTE: For HYPRE PFMG, we do NOT pin a cell to handle the null space.
+    // PFMG can solve singular systems (all Neumann/Periodic) by finding a
+    // particular solution. Pinning a cell breaks the periodic structure and
+    // can cause convergence issues with multigrid.
+    //
+    // The solution is unique up to an additive constant. In practice, the
+    // pressure gradient (what we use for velocity correction) is well-defined.
 }
 
 void HyprePoissonSolver::assemble_matrix() {
@@ -324,38 +291,9 @@ void HyprePoissonSolver::assemble_matrix() {
     compute_laplacian_coefficients();
 
     const int stencil_size = mesh_->is2D() ? 5 : 7;
-    const size_t n_cells = device_buffer_size_;
 
-    #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-    // For CUDA mode, we need to use managed memory for the coefficient arrays
-    double* m_coeffs = nullptr;
-    HYPRE_Int* m_stencil_indices = nullptr;
-
-    cudaMallocManaged(&m_coeffs, n_cells * stencil_size * sizeof(double));
-    cudaMallocManaged(&m_stencil_indices, stencil_size * sizeof(HYPRE_Int));
-
-    // Copy coefficients to managed memory
-    std::memcpy(m_coeffs, coeffs_.data(), n_cells * stencil_size * sizeof(double));
-    for (int s = 0; s < stencil_size; ++s) {
-        m_stencil_indices[s] = s;
-    }
-
-    // Ensure data is visible to device
-    cudaDeviceSynchronize();
-
-    // Set matrix values using managed memory pointers
-    HYPRE_StructMatrixSetBoxValues(A_, ilower_, iupper_,
-                                    stencil_size, m_stencil_indices,
-                                    m_coeffs);
-
-    HYPRE_StructMatrixAssemble(A_);
-    cudaDeviceSynchronize();
-
-    // Clean up temporary managed memory
-    cudaFree(m_coeffs);
-    cudaFree(m_stencil_indices);
-    #else
-    // CPU mode: use host vectors directly
+    // Use host vectors directly - HYPRE handles transfers internally
+    // when using MEMORY_HOST + EXEC_DEVICE mode
     std::vector<HYPRE_Int> stencil_indices(stencil_size);
     for (int s = 0; s < stencil_size; ++s) {
         stencil_indices[s] = s;
@@ -366,7 +304,6 @@ void HyprePoissonSolver::assemble_matrix() {
                                     coeffs_.data());
 
     HYPRE_StructMatrixAssemble(A_);
-    #endif
 
     matrix_assembled_ = true;
 }
@@ -391,65 +328,61 @@ void HyprePoissonSolver::setup_solver(const PoissonConfig& cfg) {
     HYPRE_StructPFMGSetMaxIter(solver_, cfg.max_iter);
     HYPRE_StructPFMGSetTol(solver_, cfg.tol);
 
-    // CRITICAL: Limit the number of multigrid levels for GPU efficiency
-    // PFMG uses semicoarsening (one direction at a time), which can create
-    // many more levels than necessary. For a 128^3 grid, this could be 21 levels
-    // (7 per direction) instead of ~5 levels with full coarsening.
-    //
-    // More levels = more kernel launches = more overhead on GPU.
-    // Testing showed MaxLevels=2 (coarsen to 64³) is optimal:
-    //   - MaxLevels=5 (coarsen to 8³): 5.25 ms baseline
-    //   - MaxLevels=2 (coarsen to 64³): 4.23 ms (19% faster)
-    //   - MaxLevels=1 (no coarsening): 1.2 ms but produces incorrect physics!
-    {
-        const int Nx = mesh_->Nx;
-        const int Ny = mesh_->Ny;
-        const int Nz = mesh_->is2D() ? Nx : mesh_->Nz;  // Use Nx for 2D to get valid min
-        const int min_dim = std::min({Nx, Ny, Nz});
-        // Coarsen until ~64 cells per dimension (MaxLevels=2 for 128³)
-        int max_levels = 1;
-        int dim = min_dim;
-        while (dim > 64) {
-            dim /= 2;
-            max_levels++;
+    // Configure PFMG parameters - different settings for 2D vs 3D
+    if (mesh_->is2D()) {
+        // 2D: Use settings that match working standalone HYPRE 2D test
+        // - RelaxType 2 (RB GS) works on GPU despite not being "officially" recommended
+        // - Pre=2, Post=2 for good smoothing
+        // - Don't limit levels - let HYPRE decide
+        HYPRE_StructPFMGSetRelaxType(solver_, 2);  // RB Gauss-Seidel
+        HYPRE_StructPFMGSetNumPreRelax(solver_, 2);
+        HYPRE_StructPFMGSetNumPostRelax(solver_, 2);
+        // Note: Don't set MaxLevels, SkipRelax, or RAPType for 2D - use defaults
+    } else {
+        // 3D: Optimized settings for GPU performance
+        #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
+        HYPRE_StructPFMGSetRelaxType(solver_, 1);  // Weighted Jacobi for GPU
+        #else
+        HYPRE_StructPFMGSetRelaxType(solver_, 2);  // RB Gauss-Seidel for CPU
+        #endif
+
+        HYPRE_StructPFMGSetNumPreRelax(solver_, 1);
+        HYPRE_StructPFMGSetNumPostRelax(solver_, 1);
+
+        // Skip fine grid relaxation for 3D (performance)
+        HYPRE_StructPFMGSetSkipRelax(solver_, 1);
+
+        // Coarse grid operator: Galerkin
+        HYPRE_StructPFMGSetRAPType(solver_, 0);
+
+        // Limit levels for GPU efficiency: coarsen to ~64 cells per dimension
+        {
+            const int Nx = mesh_->Nx;
+            const int Ny = mesh_->Ny;
+            const int Nz = mesh_->Nz;
+            const int min_dim = std::min({Nx, Ny, Nz});
+            int max_levels = 1;
+            int dim = min_dim;
+            while (dim > 64) {
+                dim /= 2;
+                max_levels++;
+            }
+            HYPRE_StructPFMGSetMaxLevels(solver_, max_levels);
         }
-        HYPRE_StructPFMGSetMaxLevels(solver_, max_levels);
-    }
 
-    // Relaxation type:
-    // - For GPU: use 1 (weighted Jacobi) which is fully parallel and GPU-friendly
-    // - For CPU: use 2 (red-black Gauss-Seidel) which converges faster
-    #if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-    HYPRE_StructPFMGSetRelaxType(solver_, 1);  // Weighted Jacobi for GPU
-    // Default Jacobi weight is used (0.67-style internal default)
-    #else
-    HYPRE_StructPFMGSetRelaxType(solver_, 2);  // RB Gauss-Seidel for CPU
-    #endif
-
-    // Number of pre/post relaxation sweeps
-    // Pre=1, Post=0 provides best performance while maintaining stability
-    HYPRE_StructPFMGSetNumPreRelax(solver_, 1);
-    HYPRE_StructPFMGSetNumPostRelax(solver_, 0);
-
-    // Skip relaxation on fine grid for efficiency (1 = skip)
-    HYPRE_StructPFMGSetSkipRelax(solver_, 1);
-
-    // Coarse grid operator: Galerkin (non-Galerkin causes instability for this problem)
-    HYPRE_StructPFMGSetRAPType(solver_, 0);
-
-    // Set grid spacing for semicoarsening decisions
-    // This helps PFMG choose optimal coarsening directions for anisotropic grids
-    {
-        double dxyz[3] = {mesh_->dx, mesh_->dy, mesh_->is2D() ? 1.0 : mesh_->dz};
+        // Set grid spacing for semicoarsening decisions (3D only)
+        double dxyz[3] = {mesh_->dx, mesh_->dy, mesh_->dz};
         HYPRE_StructPFMGSetDxyz(solver_, dxyz);
     }
 
-    // Logging for verbose mode
+    // Logging: Always enable level 1 to compute residual norms for GetFinalRelativeResidualNorm
+    // Without logging=1, HYPRE returns residual=0 which prevents proper convergence monitoring
+    HYPRE_StructPFMGSetLogging(solver_, 1);
+
+    // Print level: 0 = no output, 2 = convergence info (verbose only)
     if (cfg.verbose) {
-        HYPRE_StructPFMGSetLogging(solver_, 1);
         HYPRE_StructPFMGSetPrintLevel(solver_, 2);
     } else {
-        HYPRE_StructPFMGSetLogging(solver_, 0);
         HYPRE_StructPFMGSetPrintLevel(solver_, 0);
     }
 
@@ -492,15 +425,13 @@ int HyprePoissonSolver::solve(const ScalarField& rhs, ScalarField& p,
     const int Ny = mesh_->Ny;
     const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
     const int Ng = mesh_->Nghost;
-    const size_t n_cells = static_cast<size_t>(Nx) * Ny * Nz;
 
-#if defined(HYPRE_USING_CUDA) || defined(HYPRE_USING_GPU)
-    // When HYPRE is in DEVICE mode, we must use managed memory for SetBoxValues
-    // Use the pre-allocated managed memory buffers
-    double* rhs_vals = rhs_device_;
-    double* x_vals = x_device_;
+    // Use pre-allocated host buffers
+    // With HYPRE_MEMORY_HOST + HYPRE_EXEC_DEVICE, HYPRE handles GPU transfers internally
+    double* rhs_vals = rhs_host_.data();
+    double* x_vals = x_host_.data();
 
-    // Copy RHS and initial guess from ScalarField to managed memory
+    // Copy RHS and initial guess from ScalarField to host staging buffers
     for (int k = 0; k < Nz; ++k) {
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
@@ -511,36 +442,23 @@ int HyprePoissonSolver::solve(const ScalarField& rhs, ScalarField& p,
         }
     }
 
-    // Handle pinned cell for singular systems
-    if (needs_nullspace_handling()) {
-        rhs_vals[0] = 0.0;  // Pin cell (0,0,0) to zero
-    }
+    // NOTE: We don't pin a cell for singular systems - HYPRE PFMG handles this.
+    // See comment in compute_laplacian_coefficients().
 
-    // Prefetch managed memory to GPU before HYPRE operations
-    // This is needed because host-side writes to managed memory stay on CPU pages
-    int device;
-    cudaGetDevice(&device);
-    cudaMemPrefetchAsync(rhs_vals, n_cells * sizeof(double), device, 0);
-    cudaMemPrefetchAsync(x_vals, n_cells * sizeof(double), device, 0);
-    cudaDeviceSynchronize();
-
-    // Set vector values using managed memory
+    // Set vector values using host buffers
     HYPRE_StructVectorSetBoxValues(b_, ilower_, iupper_, rhs_vals);
     HYPRE_StructVectorSetBoxValues(x_, ilower_, iupper_, x_vals);
-    cudaDeviceSynchronize();
 
-    // Solve on GPU
+    // Solve (HYPRE runs on GPU internally when EXEC_DEVICE is set)
     HYPRE_StructPFMGSolve(solver_, A_, b_, x_);
-    cudaDeviceSynchronize();
 
     // Get iteration count and residual
     HYPRE_Int num_iterations;
     HYPRE_StructPFMGGetNumIterations(solver_, &num_iterations);
     HYPRE_StructPFMGGetFinalRelativeResidualNorm(solver_, &residual_);
 
-    // Copy solution back to managed memory buffer
+    // Copy solution back to host buffer
     HYPRE_StructVectorGetBoxValues(x_, ilower_, iupper_, x_vals);
-    cudaDeviceSynchronize();
 
     // Copy solution to ScalarField
     for (int k = 0; k < Nz; ++k) {
@@ -551,50 +469,6 @@ int HyprePoissonSolver::solve(const ScalarField& rhs, ScalarField& p,
             }
         }
     }
-#else
-    // HOST mode: use standard vectors
-    std::vector<double> rhs_values(n_cells);
-    std::vector<double> x_values(n_cells);
-
-    for (int k = 0; k < Nz; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                const size_t hypre_idx = (static_cast<size_t>(k) * Ny + j) * Nx + i;
-                rhs_values[hypre_idx] = rhs(i + Ng, j + Ng, mesh_->is2D() ? 0 : k + Ng);
-                x_values[hypre_idx] = p(i + Ng, j + Ng, mesh_->is2D() ? 0 : k + Ng);
-            }
-        }
-    }
-
-    // Handle pinned cell for singular systems
-    if (needs_nullspace_handling()) {
-        rhs_values[0] = 0.0;  // Pin cell (0,0,0) to zero
-    }
-
-    // Set vector values
-    HYPRE_StructVectorSetBoxValues(b_, ilower_, iupper_, rhs_values.data());
-    HYPRE_StructVectorSetBoxValues(x_, ilower_, iupper_, x_values.data());
-
-    // Solve
-    HYPRE_StructPFMGSolve(solver_, A_, b_, x_);
-
-    // Get iteration count and residual
-    HYPRE_Int num_iterations;
-    HYPRE_StructPFMGGetNumIterations(solver_, &num_iterations);
-    HYPRE_StructPFMGGetFinalRelativeResidualNorm(solver_, &residual_);
-
-    // Copy solution back to ScalarField
-    HYPRE_StructVectorGetBoxValues(x_, ilower_, iupper_, x_values.data());
-
-    for (int k = 0; k < Nz; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                const size_t hypre_idx = (static_cast<size_t>(k) * Ny + j) * Nx + i;
-                p(i + Ng, j + Ng, mesh_->is2D() ? 0 : k + Ng) = x_values[hypre_idx];
-            }
-        }
-    }
-#endif
 
     // Apply boundary conditions to ghost cells
     // (The solver only updates interior cells)
@@ -636,18 +510,18 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
     // Full array strides (with ghost cells)
     const int Nx_full = Nx + 2 * Ng;
     const int Ny_full = Ny + 2 * Ng;
-
-    // Get managed memory buffer pointers
-    double* rhs_dev = rhs_device_;
-    double* x_dev = x_device_;
-
-    // Pack RHS and initial guess from ghost-cell layout to packed layout on GPU
-    // Note: rhs_ptr and p_ptr are OMP-mapped arrays (use present)
-    //       rhs_dev and x_dev are managed memory (use is_device_ptr)
+    const size_t n_cells = static_cast<size_t>(Nx) * Ny * Nz;
     const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (is2D ? 1 : (Nz + 2 * Ng));
-    #pragma omp target teams distribute parallel for collapse(3) \
-        map(present: rhs_ptr[0:total_size], p_ptr[0:total_size]) \
-        is_device_ptr(rhs_dev, x_dev)
+
+    // Host staging buffers for HYPRE (MEMORY_HOST mode)
+    double* rhs_vals = rhs_host_.data();
+    double* x_vals = x_host_.data();
+
+    // Copy data from GPU to host staging buffers
+    // Using omp target update to transfer packed interior values
+    #pragma omp target update from(rhs_ptr[0:total_size], p_ptr[0:total_size])
+
+    // Pack RHS and initial guess from ghost-cell layout to packed layout on host
     for (int k = 0; k < Nz; ++k) {
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
@@ -655,42 +529,31 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
                 const int kk = is2D ? 0 : k + Ng;
                 const size_t full_idx = static_cast<size_t>(kk) * Nx_full * Ny_full +
                                         (j + Ng) * Nx_full + (i + Ng);
-                rhs_dev[hypre_idx] = rhs_ptr[full_idx];
-                x_dev[hypre_idx] = p_ptr[full_idx];
+                rhs_vals[hypre_idx] = rhs_ptr[full_idx];
+                x_vals[hypre_idx] = p_ptr[full_idx];
             }
         }
     }
 
-    // Handle pinned cell for singular systems (on device)
-    if (needs_nullspace_handling()) {
-        #pragma omp target is_device_ptr(rhs_dev)
-        {
-            rhs_dev[0] = 0.0;
-        }
-    }
+    // NOTE: We don't pin a cell for singular systems - HYPRE PFMG handles this.
+    // See comment in compute_laplacian_coefficients().
 
-    // Synchronize to ensure OMP kernels complete before HYPRE
-    cudaDeviceSynchronize();
+    // Set HYPRE vectors from host buffers
+    HYPRE_StructVectorSetBoxValues(b_, ilower_, iupper_, rhs_vals);
+    HYPRE_StructVectorSetBoxValues(x_, ilower_, iupper_, x_vals);
 
-    // Set HYPRE vectors from managed memory buffers
-    HYPRE_StructVectorSetBoxValues(b_, ilower_, iupper_, rhs_dev);
-    HYPRE_StructVectorSetBoxValues(x_, ilower_, iupper_, x_dev);
-
-    // Solve on GPU using HYPRE PFMG
+    // Solve using HYPRE PFMG (GPU execution handled internally by HYPRE)
     HYPRE_StructPFMGSolve(solver_, A_, b_, x_);
 
-    // Get iteration count and residual (these are CPU-side queries)
+    // Get iteration count and residual
     HYPRE_Int num_iterations;
     HYPRE_StructPFMGGetNumIterations(solver_, &num_iterations);
     HYPRE_StructPFMGGetFinalRelativeResidualNorm(solver_, &residual_);
 
-    // Get solution back to managed memory buffer
-    HYPRE_StructVectorGetBoxValues(x_, ilower_, iupper_, x_dev);
-    cudaDeviceSynchronize();
+    // Get solution back to host buffer
+    HYPRE_StructVectorGetBoxValues(x_, ilower_, iupper_, x_vals);
 
-    // Unpack solution from packed layout to ghost-cell layout on GPU
-    #pragma omp target teams distribute parallel for collapse(3) \
-        map(present: p_ptr[0:total_size]) is_device_ptr(x_dev)
+    // Unpack solution from packed layout to ghost-cell layout on host
     for (int k = 0; k < Nz; ++k) {
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
@@ -698,14 +561,13 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
                 const int kk = is2D ? 0 : k + Ng;
                 const size_t full_idx = static_cast<size_t>(kk) * Nx_full * Ny_full +
                                         (j + Ng) * Nx_full + (i + Ng);
-                p_ptr[full_idx] = x_dev[hypre_idx];
+                p_ptr[full_idx] = x_vals[hypre_idx];
             }
         }
     }
 
-    // Apply boundary conditions to ghost cells on GPU
+    // Apply boundary conditions on host (simpler than GPU version)
     // X boundaries
-    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
     for (int k = 0; k < Nz; ++k) {
         for (int j = 0; j < Ny; ++j) {
             const int kk = is2D ? 0 : k + Ng;
@@ -730,7 +592,6 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
     }
 
     // Y boundaries
-    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
     for (int k = 0; k < Nz; ++k) {
         for (int i = 0; i < Nx + 2 * Ng; ++i) {
             const int kk = is2D ? 0 : k + Ng;
@@ -755,7 +616,6 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
 
     // Z boundaries (3D only)
     if (!is2D) {
-        #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
         for (int j = 0; j < Ny + 2 * Ng; ++j) {
             for (int i = 0; i < Nx + 2 * Ng; ++i) {
                 // z_lo ghost
@@ -777,6 +637,9 @@ int HyprePoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
             }
         }
     }
+
+    // Copy solution back to GPU
+    #pragma omp target update to(p_ptr[0:total_size])
 
     return static_cast<int>(num_iterations);
 #endif // USE_GPU_OFFLOAD && HYPRE_USING_CUDA

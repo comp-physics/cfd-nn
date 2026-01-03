@@ -90,9 +90,10 @@ private:
     bool matrix_assembled_ = false;
     bool using_cuda_ = false;  // True if CUDA backend is active
 
-    // Device buffers for packed data (no ghost cells, Nx*Ny*Nz layout)
-    double* rhs_device_ = nullptr;
-    double* x_device_ = nullptr;
+    // Host staging buffers for packed data (no ghost cells, Nx*Ny*Nz layout)
+    // HYPRE handles GPU transfers internally when using MEMORY_HOST + EXEC_DEVICE
+    std::vector<double> rhs_host_;
+    std::vector<double> x_host_;
     size_t device_buffer_size_ = 0;
 
     // Boundary conditions
