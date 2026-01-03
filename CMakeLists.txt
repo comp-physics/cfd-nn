@@ -423,6 +423,21 @@ if(BUILD_TESTS)
         target_link_libraries(test_hypre_validation nn_cfd_core)
         add_test(NAME HypreValidationTest COMMAND test_hypre_validation)
     endif()
+
+    # Poisson solver selection state machine test - prevents selection logic drift
+    add_executable(test_poisson_selection tests/test_poisson_selection.cpp)
+    target_link_libraries(test_poisson_selection nn_cfd_core)
+    add_test(NAME PoissonSelectionTest COMMAND test_poisson_selection)
+
+    # FFT1D dedicated validation test - forces FFT1D selection + correctness check
+    add_executable(test_fft1d_validation tests/test_fft1d_validation.cpp)
+    target_link_libraries(test_fft1d_validation nn_cfd_core)
+    add_test(NAME FFT1DValidationTest COMMAND test_fft1d_validation)
+
+    # Endurance stability test - catches NaN-after-N-steps class bugs
+    add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
+    target_link_libraries(test_endurance_stability nn_cfd_core)
+    add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
 endif()
 
 # Installation
