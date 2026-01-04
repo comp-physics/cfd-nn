@@ -3480,25 +3480,28 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
     
     double residual = 1.0;
     int snapshot_count = 0;
-    
+
+    // Progress output interval for CI visibility (always enabled)
+    const int progress_interval = std::max(1, config_.max_iter / 10);
+
     if (config_.verbose) {
         // Enable line buffering for immediate output visibility
         std::cout << std::unitbuf;
-        
+
         if (config_.adaptive_dt) {
-            std::cout << std::setw(8) << "Iter" 
+            std::cout << std::setw(8) << "Iter"
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
                       << std::setw(12) << "dt"
                       << std::endl;
         } else {
-            std::cout << std::setw(8) << "Iter" 
+            std::cout << std::setw(8) << "Iter"
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
                       << std::endl;
         }
     }
-    
+
     for (iter_ = 0; iter_ < config_.max_iter; ++iter_) {
         // Update time step if adaptive
         if (config_.adaptive_dt) {
@@ -3525,8 +3528,14 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
             }
         }
         
-        // Console output
-        if (config_.verbose && (iter_ + 1) % config_.output_freq == 0) {
+        // Always show progress every ~10% for CI visibility
+        if ((iter_ + 1) % progress_interval == 0 || iter_ == 0) {
+            std::cout << "    Iter " << std::setw(6) << iter_ + 1 << " / " << config_.max_iter
+                      << "  (" << std::setw(3) << (100 * (iter_ + 1) / config_.max_iter) << "%)"
+                      << "  residual = " << std::scientific << std::setprecision(3) << residual
+                      << std::fixed << "\n" << std::flush;
+        } else if (config_.verbose && (iter_ + 1) % config_.output_freq == 0) {
+            // Detailed verbose output
             double max_vel = velocity_.max_magnitude();
             if (config_.adaptive_dt) {
                 std::cout << std::setw(8) << iter_ + 1

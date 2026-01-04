@@ -1332,10 +1332,10 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
     if (level == static_cast<int>(levels_.size()) - 1) {
-        // Coarsest level - solve more accurately
-        // With MIN_COARSE_SIZE=32, coarsest is 32x32 which needs more iterations
-        // For proper MG convergence, coarsest level needs good approximate solve
-        smooth_jacobi(level, 200, 0.8);
+        // Coarsest level - solve approximately
+        // With MIN_COARSE_SIZE=32, coarsest is 32x32
+        // 50 iterations is sufficient for projection-based MG
+        smooth_jacobi(level, 50, 0.8);
         return;
     }
 
