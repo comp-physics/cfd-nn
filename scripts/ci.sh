@@ -439,11 +439,13 @@ run_cross_build_test() {
     rm -f "$output_file"
 }
 
-# Check build directory exists
-if [ ! -d "$BUILD_DIR" ]; then
-    log_info "Build directory not found. Creating and building..."
-    mkdir -p "$BUILD_DIR"
+# Check if build is needed (library doesn't exist or directory is fresh from cache)
+mkdir -p "$BUILD_DIR"
+if [ ! -f "$BUILD_DIR/libnn_cfd_core.a" ]; then
+    log_info "Building project (libnn_cfd_core.a not found)..."
     cd "$BUILD_DIR"
+    # Force fresh configure: remove CMake cache but preserve _deps (HYPRE cache)
+    rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
     GPU_CC_FLAG=""
     if [[ "$USE_GPU" == "ON" ]]; then
         GPU_CC_FLAG="-DGPU_CC=${GPU_CC}"
@@ -451,6 +453,8 @@ if [ ! -d "$BUILD_DIR" ]; then
     cmake .. -DUSE_GPU_OFFLOAD=${USE_GPU} -DUSE_HYPRE=${USE_HYPRE} ${GPU_CC_FLAG} -DBUILD_TESTS=ON
     make -j"$(nproc)"
     cd "$PROJECT_DIR"
+else
+    log_info "Using existing build in $BUILD_DIR"
 fi
 
 # Display mode

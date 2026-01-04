@@ -76,6 +76,8 @@ export OMP_TARGET_OFFLOAD=MANDATORY
 echo "Building CPU reference version..."
 mkdir -p build_cpu
 cd build_cpu
+# Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
+rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
 cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF -DBUILD_TESTS=ON
 make -j8
 cd ..
@@ -85,6 +87,8 @@ cd ..
 echo "Building GPU version..."
 mkdir -p build_gpu
 cd build_gpu
+# Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
+rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
 cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON -DGPU_CC=90
 make -j8
 cd ..
