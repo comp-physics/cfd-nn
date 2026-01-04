@@ -13,7 +13,8 @@ jobs:
       run: |
         echo "Cleaning workspace (preserving HYPRE cache)..."
         # Remove build artifacts but preserve _deps (HYPRE builds)
-        for dir in build_gpu build_cpu; do
+        # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
+        for dir in build_gpu build_cpu build_gpu_hypre build_cpu_hypre; do
           if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
             # Keep _deps, remove everything else
             find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
@@ -35,15 +36,19 @@ jobs:
 
     # Cache HYPRE builds (slow to compile, rarely changes)
     # Key includes HYPRE version extracted from CMakeLists.txt and GPU architecture
+    # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
     - name: Cache HYPRE builds
       uses: actions/cache@v4
       with:
         path: |
           build_cpu/_deps
           build_gpu/_deps
+          build_cpu_hypre/_deps
+          build_gpu_hypre/_deps
         key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
         restore-keys: |
           hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-
+        save-always: true
 
     - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |
@@ -91,7 +96,8 @@ jobs:
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out || true
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err || true
         # Clean build artifacts but keep _deps for cache
-        for dir in build_gpu build_cpu; do
+        # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
+        for dir in build_gpu build_cpu build_gpu_hypre build_cpu_hypre; do
           if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
             find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
           fi
