@@ -25,9 +25,9 @@
 #include "poisson_solver_fft.hpp"
 #include "poisson_solver_fft1d.hpp"
 #include <omp.h>
-#endif
 
 using namespace nncfd;
+#endif
 
 // ============================================================================
 // Manufactured solutions
