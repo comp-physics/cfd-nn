@@ -77,9 +77,9 @@ void MultigridPoissonSolver::create_hierarchy() {
     }
 
     // Coarsen until we reach minimum grid size
-    // Stop at 32 to avoid tiny-kernel regime where OMP target overhead dominates
-    // With 32 coarsest, projection mode with 3-5 V-cycles is effective
-    constexpr int MIN_COARSE_SIZE = 32;
+    // Go down to 4x4 for efficient multigrid - coarsest solve is trivial
+    // More levels = better convergence per V-cycle
+    constexpr int MIN_COARSE_SIZE = 4;
 
     if (is_2d) {
         while (Nx > MIN_COARSE_SIZE && Ny > MIN_COARSE_SIZE) {
@@ -1333,9 +1333,9 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
 
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - solve approximately
-        // With MIN_COARSE_SIZE=32, coarsest is 32x32
-        // 50 iterations is sufficient for projection-based MG
-        smooth_jacobi(level, 50, 0.8);
+        // With MIN_COARSE_SIZE=4, coarsest is 4x4 (16 points) - trivial to solve
+        // 10 iterations is plenty for such a small grid
+        smooth_jacobi(level, 10, 0.8);
         return;
     }
 
