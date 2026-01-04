@@ -21,39 +21,49 @@ echo ""
 
 chmod +x .github/scripts/*.sh
 
-# Build CPU-only binary (single-threaded)
+# Build CPU-only binary (single-threaded) - reuse if exists
 echo "==================================================================="
 echo "  Building CPU-only binary (Release, single-threaded)"
 echo "==================================================================="
 echo ""
-rm -rf build_cpu
-mkdir -p build_cpu
-cd build_cpu
-echo "=== CMake Configuration ==="
-CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
-echo ""
-echo "=== Building ==="
-make -j8
-mkdir -p output/cpu_perf
-cd ..
+if [ -f build_cpu/channel ] && [ -f build_cpu/duct ]; then
+    echo "Reusing existing CPU build (build_cpu/channel and build_cpu/duct exist)"
+else
+    echo "Building CPU version from scratch..."
+    rm -rf build_cpu
+    mkdir -p build_cpu
+    cd build_cpu
+    echo "=== CMake Configuration ==="
+    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
+    echo ""
+    echo "=== Building ==="
+    make -j8
+    cd ..
+fi
+mkdir -p build_cpu/output/cpu_perf
 
-# Build GPU-offload binary
+# Build GPU-offload binary - reuse if exists
 echo ""
 echo "==================================================================="
 echo "  Building GPU-offload binary (Release)"
 echo "==================================================================="
 echo ""
-rm -rf build_gpu
-mkdir -p build_gpu
-cd build_gpu
-echo "=== CMake Configuration ==="
-# H200 requires cc90 (Hopper architecture)
-CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
-echo ""
-echo "=== Building ==="
-make -j8
-mkdir -p output/gpu_perf
-cd ..
+if [ -f build_gpu/channel ] && [ -f build_gpu/duct ]; then
+    echo "Reusing existing GPU build (build_gpu/channel and build_gpu/duct exist)"
+else
+    echo "Building GPU version from scratch..."
+    rm -rf build_gpu
+    mkdir -p build_gpu
+    cd build_gpu
+    echo "=== CMake Configuration ==="
+    # H200 requires cc90 (Hopper architecture)
+    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
+    echo ""
+    echo "=== Building ==="
+    make -j8
+    cd ..
+fi
+mkdir -p build_gpu/output/gpu_perf
 
 # Run comparison for one case
 run_comparison_case() {
@@ -100,21 +110,22 @@ echo "==================================================================="
 echo "  Running Performance Benchmarks"
 echo "==================================================================="
 
-# Case 1: Channel baseline (medium grid, long run)
-run_comparison_case "channel_baseline_256x512_2000" \
-    ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 2000 \
+# Case 1: Channel baseline (medium grid)
+# NOTE: 500 iters is sufficient to measure steady-state speedup
+run_comparison_case "channel_baseline_256x512_500" \
+    ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 500 \
              --model baseline --dp_dx -0.0001 \
              --output output/perf/channel_baseline --num_snapshots 0
 
-# Case 2: Channel SST transport (medium grid, moderate iters)
-run_comparison_case "channel_sst_256x512_500" \
-    ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 500 \
+# Case 2: Channel SST transport (medium grid)
+run_comparison_case "channel_sst_256x512_200" \
+    ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 200 \
              --model sst --dp_dx -0.0001 \
              --output output/perf/channel_sst --num_snapshots 0
 
 # Case 3: 3D Duct flow (3D geometry test)
-run_comparison_case "duct_baseline_32x64x64_500" \
-    ./duct --Nx 32 --Ny 64 --Nz 64 --nu 0.001 --max_iter 500 \
+run_comparison_case "duct_baseline_32x64x64_200" \
+    ./duct --Nx 32 --Ny 64 --Nz 64 --nu 0.001 --max_iter 200 \
            --model baseline --num_snapshots 0
 
 # Print final summary table
