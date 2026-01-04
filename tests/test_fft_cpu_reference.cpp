@@ -102,7 +102,7 @@ struct FFTRefTestResult {
 // Run FFT vs CPU reference test
 // This requires GPU to be available (FFT/FFT1D are GPU-only)
 FFTRefTestResult test_fft_vs_reference(
-    const std::string& test_name,
+    [[maybe_unused]] const std::string& test_name,
     PoissonSolverType fft_type,
     int Nx, int Ny, int Nz,
     double Lx, double Ly, double Lz,

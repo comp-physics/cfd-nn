@@ -109,7 +109,7 @@ double l2_diff(const ScalarField& a, const ScalarField& b, const Mesh& mesh) {
 
 // Run a single residual test and return relative residual
 // Returns -1 on failure
-double run_residual_test_2d(const std::string& name, int Nx, int Ny,
+double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, int Ny,
                             VelocityBC::Type xbc, VelocityBC::Type ybc,
                             PoissonSolverType solver_type) {
     Mesh mesh;
