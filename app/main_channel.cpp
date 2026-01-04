@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
     config.turb_model = TurbulenceModelType::None;  // Laminar by default
 
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 5000;
+    config.poisson_max_iter = 20;  // V-cycles for multigrid (not SOR iterations)
     config.poisson_omega = 1.8;
 
     // Parse command line

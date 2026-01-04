@@ -103,416 +103,236 @@ void MultigridPoissonSolver::create_hierarchy() {
 }
 
 void MultigridPoissonSolver::apply_bc(int level) {
+    // UNIFIED CPU/GPU implementation for boundary conditions
+    // Uses raw pointers and identical arithmetic for bitwise consistency
     auto& grid = *levels_[level];
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
     const int Ng = 1;  // Ghost cells
     const bool is_2d = grid.is2D();
+    const int stride = Nx + 2*Ng;
+    const int plane_stride = stride * (Ny + 2*Ng);
 
+    // Convert BCs to integers for branchless GPU code
+    const int bc_x_lo = static_cast<int>(bc_x_lo_);
+    const int bc_x_hi = static_cast<int>(bc_x_hi_);
+    const int bc_y_lo = static_cast<int>(bc_y_lo_);
+    const int bc_y_hi = static_cast<int>(bc_y_hi_);
+    const int bc_z_lo = static_cast<int>(bc_z_lo_);
+    const int bc_z_hi = static_cast<int>(bc_z_hi_);
+    const double dval = dirichlet_val_;
+
+    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
 #ifdef USE_GPU_OFFLOAD
-    // GPU path - handles both 2D and 3D
-    // CRITICAL: Use gpu_ready_ not size check - coarse multigrid levels may be small but data is on GPU
-    if (gpu_ready_) {
-        const size_t total_size = level_sizes_[level];
-        double* u_ptr = u_ptrs_[level];
-        const int stride = Nx + 2*Ng;
-
-        // Convert BCs to integers for GPU
-        const int bc_x_lo = static_cast<int>(bc_x_lo_);
-        const int bc_x_hi = static_cast<int>(bc_x_hi_);
-        const int bc_y_lo = static_cast<int>(bc_y_lo_);
-        const int bc_y_hi = static_cast<int>(bc_y_hi_);
-        const int bc_z_lo = static_cast<int>(bc_z_lo_);
-        const int bc_z_hi = static_cast<int>(bc_z_hi_);
-        const double dval = dirichlet_val_;
-
-        if (is_2d) {
-            // 2D GPU path
-            // x-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int j = 0; j < Ny + 2; ++j) {
-                int idx = j * stride;
-
-                // Left boundary (i=0)
-                if (bc_x_lo == 2) { // Periodic
-                    u_ptr[idx] = u_ptr[idx + Nx];
-                } else if (bc_x_lo == 1) { // Neumann
-                    u_ptr[idx] = u_ptr[idx + Ng];
-                } else { // Dirichlet
-                    u_ptr[idx] = 2.0 * dval - u_ptr[idx + Ng];
-                }
-
-                // Right boundary (i=Nx+1)
-                if (bc_x_hi == 2) { // Periodic
-                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Ng];
-                } else if (bc_x_hi == 1) { // Neumann
-                    u_ptr[idx + Nx + Ng] = u_ptr[idx + Nx + Ng - 1];
-                } else { // Dirichlet
-                    u_ptr[idx + Nx + Ng] = 2.0 * dval - u_ptr[idx + Nx + Ng - 1];
-                }
-            }
-
-            // y-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size])
-            for (int i = 0; i < Nx + 2; ++i) {
-                // Bottom boundary (j=0)
-                if (bc_y_lo == 2) { // Periodic
-                    u_ptr[i] = u_ptr[Ny * stride + i];
-                } else if (bc_y_lo == 1) { // Neumann
-                    u_ptr[i] = u_ptr[Ng * stride + i];
-                } else { // Dirichlet
-                    u_ptr[i] = 2.0 * dval - u_ptr[Ng * stride + i];
-                }
-
-                // Top boundary (j=Ny+1)
-                if (bc_y_hi == 2) { // Periodic
-                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[Ng * stride + i];
-                } else if (bc_y_hi == 1) { // Neumann
-                    u_ptr[(Ny + Ng) * stride + i] = u_ptr[(Ny + Ng - 1) * stride + i];
-                } else { // Dirichlet
-                    u_ptr[(Ny + Ng) * stride + i] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
-                }
-            }
-        } else {
-            // 3D GPU path - unified kernel to avoid race conditions at edges/corners
-            const int Nz = grid.Nz;
-            const int plane_stride = stride * (Ny + 2*Ng);
-            const int Nx_g = Nx + 2*Ng;
-            const int Ny_g = Ny + 2*Ng;
-            const int Nz_g = Nz + 2*Ng;
-            const int n_total_g = Nx_g * Ny_g * Nz_g;
-            assert(total_size == static_cast<size_t>(n_total_g) && "BC kernel size mismatch");
-
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size]) \
-                firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, bc_y_lo, bc_y_hi, bc_z_lo, bc_z_hi, dval)
-            for (int idx_g = 0; idx_g < n_total_g; ++idx_g) {
-                int i = idx_g % Nx_g;
-                int j = (idx_g / Nx_g) % Ny_g;
-                int k = idx_g / (Nx_g * Ny_g);
-
-                // Skip interior points
-                if (i >= Ng && i < Nx + Ng && j >= Ng && j < Ny + Ng && k >= Ng && k < Nz + Ng) {
-                    continue;
-                }
-
-                // Apply BCs in sequence (x, then y, then z) to match CPU behavior
-                // Edge/corner cells may be written multiple times (last write wins)
-                // This ensures CPU/GPU consistency for all BC combinations
-                int cell_idx = k * plane_stride + j * stride + i;
-
-                // X-direction boundaries
-                if (i < Ng) { // Left boundary
-                    if (bc_x_lo == 2) { // Periodic
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (i + Nx)];
-                    } else if (bc_x_lo == 1) { // Neumann
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + Ng];
-                    } else { // Dirichlet
-                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + Ng];
-                    }
-                } else if (i >= Nx + Ng) { // Right boundary
-                    if (bc_x_hi == 2) { // Periodic
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (i - Nx)];
-                    } else if (bc_x_hi == 1) { // Neumann
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
-                    } else { // Dirichlet
-                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
-                    }
-                }
-
-                // Y-direction boundaries (may overwrite x-boundary corners)
-                if (j < Ng) { // Bottom boundary
-                    if (bc_y_lo == 2) { // Periodic
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + (j + Ny) * stride + i];
-                    } else if (bc_y_lo == 1) { // Neumann
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + Ng * stride + i];
-                    } else { // Dirichlet
-                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
-                    }
-                } else if (j >= Ny + Ng) { // Top boundary
-                    if (bc_y_hi == 2) { // Periodic
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + (j - Ny) * stride + i];
-                    } else if (bc_y_hi == 1) { // Neumann
-                        u_ptr[cell_idx] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
-                    } else { // Dirichlet
-                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
-                    }
-                }
-
-                // Z-direction boundaries (may overwrite x/y-boundary corners)
-                if (k < Ng) { // Back boundary
-                    if (bc_z_lo == 2) { // Periodic
-                        u_ptr[cell_idx] = u_ptr[(k + Nz) * plane_stride + j * stride + i];
-                    } else if (bc_z_lo == 1) { // Neumann
-                        u_ptr[cell_idx] = u_ptr[Ng * plane_stride + j * stride + i];
-                    } else { // Dirichlet
-                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
-                    }
-                } else if (k >= Nz + Ng) { // Front boundary
-                    if (bc_z_hi == 2) { // Periodic
-                        u_ptr[cell_idx] = u_ptr[(k - Nz) * plane_stride + j * stride + i];
-                    } else if (bc_z_hi == 1) { // Neumann
-                        u_ptr[cell_idx] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
-                    } else { // Dirichlet
-                        u_ptr[cell_idx] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
-                    }
-                }
-            }
-        }
-
-        return;
-    }
+    double* u_ptr = u_ptrs_[level];
+    const size_t total_size = level_sizes_[level];
+    #define BC_TARGET_FOR_X \
+        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+    #define BC_TARGET_FOR_Y \
+        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+    #define BC_TARGET_FOR_Z \
+        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+#else
+    double* u_ptr = grid.u.data().data();
+    #define BC_TARGET_FOR_X
+    #define BC_TARGET_FOR_Y
+    #define BC_TARGET_FOR_Z
 #endif
 
-    // 3D CPU path
-    if (!is_2d) {
-        // x-direction boundaries (for all j, k)
-        for (int k = 0; k < Nz + 2*Ng; ++k) {
-            for (int j = 0; j < Ny + 2*Ng; ++j) {
-                // Left boundary (i=0)
-                switch (bc_x_lo_) {
-                    case PoissonBC::Periodic:
-                        grid.u(0, j, k) = grid.u(Nx, j, k);
-                        break;
-                    case PoissonBC::Neumann:
-                        grid.u(0, j, k) = grid.u(Ng, j, k);
-                        break;
-                    case PoissonBC::Dirichlet:
-                        grid.u(0, j, k) = 2.0 * dirichlet_val_ - grid.u(Ng, j, k);
-                        break;
-                }
-                // Right boundary (i=Nx+1)
-                switch (bc_x_hi_) {
-                    case PoissonBC::Periodic:
-                        grid.u(Nx + Ng, j, k) = grid.u(Ng, j, k);
-                        break;
-                    case PoissonBC::Neumann:
-                        grid.u(Nx + Ng, j, k) = grid.u(Nx + Ng - 1, j, k);
-                        break;
-                    case PoissonBC::Dirichlet:
-                        grid.u(Nx + Ng, j, k) = 2.0 * dirichlet_val_ - grid.u(Nx + Ng - 1, j, k);
-                        break;
-                }
-            }
-        }
-
-        // y-direction boundaries (for all i, k)
-        for (int k = 0; k < Nz + 2*Ng; ++k) {
-            for (int i = 0; i < Nx + 2*Ng; ++i) {
-                // Bottom boundary (j=0)
-                switch (bc_y_lo_) {
-                    case PoissonBC::Periodic:
-                        grid.u(i, 0, k) = grid.u(i, Ny, k);
-                        break;
-                    case PoissonBC::Neumann:
-                        grid.u(i, 0, k) = grid.u(i, Ng, k);
-                        break;
-                    case PoissonBC::Dirichlet:
-                        grid.u(i, 0, k) = 2.0 * dirichlet_val_ - grid.u(i, Ng, k);
-                        break;
-                }
-                // Top boundary (j=Ny+1)
-                switch (bc_y_hi_) {
-                    case PoissonBC::Periodic:
-                        grid.u(i, Ny + Ng, k) = grid.u(i, Ng, k);
-                        break;
-                    case PoissonBC::Neumann:
-                        grid.u(i, Ny + Ng, k) = grid.u(i, Ny + Ng - 1, k);
-                        break;
-                    case PoissonBC::Dirichlet:
-                        grid.u(i, Ny + Ng, k) = 2.0 * dirichlet_val_ - grid.u(i, Ny + Ng - 1, k);
-                        break;
-                }
-            }
-        }
-
-        // z-direction boundaries (for all i, j)
+    if (is_2d) {
+        // ========== 2D BOUNDARY CONDITIONS ==========
+        // Pass 1: x-direction boundaries (loop over j)
+        BC_TARGET_FOR_X
         for (int j = 0; j < Ny + 2*Ng; ++j) {
-            for (int i = 0; i < Nx + 2*Ng; ++i) {
-                // Back boundary (k=0)
-                switch (bc_z_lo_) {
-                    case PoissonBC::Periodic:
-                        grid.u(i, j, 0) = grid.u(i, j, Nz);
-                        break;
-                    case PoissonBC::Neumann:
-                        grid.u(i, j, 0) = grid.u(i, j, Ng);
-                        break;
-                    case PoissonBC::Dirichlet:
-                        grid.u(i, j, 0) = 2.0 * dirichlet_val_ - grid.u(i, j, Ng);
-                        break;
-                }
-                // Front boundary (k=Nz+1)
-                switch (bc_z_hi_) {
-                    case PoissonBC::Periodic:
-                        grid.u(i, j, Nz + Ng) = grid.u(i, j, Ng);
-                        break;
-                    case PoissonBC::Neumann:
-                        grid.u(i, j, Nz + Ng) = grid.u(i, j, Nz + Ng - 1);
-                        break;
-                    case PoissonBC::Dirichlet:
-                        grid.u(i, j, Nz + Ng) = 2.0 * dirichlet_val_ - grid.u(i, j, Nz + Ng - 1);
-                        break;
-                }
-            }
-        }
-        return;
-    }
+            int idx_lo = j * stride + 0;           // Left ghost (i=0)
+            int idx_hi = j * stride + (Nx + Ng);   // Right ghost (i=Nx+1)
 
-    // 2D CPU path
-    // x-direction boundaries
-    for (int j = 0; j < Ny + 2*Ng; ++j) {
-        // Left boundary
-        int i_ghost = 0;
-        int i_interior = Ng;
-        int i_periodic = Nx;
-        
-        switch (bc_x_lo_) {
-            case PoissonBC::Periodic:
-                grid.u(i_ghost, j) = grid.u(i_periodic, j);
-                break;
-            case PoissonBC::Neumann:
-                grid.u(i_ghost, j) = grid.u(i_interior, j);
-                break;
-            case PoissonBC::Dirichlet:
-                grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
-                break;
-        }
-        
-        // Right boundary
-        i_ghost = Nx + Ng;
-        i_interior = Nx + Ng - 1;
-        i_periodic = Ng;
-        
-        switch (bc_x_hi_) {
-            case PoissonBC::Periodic:
-                grid.u(i_ghost, j) = grid.u(i_periodic, j);
-                break;
-            case PoissonBC::Neumann:
-                grid.u(i_ghost, j) = grid.u(i_interior, j);
-                break;
-            case PoissonBC::Dirichlet:
-                grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
-                break;
-        }
-    }
-    
-    // y-direction boundaries
-    for (int i = 0; i < Nx + 2*Ng; ++i) {
-        // Bottom boundary
-        int j_ghost = 0;
-        int j_interior = Ng;
-        
-        switch (bc_y_lo_) {
-            case PoissonBC::Neumann:
-                grid.u(i, j_ghost) = grid.u(i, j_interior);
-                break;
-            case PoissonBC::Dirichlet:
-                grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
-                break;
-            case PoissonBC::Periodic:
-                grid.u(i, j_ghost) = grid.u(i, Ny);
-                break;
-        }
-        
-        // Top boundary
-        j_ghost = Ny + Ng;
-        j_interior = Ny + Ng - 1;
-        
-        switch (bc_y_hi_) {
-            case PoissonBC::Neumann:
-                grid.u(i, j_ghost) = grid.u(i, j_interior);
-                break;
-            case PoissonBC::Dirichlet:
-                grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
-                break;
-            case PoissonBC::Periodic:
-                grid.u(i, j_ghost) = grid.u(i, Ng);
-                break;
-        }
-    }
-    
-    // Re-apply periodic BCs to fix corner ghost cells
-    // When both directions have periodic BCs applied sequentially, corner values
-    // can be inconsistent. Re-applying ensures all ghost cells are properly synchronized.
-    const bool x_periodic = (bc_x_lo_ == PoissonBC::Periodic) && (bc_x_hi_ == PoissonBC::Periodic);
-    const bool y_periodic = (bc_y_lo_ == PoissonBC::Periodic) && (bc_y_hi_ == PoissonBC::Periodic);
-    
-    if (x_periodic || y_periodic) {
-        // Re-apply x-direction boundaries
-        for (int j = 0; j < Ny + 2*Ng; ++j) {
-            // Left boundary
-            int i_ghost = 0;
-            int i_interior = Ng;
-            int i_periodic = Nx;
-            
-            switch (bc_x_lo_) {
-                case PoissonBC::Periodic:
-                    grid.u(i_ghost, j) = grid.u(i_periodic, j);
-                    break;
-                case PoissonBC::Neumann:
-                    grid.u(i_ghost, j) = grid.u(i_interior, j);
-                    break;
-                case PoissonBC::Dirichlet:
-                    grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
-                    break;
+            // Left boundary (i=0)
+            if (bc_x_lo == 2) { // Periodic
+                u_ptr[idx_lo] = u_ptr[j * stride + Nx];
+            } else if (bc_x_lo == 1) { // Neumann
+                u_ptr[idx_lo] = u_ptr[j * stride + Ng];
+            } else { // Dirichlet
+                u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + Ng];
             }
-            
-            // Right boundary
-            i_ghost = Nx + Ng;
-            i_interior = Nx + Ng - 1;
-            i_periodic = Ng;
-            
-            switch (bc_x_hi_) {
-                case PoissonBC::Periodic:
-                    grid.u(i_ghost, j) = grid.u(i_periodic, j);
-                    break;
-                case PoissonBC::Neumann:
-                    grid.u(i_ghost, j) = grid.u(i_interior, j);
-                    break;
-                case PoissonBC::Dirichlet:
-                    grid.u(i_ghost, j) = 2.0 * dirichlet_val_ - grid.u(i_interior, j);
-                    break;
+
+            // Right boundary (i=Nx+1)
+            if (bc_x_hi == 2) { // Periodic
+                u_ptr[idx_hi] = u_ptr[j * stride + Ng];
+            } else if (bc_x_hi == 1) { // Neumann
+                u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
+            } else { // Dirichlet
+                u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1)];
             }
         }
-        
-        // Re-apply y-direction boundaries
+
+        // Pass 2: y-direction boundaries (loop over i)
+        BC_TARGET_FOR_Y
         for (int i = 0; i < Nx + 2*Ng; ++i) {
-            // Bottom boundary
-            int j_ghost = 0;
-            int j_interior = Ng;
-            
-            switch (bc_y_lo_) {
-                case PoissonBC::Neumann:
-                    grid.u(i, j_ghost) = grid.u(i, j_interior);
-                    break;
-                case PoissonBC::Dirichlet:
-                    grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
-                    break;
-                case PoissonBC::Periodic:
-                    grid.u(i, j_ghost) = grid.u(i, Ny);
-                    break;
+            int idx_lo = 0 * stride + i;               // Bottom ghost (j=0)
+            int idx_hi = (Ny + Ng) * stride + i;       // Top ghost (j=Ny+1)
+
+            // Bottom boundary (j=0)
+            if (bc_y_lo == 2) { // Periodic
+                u_ptr[idx_lo] = u_ptr[Ny * stride + i];
+            } else if (bc_y_lo == 1) { // Neumann
+                u_ptr[idx_lo] = u_ptr[Ng * stride + i];
+            } else { // Dirichlet
+                u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * stride + i];
             }
-            
-            // Top boundary
-            j_ghost = Ny + Ng;
-            j_interior = Ny + Ng - 1;
-            
-            switch (bc_y_hi_) {
-                case PoissonBC::Neumann:
-                    grid.u(i, j_ghost) = grid.u(i, j_interior);
-                    break;
-                case PoissonBC::Dirichlet:
-                    grid.u(i, j_ghost) = 2.0 * dirichlet_val_ - grid.u(i, j_interior);
-                    break;
-                case PoissonBC::Periodic:
-                    grid.u(i, j_ghost) = grid.u(i, Ng);
-                    break;
+
+            // Top boundary (j=Ny+1)
+            if (bc_y_hi == 2) { // Periodic
+                u_ptr[idx_hi] = u_ptr[Ng * stride + i];
+            } else if (bc_y_hi == 1) { // Neumann
+                u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
+            } else { // Dirichlet
+                u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+            }
+        }
+
+        // Pass 3: Re-apply x-direction for corner consistency (periodic BCs)
+        // This ensures corners get correct values when both x and y are periodic
+        const bool needs_corner_fix = (bc_x_lo == 2 || bc_x_hi == 2 || bc_y_lo == 2 || bc_y_hi == 2);
+        if (needs_corner_fix) {
+            BC_TARGET_FOR_X
+            for (int j = 0; j < Ny + 2*Ng; ++j) {
+                int idx_lo = j * stride + 0;
+                int idx_hi = j * stride + (Nx + Ng);
+
+                if (bc_x_lo == 2) {
+                    u_ptr[idx_lo] = u_ptr[j * stride + Nx];
+                } else if (bc_x_lo == 1) {
+                    u_ptr[idx_lo] = u_ptr[j * stride + Ng];
+                } else {
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + Ng];
+                }
+
+                if (bc_x_hi == 2) {
+                    u_ptr[idx_hi] = u_ptr[j * stride + Ng];
+                } else if (bc_x_hi == 1) {
+                    u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
+                } else {
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1)];
+                }
+            }
+
+            BC_TARGET_FOR_Y
+            for (int i = 0; i < Nx + 2*Ng; ++i) {
+                int idx_lo = 0 * stride + i;
+                int idx_hi = (Ny + Ng) * stride + i;
+
+                if (bc_y_lo == 2) {
+                    u_ptr[idx_lo] = u_ptr[Ny * stride + i];
+                } else if (bc_y_lo == 1) {
+                    u_ptr[idx_lo] = u_ptr[Ng * stride + i];
+                } else {
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * stride + i];
+                }
+
+                if (bc_y_hi == 2) {
+                    u_ptr[idx_hi] = u_ptr[Ng * stride + i];
+                } else if (bc_y_hi == 1) {
+                    u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
+                } else {
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                }
+            }
+        }
+    } else {
+        // ========== 3D BOUNDARY CONDITIONS ==========
+        // Use face-by-face approach matching 2D structure for consistency
+        const int n_jk = (Ny + 2*Ng) * (Nz + 2*Ng);
+        const int n_ik = (Nx + 2*Ng) * (Nz + 2*Ng);
+        const int n_ij = (Nx + 2*Ng) * (Ny + 2*Ng);
+
+        // Pass 1: x-direction boundaries (loop over j,k faces)
+        BC_TARGET_FOR_X
+        for (int jk = 0; jk < n_jk; ++jk) {
+            int j = jk % (Ny + 2*Ng);
+            int k = jk / (Ny + 2*Ng);
+            int idx_lo = k * plane_stride + j * stride + 0;
+            int idx_hi = k * plane_stride + j * stride + (Nx + Ng);
+
+            // Left boundary (i=0)
+            if (bc_x_lo == 2) {
+                u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Nx];
+            } else if (bc_x_lo == 1) {
+                u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Ng];
+            } else {
+                u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + Ng];
+            }
+
+            // Right boundary (i=Nx+1)
+            if (bc_x_hi == 2) {
+                u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + Ng];
+            } else if (bc_x_hi == 1) {
+                u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+            } else {
+                u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+            }
+        }
+
+        // Pass 2: y-direction boundaries (loop over i,k faces)
+        BC_TARGET_FOR_Y
+        for (int ik = 0; ik < n_ik; ++ik) {
+            int i = ik % (Nx + 2*Ng);
+            int k = ik / (Nx + 2*Ng);
+            int idx_lo = k * plane_stride + 0 * stride + i;
+            int idx_hi = k * plane_stride + (Ny + Ng) * stride + i;
+
+            // Bottom boundary (j=0)
+            if (bc_y_lo == 2) {
+                u_ptr[idx_lo] = u_ptr[k * plane_stride + Ny * stride + i];
+            } else if (bc_y_lo == 1) {
+                u_ptr[idx_lo] = u_ptr[k * plane_stride + Ng * stride + i];
+            } else {
+                u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
+            }
+
+            // Top boundary (j=Ny+1)
+            if (bc_y_hi == 2) {
+                u_ptr[idx_hi] = u_ptr[k * plane_stride + Ng * stride + i];
+            } else if (bc_y_hi == 1) {
+                u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+            } else {
+                u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+            }
+        }
+
+        // Pass 3: z-direction boundaries (loop over i,j faces)
+        BC_TARGET_FOR_Z
+        for (int ij = 0; ij < n_ij; ++ij) {
+            int i = ij % (Nx + 2*Ng);
+            int j = ij / (Nx + 2*Ng);
+            int idx_lo = 0 * plane_stride + j * stride + i;
+            int idx_hi = (Nz + Ng) * plane_stride + j * stride + i;
+
+            // Back boundary (k=0)
+            if (bc_z_lo == 2) {
+                u_ptr[idx_lo] = u_ptr[Nz * plane_stride + j * stride + i];
+            } else if (bc_z_lo == 1) {
+                u_ptr[idx_lo] = u_ptr[Ng * plane_stride + j * stride + i];
+            } else {
+                u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
+            }
+
+            // Front boundary (k=Nz+1)
+            if (bc_z_hi == 2) {
+                u_ptr[idx_hi] = u_ptr[Ng * plane_stride + j * stride + i];
+            } else if (bc_z_hi == 1) {
+                u_ptr[idx_hi] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+            } else {
+                u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
             }
         }
     }
+
+    // Clean up macros
+    #undef BC_TARGET_FOR_X
+    #undef BC_TARGET_FOR_Y
+    #undef BC_TARGET_FOR_Z
 }
 
 void MultigridPoissonSolver::apply_bc_to_residual(int level) {

@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     config.verbose = true;
     config.turb_model = TurbulenceModelType::None;
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 5000;
+    config.poisson_max_iter = 20;  // V-cycles for multigrid (not SOR iterations)
 
     // Parse command line (handles all args including --Nx, --Ny, --Nz, etc.)
     config.parse_args(argc, argv);
