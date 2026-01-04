@@ -22,27 +22,26 @@ echo ""
 chmod +x .github/scripts/*.sh
 
 # Build CPU-only binary (single-threaded)
-# Use incremental build if CMakeCache exists with correct config
+# Preserves _deps (HYPRE cache) while rebuilding project code
 echo "==================================================================="
 echo "  Building CPU-only binary (Release, single-threaded)"
 echo "==================================================================="
 echo ""
 mkdir -p build_cpu
 cd build_cpu
-if [ -f CMakeCache.txt ] && grep -q "USE_GPU_OFFLOAD:BOOL=OFF" CMakeCache.txt; then
-    echo "Incremental build (CMakeCache.txt exists with correct config)"
-else
-    echo "Full configuration (new or mismatched build)"
-    rm -rf *
-    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
+# Clean project artifacts but preserve _deps (HYPRE cache)
+if [ -d _deps ]; then
+    echo "Preserving HYPRE cache in _deps/"
+    find . -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
 fi
+CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
 echo "=== Building ==="
 make -j8 channel duct
 mkdir -p output/cpu_perf
 cd ..
 
 # Build GPU-offload binary
-# Use incremental build if CMakeCache exists with correct config
+# Preserves _deps (HYPRE cache) while rebuilding project code
 echo ""
 echo "==================================================================="
 echo "  Building GPU-offload binary (Release)"
@@ -50,14 +49,13 @@ echo "==================================================================="
 echo ""
 mkdir -p build_gpu
 cd build_gpu
-if [ -f CMakeCache.txt ] && grep -q "USE_GPU_OFFLOAD:BOOL=ON" CMakeCache.txt; then
-    echo "Incremental build (CMakeCache.txt exists with correct config)"
-else
-    echo "Full configuration (new or mismatched build)"
-    rm -rf *
-    # H200 requires cc90 (Hopper architecture)
-    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
+# Clean project artifacts but preserve _deps (HYPRE cache)
+if [ -d _deps ]; then
+    echo "Preserving HYPRE cache in _deps/"
+    find . -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
 fi
+# H200 requires cc90 (Hopper architecture)
+CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
 echo "=== Building ==="
 make -j8 channel duct
 mkdir -p output/gpu_perf

@@ -7,19 +7,36 @@ jobs:
   gpu-tests:
     runs-on: self-hosted
     timeout-minutes: 150
-    
+
     steps:
-    - name: Clean workspace
+    - name: Clean workspace (preserve HYPRE cache)
       run: |
-        echo "Cleaning workspace to avoid stale artifacts..."
-        rm -rf ${GITHUB_WORKSPACE}/build_gpu
-        rm -rf ${GITHUB_WORKSPACE}/build_cpu
+        echo "Cleaning workspace (preserving HYPRE cache)..."
+        # Remove build artifacts but preserve _deps (HYPRE builds)
+        for dir in build_gpu build_cpu; do
+          if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
+            # Keep _deps, remove everything else
+            find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
+          fi
+        done
         rm -rf ${GITHUB_WORKSPACE}/CMakeCache.txt
         rm -rf ${GITHUB_WORKSPACE}/CMakeFiles
-        echo "Workspace cleaned"
-    
+        echo "Workspace cleaned (HYPRE cache preserved if present)"
+
     - uses: actions/checkout@v4
-    
+
+    # Cache HYPRE builds (slow to compile, rarely changes)
+    # Key includes HYPRE version from CMakeLists.txt and GPU architecture
+    - name: Cache HYPRE builds
+      uses: actions/cache@v4
+      with:
+        path: |
+          build_cpu/_deps
+          build_gpu/_deps
+        key: hypre-v2.31.0-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
+        restore-keys: |
+          hypre-v2.31.0-h200-cc90-
+
     - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |
         ./.github/scripts/submit_and_monitor_slurm.sh \
@@ -37,7 +54,7 @@ jobs:
           "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" \
           "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" \
           "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch"
-    
+
     - name: Debug info on failure
       if: failure()
       run: |
@@ -49,10 +66,14 @@ jobs:
         ls -la build_gpu 2>/dev/null || echo "No build_gpu directory"
         ls -la build_cpu 2>/dev/null || echo "No build_cpu directory"
         echo ""
+        echo "=== HYPRE cache status ==="
+        ls -la build_gpu/_deps 2>/dev/null || echo "No GPU HYPRE cache"
+        ls -la build_cpu/_deps 2>/dev/null || echo "No CPU HYPRE cache"
+        echo ""
         echo "=== Test binaries ==="
         ls -lh build_gpu/test_* 2>/dev/null || echo "No test binaries found"
 
-    - name: Cleanup
+    - name: Cleanup (preserve HYPRE cache)
       if: always()
       run: |
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch || true
@@ -61,6 +82,9 @@ jobs:
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch || true
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out || true
         rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err || true
-        rm -rf build_gpu || true
-        rm -rf build_cpu || true
-
+        # Clean build artifacts but keep _deps for cache
+        for dir in build_gpu build_cpu; do
+          if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
+            find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
+          fi
+        done
