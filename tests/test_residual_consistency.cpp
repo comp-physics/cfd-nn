@@ -86,32 +86,6 @@ double l2_norm(const ScalarField& f, const Mesh& mesh) {
     return std::sqrt(sum_sq / count);
 }
 
-// Compute L2 norm of difference: ||a - b||_2
-double l2_diff(const ScalarField& a, const ScalarField& b, const Mesh& mesh) {
-    double sum_sq = 0.0;
-    int count = 0;
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double diff = a(i, j) - b(i, j);
-                sum_sq += diff * diff;
-                ++count;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double diff = a(i, j, k) - b(i, j, k);
-                    sum_sq += diff * diff;
-                    ++count;
-                }
-            }
-        }
-    }
-    return std::sqrt(sum_sq / count);
-}
-
 // Run a single residual test and return relative residual
 // Returns -1 on failure
 double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, int Ny,
