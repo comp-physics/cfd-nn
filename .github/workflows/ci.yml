@@ -40,9 +40,17 @@ jobs:
         cd ..
 
         # Run the CI test suite
+        # Debug builds run only fast tests (Debug is 3-10x slower than Release)
+        # Release builds run all tests
         chmod +x scripts/ci.sh
         chmod +x scripts/check_code_sharing.sh
-        ./scripts/ci.sh --cpu
+        if [[ "${{ matrix.build_type }}" == "Debug" ]]; then
+          echo "Running fast tests only (Debug build)"
+          ./scripts/ci.sh --cpu fast
+        else
+          echo "Running all tests (Release build)"
+          ./scripts/ci.sh --cpu
+        fi
 
     - name: Check for warnings
       if: matrix.build_type == 'Release'
