@@ -203,8 +203,8 @@ struct ConvergenceResult {
     std::string bc_config;
     std::vector<int> grid_sizes;
     std::vector<double> errors;
-    double convergence_rate;
-    bool passed;
+    double convergence_rate = 0.0;
+    bool passed = false;
     std::string message;
 };
 

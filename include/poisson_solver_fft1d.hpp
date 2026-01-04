@@ -34,6 +34,12 @@ public:
     /// Destructor
     ~FFT1DPoissonSolver();
 
+    // Non-copyable, non-movable (owns GPU resources)
+    FFT1DPoissonSolver(const FFT1DPoissonSolver&) = delete;
+    FFT1DPoissonSolver& operator=(const FFT1DPoissonSolver&) = delete;
+    FFT1DPoissonSolver(FFT1DPoissonSolver&&) = delete;
+    FFT1DPoissonSolver& operator=(FFT1DPoissonSolver&&) = delete;
+
     /// Set boundary conditions
     /// The periodic direction must have Periodic BCs
     /// The other two directions can be Neumann or Dirichlet

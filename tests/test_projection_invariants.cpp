@@ -140,12 +140,12 @@ struct InvariantTestCase {
 };
 
 struct InvariantTestResult {
-    bool passed;
-    int steps_completed;
-    double initial_ke;
-    double final_ke;
-    double max_div_seen;
-    double max_pressure_seen;
+    bool passed = false;
+    int steps_completed = 0;
+    double initial_ke = 0.0;
+    double final_ke = 0.0;
+    double max_div_seen = 0.0;
+    double max_pressure_seen = 0.0;
     std::string initial_solver;
     std::string final_solver;
     std::string failure_reason;

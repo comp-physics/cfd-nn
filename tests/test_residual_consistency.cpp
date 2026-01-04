@@ -1,12 +1,17 @@
 /// @file test_residual_consistency.cpp
-/// @brief Discrete residual consistency test for Poisson solvers
+/// @brief Poisson solver sanity check - validates pressure field is reasonable
 ///
-/// CRITICAL TEST: Validates that each Poisson solver output actually satisfies
-/// the discrete Poisson equation: ||L(p) - rhs|| / ||rhs|| < tolerance
+/// SANITY TEST: Validates that Poisson solver produces non-trivial, finite
+/// pressure fields. This is a basic smoke test, not a full residual check.
 ///
-/// This catches "solver runs but wrong" cases that cross-solver comparison
-/// might miss (e.g., both solvers converge to incorrect solutions due to
-/// shared BC bugs).
+/// What this test checks:
+///   - Pressure field is non-zero after projection
+///   - L(p) = d²p/dx² + d²p/dy² is finite and reasonable
+///   - Solution doesn't blow up or contain NaN
+///
+/// NOTE: This does NOT compute the true residual ||L(p) - rhs|| because the
+/// intermediate RHS (div(u*)/dt) is internal to RANSSolver. For true residual
+/// validation, use test_poisson_manufactured.cpp which uses known analytic RHS.
 
 #include "mesh.hpp"
 #include "fields.hpp"
@@ -192,8 +197,8 @@ int main() {
 #endif
     std::cout << "\n";
 
-    std::cout << "Validating that Poisson solver produces reasonable solutions.\n";
-    std::cout << "Checking: L(p) is finite and non-trivial after projection.\n\n";
+    std::cout << "Sanity check: Poisson solver produces reasonable pressure fields.\n";
+    std::cout << "Checking: p is non-zero and L(p) is finite after projection.\n\n";
 
     int passed = 0, failed = 0;
 
@@ -229,17 +234,17 @@ int main() {
 
     // Summary
     std::cout << "\n================================================================\n";
-    std::cout << "Residual Consistency Summary\n";
+    std::cout << "Poisson Sanity Check Summary\n";
     std::cout << "================================================================\n";
     std::cout << "  Passed:  " << passed << "/" << (passed + failed) << "\n";
     std::cout << "  Failed:  " << failed << "/" << (passed + failed) << "\n";
 
     if (failed == 0) {
-        std::cout << "\n[PASS] All residual consistency tests passed\n";
-        std::cout << "       Solver outputs satisfy discrete Poisson equation\n";
+        std::cout << "\n[PASS] All sanity checks passed\n";
+        std::cout << "       Pressure fields are non-trivial and finite\n";
         return 0;
     } else {
-        std::cout << "\n[FAIL] " << failed << " residual consistency test(s) failed\n";
+        std::cout << "\n[FAIL] " << failed << " sanity check(s) failed\n";
         return 1;
     }
 }

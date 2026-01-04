@@ -772,9 +772,9 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double omega) {
     // Weighted Jacobi smoother - GPU optimized
     // Uses 1 target region per iteration (vs 2 for RB-SOR)
-    // Uses u and r arrays as ping-pong buffers
-    // OPTIMIZATION: Skip per-iteration BC updates - common for MG smoothers
-    // Ghost cell error is O(h) and gets smoothed away. Apply BC only at end.
+    // Uses u and tmp arrays as ping-pong buffers
+    // NOTE: BCs are applied after each iteration for proper convergence,
+    // especially for periodic BCs where ghost cells must wrap correctly.
     NVTX_SCOPE_POISSON("mg:smooth_jacobi");
 
     auto& grid = *levels_[level];
