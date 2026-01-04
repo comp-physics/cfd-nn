@@ -770,11 +770,9 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 }
 
 void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double omega) {
-    // Weighted Jacobi smoother - GPU optimized
-    // Uses 1 target region per iteration (vs 2 for RB-SOR)
-    // Uses u and tmp arrays as ping-pong buffers
-    // NOTE: BCs are applied after each iteration for proper convergence,
-    // especially for periodic BCs where ghost cells must wrap correctly.
+    // Weighted Jacobi smoother - UNIFIED CPU/GPU implementation
+    // Uses ping-pong buffers (u <-> tmp) for identical arithmetic on both paths.
+    // GPU uses omp target; CPU uses same algorithm for bitwise consistency.
     NVTX_SCOPE_POISSON("mg:smooth_jacobi");
 
     auto& grid = *levels_[level];
@@ -791,21 +789,45 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     const int Nz = grid.Nz;
     const int stride = Nx + 2;
     const int plane_stride = (Nx + 2) * (Ny + 2);
+    const size_t total_size = static_cast<size_t>(Nx + 2) *
+                              static_cast<size_t>(Ny + 2) *
+                              static_cast<size_t>(Nz + 2);
 
+    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
 #ifdef USE_GPU_OFFLOAD
     double* u_ptr = u_ptrs_[level];
-    double* tmp_ptr = tmp_ptrs_[level];  // Dedicated scratch buffer (device-only)
+    double* tmp_ptr = tmp_ptrs_[level];  // Device-only scratch buffer
     const double* f_ptr = f_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
-
-    // Ping-pong Jacobi: u -> tmp, then tmp -> u (1 target region per iteration)
     // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
+    #define JACOBI_TARGET_U_TO_TMP_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_U_TO_TMP_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_COPY \
+        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+#else
+    double* u_ptr = grid.u.data().data();
+    double* tmp_ptr = grid.r.data().data();  // Reuse r as scratch buffer
+    const double* f_ptr = grid.f.data().data();
+    // CPU: no pragmas needed
+    #define JACOBI_TARGET_U_TO_TMP_2D
+    #define JACOBI_TARGET_TMP_TO_U_2D
+    #define JACOBI_TARGET_U_TO_TMP_3D
+    #define JACOBI_TARGET_TMP_TO_U_3D
+    #define JACOBI_TARGET_COPY
+#endif
+
+    // Ping-pong Jacobi: u -> tmp, then tmp -> u
+    // Identical algorithm for CPU and GPU - only pragmas differ
     for (int iter = 0; iter < iterations; ++iter) {
         if (iter % 2 == 0) {
             // u -> tmp
             if (is_2d) {
-                #pragma omp target teams distribute parallel for collapse(2) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+                JACOBI_TARGET_U_TO_TMP_2D
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = j * stride + i;
@@ -817,8 +839,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                     }
                 }
             } else {
-                #pragma omp target teams distribute parallel for collapse(3) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+                JACOBI_TARGET_U_TO_TMP_3D
                 for (int k = Ng; k < Nz + Ng; ++k) {
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
@@ -836,8 +857,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
         } else {
             // tmp -> u
             if (is_2d) {
-                #pragma omp target teams distribute parallel for collapse(2) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+                JACOBI_TARGET_TMP_TO_U_2D
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = j * stride + i;
@@ -849,8 +869,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                     }
                 }
             } else {
-                #pragma omp target teams distribute parallel for collapse(3) \
-                    map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+                JACOBI_TARGET_TMP_TO_U_3D
                 for (int k = Ng; k < Nz + Ng; ++k) {
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
@@ -866,69 +885,32 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                 }
             }
         }
-        // Apply BCs after each iteration for proper convergence
-        // After even iter: result in tmp_ptr, after odd iter: result in u_ptr
-        // Copy result back to u_ptr and apply_bc to ensure correct ghost values
+
+        // After even iter: result in tmp_ptr; after odd iter: result in u_ptr
+        // Copy result to u_ptr for BC application
         if (iter % 2 == 0) {
-            // Result is in tmp_ptr, copy to u_ptr then apply BCs
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+            JACOBI_TARGET_COPY
             for (size_t idx = 0; idx < total_size; ++idx) {
                 u_ptr[idx] = tmp_ptr[idx];
             }
         }
         apply_bc(level);
-        // If we just copied tmp->u and applied BCs, copy BCs back to tmp
+
+        // Copy updated BCs back to tmp for next iteration (if not last)
         if (iter % 2 == 0 && iter + 1 < iterations) {
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+            JACOBI_TARGET_COPY
             for (size_t idx = 0; idx < total_size; ++idx) {
                 tmp_ptr[idx] = u_ptr[idx];
             }
         }
     }
 
-    // Final result should be in u_ptr
-    // If odd iterations, final was written to u_ptr directly, BC already applied
-    // If even iterations, we copied tmp->u and applied BCs in loop
-#else
-    // CPU fallback - use standard Jacobi with BCs
-    auto& u = grid.u;
-    auto& r = grid.r;
-    const auto& f = grid.f;
-
-    for (int iter = 0; iter < iterations; ++iter) {
-        if (is_2d) {
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    double u_old = u(i, j);
-                    double u_jacobi = ((u(i+1, j) + u(i-1, j)) / dx2
-                                     + (u(i, j+1) + u(i, j-1)) / dy2
-                                     - f(i, j)) / coeff;
-                    r(i, j) = (1.0 - omega) * u_old + omega * u_jacobi;
-                }
-            }
-            std::swap(u, r);
-        } else {
-            for (int k = Ng; k < Nz + Ng; ++k) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        double u_old = u(i, j, k);
-                        double u_jacobi = ((u(i+1, j, k) + u(i-1, j, k)) / dx2
-                                         + (u(i, j+1, k) + u(i, j-1, k)) / dy2
-                                         + (u(i, j, k+1) + u(i, j, k-1)) / dz2
-                                         - f(i, j, k)) / coeff;
-                        r(i, j, k) = (1.0 - omega) * u_old + omega * u_jacobi;
-                    }
-                }
-            }
-            std::swap(u, r);
-        }
-        // Apply BCs after each iteration to ensure ghost cells have correct values
-        // This is essential for iterative convergence, especially with periodic BCs
-        apply_bc(level);
-    }
-#endif
+    // Clean up macros
+    #undef JACOBI_TARGET_U_TO_TMP_2D
+    #undef JACOBI_TARGET_TMP_TO_U_2D
+    #undef JACOBI_TARGET_U_TO_TMP_3D
+    #undef JACOBI_TARGET_TMP_TO_U_3D
+    #undef JACOBI_TARGET_COPY
 }
 
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
