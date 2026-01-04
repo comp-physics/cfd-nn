@@ -106,22 +106,22 @@ echo "==================================================================="
 echo "  Running Performance Benchmarks"
 echo "==================================================================="
 
-# Case 1: Channel baseline (medium grid)
-# NOTE: 500 iters is sufficient to measure steady-state speedup
-run_comparison_case "channel_baseline_256x512_500" \
-    ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 500 \
+# Case 1: Channel baseline (small grid for CI speed)
+# 128x128 with 100 iters completes in ~2 min on CPU, shows clear GPU speedup
+run_comparison_case "channel_baseline_128x128_100" \
+    ./channel --Nx 128 --Ny 128 --nu 0.001 --max_iter 100 \
              --model baseline --dp_dx -0.0001 \
              --output output/perf/channel_baseline --num_snapshots 0
 
-# Case 2: Channel SST transport (medium grid)
-run_comparison_case "channel_sst_256x512_200" \
-    ./channel --Nx 256 --Ny 512 --nu 0.001 --max_iter 200 \
+# Case 2: Channel SST transport (small grid)
+run_comparison_case "channel_sst_128x128_50" \
+    ./channel --Nx 128 --Ny 128 --nu 0.001 --max_iter 50 \
              --model sst --dp_dx -0.0001 \
              --output output/perf/channel_sst --num_snapshots 0
 
-# Case 3: 3D Duct flow (3D geometry test)
-run_comparison_case "duct_baseline_32x64x64_200" \
-    ./duct --Nx 32 --Ny 64 --Nz 64 --nu 0.001 --max_iter 200 \
+# Case 3: 3D Duct flow (small 3D test)
+run_comparison_case "duct_baseline_16x32x32_50" \
+    ./duct --Nx 16 --Ny 32 --Nz 32 --nu 0.001 --max_iter 50 \
            --model baseline --num_snapshots 0
 
 # Print final summary table
