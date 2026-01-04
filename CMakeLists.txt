@@ -493,6 +493,11 @@ if(BUILD_TESTS)
     add_executable(test_mpi_guard tests/test_mpi_guard.cpp)
     target_link_libraries(test_mpi_guard nn_cfd_core)
     add_test(NAME MpiGuardTest COMMAND test_mpi_guard)
+
+    # Turbulence golden snapshot test - catches model regressions
+    add_executable(test_turbulence_golden tests/test_turbulence_golden.cpp)
+    target_link_libraries(test_turbulence_golden nn_cfd_core)
+    add_test(NAME TurbulenceGoldenTest COMMAND test_turbulence_golden)
 endif()
 
 # Installation
