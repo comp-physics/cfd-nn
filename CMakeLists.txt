@@ -49,9 +49,24 @@ if(USE_HYPRE)
     message(STATUS "  CUDA include dir: ${CUDAToolkit_INCLUDE_DIRS}")
 
     # Detect GPU architecture if not specified
-    # Default to Ampere (A100=sm80). Use -DGPU_CC=90 for Hopper (H100)
+    # Priority: 1. User-specified -DGPU_CC=XX, 2. Auto-detect via script, 3. Default to 80
     if(NOT DEFINED GPU_CC)
-        set(GPU_CC "80" CACHE STRING "GPU compute capability (80=A100, 90=H100)")
+        # Try auto-detection using our detection script
+        execute_process(
+            COMMAND ${CMAKE_SOURCE_DIR}/scripts/detect_gpu_cc.sh
+            OUTPUT_VARIABLE DETECTED_GPU_CC
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE DETECT_RESULT
+        )
+        if(DETECT_RESULT EQUAL 0 AND DETECTED_GPU_CC MATCHES "^[0-9]+$")
+            set(GPU_CC "${DETECTED_GPU_CC}" CACHE STRING "GPU compute capability (auto-detected)")
+            message(STATUS "  GPU_CC auto-detected: ${GPU_CC}")
+        else()
+            set(GPU_CC "80" CACHE STRING "GPU compute capability (80=A100, 90=H100)")
+            message(STATUS "  GPU_CC fallback: ${GPU_CC} (auto-detection failed)")
+        endif()
+    else()
+        message(STATUS "  GPU_CC user-specified: ${GPU_CC}")
     endif()
     set(CMAKE_CUDA_ARCHITECTURES "${GPU_CC}" CACHE STRING "CUDA architectures" FORCE)
     message(STATUS "  CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
@@ -99,9 +114,21 @@ if(USE_GPU_OFFLOAD)
     # Detect compiler and set appropriate flags
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
         # NVIDIA HPC SDK - best for NVIDIA GPUs
-        # GPU compute capability: cc80=A100, cc90=H100 (default: cc80 for A100)
+        # Priority: 1. User-specified -DGPU_CC=XX, 2. Auto-detect, 3. Default to 80
         if(NOT DEFINED GPU_CC)
-            set(GPU_CC "80" CACHE STRING "GPU compute capability (80=A100, 90=H100)")
+            execute_process(
+                COMMAND ${CMAKE_SOURCE_DIR}/scripts/detect_gpu_cc.sh
+                OUTPUT_VARIABLE DETECTED_GPU_CC
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE DETECT_RESULT
+            )
+            if(DETECT_RESULT EQUAL 0 AND DETECTED_GPU_CC MATCHES "^[0-9]+$")
+                set(GPU_CC "${DETECTED_GPU_CC}" CACHE STRING "GPU compute capability (auto-detected)")
+                message(STATUS "  GPU_CC auto-detected: ${GPU_CC}")
+            else()
+                set(GPU_CC "80" CACHE STRING "GPU compute capability (default=A100)")
+                message(STATUS "  GPU_CC fallback: ${GPU_CC}")
+            endif()
         endif()
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc${GPU_CC}")
         # Add -cuda for OpenMP+CUDA interoperability
