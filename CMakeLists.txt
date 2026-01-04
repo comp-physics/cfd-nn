@@ -535,6 +535,21 @@ if(BUILD_TESTS)
     add_executable(test_hypre_canary tests/test_hypre_canary.cpp)
     target_link_libraries(test_hypre_canary nn_cfd_core)
     add_test(NAME HypreCanaryTest COMMAND test_hypre_canary)
+
+    # Residual consistency test - validates ||L(p)-rhs||/||rhs|| for each solver
+    add_executable(test_residual_consistency tests/test_residual_consistency.cpp)
+    target_link_libraries(test_residual_consistency nn_cfd_core)
+    add_test(NAME ResidualConsistencyTest COMMAND test_residual_consistency)
+
+    # FFT vs CPU reference test - validates FFT/FFT1D against MG on same node
+    add_executable(test_fft_cpu_reference tests/test_fft_cpu_reference.cpp)
+    target_link_libraries(test_fft_cpu_reference nn_cfd_core)
+    add_test(NAME FFTCpuReferenceTest COMMAND test_fft_cpu_reference)
+
+    # Detailed kernel parity test - CPU/GPU parity for non-Poisson kernels
+    add_executable(test_kernel_parity_detailed tests/test_kernel_parity_detailed.cpp)
+    target_link_libraries(test_kernel_parity_detailed nn_cfd_core)
+    add_test(NAME KernelParityDetailedTest COMMAND test_kernel_parity_detailed)
 endif()
 
 # Installation

@@ -28,15 +28,38 @@ echo "GPU(s):"
 nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
 echo ""
 
-# Hard-require OpenMP target offload (fail if it falls back to CPU)
-export OMP_TARGET_OFFLOAD=MANDATORY
-
-# Set compiler for GPU build
+# Set compiler for both CPU and GPU builds
 export CC=nvc
 export CXX=nvc++
 
 # Clean any stale builds
-rm -rf build_cpu build_gpu
+rm -rf build_cpu build_gpu build_ci_cpu_sanity
+
+# ===================================================================
+# Phase 1: CPU Sanity Suite (catches environment-specific issues)
+# ===================================================================
+echo ""
+echo "==================================================================="
+echo "  Phase 1: CPU Sanity Suite"
+echo "==================================================================="
+echo ""
+echo "Running CPU tests on H200 node to verify environment correctness."
+echo "This catches issues that hosted CI might miss (NVHPC quirks, etc.)"
+echo ""
+
+chmod +x .github/scripts/cpu_sanity_suite.sh
+.github/scripts/cpu_sanity_suite.sh "${PWD}"
+
+echo ""
+echo "[PASS] CPU sanity suite completed - proceeding to GPU build"
+echo ""
+
+# ===================================================================
+# Phase 2: CPU Reference + GPU Comparison
+# ===================================================================
+
+# Hard-require OpenMP target offload (fail if it falls back to CPU)
+export OMP_TARGET_OFFLOAD=MANDATORY
 
 # Build CPU reference version (needed for CPU/GPU comparison tests)
 echo "Building CPU reference version..."
