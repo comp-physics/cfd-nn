@@ -23,10 +23,7 @@
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
 #endif
-#ifdef USE_FFT_POISSON
-#include "poisson_solver_fft.hpp"
-#include "poisson_solver_fft1d.hpp"
-#endif
+// NOTE: FFT solver tests are in test_poisson_fft_manufactured.cpp (GPU-only)
 #include <iostream>
 #include <cmath>
 #include <iomanip>
@@ -434,132 +431,8 @@ ConvergenceResult test_hypre_convergence_2d() {
 }
 #endif
 
-#ifdef USE_FFT_POISSON
-// Test FFT solver with manufactured solution (periodic x,z + Neumann y)
-ConvergenceResult test_fft_convergence() {
-    ConvergenceResult result;
-    result.solver_name = "FFT";
-    result.bc_config = "3D_channel_periodic_xz_neumann_y";
-
-    std::vector<int> Ns = {32, 64};
-    const double Lx = 2.0 * M_PI;
-    const double Ly = 2.0;
-    const double Lz = 2.0 * M_PI;
-
-    ChannelSolution sol(Lx, Ly, Lz);
-
-    for (int N : Ns) {
-        Mesh mesh;
-        mesh.init_uniform(N, N, N, 0.0, Lx, 0.0, Ly, 0.0, Lz);
-
-        ScalarField rhs(mesh);
-        ScalarField p(mesh, 0.0);
-
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    rhs(i, j, k) = sol.rhs(mesh.x(i), mesh.y(j), mesh.z(k));
-                }
-            }
-        }
-
-        try {
-            FFTPoissonSolver solver(mesh);
-            solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                          PoissonBC::Neumann, PoissonBC::Neumann,
-                          PoissonBC::Periodic, PoissonBC::Periodic);
-
-            PoissonConfig cfg;
-            cfg.tol = 1e-10;
-            cfg.max_iter = 1;  // FFT is direct
-
-            solver.solve(rhs, p, cfg);
-
-            double err = compute_l2_error_3d(p, mesh, sol);
-            result.grid_sizes.push_back(N);
-            result.errors.push_back(err);
-        } catch (const std::exception& e) {
-            result.passed = false;
-            result.message = std::string("FFT solver failed: ") + e.what();
-            return result;
-        }
-    }
-
-    if (result.errors.size() >= 2) {
-        result.convergence_rate = std::log2(result.errors[0] / result.errors[1]);
-        // FFT should be spectral (better than 2nd order for smooth solutions)
-        result.passed = (result.convergence_rate > 1.8);
-        result.message = result.passed ? "high-order convergence" : "convergence rate too low";
-    } else {
-        result.passed = false;
-        result.message = "insufficient data";
-    }
-
-    return result;
-}
-
-// Test FFT1D solver (periodic x + Neumann yz)
-ConvergenceResult test_fft1d_convergence() {
-    ConvergenceResult result;
-    result.solver_name = "FFT1D";
-    result.bc_config = "3D_duct_periodic_x_neumann_yz";
-
-    std::vector<int> Ns = {32, 64};
-    const double Lx = 2.0 * M_PI;
-    const double Ly = 2.0;
-    const double Lz = 2.0;
-
-    DuctSolution sol(Lx, Ly, Lz);
-
-    for (int N : Ns) {
-        Mesh mesh;
-        mesh.init_uniform(N, N, N, 0.0, Lx, 0.0, Ly, 0.0, Lz);
-
-        ScalarField rhs(mesh);
-        ScalarField p(mesh, 0.0);
-
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    rhs(i, j, k) = sol.rhs(mesh.x(i), mesh.y(j), mesh.z(k));
-                }
-            }
-        }
-
-        try {
-            FFT1DPoissonSolver solver(mesh, 0);  // x-periodic
-            solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                          PoissonBC::Neumann, PoissonBC::Neumann,
-                          PoissonBC::Neumann, PoissonBC::Neumann);
-
-            PoissonConfig cfg;
-            cfg.tol = 1e-10;
-            cfg.max_iter = 1;
-
-            solver.solve(rhs, p, cfg);
-
-            double err = compute_l2_error_3d(p, mesh, sol);
-            result.grid_sizes.push_back(N);
-            result.errors.push_back(err);
-        } catch (const std::exception& e) {
-            result.passed = false;
-            result.message = std::string("FFT1D solver failed: ") + e.what();
-            return result;
-        }
-    }
-
-    if (result.errors.size() >= 2) {
-        result.convergence_rate = std::log2(result.errors[0] / result.errors[1]);
-        result.passed = (result.convergence_rate > 1.5);
-        result.message = result.passed ? "2nd-order+ convergence" : "convergence rate too low";
-    } else {
-        result.passed = false;
-        result.message = "insufficient data";
-    }
-
-    return result;
-}
-#endif
+// NOTE: FFT/FFT1D tests are in test_poisson_fft_manufactured.cpp
+// They use solve_device() and require GPU + device pointer setup.
 
 // ============================================================================
 // Main
@@ -639,20 +512,7 @@ int main() {
     results.back().passed ? ++passed : ++failed;
 #endif
 
-    // ========================================================================
-    // FFT Tests (if available, GPU-only)
-    // ========================================================================
-#ifdef USE_FFT_POISSON
-    std::cout << "\n--- FFT Solver Tests ---\n";
-
-    results.push_back(test_fft_convergence());
-    print_result(results.back());
-    results.back().passed ? ++passed : ++failed;
-
-    results.push_back(test_fft1d_convergence());
-    print_result(results.back());
-    results.back().passed ? ++passed : ++failed;
-#endif
+    // NOTE: FFT tests are in test_poisson_fft_manufactured.cpp (GPU-only, uses solve_device())
 
     // ========================================================================
     // Summary
