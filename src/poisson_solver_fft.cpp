@@ -184,10 +184,6 @@ __global__ void kernel_unpack_and_bc(
     }
 }
 
-// Scratch buffer for partial sums (allocated once, reused)
-static double* g_partial_sums = nullptr;
-static size_t g_partial_sums_size = 0;
-
 #endif // USE_GPU_OFFLOAD
 
 FFTPoissonSolver::FFTPoissonSolver(const Mesh& mesh)
@@ -212,6 +208,7 @@ FFTPoissonSolver::~FFTPoissonSolver() {
     if (ev_fft_done_) cudaEventDestroy(ev_fft_done_);
     if (stream_) cudaStreamDestroy(stream_);
     if (sum_dev_) cudaFree(sum_dev_);
+    if (partial_sums_) cudaFree(partial_sums_);
     if (fft_work_area_) cudaFree(fft_work_area_);
     if (rhs_packed_) cudaFree(rhs_packed_);
     if (p_packed_) cudaFree(p_packed_);
@@ -837,20 +834,20 @@ void FFTPoissonSolver::launch_pack_and_sum(double* rhs_dev) {
     const int num_blocks = (n_total + block_size - 1) / block_size;
 
     // Allocate/resize partial sums buffer if needed
-    if (g_partial_sums_size < static_cast<size_t>(num_blocks)) {
-        if (g_partial_sums) cudaFree(g_partial_sums);
-        cudaMalloc(&g_partial_sums, sizeof(double) * num_blocks);
-        g_partial_sums_size = num_blocks;
+    if (partial_sums_size_ < static_cast<size_t>(num_blocks)) {
+        if (partial_sums_) cudaFree(partial_sums_);
+        cudaMalloc(&partial_sums_, sizeof(double) * num_blocks);
+        partial_sums_size_ = num_blocks;
     }
 
     // Launch pack + partial sum kernel on stream_
     kernel_pack_and_partial_sum<<<num_blocks, block_size, 0, stream_>>>(
-        rhs_dev, rhs_packed_, g_partial_sums,
+        rhs_dev, rhs_packed_, partial_sums_,
         Nx, Ny, Nz, Ng, Nx_full, Ny_full);
 
     // Launch final reduction kernel to compute total sum into sum_dev_
     kernel_final_reduce<<<1, 256, 0, stream_>>>(
-        g_partial_sums, sum_dev_, num_blocks);
+        partial_sums_, sum_dev_, num_blocks);
 }
 
 void FFTPoissonSolver::launch_subtract_mean(size_t n_total) {

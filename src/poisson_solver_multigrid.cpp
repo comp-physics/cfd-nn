@@ -1568,10 +1568,11 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 #endif
     
     apply_bc(0);
-    
+
     // MG V-cycles: use cfg.max_iter to control number of V-cycles
     // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
     // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
     const int num_cycles = cfg.max_iter;
     const bool accurate_mode = (num_cycles > 5);
     const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
@@ -1656,12 +1657,13 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         f_dev[idx] = rhs_present[idx];
         u_dev[idx] = p_present[idx];
     }
-    
+
     apply_bc(0);
 
     // MG V-cycles: use cfg.max_iter to control number of V-cycles
     // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
     // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
     const int num_cycles = cfg.max_iter;
     const bool accurate_mode = (num_cycles > 5);
     const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps

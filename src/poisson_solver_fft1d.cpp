@@ -134,6 +134,84 @@ __global__ void kernel_unpack_lines_to_ghost(
     p_ghost[g] = out_pack[(size_t)b * (size_t)Nx + (size_t)i] * invNx;
 }
 
+// Pack kernel for z-periodic: ghost layout -> packed z-lines
+// Thread mapping: tid indexes packed array linearly, decompose to (k, i, j)
+// Packed layout: in_pack[b*Nz + k] where b = i*Ny + j
+__global__ void kernel_pack_ghost_to_zlines(
+    const double* __restrict__ rhs_ghost,
+    double* __restrict__ in_pack,
+    double* __restrict__ partial_sums,
+    int Nx, int Ny, int Nz,
+    int stride, int plane_stride)
+{
+    extern __shared__ double sdata[];
+
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = Nx * Ny * Nz;
+
+    double local_sum = 0.0;
+
+    if (tid < total) {
+        // For z-periodic: pack z-lines, so k varies fastest in packed array
+        // Packed index: b*Nz + k where b = i*Ny + j
+        const int k = tid % Nz;
+        const int b = tid / Nz;      // b = i*Ny + j
+        const int j = b % Ny;
+        const int i = b / Ny;
+
+        // Ghost index: (k+1)*plane_stride + (j+1)*stride + (i+1)
+        const size_t g = (size_t)(k + 1) * (size_t)plane_stride
+                       + (size_t)(j + 1) * (size_t)stride
+                       + (size_t)(i + 1);
+
+        double val = rhs_ghost[g];
+
+        // Packed index: b*Nz + k
+        in_pack[(size_t)b * (size_t)Nz + (size_t)k] = val;
+        local_sum = val;
+    }
+
+    // Block reduction for mean computation
+    sdata[threadIdx.x] = local_sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        partial_sums[blockIdx.x] = sdata[0];
+    }
+}
+
+// Unpack kernel for z-periodic: packed z-lines -> ghost layout with normalization
+__global__ void kernel_unpack_zlines_to_ghost(
+    const double* __restrict__ out_pack,
+    double* __restrict__ p_ghost,
+    int Nx, int Ny, int Nz,
+    int stride, int plane_stride,
+    double invNz)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = Nx * Ny * Nz;
+    if (tid >= total) return;
+
+    // For z-periodic: unpack z-lines, so k varies fastest in packed array
+    const int k = tid % Nz;
+    const int b = tid / Nz;      // b = i*Ny + j
+    const int j = b % Ny;
+    const int i = b / Ny;
+
+    const size_t g = (size_t)(k + 1) * (size_t)plane_stride
+                   + (size_t)(j + 1) * (size_t)stride
+                   + (size_t)(i + 1);
+
+    p_ghost[g] = out_pack[(size_t)b * (size_t)Nz + (size_t)k] * invNz;
+}
+
 // 2D Helmholtz Jacobi iteration kernel
 // Processes all modes in parallel
 // Layout: p_hat[m * N_yz + j * Nz + k] where k is fastest
@@ -735,14 +813,23 @@ int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
         cudaEventRecord(ev_start, stream_);
     }
 
-    // 1. Pack RHS from ghost layout to contiguous x-lines + compute sum for mean
-    kernel_pack_ghost_to_lines<<<grid, block, smem, stream_>>>(
-        rhs_dev, in_pack_, partial_sums_,
-        Nx_, Ny_, Nz_, stride, plane_stride
-    );
+    // 1. Pack RHS from ghost layout to contiguous periodic lines + compute sum for mean
+    if (periodic_dir_ == 0) {
+        // x-periodic: pack x-lines
+        kernel_pack_ghost_to_lines<<<grid, block, smem, stream_>>>(
+            rhs_dev, in_pack_, partial_sums_,
+            Nx_, Ny_, Nz_, stride, plane_stride
+        );
+    } else {
+        // z-periodic: pack z-lines
+        kernel_pack_ghost_to_zlines<<<grid, block, smem, stream_>>>(
+            rhs_dev, in_pack_, partial_sums_,
+            Nx_, Ny_, Nz_, stride, plane_stride
+        );
+    }
     err = cudaGetLastError();
     if (err != cudaSuccess) {
-        std::cerr << "[FFT1D] kernel_pack_ghost_to_lines failed: " << cudaGetErrorString(err) << "\n";
+        std::cerr << "[FFT1D] kernel_pack failed: " << cudaGetErrorString(err) << "\n";
         return -1;
     }
 
@@ -792,12 +879,22 @@ int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     if (profile_enabled) cudaEventRecord(ev_fft_inv, stream_);
 
     // 7. Unpack from packed layout to ghost layout with normalization
-    double invNx = 1.0 / (double)N_periodic_;
-    kernel_unpack_lines_to_ghost<<<grid, block, 0, stream_>>>(
-        out_pack_, p_dev,
-        Nx_, Ny_, Nz_, stride, plane_stride,
-        invNx
-    );
+    const double invN = 1.0 / (double)N_periodic_;
+    if (periodic_dir_ == 0) {
+        // x-periodic: unpack x-lines
+        kernel_unpack_lines_to_ghost<<<grid, block, 0, stream_>>>(
+            out_pack_, p_dev,
+            Nx_, Ny_, Nz_, stride, plane_stride,
+            invN
+        );
+    } else {
+        // z-periodic: unpack z-lines
+        kernel_unpack_zlines_to_ghost<<<grid, block, 0, stream_>>>(
+            out_pack_, p_dev,
+            Nx_, Ny_, Nz_, stride, plane_stride,
+            invN
+        );
+    }
 
     if (profile_enabled) cudaEventRecord(ev_unpack, stream_);
 

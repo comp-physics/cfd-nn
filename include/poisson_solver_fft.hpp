@@ -69,6 +69,10 @@ private:
     // Device-resident sum for mean subtraction (avoids host scalar transfer)
     double* sum_dev_ = nullptr;
 
+    // Partial sums buffer for block-level reduction (owned by this instance)
+    double* partial_sums_ = nullptr;
+    size_t partial_sums_size_ = 0;
+
     // cuFFT plans
     cufftHandle fft_plan_r2c_;  // Forward: Real to Complex
     cufftHandle fft_plan_c2r_;  // Inverse: Complex to Real
