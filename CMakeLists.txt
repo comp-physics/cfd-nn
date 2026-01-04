@@ -412,6 +412,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 
+    # FFT manufactured solution test - proves FFT correctness with O(h²) convergence
+    add_executable(test_poisson_fft_manufactured tests/test_poisson_fft_manufactured.cpp)
+    target_link_libraries(test_poisson_fft_manufactured nn_cfd_core)
+    add_test(NAME PoissonFFTManufacturedTest COMMAND test_poisson_fft_manufactured)
+
     # HYPRE all BC configurations test
     if(USE_HYPRE)
         add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
@@ -483,6 +488,11 @@ if(BUILD_TESTS)
     add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
     target_link_libraries(test_projection_invariants nn_cfd_core)
     add_test(NAME ProjectionInvariantsTest COMMAND test_projection_invariants)
+
+    # MPI guard policy test - validates multi-rank detection logic
+    add_executable(test_mpi_guard tests/test_mpi_guard.cpp)
+    target_link_libraries(test_mpi_guard nn_cfd_core)
+    add_test(NAME MpiGuardTest COMMAND test_mpi_guard)
 endif()
 
 # Installation

@@ -1045,9 +1045,10 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , use_multigrid_(true)
     , current_dt_(config.dt)
 {
-    // Check for MPI environment and warn if multiple ranks detected
+    // Check for MPI environment - hard fail for GPU builds, warn for CPU
     // (this code uses GPU parallelism, not MPI distribution)
-    warn_if_mpi_detected("RANSSolver");
+    // Set NNCFD_ALLOW_MULTI_RANK=1 to override (dangerous)
+    enforce_single_rank_gpu("RANSSolver");
 
     // Precompute wall distance (once, then stays on GPU if enabled)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
