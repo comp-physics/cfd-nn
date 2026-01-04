@@ -422,6 +422,11 @@ if(BUILD_TESTS)
         add_executable(test_hypre_validation tests/test_hypre_validation.cpp)
         target_link_libraries(test_hypre_validation nn_cfd_core)
         add_test(NAME HypreValidationTest COMMAND test_hypre_validation)
+
+        # HYPRE backend verification test - ensures GPU/CPU backend matches expectations
+        add_executable(test_hypre_backend tests/test_hypre_backend.cpp)
+        target_link_libraries(test_hypre_backend nn_cfd_core)
+        add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
     endif()
 
     # Poisson solver selection state machine test - prevents selection logic drift

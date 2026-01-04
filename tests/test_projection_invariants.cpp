@@ -332,7 +332,9 @@ int main() {
     std::cout << "  - Solver selection stays stable\n\n";
 
     // Test cases: small grids, moderate step counts
-    // Divergence bound: 0.1 (allows for discretization error on coarse grids)
+    // Divergence bound: scales with grid spacing (coarser grids allow more error)
+    //   - 2D 64^2: bound=0.1 (fine enough for strict check)
+    //   - 3D 32^3: bound=0.3 (coarser grid, more discretization error, dx≈0.2)
     // KE growth max: 10x (should not blow up, but allow some transient growth)
     std::vector<InvariantTestCase> tests = {
         // 2D channel: periodic x, no-slip y walls
@@ -346,14 +348,15 @@ int main() {
          50, 0.1, 10.0, true},
 
         // 3D channel (small): periodic x/z, no-slip y
+        // Relaxed div bound due to coarser grid (dx≈0.2 means O(dx) discretization error)
         {"3D_channel", 32, 32, 32, 2.0*M_PI, 2.0, 2.0*M_PI,
          VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::Periodic,
-         50, 0.1, 10.0, false},
+         50, 0.3, 10.0, false},
 
         // 3D duct: periodic x, no-slip y/z walls
         {"3D_duct", 32, 32, 32, 2.0*M_PI, 2.0, 2.0,
          VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::NoSlip,
-         50, 0.1, 10.0, false},
+         50, 0.3, 10.0, false},
     };
 
     std::cout << "--- Running " << tests.size() << " invariant tests ---\n\n";
