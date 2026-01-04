@@ -77,9 +77,9 @@ void MultigridPoissonSolver::create_hierarchy() {
     }
 
     // Coarsen until we reach minimum grid size
-    // Go down to 4x4 for efficient multigrid - coarsest solve is trivial
-    // More levels = better convergence per V-cycle
-    constexpr int MIN_COARSE_SIZE = 4;
+    // 8x8 coarsest is GPU-friendly while still giving good MG efficiency
+    // For 128x128: gives 4 levels (128→64→32→16→8) instead of 3
+    constexpr int MIN_COARSE_SIZE = 8;
 
     if (is_2d) {
         while (Nx > MIN_COARSE_SIZE && Ny > MIN_COARSE_SIZE) {
@@ -1333,9 +1333,9 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
 
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - solve approximately
-        // With MIN_COARSE_SIZE=4, coarsest is 4x4 (16 points) - trivial to solve
-        // 10 iterations is plenty for such a small grid
-        smooth_jacobi(level, 10, 0.8);
+        // With MIN_COARSE_SIZE=8, coarsest is 8x8 (64 points)
+        // 20 iterations is sufficient for good convergence
+        smooth_jacobi(level, 20, 0.8);
         return;
     }
 
