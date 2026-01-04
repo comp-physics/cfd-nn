@@ -25,17 +25,25 @@ jobs:
 
     - uses: actions/checkout@v4
 
+    # Extract HYPRE version from CMakeLists.txt to ensure cache key stays in sync
+    - name: Extract HYPRE version
+      id: hypre_version
+      run: |
+        HYPRE_VERSION=$(grep -oP 'GIT_TAG v\K[\d.]+' CMakeLists.txt || echo "unknown")
+        echo "version=${HYPRE_VERSION}" >> $GITHUB_OUTPUT
+        echo "Detected HYPRE version: ${HYPRE_VERSION}"
+
     # Cache HYPRE builds (slow to compile, rarely changes)
-    # Key includes HYPRE version from CMakeLists.txt and GPU architecture
+    # Key includes HYPRE version extracted from CMakeLists.txt and GPU architecture
     - name: Cache HYPRE builds
       uses: actions/cache@v4
       with:
         path: |
           build_cpu/_deps
           build_gpu/_deps
-        key: hypre-v2.31.0-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
+        key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
         restore-keys: |
-          hypre-v2.31.0-h200-cc90-
+          hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-
 
     - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |
