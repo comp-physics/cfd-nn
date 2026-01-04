@@ -55,10 +55,23 @@ echo ""
 echo "=== Final Slurm STDERR ==="
 cat "${SLURM_ERR}" || true
 
-# Check job exit code
-EXIT_CODE=$(sacct -j ${JOB_ID} --format=ExitCode --noheader | head -n1 | cut -d: -f1 | tr -d ' ')
-if [ "$EXIT_CODE" != "0" ]; then
-  echo "Job failed with exit code: ${EXIT_CODE}"
+# Check job state and exit code
+JOB_STATE=$(sacct -j ${JOB_ID} --format=State --noheader | head -n1 | tr -d ' ')
+EXIT_CODE_FULL=$(sacct -j ${JOB_ID} --format=ExitCode --noheader | head -n1 | tr -d ' ')
+EXIT_CODE=$(echo "$EXIT_CODE_FULL" | cut -d: -f1)
+SIGNAL=$(echo "$EXIT_CODE_FULL" | cut -d: -f2)
+
+echo "Job state: ${JOB_STATE}, exit code: ${EXIT_CODE_FULL}"
+
+# Fail on non-COMPLETED states (TIMEOUT, CANCELLED, FAILED, etc.)
+if [ "$JOB_STATE" != "COMPLETED" ]; then
+  echo "Job did not complete successfully (state: ${JOB_STATE})"
+  exit 1
+fi
+
+# Fail on non-zero exit code or signal
+if [ "$EXIT_CODE" != "0" ] || [ "$SIGNAL" != "0" ]; then
+  echo "Job failed with exit code: ${EXIT_CODE_FULL}"
   exit 1
 fi
 
