@@ -21,49 +21,47 @@ echo ""
 
 chmod +x .github/scripts/*.sh
 
-# Build CPU-only binary (single-threaded) - reuse if exists
+# Build CPU-only binary (single-threaded)
+# Use incremental build if CMakeCache exists with correct config
 echo "==================================================================="
 echo "  Building CPU-only binary (Release, single-threaded)"
 echo "==================================================================="
 echo ""
-if [ -f build_cpu/channel ] && [ -f build_cpu/duct ]; then
-    echo "Reusing existing CPU build (build_cpu/channel and build_cpu/duct exist)"
+mkdir -p build_cpu
+cd build_cpu
+if [ -f CMakeCache.txt ] && grep -q "USE_GPU_OFFLOAD:BOOL=OFF" CMakeCache.txt; then
+    echo "Incremental build (CMakeCache.txt exists with correct config)"
 else
-    echo "Building CPU version from scratch..."
-    rm -rf build_cpu
-    mkdir -p build_cpu
-    cd build_cpu
-    echo "=== CMake Configuration ==="
+    echo "Full configuration (new or mismatched build)"
+    rm -rf *
     CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
-    echo ""
-    echo "=== Building ==="
-    make -j8
-    cd ..
 fi
-mkdir -p build_cpu/output/cpu_perf
+echo "=== Building ==="
+make -j8 channel duct
+mkdir -p output/cpu_perf
+cd ..
 
-# Build GPU-offload binary - reuse if exists
+# Build GPU-offload binary
+# Use incremental build if CMakeCache exists with correct config
 echo ""
 echo "==================================================================="
 echo "  Building GPU-offload binary (Release)"
 echo "==================================================================="
 echo ""
-if [ -f build_gpu/channel ] && [ -f build_gpu/duct ]; then
-    echo "Reusing existing GPU build (build_gpu/channel and build_gpu/duct exist)"
+mkdir -p build_gpu
+cd build_gpu
+if [ -f CMakeCache.txt ] && grep -q "USE_GPU_OFFLOAD:BOOL=ON" CMakeCache.txt; then
+    echo "Incremental build (CMakeCache.txt exists with correct config)"
 else
-    echo "Building GPU version from scratch..."
-    rm -rf build_gpu
-    mkdir -p build_gpu
-    cd build_gpu
-    echo "=== CMake Configuration ==="
+    echo "Full configuration (new or mismatched build)"
+    rm -rf *
     # H200 requires cc90 (Hopper architecture)
     CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
-    echo ""
-    echo "=== Building ==="
-    make -j8
-    cd ..
 fi
-mkdir -p build_gpu/output/gpu_perf
+echo "=== Building ==="
+make -j8 channel duct
+mkdir -p output/gpu_perf
+cd ..
 
 # Run comparison for one case
 run_comparison_case() {
