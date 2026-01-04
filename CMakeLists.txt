@@ -530,6 +530,11 @@ if(BUILD_TESTS)
     add_executable(test_kernel_parity tests/test_kernel_parity.cpp)
     target_link_libraries(test_kernel_parity nn_cfd_core)
     add_test(NAME KernelParityTest COMMAND test_kernel_parity)
+
+    # HYPRE canary test - monitors known HYPRE limitations (quarantined)
+    add_executable(test_hypre_canary tests/test_hypre_canary.cpp)
+    target_link_libraries(test_hypre_canary nn_cfd_core)
+    add_test(NAME HypreCanaryTest COMMAND test_hypre_canary)
 endif()
 
 # Installation
