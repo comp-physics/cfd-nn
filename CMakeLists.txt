@@ -498,6 +498,11 @@ if(BUILD_TESTS)
     add_executable(test_turbulence_golden tests/test_turbulence_golden.cpp)
     target_link_libraries(test_turbulence_golden nn_cfd_core)
     add_test(NAME TurbulenceGoldenTest COMMAND test_turbulence_golden)
+
+    # Kernel parity test - verifies CPU/GPU path semantic equivalence
+    add_executable(test_kernel_parity tests/test_kernel_parity.cpp)
+    target_link_libraries(test_kernel_parity nn_cfd_core)
+    add_test(NAME KernelParityTest COMMAND test_kernel_parity)
 endif()
 
 # Installation
