@@ -13,6 +13,7 @@
 #   ./scripts/ci.sh --cpu        # Force CPU-only build (no GPU, no HYPRE)
 #   ./scripts/ci.sh --cpu fast   # CPU-only with fast tests
 #   ./scripts/ci.sh --no-hypre   # Disable HYPRE (use multigrid only)
+#   ./scripts/ci.sh --debug      # Debug build mode (4x timeout multiplier)
 #   ./scripts/ci.sh -v           # Verbose output (show full test output)
 #   ./scripts/ci.sh --verbose    # Same as -v
 #
@@ -70,6 +71,8 @@ USE_GPU=ON
 # Use --no-hypre to disable
 USE_HYPRE=AUTO
 VERBOSE=0
+DEBUG_BUILD=0
+TIMEOUT_MULTIPLIER=1
 while [[ "$1" == --* || "$1" == -* ]]; do
     case "$1" in
         --cpu)
@@ -86,6 +89,12 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             ;;
         --verbose|-v)
             VERBOSE=1
+            shift
+            ;;
+        --debug)
+            # Debug builds are 3-10x slower, use 4x timeout multiplier
+            DEBUG_BUILD=1
+            TIMEOUT_MULTIPLIER=4
             shift
             ;;
         *)
@@ -252,8 +261,11 @@ is_gpu_flaky() {
 run_test() {
     local test_name=$1
     local test_binary=$2
-    local timeout_secs=${3:-120}
+    local base_timeout=${3:-120}
     local env_prefix=${4:-""}  # Optional env vars (e.g., "OMP_TARGET_OFFLOAD=MANDATORY")
+
+    # Apply timeout multiplier for Debug builds
+    local timeout_secs=$((base_timeout * TIMEOUT_MULTIPLIER))
 
     if [ ! -f "$test_binary" ]; then
         log_skip "$test_name (not built)"
@@ -269,7 +281,11 @@ run_test() {
     fi
 
     echo ""
-    log_info "Running $test_name..."
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        log_info "Running $test_name... (timeout: ${timeout_secs}s, debug 4x)"
+    else
+        log_info "Running $test_name..."
+    fi
 
     local output_file="/tmp/test_output_$$.txt"
     local exit_code=0
