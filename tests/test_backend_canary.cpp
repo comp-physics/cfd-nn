@@ -18,6 +18,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 #include <fstream>
 #include <cstring>
