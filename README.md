@@ -239,9 +239,30 @@ where $\nu_e, \nu_w, \nu_n, \nu_s$ are face-averaged effective viscosities (e.g.
 
 ### Pressure Poisson Solver
 
-The pressure equation is solved using one of two methods:
+The pressure equation is solved using one of several methods, automatically selected based on boundary conditions and grid configuration:
 
-#### 1. Successive Over-Relaxation (SOR)
+**Solver Selection Priority:** FFT (3D) → FFT2D (2D) → FFT1D (3D) → HYPRE → Multigrid
+
+| Solver | Best For | Requirements |
+|--------|----------|--------------|
+| **FFT** | 3D channel flows | Periodic x AND z, uniform dx/dz |
+| **FFT2D** | 2D channel flows | 2D mesh, periodic x |
+| **FFT1D** | 3D duct flows | Periodic x OR z (one only) |
+| **HYPRE** | Stretched grids | `USE_HYPRE` build |
+| **Multigrid** | General fallback | Always available |
+
+See `docs/POISSON_SOLVER_GUIDE.md` for detailed documentation on all solvers.
+
+#### 1. FFT-Based Solvers (Fastest)
+
+For periodic boundary conditions, the FFT solvers use cuFFT + cuSPARSE for direct solves:
+- **FFT**: 2D FFT in x-z + batched tridiagonal in y (3D, periodic x AND z)
+- **FFT2D**: 1D FFT in x + batched tridiagonal in y (2D mesh)
+- **FFT1D**: 1D FFT in periodic direction + 2D Helmholtz per mode (3D duct)
+
+Complexity: $\mathcal{O}(N \log N)$ - near-optimal for periodic problems.
+
+#### 2. Successive Over-Relaxation (SOR) - Testing Only
 
 Red-black Gauss-Seidel with relaxation parameter $\omega \in (1, 2)$:
 
@@ -251,7 +272,7 @@ $$p_{i,j}^{k+1} = (1-\omega) p_{i,j}^k + \omega \frac{\displaystyle\frac{p_{i+1,
 - Iterations to convergence: 1000-10000
 - Used for small grids or validation
 
-#### 2. Geometric Multigrid (V-Cycle)
+#### 3. Geometric Multigrid (V-Cycle)
 
 **Algorithm:**
 1. **Pre-smooth**: Apply $\nu_1$ SOR iterations on fine grid
@@ -274,7 +295,7 @@ $$r_{2h}^{I,J} = \frac{1}{16}\begin{bmatrix}1 & 2 & 1 \\ 2 & 4 & 2 \\ 1 & 2 & 1\
 - V-cycles to convergence: 5-15 (vs 1000-10000 SOR iterations)
 - Speedup: **10-100x faster** than SOR for large grids
 
-#### 3. HYPRE PFMG (GPU-Accelerated)
+#### 4. HYPRE PFMG (GPU-Accelerated)
 
 For maximum GPU performance, the solver supports [HYPRE](https://github.com/hypre-space/hypre)'s PFMG (Parallel Semicoarsening Multigrid) solver with CUDA backend:
 

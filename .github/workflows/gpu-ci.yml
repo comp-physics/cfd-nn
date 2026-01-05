@@ -3,6 +3,12 @@ name: GPU CI
 on:
   push:
 
+# Prevent concurrent runs on the same branch to avoid cache save race conditions
+# New pushes cancel in-progress runs (no point testing outdated commits)
+concurrency:
+  group: gpu-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gpu-tests:
     runs-on: self-hosted
@@ -47,6 +53,7 @@ jobs:
     # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
     # Using separate restore/save steps as save-always is deprecated
     - name: Restore HYPRE cache
+      id: hypre_cache
       uses: actions/cache/restore@v4
       with:
         path: |
@@ -107,10 +114,11 @@ jobs:
         echo "=== Test binaries ==="
         ls -lh build_gpu/test_* 2>/dev/null || echo "No test binaries found"
 
-    # Save HYPRE cache (always, even on failure - HYPRE builds are expensive)
-    # This replaces the deprecated save-always parameter
+    # Save HYPRE cache only on cache miss (HYPRE builds are expensive)
+    # Skip if cache was restored with exact key match (cache-hit=true) to avoid
+    # "another job may be creating this cache" errors from concurrent runs
     - name: Save HYPRE cache
-      if: always()
+      if: always() && steps.hypre_cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: |

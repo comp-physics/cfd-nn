@@ -43,11 +43,16 @@ for dir in build_cpu build_gpu build_cpu_hypre build_gpu_hypre; do
         rm -rf "$dir/_deps/hypre-subbuild" 2>/dev/null || true
     fi
 done
-echo "HYPRE cache status:"
-ls -la build_cpu/_deps 2>/dev/null || echo "  No CPU HYPRE cache"
-ls -la build_gpu/_deps 2>/dev/null || echo "  No GPU HYPRE cache"
-ls -la build_cpu_hypre/_deps 2>/dev/null || echo "  No CPU+HYPRE cache"
-ls -la build_gpu_hypre/_deps 2>/dev/null || echo "  No GPU+HYPRE cache"
+# Check for cached HYPRE builds (CMake will auto-detect and skip rebuild if present)
+echo "HYPRE cache status (CMake will detect libHYPRE.a and skip rebuild):"
+for dir in build_cpu_hypre build_gpu_hypre; do
+    if [ -f "${dir}/_deps/hypre-build/libHYPRE.a" ]; then
+        echo "  [CACHED] ${dir}/_deps/hypre-build/libHYPRE.a exists"
+        ls -la "${dir}/_deps/" 2>/dev/null | grep hypre || true
+    else
+        echo "  [MISS] ${dir} - will build HYPRE from source"
+    fi
+done
 
 # ===================================================================
 # Phase 1: CPU Sanity Suite (catches environment-specific issues)

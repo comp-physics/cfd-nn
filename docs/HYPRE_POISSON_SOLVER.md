@@ -302,6 +302,8 @@ cfg.verbose = true;  // Prints iteration counts and residuals
 | `CMakeLists.txt` (lines 42-86) | HYPRE build configuration |
 | `tests/test_hypre_all_bcs.cpp` | HYPRE initialization test |
 | `tests/test_hypre_validation.cpp` | HYPRE vs Multigrid comparison test |
+| `tests/test_hypre_backend.cpp` | Backend verification (CPU vs GPU) |
+| `tests/test_hypre_canary.cpp` | Canary test for known HYPRE limitations |
 
 ## Testing
 
@@ -338,6 +340,8 @@ The CI script supports HYPRE testing with the `--hypre` flag:
 |------|-------------|
 | `test_hypre_all_bcs` | Verifies HYPRE initialization with different BC configurations |
 | `test_hypre_validation` | Compares HYPRE and Multigrid solver results on 3D channel/duct flows |
+| `test_hypre_backend` | Verifies HYPRE runs on correct backend (CPU or GPU) - fails if GPU build falls back to CPU |
+| `test_hypre_canary` | Monitors known HYPRE limitations (e.g., 2D y-periodic instability) - informational only, doesn't fail CI |
 
 ### Cross-Build Comparison
 
@@ -356,6 +360,10 @@ The `test_hypre_validation` test supports cross-build comparison for CI:
 1. **ScalarField-based `solve()` method**: The `solve(ScalarField&, ScalarField&)` method has known issues in CUDA mode. Use the `solve_device()` path (which is automatically used by the solver integration) for production.
 
 2. **Test tolerance**: The validation tests compare HYPRE and Multigrid solutions with tolerance 1e-6. Both solvers should produce nearly identical results for well-posed problems.
+
+3. **2D y-periodic BCs**: HYPRE PFMG has known instability issues with 2D meshes that have periodic y BCs. The solver may produce NaN after ~50-100 time steps. The solver automatically falls back to MG for these cases.
+
+4. **Backend fallback**: In GPU builds, if HYPRE CUDA initialization fails, the solver falls back to CPU execution without warning. The `test_hypre_backend` test catches this.
 
 ## References
 
