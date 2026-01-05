@@ -4241,6 +4241,10 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         // Vorticity (omega_z = dv/dx - du/dy) - scalar in 2D
         // NOTE: Uses uniform dx/dy spacing. On stretched meshes, this is an approximation
         // suitable for visualization but not metrically consistent with the solver discretization.
+        // Guard: skip vorticity output for degenerate meshes (need >= 2 cells per direction)
+        const int nx_2d = mesh_->i_end() - mesh_->i_begin();
+        const int ny_2d = mesh_->j_end() - mesh_->j_begin();
+        if (nx_2d >= 2 && ny_2d >= 2) {
         auto compute_vorticity_2d = [&](int i, int j) -> double {
             // dv/dx
             double dvdx;
@@ -4293,6 +4297,7 @@ void RANSSolver::write_vtk(const std::string& filename) const {
                 file << std::abs(compute_vorticity_2d(i, j)) << "\n";
             }
         }
+        } // end degenerate mesh guard for 2D vorticity
     } else {
         // 3D output
         file << "DIMENSIONS " << Nx << " " << Ny << " " << Nz << "\n";
@@ -4483,6 +4488,11 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         //   omega_z = dv/dx - du/dy
         // NOTE: Uses uniform dx/dy/dz spacing. On stretched meshes, this is an approximation
         // suitable for visualization but not metrically consistent with the solver discretization.
+        // Guard: skip vorticity/Q-criterion output for degenerate meshes (need >= 2 cells per direction)
+        const int nx_3d = mesh_->i_end() - mesh_->i_begin();
+        const int ny_3d = mesh_->j_end() - mesh_->j_begin();
+        const int nz_3d = mesh_->k_end() - mesh_->k_begin();
+        if (nx_3d >= 2 && ny_3d >= 2 && nz_3d >= 2) {
 
         // Helper lambda for dw/dy
         auto compute_dwdy = [&](int i, int j, int k) -> double {
@@ -4722,6 +4732,7 @@ void RANSSolver::write_vtk(const std::string& filename) const {
                 }
             }
         }
+        } // end degenerate mesh guard for 3D vorticity/Q-criterion
     }
 
     file.close();

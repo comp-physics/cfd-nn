@@ -304,6 +304,8 @@ void Config::parse_args(int argc, char** argv) {
             poisson_solver = PoissonSolverType::FFT;
         } else if ((val = get_value(i, arg, "--poisson_abs_tol_floor")) != "") {
             poisson_abs_tol_floor = std::stod(val);
+        } else if ((val = get_value(i, arg, "--turb_guard_enabled")) != "") {
+            turb_guard_enabled = (val == "true" || val == "1" || val == "yes");
         } else if (is_flag(arg, "--turb_guard_enabled")) {
             turb_guard_enabled = true;
         } else if ((val = get_value(i, arg, "--turb_guard_interval")) != "") {
@@ -662,6 +664,14 @@ void Config::finalize() {
         std::exit(1);
     }
 
+    // Validate dt is positive (prevents invalid time integration)
+    if (dt <= 0.0) {
+        std::cerr << "ERROR: Invalid configuration: dt=" << dt << ".\n"
+                  << "\n"
+                  << "The time step must be a positive value.\n";
+        std::exit(1);
+    }
+
     // Validate CFL_max is positive (unconditional - prevents division by zero)
     if (CFL_max <= 0.0) {
         std::cerr << "ERROR: Invalid configuration: CFL_max=" << CFL_max << ".\n"
@@ -699,6 +709,16 @@ void Config::finalize() {
                   << "The absolute tolerance floor must be non-negative.\n"
                   << "This sets a minimum threshold for the Poisson solver convergence check.\n"
                   << "Typical values: 0.0 (disabled) or 1e-12 to 1e-10.\n";
+        std::exit(1);
+    }
+
+    // Validate poisson_abs_tol_floor <= poisson_tol (floor should not override tolerance)
+    if (poisson_abs_tol_floor > poisson_tol) {
+        std::cerr << "ERROR: Invalid configuration: poisson_abs_tol_floor=" << poisson_abs_tol_floor
+                  << " exceeds poisson_tol=" << poisson_tol << ".\n"
+                  << "\n"
+                  << "The absolute tolerance floor must be <= poisson_tol, otherwise it becomes\n"
+                  << "the effective stopping criterion for the Poisson solver.\n";
         std::exit(1);
     }
 
