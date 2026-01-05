@@ -280,6 +280,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Print final solver configuration (after all setup)
+    solver.print_solver_info();
+
     // Determine simulation mode
     bool is_unsteady = (config.simulation_mode == SimulationMode::Unsteady);
 

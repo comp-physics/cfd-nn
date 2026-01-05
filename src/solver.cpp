@@ -1399,6 +1399,96 @@ void RANSSolver::set_body_force(double fx, double fy, double fz) {
     fz_ = fz;
 }
 
+void RANSSolver::print_solver_info() const {
+    std::cout << "\n=== Solver Configuration ===\n";
+
+    // Mesh info
+    std::cout << "Mesh: " << mesh_->Nx << " x " << mesh_->Ny;
+    if (!mesh_->is2D()) {
+        std::cout << " x " << mesh_->Nz << " (3D)";
+    } else {
+        std::cout << " (2D)";
+    }
+    std::cout << "\n";
+
+    // Poisson solver selection
+    std::cout << "Poisson solver: ";
+    switch (selected_solver_) {
+        case PoissonSolverType::FFT:
+            std::cout << "FFT (2D-FFT in x-z + tridiagonal in y)";
+            break;
+        case PoissonSolverType::FFT2D:
+            std::cout << "FFT2D (1D-FFT in x + tridiagonal in y)";
+            break;
+        case PoissonSolverType::FFT1D:
+            std::cout << "FFT1D (1D-FFT in periodic dir + 2D Helmholtz)";
+            break;
+        case PoissonSolverType::HYPRE:
+            std::cout << "HYPRE PFMG (geometric multigrid)";
+            break;
+        case PoissonSolverType::MG:
+            std::cout << "Native Multigrid (V-cycle)";
+            break;
+        default:
+            std::cout << "Unknown";
+    }
+    std::cout << "\n";
+
+    std::cout << "Selection reason: " << selection_reason_ << "\n";
+
+    // Poisson solver parameters (MG uses these, others may not)
+    if (selected_solver_ == PoissonSolverType::MG) {
+        std::cout << "MG params: tol=" << config_.poisson_tol
+                  << ", max_vcycles=" << config_.poisson_max_iter
+                  << ", omega=" << config_.poisson_omega << "\n";
+    }
+
+    // Boundary conditions
+    std::cout << "Velocity BCs: x=";
+    std::cout << (velocity_bc_.x_lo == VelocityBC::Periodic ? "periodic" :
+                  velocity_bc_.x_lo == VelocityBC::NoSlip ? "wall" : "inflow/outflow");
+    std::cout << ", y=";
+    std::cout << (velocity_bc_.y_lo == VelocityBC::Periodic ? "periodic" :
+                  velocity_bc_.y_lo == VelocityBC::NoSlip ? "wall" : "inflow/outflow");
+    if (!mesh_->is2D()) {
+        std::cout << ", z=";
+        std::cout << (velocity_bc_.z_lo == VelocityBC::Periodic ? "periodic" :
+                      velocity_bc_.z_lo == VelocityBC::NoSlip ? "wall" : "inflow/outflow");
+    }
+    std::cout << "\n";
+
+    // Turbulence model
+    std::cout << "Turbulence: ";
+    if (turb_model_) {
+        std::cout << turb_model_->name();
+    } else {
+        std::cout << "None (laminar)";
+    }
+    std::cout << "\n";
+
+    // Build info
+    std::cout << "Build features: ";
+    std::vector<std::string> features;
+#ifdef USE_GPU_OFFLOAD
+    features.push_back("GPU");
+#else
+    features.push_back("CPU");
+#endif
+#ifdef USE_FFT_POISSON
+    features.push_back("FFT");
+#endif
+#ifdef USE_HYPRE
+    features.push_back("HYPRE");
+#endif
+    for (size_t i = 0; i < features.size(); ++i) {
+        if (i > 0) std::cout << ", ";
+        std::cout << features[i];
+    }
+    std::cout << "\n";
+
+    std::cout << "============================\n\n";
+}
+
 void RANSSolver::initialize(const VectorField& initial_velocity) {
     velocity_ = initial_velocity;
     apply_velocity_bc();

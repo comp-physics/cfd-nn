@@ -203,6 +203,9 @@ int main(int argc, char** argv) {
     bc.z_hi = VelocityBC::Periodic;
     solver.set_velocity_bc(bc);
 
+    // Print final solver configuration (after all setup)
+    solver.print_solver_info();
+
     // Initialize with Taylor-Green vortex
     // u = V0 * sin(x) * cos(y) * cos(z)
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {

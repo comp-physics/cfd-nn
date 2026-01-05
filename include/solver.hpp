@@ -97,6 +97,10 @@ public:
     /// Returns a human-readable string explaining why the solver was chosen
     const std::string& selection_reason() const { return selection_reason_; }
 
+    /// Print solver configuration (call after set_velocity_bc() for final info)
+    /// Prints: selected solver, selection reason, solver parameters, build info
+    void print_solver_info() const;
+
 #ifdef USE_HYPRE
     /// Enable/disable HYPRE PFMG Poisson solver (legacy API, prefer --poisson=hypre)
     void set_use_hypre(bool use) { if (use) selected_solver_ = PoissonSolverType::HYPRE; }
