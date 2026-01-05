@@ -470,7 +470,9 @@ run_cross_build_canary_test() {
     fi
 
     mkdir -p "$ref_dir"
-    local output_file="/tmp/canary_test_$$.txt"
+    local output_file
+    output_file="$(mktemp)"
+    trap 'rm -f "$output_file"' RETURN
 
     # Step 1: Generate CPU reference
     log_info "  Step 1: Generating CPU canary reference..."
@@ -482,7 +484,6 @@ run_cross_build_canary_test() {
         tail -20 "$output_file" | sed 's/^/    /'
         FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU ref failed)"
-        rm -f "$output_file"
         return 0
     fi
 
@@ -506,8 +507,6 @@ run_cross_build_canary_test() {
         FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
     fi
-
-    rm -f "$output_file"
 }
 
 # Check if build is needed (library doesn't exist or directory is fresh from cache)
