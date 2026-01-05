@@ -18,6 +18,9 @@ jobs:
           if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
             # Keep _deps, remove everything else
             find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
+            # Clean hypre-subbuild which contains CMakeCache.txt with absolute paths
+            # This prevents "different directory" errors when runner path changes
+            rm -rf "${GITHUB_WORKSPACE}/${dir}/_deps/hypre-subbuild" 2>/dev/null || true
           fi
         done
         rm -rf ${GITHUB_WORKSPACE}/CMakeCache.txt
