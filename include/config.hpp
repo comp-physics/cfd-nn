@@ -38,9 +38,10 @@ enum class SimulationMode {
 
 /// Poisson solver selection
 enum class PoissonSolverType {
-    Auto,       ///< Auto-select: FFT → FFT1D → HYPRE → MG
-    FFT,        ///< 2D FFT solver (requires periodic x AND z, uniform dx/dz)
-    FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z)
+    Auto,       ///< Auto-select: FFT → FFT2D → FFT1D → HYPRE → MG
+    FFT,        ///< 2D FFT solver (requires periodic x AND z, uniform dx/dz) - 3D only
+    FFT2D,      ///< 2D mesh FFT solver (periodic x, walls y, Nz=1)
+    FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z) - 3D only
     HYPRE,      ///< HYPRE PFMG solver (requires USE_HYPRE build)
     MG          ///< Native geometric multigrid
 };

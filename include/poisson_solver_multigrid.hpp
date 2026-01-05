@@ -105,6 +105,7 @@ private:
     void create_hierarchy();
     void smooth(int level, int iterations, double omega = 1.8);
     void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
+    void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
     void restrict_residual(int fine_level);
     void prolongate_correction(int coarse_level);
