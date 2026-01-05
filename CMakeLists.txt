@@ -40,7 +40,7 @@ endif()
 
 # Hypre configuration - download and build from source with CUDA support
 if(USE_HYPRE)
-    message(STATUS "HYPRE solver ENABLED - downloading and building from source")
+    message(STATUS "HYPRE solver ENABLED")
 
     # Enable CUDA language for hypre build
     enable_language(CUDA)
@@ -71,34 +71,98 @@ if(USE_HYPRE)
     set(CMAKE_CUDA_ARCHITECTURES "${GPU_CC}" CACHE STRING "CUDA architectures" FORCE)
     message(STATUS "  CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
-    include(FetchContent)
-    FetchContent_Declare(
-        hypre
-        GIT_REPOSITORY https://github.com/hypre-space/hypre.git
-        GIT_TAG v2.31.0
-        SOURCE_SUBDIR src
-    )
+    # Check for cached HYPRE build from CI
+    # CI caches _deps/hypre-src and _deps/hypre-build but removes hypre-subbuild
+    # (which contains CMake internals with absolute paths). Without hypre-subbuild,
+    # FetchContent thinks HYPRE needs to be rebuilt even when libHYPRE.a exists.
+    # This logic detects cached builds and creates an IMPORTED target to skip rebuild.
+    set(HYPRE_CACHED_SOURCE "${CMAKE_BINARY_DIR}/_deps/hypre-src")
+    set(HYPRE_CACHED_BUILD "${CMAKE_BINARY_DIR}/_deps/hypre-build")
+    set(HYPRE_CACHED_LIB "${HYPRE_CACHED_BUILD}/libHYPRE.a")
 
-    # Configure hypre build options before FetchContent_MakeAvailable
-    # FORCE these options to ensure they take effect in the subproject
-    # Note: hypre uses HYPRE_WITH_CUDA (not HYPRE_ENABLE_CUDA)
-    set(HYPRE_WITH_CUDA ON CACHE BOOL "Enable CUDA support in HYPRE" FORCE)
-    set(HYPRE_ENABLE_UNIFIED_MEMORY ON CACHE BOOL "Use unified memory for GPU-CPU sharing" FORCE)
-    set(HYPRE_ENABLE_GPU_PROFILING OFF CACHE BOOL "Disable GPU profiling" FORCE)
-    set(HYPRE_CUDA_SM "${GPU_CC}" CACHE STRING "CUDA SM architecture" FORCE)
+    if(EXISTS "${HYPRE_CACHED_LIB}" AND EXISTS "${HYPRE_CACHED_SOURCE}/src/HYPRE.h")
+        message(STATUS "  Found cached HYPRE build - skipping rebuild")
+        message(STATUS "    Library: ${HYPRE_CACHED_LIB}")
+        message(STATUS "    Source: ${HYPRE_CACHED_SOURCE}")
 
-    # Disable features we don't need
-    set(HYPRE_WITH_MPI OFF CACHE BOOL "Disable MPI (single-node only)" FORCE)
-    set(HYPRE_WITH_OPENMP OFF CACHE BOOL "Use CUDA instead of OpenMP for GPU" FORCE)
-    set(HYPRE_ENABLE_SHARED OFF CACHE BOOL "Build static library" FORCE)
-    set(HYPRE_ENABLE_MIXEDINT OFF CACHE BOOL "Use consistent integer types" FORCE)
-    set(HYPRE_PRINT_ERRORS ON CACHE BOOL "Print error messages" FORCE)
-    set(HYPRE_ENABLE_BIGINT OFF CACHE BOOL "Use 32-bit integers" FORCE)
+        # Create IMPORTED target to use the cached library
+        # We can't use find_package(HYPRE CONFIG) because the generated HYPRETargets.cmake
+        # contains absolute paths from the original build, which break when cache is
+        # restored to a different runner path in CI.
+        add_library(HYPRE STATIC IMPORTED GLOBAL)
+        set_target_properties(HYPRE PROPERTIES
+            IMPORTED_LOCATION "${HYPRE_CACHED_LIB}"
+        )
 
-    FetchContent_MakeAvailable(hypre)
+        # HYPRE headers are scattered across many subdirectories
+        # This list matches what HYPRE's own CMake exports in HYPRETargets.cmake
+        set(HYPRE_INCLUDE_DIRS
+            "${HYPRE_CACHED_SOURCE}/src"
+            "${HYPRE_CACHED_SOURCE}/src/blas"
+            "${HYPRE_CACHED_SOURCE}/src/lapack"
+            "${HYPRE_CACHED_SOURCE}/src/utilities"
+            "${HYPRE_CACHED_SOURCE}/src/multivector"
+            "${HYPRE_CACHED_SOURCE}/src/krylov"
+            "${HYPRE_CACHED_SOURCE}/src/seq_mv"
+            "${HYPRE_CACHED_SOURCE}/src/seq_block_mv"
+            "${HYPRE_CACHED_SOURCE}/src/parcsr_mv"
+            "${HYPRE_CACHED_SOURCE}/src/parcsr_block_mv"
+            "${HYPRE_CACHED_SOURCE}/src/distributed_matrix"
+            "${HYPRE_CACHED_SOURCE}/src/IJ_mv"
+            "${HYPRE_CACHED_SOURCE}/src/matrix_matrix"
+            "${HYPRE_CACHED_SOURCE}/src/distributed_ls"
+            "${HYPRE_CACHED_SOURCE}/src/parcsr_ls"
+            "${HYPRE_CACHED_SOURCE}/src/struct_mv"
+            "${HYPRE_CACHED_SOURCE}/src/struct_ls"
+            "${HYPRE_CACHED_SOURCE}/src/sstruct_mv"
+            "${HYPRE_CACHED_SOURCE}/src/sstruct_ls"
+            "${HYPRE_CACHED_BUILD}"
+        )
+        set_target_properties(HYPRE PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${HYPRE_INCLUDE_DIRS}"
+        )
 
-    message(STATUS "  HYPRE source dir: ${hypre_SOURCE_DIR}")
-    message(STATUS "  HYPRE binary dir: ${hypre_BINARY_DIR}")
+        # HYPRE with CUDA requires linking CUDA libraries (matching HYPRETargets.cmake)
+        target_link_libraries(HYPRE INTERFACE CUDA::cusparse_static CUDA::curand_static)
+
+        # Set variables expected by downstream code
+        set(hypre_SOURCE_DIR "${HYPRE_CACHED_SOURCE}" CACHE PATH "HYPRE source directory" FORCE)
+        set(hypre_BINARY_DIR "${HYPRE_CACHED_BUILD}" CACHE PATH "HYPRE binary directory" FORCE)
+
+        message(STATUS "  HYPRE source dir: ${hypre_SOURCE_DIR}")
+        message(STATUS "  HYPRE binary dir: ${hypre_BINARY_DIR}")
+    else()
+        message(STATUS "  No cached HYPRE build found - building from source")
+
+        include(FetchContent)
+        FetchContent_Declare(
+            hypre
+            GIT_REPOSITORY https://github.com/hypre-space/hypre.git
+            GIT_TAG v2.31.0
+            SOURCE_SUBDIR src
+        )
+
+        # Configure hypre build options before FetchContent_MakeAvailable
+        # FORCE these options to ensure they take effect in the subproject
+        # Note: hypre uses HYPRE_WITH_CUDA (not HYPRE_ENABLE_CUDA)
+        set(HYPRE_WITH_CUDA ON CACHE BOOL "Enable CUDA support in HYPRE" FORCE)
+        set(HYPRE_ENABLE_UNIFIED_MEMORY ON CACHE BOOL "Use unified memory for GPU-CPU sharing" FORCE)
+        set(HYPRE_ENABLE_GPU_PROFILING OFF CACHE BOOL "Disable GPU profiling" FORCE)
+        set(HYPRE_CUDA_SM "${GPU_CC}" CACHE STRING "CUDA SM architecture" FORCE)
+
+        # Disable features we don't need
+        set(HYPRE_WITH_MPI OFF CACHE BOOL "Disable MPI (single-node only)" FORCE)
+        set(HYPRE_WITH_OPENMP OFF CACHE BOOL "Use CUDA instead of OpenMP for GPU" FORCE)
+        set(HYPRE_ENABLE_SHARED OFF CACHE BOOL "Build static library" FORCE)
+        set(HYPRE_ENABLE_MIXEDINT OFF CACHE BOOL "Use consistent integer types" FORCE)
+        set(HYPRE_PRINT_ERRORS ON CACHE BOOL "Print error messages" FORCE)
+        set(HYPRE_ENABLE_BIGINT OFF CACHE BOOL "Use 32-bit integers" FORCE)
+
+        FetchContent_MakeAvailable(hypre)
+
+        message(STATUS "  HYPRE source dir: ${hypre_SOURCE_DIR}")
+        message(STATUS "  HYPRE binary dir: ${hypre_BINARY_DIR}")
+    endif()
 endif()
 
 # Compiler flags
