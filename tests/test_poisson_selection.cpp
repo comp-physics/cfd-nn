@@ -66,7 +66,7 @@ bool run_selection_test(const SelectionTestCase& tc) {
                      (reason.find(tc.expected_reason_keyword) != std::string::npos);
     bool pass = type_ok && reason_ok;
 
-    const char* type_names[] = {"Auto", "FFT", "FFT1D", "HYPRE", "MG"};
+    const char* type_names[] = {"Auto", "FFT", "FFT2D", "FFT1D", "HYPRE", "MG"};
 
     std::cout << "  " << tc.name << ": ";
     if (pass) {
@@ -114,8 +114,22 @@ int main() {
     std::vector<SelectionTestCase> tests;
 
     // ========================================================================
-    // 2D Tests (should always use MG since FFT is 3D-only)
+    // 2D Tests
+    // With USE_FFT_POISSON: FFT2D is available for 2D periodic-x meshes
+    // Without USE_FFT_POISSON: Falls back to MG
     // ========================================================================
+#ifdef USE_FFT_POISSON
+    tests.push_back({
+        "2D channel (periodic X, walls Y) - auto",
+        32, 32, 0,
+        VelocityBC::Periodic, VelocityBC::Periodic,
+        VelocityBC::NoSlip, VelocityBC::NoSlip,
+        VelocityBC::NoSlip, VelocityBC::NoSlip,  // ignored
+        PoissonSolverType::Auto,
+        PoissonSolverType::FFT2D,
+        "2D mesh"  // FFT2D for 2D periodic-x
+    });
+#else
     tests.push_back({
         "2D channel (periodic X, walls Y) - auto",
         32, 32, 0,
@@ -124,8 +138,9 @@ int main() {
         VelocityBC::NoSlip, VelocityBC::NoSlip,  // ignored
         PoissonSolverType::Auto,
         PoissonSolverType::MG,
-        "fallback"  // 2D falls back to MG
+        "fallback"  // 2D falls back to MG without FFT
     });
+#endif
 
     tests.push_back({
         "2D channel - explicit MG request",
