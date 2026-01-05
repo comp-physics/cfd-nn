@@ -3,6 +3,12 @@ name: GPU CI
 on:
   push:
 
+# Prevent concurrent runs on the same branch to avoid cache save race conditions
+# New pushes cancel in-progress runs (no point testing outdated commits)
+concurrency:
+  group: gpu-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gpu-tests:
     runs-on: self-hosted
