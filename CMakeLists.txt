@@ -211,7 +211,8 @@ if(USE_GPU_OFFLOAD)
     if(CUDAToolkit_FOUND)
         target_sources(nn_cfd_core PRIVATE
             src/poisson_solver_fft.cpp
-            src/poisson_solver_fft1d.cpp)
+            src/poisson_solver_fft1d.cpp
+            src/poisson_solver_fft2d.cpp)
         target_link_libraries(nn_cfd_core CUDA::cufft CUDA::cusparse CUDA::cudart)
         target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
         message(STATUS "  FFT Poisson solvers added (2D FFT + 1D FFT + cuSPARSE)")

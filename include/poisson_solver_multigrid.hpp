@@ -8,6 +8,12 @@
 
 namespace nncfd {
 
+/// Smoother type for multigrid
+enum class MGSmootherType {
+    Jacobi,     // Standard weighted Jacobi (reference, safe)
+    Chebyshev   // Chebyshev polynomial acceleration (default, faster)
+};
+
 /// Multigrid Poisson solver for incompressible flow
 /// Uses geometric multigrid with V-cycles for O(N) convergence
 class MultigridPoissonSolver {
@@ -48,7 +54,12 @@ public:
     
     /// Get final residual
     double residual() const { return residual_; }
-    
+
+    /// Set smoother type (Jacobi for reference/debugging, Chebyshev for performance)
+    /// Can also be set via environment variable MG_SMOOTHER=jacobi|chebyshev
+    void set_smoother(MGSmootherType type) { smoother_type_ = type; }
+    MGSmootherType smoother_type() const { return smoother_type_; }
+
     /// Sync data to/from GPU for a specific multigrid level (always declared for ABI)
     /// These are public so RANSSolver can control when transfers happen
     void sync_level_to_gpu(int level);
@@ -100,11 +111,13 @@ private:
     
     double residual_ = 0.0;
     double dirichlet_val_ = 0.0;
-    
+    MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
+
     // Core multigrid operations
     void create_hierarchy();
     void smooth(int level, int iterations, double omega = 1.8);
     void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
+    void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
     void restrict_residual(int fine_level);
     void prolongate_correction(int coarse_level);

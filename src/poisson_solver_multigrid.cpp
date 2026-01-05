@@ -23,6 +23,7 @@
 #include <cstring>  // for memcpy in debug
 #include <cassert>
 #include <limits>   // for std::numeric_limits (NaN handling)
+#include <cstdlib>  // for std::getenv
 
 namespace nncfd {
 
@@ -589,6 +590,123 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
     }
 }
 
+void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
+    // Chebyshev polynomial acceleration on Jacobi smoother
+    // Uses ping-pong buffers for BC consistency: every A*u sees BC-valid ghosts
+    //
+    // Algorithm (Richardson-Chebyshev):
+    //   For each step k = 0..degree-1:
+    //     1. apply_bc(u) - ensure ghost cells are valid
+    //     2. Compute Jacobi update: u_jacobi = (neighbors - f) / diag
+    //     3. Update with Chebyshev weight: u_new = (1-ω_k)*u + ω_k*u_jacobi
+    //     4. Copy to u buffer for next iteration
+    //
+    // The Chebyshev-optimal weights are: ω_k = 1/(d - c*cos(θ_k))
+    // where θ_k = π*(2k+1)/(2*degree), d = (λ_max+λ_min)/2, c = (λ_max-λ_min)/2
+    NVTX_SCOPE_POISSON("mg:smooth_chebyshev");
+
+    auto& grid = *levels_[level];
+    const double dx2 = grid.dx * grid.dx;
+    const double dy2 = grid.dy * grid.dy;
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
+    const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
+                               : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
+
+    const int Ng = 1;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = (Nx + 2) * (Ny + 2);
+    const size_t total_size = static_cast<size_t>(Nx + 2) *
+                              static_cast<size_t>(Ny + 2) *
+                              static_cast<size_t>(Nz + 2);
+
+    // Eigenvalue bounds for D^{-1}*A where D = diag(A)
+    // For discrete Laplacian with 5/7-point stencil, eigenvalues are in (0, 2)
+    // Use conservative bounds for stability across grid sizes and BCs
+    const double lambda_min = 0.05;   // Lower bound (> 0)
+    const double lambda_max = 1.95;   // Upper bound (< 2)
+    const double d = (lambda_max + lambda_min) / 2.0;
+    const double c = (lambda_max - lambda_min) / 2.0;
+
+    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
+#ifdef USE_GPU_OFFLOAD
+    double* u_ptr = u_ptrs_[level];
+    double* tmp_ptr = tmp_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    #define CHEBY_TARGET_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define CHEBY_TARGET_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define CHEBY_TARGET_COPY \
+        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+#else
+    double* u_ptr = grid.u.data().data();
+    double* tmp_ptr = grid.r.data().data();  // Reuse r as scratch buffer
+    const double* f_ptr = grid.f.data().data();
+    #define CHEBY_TARGET_2D
+    #define CHEBY_TARGET_3D
+    #define CHEBY_TARGET_COPY
+#endif
+
+    // Chebyshev-Jacobi iteration with ping-pong
+    for (int k = 0; k < degree; ++k) {
+        // Step 1: Apply BC before operator application (ghost fill)
+        apply_bc(level);
+
+        // Chebyshev-optimal weight for step k
+        // ω_k = 1/(d - c*cos(θ_k)) where θ_k = π*(2k+1)/(2*degree)
+        double theta = M_PI * (2.0 * k + 1.0) / (2.0 * degree);
+        double omega = 1.0 / (d - c * std::cos(theta));
+
+        // Steps 2-3: Compute Jacobi update and apply Chebyshev weight
+        // Read from u (with valid BCs), write to tmp
+        if (is_2d) {
+            CHEBY_TARGET_2D
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double u_old = u_ptr[idx];
+                    double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                     - f_ptr[idx]) / coeff;
+                    tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                }
+            }
+        } else {
+            CHEBY_TARGET_3D
+            for (int kk = Ng; kk < Nz + Ng; ++kk) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = kk * plane_stride + j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                         + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
+                                         - f_ptr[idx]) / coeff;
+                        tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
+                }
+            }
+        }
+
+        // Step 4: Copy tmp to u for next iteration
+        CHEBY_TARGET_COPY
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            u_ptr[idx] = tmp_ptr[idx];
+        }
+    }
+
+    // Final BC application after all iterations
+    apply_bc(level);
+
+    #undef CHEBY_TARGET_2D
+    #undef CHEBY_TARGET_3D
+    #undef CHEBY_TARGET_COPY
+}
+
 void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double omega) {
     // Weighted Jacobi smoother - UNIFIED CPU/GPU implementation
     // Uses ping-pong buffers (u <-> tmp) for identical arithmetic on both paths.
@@ -1133,19 +1251,46 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
+    // Check environment variable override for smoother type (on first call)
+    static bool checked_env = false;
+    if (!checked_env) {
+        checked_env = true;
+        const char* env = std::getenv("MG_SMOOTHER");
+        if (env != nullptr) {
+            std::string s(env);
+            if (s == "jacobi" || s == "JACOBI") {
+                smoother_type_ = MGSmootherType::Jacobi;
+            } else if (s == "chebyshev" || s == "CHEBYSHEV") {
+                smoother_type_ = MGSmootherType::Chebyshev;
+            }
+        }
+    }
+
+    // Helper lambda to call the appropriate smoother
+    // For Chebyshev, degree roughly corresponds to iterations (degree=4 ≈ 4 Jacobi iterations)
+    auto do_smooth = [this, level](int iters) {
+        if (smoother_type_ == MGSmootherType::Chebyshev) {
+            smooth_chebyshev(level, iters);  // degree = iters
+        } else {
+            smooth_jacobi(level, iters, 0.8);  // omega = 0.8 for stability
+        }
+    };
+
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - solve approximately
         // With MIN_COARSE_SIZE=8, coarsest is 8x8 (64 points)
-        // 20 iterations is sufficient for good convergence
-        smooth_jacobi(level, 20, 0.8);
+        // Use more iterations/higher degree for accurate coarse solve
+        if (smoother_type_ == MGSmootherType::Chebyshev) {
+            smooth_chebyshev(level, 8);  // degree=8 for coarsest
+        } else {
+            smooth_jacobi(level, 20, 0.8);  // 20 Jacobi iterations
+        }
         return;
     }
 
-    // Pre-smoothing with weighted Jacobi
-    // Jacobi has 1 target region per iteration (vs 2 for RB-SOR)
-    // omega=0.8 (damped Jacobi) for stability
-    smooth_jacobi(level, nu1, 0.8);
-    
+    // Pre-smoothing
+    do_smooth(nu1);
+
     // Compute residual
     compute_residual(level);
 
@@ -1155,15 +1300,15 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
 
     // Restrict to coarse grid
     restrict_residual(level);
-    
+
     // Zero coarse grid solution
     auto& coarse = *levels_[level + 1];
-    
+
 #ifdef USE_GPU_OFFLOAD
     assert(gpu_ready_ && "GPU must be initialized");
     const size_t size_c = level_sizes_[level + 1];
     double* u_coarse = u_ptrs_[level + 1];
-    
+
     #pragma omp target teams distribute parallel for \
         map(present: u_coarse[0:size_c])
     for (int idx = 0; idx < (int)size_c; ++idx) {
@@ -1179,7 +1324,7 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
         }
     }
 #endif
-    
+
     // Recursive call to coarser level
     vcycle(level + 1, nu1, nu2);
 
@@ -1188,9 +1333,9 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     prolongate_correction(level + 1);
     apply_bc(level);
 
-    // Post-smoothing with weighted Jacobi (projection mode: nu2=0 skips this)
+    // Post-smoothing (projection mode: nu2=0 skips this)
     if (nu2 > 0) {
-        smooth_jacobi(level, nu2, 0.8);
+        do_smooth(nu2);
     }
 }
 
