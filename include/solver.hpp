@@ -4,6 +4,13 @@
 #include "fields.hpp"
 #include "poisson_solver.hpp"
 #include "poisson_solver_multigrid.hpp"
+#ifdef USE_HYPRE
+#include "poisson_solver_hypre.hpp"
+#endif
+#ifdef USE_FFT_POISSON
+#include "poisson_solver_fft.hpp"
+#include "poisson_solver_fft1d.hpp"
+#endif
 #include "turbulence_model.hpp"
 #include "config.hpp"
 #include <memory>
@@ -81,7 +88,20 @@ public:
     
     /// Set body force (pressure gradient equivalent)
     void set_body_force(double fx, double fy, double fz = 0.0);
-    
+
+    /// Get the selected Poisson solver type (after auto-selection)
+    PoissonSolverType poisson_solver_type() const { return selected_solver_; }
+
+    /// Get the reason for Poisson solver selection (for debugging/observability)
+    /// Returns a human-readable string explaining why the solver was chosen
+    const std::string& selection_reason() const { return selection_reason_; }
+
+#ifdef USE_HYPRE
+    /// Enable/disable HYPRE PFMG Poisson solver (legacy API, prefer --poisson=hypre)
+    void set_use_hypre(bool use) { if (use) selected_solver_ = PoissonSolverType::HYPRE; }
+    bool using_hypre() const { return selected_solver_ == PoissonSolverType::HYPRE; }
+#endif
+
     /// Initialize velocity field
     void initialize(const VectorField& initial_velocity);
     void initialize_uniform(double u0, double v0);
@@ -194,6 +214,15 @@ private:
     // Solvers
     PoissonSolver poisson_solver_;
     MultigridPoissonSolver mg_poisson_solver_;
+#ifdef USE_HYPRE
+    std::unique_ptr<HyprePoissonSolver> hypre_poisson_solver_;
+#endif
+#ifdef USE_FFT_POISSON
+    std::unique_ptr<FFTPoissonSolver> fft_poisson_solver_;      // 2D FFT (periodic x AND z)
+    std::unique_ptr<FFT1DPoissonSolver> fft1d_poisson_solver_;  // 1D FFT (periodic x OR z)
+#endif
+    PoissonSolverType selected_solver_ = PoissonSolverType::MG;  // Actually selected solver (after auto)
+    std::string selection_reason_;  // Human-readable reason for solver selection (observability)
     std::unique_ptr<TurbulenceModel> turb_model_;
     bool use_multigrid_ = true;  // Use multigrid by default for speed
     

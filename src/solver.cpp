@@ -16,12 +16,14 @@
 #include "timing.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
+#include "mpi_check.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <cstdlib>
 #include <cassert>
+#include <cstring>
 
 #ifdef GPU_PROFILE_TRANSFERS
 #include <chrono>
@@ -1043,6 +1045,11 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , use_multigrid_(true)
     , current_dt_(config.dt)
 {
+    // Check for MPI environment - hard fail for GPU builds, warn for CPU
+    // (this code uses GPU parallelism, not MPI distribution)
+    // Set NNCFD_ALLOW_MULTI_RANK=1 to override (dangerous)
+    enforce_single_rank_gpu("RANSSolver");
+
     // Precompute wall distance (once, then stays on GPU if enabled)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -1054,6 +1061,164 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
                            PoissonBC::Neumann, PoissonBC::Neumann);
     mg_poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                               PoissonBC::Neumann, PoissonBC::Neumann);
+
+#ifdef USE_HYPRE
+    // Initialize HYPRE PFMG solver
+    hypre_poisson_solver_ = std::make_unique<HyprePoissonSolver>(mesh);
+    hypre_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                   PoissonBC::Neumann, PoissonBC::Neumann);
+#endif
+
+#ifdef USE_FFT_POISSON
+    // Initialize FFT solvers for periodic cases
+    // FFT (2D): requires periodic x AND z with uniform spacing
+    // FFT1D: requires periodic x OR z (exactly one) with uniform spacing
+    bool fft_applicable = false;
+    bool fft1d_applicable = false;
+
+    // Check which FFT solver is applicable (actual BCs set later via set_velocity_bc)
+    // For now, assume defaults: periodic x,z - will be updated in set_velocity_bc
+    bool periodic_xz = true;  // Default for channel: periodic x/z
+    bool uniform_xz = true;   // Default for channel: uniform x/z spacing
+
+    if (!mesh.is2D()) {
+        // Try 2D FFT first (periodic x AND z)
+        if (periodic_xz && uniform_xz) {
+            try {
+                fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
+                fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                             PoissonBC::Neumann, PoissonBC::Neumann,
+                                             PoissonBC::Periodic, PoissonBC::Periodic);
+                fft_applicable = true;
+            } catch (const std::exception& e) {
+                std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
+            }
+        }
+
+        // Also initialize 1D FFT solver (for cases like duct flow)
+        // Will be used if 2D FFT becomes incompatible after BC update
+        try {
+            // Default to x-periodic (duct flow typical case)
+            fft1d_poisson_solver_ = std::make_unique<FFT1DPoissonSolver>(mesh, 0);
+            fft1d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                           PoissonBC::Neumann, PoissonBC::Neumann,
+                                           PoissonBC::Neumann, PoissonBC::Neumann);
+            fft1d_applicable = true;
+        } catch (const std::exception& e) {
+            std::cerr << "[Solver] FFT1D solver initialization failed: " << e.what() << "\n";
+        }
+    }
+#endif
+
+    // ========================================================================
+    // Poisson Solver Auto-Selection
+    // Priority: FFT (periodic x+z) → FFT1D (periodic x OR z) → HYPRE → MG
+    // ========================================================================
+    PoissonSolverType requested = config.poisson_solver;
+
+    if (requested == PoissonSolverType::Auto) {
+        // Auto-select: FFT > FFT1D > HYPRE > MG
+#ifdef USE_FFT_POISSON
+        if (fft_applicable) {
+            selected_solver_ = PoissonSolverType::FFT;
+            selection_reason_ ="auto: periodic(x,z) + uniform(dx,dz) + 3D";
+        } else if (fft1d_applicable) {
+            selected_solver_ = PoissonSolverType::FFT1D;
+            selection_reason_ ="auto: periodic(x) + uniform(dx) + 3D (1D FFT)";
+        } else
+#endif
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            selected_solver_ = PoissonSolverType::HYPRE;
+            selection_reason_ ="auto: FFT not applicable, HYPRE available";
+        } else
+#endif
+        {
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason_ ="auto: fallback to multigrid";
+        }
+    } else if (requested == PoissonSolverType::FFT) {
+#ifdef USE_FFT_POISSON
+        if (fft_applicable) {
+            selected_solver_ = PoissonSolverType::FFT;
+            selection_reason_ ="explicit: user requested FFT";
+        } else {
+            std::cerr << "[Solver] Warning: FFT requested but not applicable "
+                      << "(requires 3D, periodic x/z, uniform dx/dz). Falling back to ";
+            if (fft1d_applicable) {
+                selected_solver_ = PoissonSolverType::FFT1D;
+                std::cerr << "FFT1D.\n";
+                selection_reason_ ="fallback from FFT: using FFT1D";
+            } else
+#ifdef USE_HYPRE
+            if (hypre_poisson_solver_) {
+                selected_solver_ = PoissonSolverType::HYPRE;
+                std::cerr << "HYPRE.\n";
+                selection_reason_ ="fallback from FFT: not applicable";
+            } else
+#endif
+            {
+                selected_solver_ = PoissonSolverType::MG;
+                std::cerr << "MG.\n";
+                selection_reason_ ="fallback from FFT: not applicable";
+            }
+        }
+#else
+        std::cerr << "[Solver] Warning: FFT requested but USE_FFT_POISSON not built. ";
+#ifdef USE_HYPRE
+        selected_solver_ = PoissonSolverType::HYPRE;
+        std::cerr << "Using HYPRE.\n";
+#else
+        selected_solver_ = PoissonSolverType::MG;
+        std::cerr << "Using MG.\n";
+#endif
+        selection_reason_ ="fallback from FFT: not built";
+#endif
+    } else if (requested == PoissonSolverType::FFT1D) {
+#ifdef USE_FFT_POISSON
+        if (fft1d_applicable) {
+            selected_solver_ = PoissonSolverType::FFT1D;
+            selection_reason_ ="explicit: user requested FFT1D";
+        } else {
+            std::cerr << "[Solver] Warning: FFT1D requested but not applicable. ";
+            selected_solver_ = PoissonSolverType::MG;
+            std::cerr << "Using MG.\n";
+            selection_reason_ ="fallback from FFT1D: not applicable";
+        }
+#else
+        std::cerr << "[Solver] Warning: FFT1D requested but USE_FFT_POISSON not built. ";
+        selected_solver_ = PoissonSolverType::MG;
+        std::cerr << "Using MG.\n";
+        selection_reason_ ="fallback from FFT1D: not built";
+#endif
+    } else if (requested == PoissonSolverType::HYPRE) {
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            selected_solver_ = PoissonSolverType::HYPRE;
+            selection_reason_ ="explicit: user requested HYPRE";
+        } else {
+            std::cerr << "[Solver] Warning: HYPRE initialization failed. Using MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason_ ="fallback from HYPRE: init failed";
+        }
+#else
+        std::cerr << "[Solver] Warning: HYPRE requested but USE_HYPRE not built. Using MG.\n";
+        selected_solver_ = PoissonSolverType::MG;
+        selection_reason_ ="fallback from HYPRE: not built";
+#endif
+    } else {
+        // PoissonSolverType::MG
+        selected_solver_ = PoissonSolverType::MG;
+        selection_reason_ ="explicit: user requested MG";
+    }
+
+    // Log the selection
+    const char* solver_name = (selected_solver_ == PoissonSolverType::FFT) ? "FFT" :
+                              (selected_solver_ == PoissonSolverType::FFT1D) ? "FFT1D" :
+                              (selected_solver_ == PoissonSolverType::HYPRE) ? "HYPRE" : "MG";
+    std::cout << "[Poisson] selected=" << solver_name
+              << " reason=" << selection_reason_
+              << " dims=" << mesh.Nx << "x" << mesh.Ny << "x" << mesh.Nz << "\n";
 
 #ifdef USE_GPU_OFFLOAD
     // Fail-fast if GPU offload is enabled but no device is available
@@ -1115,10 +1280,83 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     if (!mesh_->is2D()) {
         poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
         mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            hypre_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        }
+#endif
     } else {
         poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
         mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            hypre_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+        }
+#endif
     }
+
+    // Re-check FFT/FFT1D applicability after BC update
+#ifdef USE_FFT_POISSON
+    bool periodic_x = (p_x_lo == PoissonBC::Periodic && p_x_hi == PoissonBC::Periodic);
+    bool periodic_z = (p_z_lo == PoissonBC::Periodic && p_z_hi == PoissonBC::Periodic);
+
+    // 2D FFT requires periodic in BOTH x and z
+    bool fft_compatible = periodic_x && periodic_z && !mesh_->is2D();
+
+    // 1D FFT requires periodic in EXACTLY ONE of x or z
+    bool fft1d_compatible = (periodic_x != periodic_z) && !mesh_->is2D();
+
+    if (fft_poisson_solver_) {
+        if (fft_compatible) {
+            // Update FFT solver BCs
+            fft_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        } else if (selected_solver_ == PoissonSolverType::FFT) {
+            // FFT was selected but BCs are now incompatible
+            if (fft1d_compatible && fft1d_poisson_solver_) {
+                std::cerr << "[Poisson] Warning: FFT solver incompatible with BCs "
+                          << "(requires periodic x AND z). Switching to FFT1D.\n";
+                selected_solver_ = PoissonSolverType::FFT1D;
+            } else {
+                std::cerr << "[Poisson] Warning: FFT solver incompatible with BCs "
+                          << "(requires periodic x AND z). Switching to MG.\n";
+                selected_solver_ = PoissonSolverType::MG;
+            }
+        }
+    }
+
+    if (fft1d_poisson_solver_) {
+        if (fft1d_compatible) {
+            // Update FFT1D solver BCs
+            fft1d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        } else if (selected_solver_ == PoissonSolverType::FFT1D) {
+            // FFT1D was selected but BCs are now incompatible - switch to MG
+            std::cerr << "[Poisson] Warning: FFT1D solver incompatible with BCs "
+                      << "(requires periodic in exactly one of x or z). Switching to MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+        }
+    }
+#endif
+
+#ifdef USE_HYPRE
+    // Check HYPRE compatibility with current BCs
+    // KNOWN ISSUE: HYPRE GPU (CUDA) has numerical instability with 2D problems
+    // that have periodic Y-direction BCs. Fall back to MG for these cases.
+    // The issue manifests as NaN after ~10 time steps.
+    // 3D works fine, and 2D with x-periodic + y-walls (channel) works fine.
+    // But 2D with y-periodic (spanwise or fully periodic) fails.
+    {
+        bool hypre_periodic_y = (p_y_lo == PoissonBC::Periodic && p_y_hi == PoissonBC::Periodic);
+        bool y_periodic_2d = mesh_->is2D() && hypre_periodic_y;
+
+        if (selected_solver_ == PoissonSolverType::HYPRE && y_periodic_2d) {
+#ifdef USE_GPU_OFFLOAD
+            // Fall back to MG for 2D with y-periodic on GPU (HYPRE CUDA instability)
+            std::cerr << "[Poisson] HYPRE->MG fallback: 2D y-periodic + GPU\n";
+            selected_solver_ = PoissonSolverType::MG;
+#endif
+        }
+    }
+#endif
 }
 
 void RANSSolver::set_body_force(double fx, double fy, double fz) {
@@ -2946,27 +3184,96 @@ double RANSSolver::step() {
         }();
         
         int cycles = 0;
+        double final_residual = 0.0;
+
+        // Dispatch to selected Poisson solver
+        // Note: Selection was done at init time; we just execute the selected path here
+        static bool solver_logged = false;
+
 #ifdef USE_GPU_OFFLOAD
-        if (gpu_ready_ && use_multigrid_) {
-            // GPU-RESIDENT PATH: solve directly on device without host staging
-            // This eliminates the DtoH/HtoD transfers that happened in the old path
-            cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+        if (gpu_ready_) {
+            // GPU path based on selected solver
+            switch (selected_solver_) {
+#ifdef USE_FFT_POISSON
+                case PoissonSolverType::FFT:
+                    if (fft_poisson_solver_) {
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using FFT solve_device() (cuFFT+cuSPARSE)\n";
+                            solver_logged = true;
+                        }
+                        cycles = fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        final_residual = fft_poisson_solver_->residual();
+                    }
+                    break;
+                case PoissonSolverType::FFT1D:
+                    if (fft1d_poisson_solver_) {
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using FFT1D solve_device() (1D cuFFT + 2D Helmholtz)\n";
+                            solver_logged = true;
+                        }
+                        cycles = fft1d_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        final_residual = fft1d_poisson_solver_->residual();
+                    }
+                    break;
+#endif
+#ifdef USE_HYPRE
+                case PoissonSolverType::HYPRE:
+                    if (hypre_poisson_solver_) {
+                        if (hypre_poisson_solver_->using_cuda()) {
+                            if (!solver_logged) {
+                                std::cout << "[Poisson] Using HYPRE solve_device() (CUDA)\n";
+                                solver_logged = true;
+                            }
+                            cycles = hypre_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                            final_residual = hypre_poisson_solver_->residual();
+                        } else {
+                            // HYPRE host fallback with GPU staging
+                            if (!solver_logged) {
+                                std::cout << "[Poisson] Using HYPRE solve() (host, GPU staging)\n";
+                                solver_logged = true;
+                            }
+                            #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
+                            std::memcpy(rhs_poisson_.data().data(), rhs_poisson_ptr_, field_total_size_ * sizeof(double));
+                            cycles = hypre_poisson_solver_->solve(rhs_poisson_, pressure_correction_, pcfg);
+                            final_residual = hypre_poisson_solver_->residual();
+                            std::memcpy(pressure_corr_ptr_, pressure_correction_.data().data(), field_total_size_ * sizeof(double));
+                            #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
+                        }
+                    }
+                    break;
+#endif
+                case PoissonSolverType::MG:
+                default:
+                    if (!solver_logged) {
+                        std::cout << "[Poisson] Using MG solve_device()\n";
+                        solver_logged = true;
+                    }
+                    cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                    final_residual = mg_poisson_solver_.residual();
+                    break;
+            }
         } else
 #endif
         {
-            // Host path (or GPU with host staging for non-multigrid)
+            // Host path
+            if (!solver_logged) {
+                std::cout << "[Poisson] Using HOST path\n";
+                solver_logged = true;
+            }
             if (use_multigrid_) {
                 cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+                final_residual = mg_poisson_solver_.residual();
             } else {
                 cycles = poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+                final_residual = poisson_solver_.residual();
             }
         }
-        
+
         // Print cycle count diagnostics if enabled
         if (poisson_diagnostics && (iter_ % poisson_diagnostics_interval == 0)) {
-            std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles 
-                      << " residual=" << std::scientific << std::setprecision(15) 
-                      << mg_poisson_solver_.residual() << "\n";
+            std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles
+                      << " residual=" << std::scientific << std::setprecision(15)
+                      << final_residual << "\n";
         }
         
         NVTX_POP();
@@ -3173,25 +3480,28 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
     
     double residual = 1.0;
     int snapshot_count = 0;
-    
+
+    // Progress output interval for CI visibility (always enabled)
+    const int progress_interval = std::max(1, config_.max_iter / 10);
+
     if (config_.verbose) {
         // Enable line buffering for immediate output visibility
         std::cout << std::unitbuf;
-        
+
         if (config_.adaptive_dt) {
-            std::cout << std::setw(8) << "Iter" 
+            std::cout << std::setw(8) << "Iter"
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
                       << std::setw(12) << "dt"
                       << std::endl;
         } else {
-            std::cout << std::setw(8) << "Iter" 
+            std::cout << std::setw(8) << "Iter"
                       << std::setw(15) << "Residual"
                       << std::setw(15) << "Max |u|"
                       << std::endl;
         }
     }
-    
+
     for (iter_ = 0; iter_ < config_.max_iter; ++iter_) {
         // Update time step if adaptive
         if (config_.adaptive_dt) {
@@ -3218,8 +3528,14 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
             }
         }
         
-        // Console output
-        if (config_.verbose && (iter_ + 1) % config_.output_freq == 0) {
+        // Always show progress every ~10% for CI visibility
+        if ((iter_ + 1) % progress_interval == 0 || iter_ == 0) {
+            std::cout << "    Iter " << std::setw(6) << iter_ + 1 << " / " << config_.max_iter
+                      << "  (" << std::setw(3) << (100 * (iter_ + 1) / config_.max_iter) << "%)"
+                      << "  residual = " << std::scientific << std::setprecision(3) << residual
+                      << std::fixed << "\n" << std::flush;
+        } else if (config_.verbose && (iter_ + 1) % config_.output_freq == 0) {
+            // Detailed verbose output
             double max_vel = velocity_.max_magnitude();
             if (config_.adaptive_dt) {
                 std::cout << std::setw(8) << iter_ + 1

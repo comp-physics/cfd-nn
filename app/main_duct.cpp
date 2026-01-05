@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     config.verbose = true;
     config.turb_model = TurbulenceModelType::None;
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 5000;
+    config.poisson_max_iter = 20;  // V-cycles for multigrid (not SOR iterations)
 
     // Parse command line (handles all args including --Nx, --Ny, --Nz, etc.)
     config.parse_args(argc, argv);
@@ -327,6 +327,9 @@ int main(int argc, char** argv) {
     double residual = 1.0;
     int iter = 0;
 
+    // Progress output interval for CI visibility (always enabled)
+    const int progress_interval = std::max(1, config.max_iter / 10);
+
     // Unsteady: run all iterations; Steady: check convergence
     for (iter = 1; iter <= config.max_iter; ++iter) {
         // For steady mode, check convergence
@@ -339,6 +342,15 @@ int main(int argc, char** argv) {
         }
         residual = solver.step();
 
+        // Reset timers after warmup steps (excluded from reported timing)
+        if (config.warmup_steps > 0 && iter == config.warmup_steps) {
+            TimingStats::instance().reset();
+            if (config.verbose) {
+                std::cout << "    [Warmup complete: " << config.warmup_steps
+                          << " steps, timers reset]\n";
+            }
+        }
+
         // Write VTK snapshot
         if (!snapshot_prefix.empty() && snapshot_freq > 0 && (iter % snapshot_freq == 0)) {
 #ifdef USE_GPU_OFFLOAD
@@ -348,7 +360,13 @@ int main(int argc, char** argv) {
             solver.write_vtk(snapshot_prefix + "_" + std::to_string(snap_count) + ".vtk");
         }
 
-        if (config.verbose && (iter % config.output_freq == 0)) {
+        // Always show progress every ~10% for CI visibility
+        if (iter % progress_interval == 0 || iter == 1) {
+            std::cout << "    Step " << std::setw(6) << iter << " / " << config.max_iter
+                      << "  (" << std::setw(3) << (100 * iter / config.max_iter) << "%)"
+                      << "  residual = " << std::scientific << std::setprecision(3) << residual
+                      << std::fixed << "\n" << std::flush;
+        } else if (config.verbose && (iter % config.output_freq == 0)) {
 #ifdef USE_GPU_OFFLOAD
             solver.sync_from_gpu();
 #endif

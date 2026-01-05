@@ -4,15 +4,23 @@
 # This script runs the test suite used by both local development and GitHub CI.
 #
 # Usage:
-#   ./scripts/ci.sh              # Run all tests (requires GPU for cross-build tests)
+#   ./scripts/ci.sh              # Run all tests with GPU+HYPRE (default)
 #   ./scripts/ci.sh fast         # Run only fast tests (~1 minute)
 #   ./scripts/ci.sh full         # Run all tests including slow ones
-#   ./scripts/ci.sh gpu          # Run GPU-specific tests only (requires GPU)
+#   ./scripts/ci.sh gpu          # Run GPU-specific tests only
+#   ./scripts/ci.sh hypre        # Run HYPRE-specific tests only
 #   ./scripts/ci.sh paradigm     # Run code sharing paradigm checks
-#   ./scripts/ci.sh --cpu        # Force CPU-only build (skips cross-build tests)
+#   ./scripts/ci.sh --cpu        # Force CPU-only build (no GPU, no HYPRE)
 #   ./scripts/ci.sh --cpu fast   # CPU-only with fast tests
+#   ./scripts/ci.sh --no-hypre   # Disable HYPRE (use multigrid only)
+#   ./scripts/ci.sh --debug      # Debug build mode (4x timeout multiplier)
 #   ./scripts/ci.sh -v           # Verbose output (show full test output)
 #   ./scripts/ci.sh --verbose    # Same as -v
+#
+# HYPRE Poisson Solver:
+#   HYPRE is ENABLED by default for GPU builds (provides 8-10x speedup).
+#   Use --no-hypre to test with multigrid-only build.
+#   HYPRE tests validate both solvers produce consistent results.
 #
 # Cross-build tests (CPU vs GPU comparison):
 #   When running in GPU mode (default), the script will:
@@ -28,17 +36,65 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
+# GPU compute capability detection (precedence):
+#   1. GPU_CC env var if set (e.g., GPU_CC=90 ./scripts/ci.sh)
+#   2. Auto-detect from nvidia-smi (first GPU's compute_cap)
+#   3. Fallback to 80 (A100/Ampere) - conservative default
+# Examples: A100=80, H100/H200=90
+GPU_CC_SOURCE="env"
+if [[ -z "${GPU_CC:-}" ]]; then
+    GPU_CC_SOURCE="auto"
+    if command -v nvidia-smi &> /dev/null; then
+        # Query compute capability (e.g., "8.0" -> "80", "9.0" -> "90")
+        GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+        if [[ -z "$GPU_CC" ]]; then
+            # nvidia-smi exists but returned empty (MIG mode, no GPU visible, etc.)
+            GPU_CC_SOURCE="fallback"
+        fi
+    else
+        GPU_CC_SOURCE="fallback"
+    fi
+    # Fallback to 80 (A100/Ampere) if detection fails
+    GPU_CC=${GPU_CC:-80}
+fi
+
+# Validate GPU_CC is a reasonable value (2-digit number in range 60-100)
+if ! [[ "$GPU_CC" =~ ^[0-9]+$ ]] || [[ "$GPU_CC" -lt 60 ]] || [[ "$GPU_CC" -gt 100 ]]; then
+    echo "ERROR: Invalid GPU_CC value: '$GPU_CC' (expected 60-100, e.g., 80 for A100, 90 for H100)"
+    echo "       Set GPU_CC explicitly: GPU_CC=90 ./scripts/ci.sh"
+    exit 1
+fi
+
 # Parse flags
 USE_GPU=ON
+# HYPRE is enabled by default for GPU builds (best performance)
+# Use --no-hypre to disable
+USE_HYPRE=AUTO
 VERBOSE=0
+DEBUG_BUILD=0
+TIMEOUT_MULTIPLIER=1
 while [[ "$1" == --* || "$1" == -* ]]; do
     case "$1" in
         --cpu)
             USE_GPU=OFF
             shift
             ;;
+        --hypre)
+            USE_HYPRE=ON
+            shift
+            ;;
+        --no-hypre)
+            USE_HYPRE=OFF
+            shift
+            ;;
         --verbose|-v)
             VERBOSE=1
+            shift
+            ;;
+        --debug)
+            # Debug builds are 3-10x slower, use 4x timeout multiplier
+            DEBUG_BUILD=1
+            TIMEOUT_MULTIPLIER=4
             shift
             ;;
         *)
@@ -48,11 +104,28 @@ while [[ "$1" == --* || "$1" == -* ]]; do
     esac
 done
 
+# Resolve AUTO: HYPRE is enabled by default for GPU builds
+if [[ "$USE_HYPRE" == "AUTO" ]]; then
+    if [[ "$USE_GPU" == "ON" ]]; then
+        USE_HYPRE=ON
+    else
+        USE_HYPRE=OFF
+    fi
+fi
+
 # Set build directory based on mode
 if [[ "$USE_GPU" == "ON" ]]; then
-    BUILD_DIR="${PROJECT_DIR}/build_gpu"
+    if [[ "$USE_HYPRE" == "ON" ]]; then
+        BUILD_DIR="${PROJECT_DIR}/build_gpu_hypre"
+    else
+        BUILD_DIR="${PROJECT_DIR}/build_gpu"
+    fi
 else
-    BUILD_DIR="${PROJECT_DIR}/build_cpu"
+    if [[ "$USE_HYPRE" == "ON" ]]; then
+        BUILD_DIR="${PROJECT_DIR}/build_cpu_hypre"
+    else
+        BUILD_DIR="${PROJECT_DIR}/build_cpu"
+    fi
 fi
 
 # Colors for output
@@ -100,13 +173,17 @@ check_gpu_available() {
 }
 
 # Build a specific configuration, ensuring all tests are built
-# Usage: ensure_build <build_dir> <use_gpu_offload>
+# Usage: ensure_build <build_dir> <use_gpu_offload> [use_hypre]
 ensure_build() {
     local build_dir=$1
     local gpu_offload=$2
+    local use_hypre=${3:-OFF}
     local build_name="CPU"
     if [[ "$gpu_offload" == "ON" ]]; then
         build_name="GPU"
+    fi
+    if [[ "$use_hypre" == "ON" ]]; then
+        build_name="${build_name}+HYPRE"
     fi
 
     log_info "Ensuring $build_name build in $build_dir..."
@@ -120,7 +197,11 @@ ensure_build() {
     # Configure if not already configured
     if [ ! -f "CMakeCache.txt" ]; then
         log_info "  Configuring $build_name build..."
-        if ! cmake "$PROJECT_DIR" -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=${gpu_offload} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
+        local gpu_cc_flag=""
+        if [[ "$gpu_offload" == "ON" ]]; then
+            gpu_cc_flag="-DGPU_CC=${GPU_CC}"
+        fi
+        if ! cmake "$PROJECT_DIR" -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=${gpu_offload} -DUSE_HYPRE=${use_hypre} ${gpu_cc_flag} -DBUILD_TESTS=ON > cmake_output.log 2>&1; then
             log_failure "$build_name cmake configuration failed"
             cat cmake_output.log | tail -20 | sed 's/^/    /'
             cd "$orig_dir"
@@ -180,8 +261,11 @@ is_gpu_flaky() {
 run_test() {
     local test_name=$1
     local test_binary=$2
-    local timeout_secs=${3:-120}
+    local base_timeout=${3:-120}
     local env_prefix=${4:-""}  # Optional env vars (e.g., "OMP_TARGET_OFFLOAD=MANDATORY")
+
+    # Apply timeout multiplier for Debug builds
+    local timeout_secs=$((base_timeout * TIMEOUT_MULTIPLIER))
 
     if [ ! -f "$test_binary" ]; then
         log_skip "$test_name (not built)"
@@ -197,7 +281,11 @@ run_test() {
     fi
 
     echo ""
-    log_info "Running $test_name..."
+    if [ $DEBUG_BUILD -eq 1 ]; then
+        log_info "Running $test_name... (timeout: ${timeout_secs}s, debug 4x)"
+    else
+        log_info "Running $test_name..."
+    fi
 
     local output_file="/tmp/test_output_$$.txt"
     local exit_code=0
@@ -351,25 +439,51 @@ run_cross_build_test() {
     rm -f "$output_file"
 }
 
-# Check build directory exists
-if [ ! -d "$BUILD_DIR" ]; then
-    log_info "Build directory not found. Creating and building..."
-    mkdir -p "$BUILD_DIR"
+# Check if build is needed (library doesn't exist or directory is fresh from cache)
+mkdir -p "$BUILD_DIR"
+if [ ! -f "$BUILD_DIR/libnn_cfd_core.a" ]; then
+    log_info "Building project (libnn_cfd_core.a not found)..."
     cd "$BUILD_DIR"
-    cmake .. -DUSE_GPU_OFFLOAD=${USE_GPU} -DBUILD_TESTS=ON
+    # Force fresh configure: remove CMake cache but preserve _deps (HYPRE cache)
+    rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
+    GPU_CC_FLAG=""
+    if [[ "$USE_GPU" == "ON" ]]; then
+        GPU_CC_FLAG="-DGPU_CC=${GPU_CC}"
+    fi
+    cmake .. -DUSE_GPU_OFFLOAD=${USE_GPU} -DUSE_HYPRE=${USE_HYPRE} ${GPU_CC_FLAG} -DBUILD_TESTS=ON
     make -j"$(nproc)"
     cd "$PROJECT_DIR"
+else
+    log_info "Using existing build in $BUILD_DIR"
 fi
 
 # Display mode
 if [[ "$USE_GPU" == "ON" ]]; then
-    log_info "Running in GPU mode (USE_GPU_OFFLOAD=ON)"
+    if [[ "$USE_HYPRE" == "ON" ]]; then
+        log_info "Running in GPU+HYPRE mode (USE_GPU_OFFLOAD=ON, USE_HYPRE=ON)"
+    else
+        log_info "Running in GPU mode (USE_GPU_OFFLOAD=ON)"
+    fi
 else
-    log_info "Running in CPU-only mode (USE_GPU_OFFLOAD=OFF)"
+    if [[ "$USE_HYPRE" == "ON" ]]; then
+        log_info "Running in CPU+HYPRE mode (USE_GPU_OFFLOAD=OFF, USE_HYPRE=ON)"
+    else
+        log_info "Running in CPU-only mode (USE_GPU_OFFLOAD=OFF)"
+    fi
 fi
 
 log_section "CI Test Suite: $TEST_SUITE"
 echo "Build directory: $BUILD_DIR"
+
+# Report GPU_CC detection status
+if [[ "$USE_GPU" == "ON" ]]; then
+    echo "GPU compute capability: cc$GPU_CC (source: $GPU_CC_SOURCE)"
+    if [[ "$GPU_CC_SOURCE" == "fallback" ]]; then
+        log_info "WARNING: GPU_CC auto-detection failed (no GPU visible?)"
+        log_info "         Using fallback cc$GPU_CC - may cause runtime errors if wrong"
+        log_info "         Set GPU_CC explicitly for cross-compile: GPU_CC=90 ./scripts/ci.sh"
+    fi
+fi
 echo ""
 
 # Run paradigm check first (always)
@@ -441,6 +555,72 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
     # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
     if [[ "$USE_GPU" == "ON" ]]; then
         run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300 "OMP_TARGET_OFFLOAD=MANDATORY"
+    fi
+fi
+
+# HYPRE-specific tests (only when --hypre flag is used)
+if [[ "$USE_HYPRE" == "ON" ]]; then
+    if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "hypre" ] || [ "$TEST_SUITE" = "full" ]; then
+        log_section "HYPRE Poisson Solver Tests"
+
+        # HYPRE initialization test (fast)
+        run_test "HYPRE All BCs Init" "$BUILD_DIR/test_hypre_all_bcs" 60
+
+        # HYPRE vs Multigrid validation test
+        # This compares HYPRE and Multigrid results on the same problem
+        run_test "HYPRE Validation" "$BUILD_DIR/test_hypre_validation" 300
+
+        # Cross-build HYPRE test (CPU HYPRE vs GPU HYPRE)
+        # Only run if GPU is available and enabled
+        if [[ "$USE_GPU" == "ON" ]] && check_gpu_available; then
+            log_info "Running HYPRE cross-build comparison (requires both CPU and GPU HYPRE builds)..."
+
+            cpu_hypre_dir="${PROJECT_DIR}/build_cpu_hypre"
+            gpu_hypre_dir="${PROJECT_DIR}/build_gpu_hypre"
+            ref_dir="${PROJECT_DIR}/build_gpu_hypre/hypre_reference"
+            mkdir -p "$ref_dir"
+
+            # Ensure CPU HYPRE build exists
+            if ! ensure_build "$cpu_hypre_dir" "OFF" "ON"; then
+                log_failure "CPU HYPRE build failed"
+                FAILED=$((FAILED + 1))
+                FAILED_TESTS="${FAILED_TESTS}\n  - HYPRE CPU build"
+            else
+                # Generate CPU HYPRE reference
+                output_file="/tmp/hypre_ref_$$.txt"
+                if timeout 180 "$cpu_hypre_dir/test_hypre_validation" --dump-prefix "${ref_dir}/hypre" > "$output_file" 2>&1; then
+                    log_success "HYPRE CPU reference generated"
+
+                    # Ensure GPU HYPRE build exists
+                    if ! ensure_build "$gpu_hypre_dir" "ON" "ON"; then
+                        log_failure "GPU HYPRE build failed"
+                        FAILED=$((FAILED + 1))
+                        FAILED_TESTS="${FAILED_TESTS}\n  - HYPRE GPU build"
+                    else
+                        # Run GPU HYPRE comparison
+                        if OMP_TARGET_OFFLOAD=MANDATORY timeout 180 "$gpu_hypre_dir/test_hypre_validation" --compare-prefix "${ref_dir}/hypre" > "$output_file" 2>&1; then
+                            log_success "HYPRE Cross-Build (CPU vs GPU)"
+                            PASSED=$((PASSED + 1))
+                            if [ $VERBOSE -eq 1 ]; then
+                                cat "$output_file" | sed 's/^/    /'
+                            fi
+                        else
+                            log_failure "HYPRE Cross-Build (CPU vs GPU)"
+                            echo "  Output (last 30 lines):"
+                            tail -30 "$output_file" | sed 's/^/    /'
+                            FAILED=$((FAILED + 1))
+                            FAILED_TESTS="${FAILED_TESTS}\n  - HYPRE Cross-Build"
+                        fi
+                    fi
+                else
+                    log_failure "HYPRE CPU reference generation failed"
+                    tail -20 "$output_file" | sed 's/^/    /'
+                    FAILED=$((FAILED + 1))
+                    FAILED_TESTS="${FAILED_TESTS}\n  - HYPRE CPU reference"
+                fi
+                rm -f "$output_file"
+            fi
+        fi
     fi
 fi
 

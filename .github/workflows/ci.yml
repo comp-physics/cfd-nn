@@ -40,9 +40,17 @@ jobs:
         cd ..
 
         # Run the CI test suite
+        # Debug builds run only fast tests with 4x timeout multiplier
+        # Release builds run all tests with normal timeouts
         chmod +x scripts/ci.sh
         chmod +x scripts/check_code_sharing.sh
-        ./scripts/ci.sh --cpu
+        if [[ "${{ matrix.build_type }}" == "Debug" ]]; then
+          echo "Running fast tests only (Debug build with 4x timeouts)"
+          ./scripts/ci.sh --cpu --debug fast
+        else
+          echo "Running all tests (Release build)"
+          ./scripts/ci.sh --cpu
+        fi
 
     - name: Check for warnings
       if: matrix.build_type == 'Release'

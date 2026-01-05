@@ -36,6 +36,15 @@ enum class SimulationMode {
     Unsteady    ///< Time-accurate integration (fixed number of steps)
 };
 
+/// Poisson solver selection
+enum class PoissonSolverType {
+    Auto,       ///< Auto-select: FFT → FFT1D → HYPRE → MG
+    FFT,        ///< 2D FFT solver (requires periodic x AND z, uniform dx/dz)
+    FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z)
+    HYPRE,      ///< HYPRE PFMG solver (requires USE_HYPRE build)
+    MG          ///< Native geometric multigrid
+};
+
 /// Simulation configuration
 struct Config {
     // Domain and mesh
@@ -103,13 +112,17 @@ struct Config {
     // - write_fields: VTK/field output via solver.write_fields(...) and snapshots
     bool postprocess = true;
     bool write_fields = true;
+
+    // Performance benchmarking
+    int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)
     
     // Poisson solver
     double poisson_tol = 1e-6;
-    int poisson_max_iter = 1000;  ///< Max iterations per Poisson solve
+    int poisson_max_iter = 5;  ///< MG V-cycles per solve (5 for projection, increase for accurate solve)
     double poisson_omega = 1.8; ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
-    
+    PoissonSolverType poisson_solver = PoissonSolverType::Auto;  ///< Poisson solver selection
+
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks
     int turb_guard_interval = 5;            ///< Check every N steps (performance)

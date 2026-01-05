@@ -19,6 +19,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # GPU offload option (must be set before finding OpenMP)
 option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
+# Hypre solver option (requires CUDA toolkit)
+option(USE_HYPRE "Enable HYPRE PFMG Poisson solver" OFF)
+
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
@@ -35,6 +38,69 @@ if(USE_GPU_OFFLOAD)
     endif()
 endif()
 
+# Hypre configuration - download and build from source with CUDA support
+if(USE_HYPRE)
+    message(STATUS "HYPRE solver ENABLED - downloading and building from source")
+
+    # Enable CUDA language for hypre build
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    message(STATUS "  CUDA Toolkit version: ${CUDAToolkit_VERSION}")
+    message(STATUS "  CUDA include dir: ${CUDAToolkit_INCLUDE_DIRS}")
+
+    # Detect GPU architecture if not specified
+    # Priority: 1. User-specified -DGPU_CC=XX, 2. Auto-detect via script, 3. Default to 80
+    if(NOT DEFINED GPU_CC)
+        # Try auto-detection using our detection script
+        execute_process(
+            COMMAND ${CMAKE_SOURCE_DIR}/scripts/detect_gpu_cc.sh
+            OUTPUT_VARIABLE DETECTED_GPU_CC
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE DETECT_RESULT
+        )
+        if(DETECT_RESULT EQUAL 0 AND DETECTED_GPU_CC MATCHES "^[0-9]+$")
+            set(GPU_CC "${DETECTED_GPU_CC}" CACHE STRING "GPU compute capability (auto-detected)")
+            message(STATUS "  GPU_CC auto-detected: ${GPU_CC}")
+        else()
+            set(GPU_CC "80" CACHE STRING "GPU compute capability (80=A100, 90=H100)")
+            message(STATUS "  GPU_CC fallback: ${GPU_CC} (auto-detection failed)")
+        endif()
+    else()
+        message(STATUS "  GPU_CC user-specified: ${GPU_CC}")
+    endif()
+    set(CMAKE_CUDA_ARCHITECTURES "${GPU_CC}" CACHE STRING "CUDA architectures" FORCE)
+    message(STATUS "  CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+
+    include(FetchContent)
+    FetchContent_Declare(
+        hypre
+        GIT_REPOSITORY https://github.com/hypre-space/hypre.git
+        GIT_TAG v2.31.0
+        SOURCE_SUBDIR src
+    )
+
+    # Configure hypre build options before FetchContent_MakeAvailable
+    # FORCE these options to ensure they take effect in the subproject
+    # Note: hypre uses HYPRE_WITH_CUDA (not HYPRE_ENABLE_CUDA)
+    set(HYPRE_WITH_CUDA ON CACHE BOOL "Enable CUDA support in HYPRE" FORCE)
+    set(HYPRE_ENABLE_UNIFIED_MEMORY ON CACHE BOOL "Use unified memory for GPU-CPU sharing" FORCE)
+    set(HYPRE_ENABLE_GPU_PROFILING OFF CACHE BOOL "Disable GPU profiling" FORCE)
+    set(HYPRE_CUDA_SM "${GPU_CC}" CACHE STRING "CUDA SM architecture" FORCE)
+
+    # Disable features we don't need
+    set(HYPRE_WITH_MPI OFF CACHE BOOL "Disable MPI (single-node only)" FORCE)
+    set(HYPRE_WITH_OPENMP OFF CACHE BOOL "Use CUDA instead of OpenMP for GPU" FORCE)
+    set(HYPRE_ENABLE_SHARED OFF CACHE BOOL "Build static library" FORCE)
+    set(HYPRE_ENABLE_MIXEDINT OFF CACHE BOOL "Use consistent integer types" FORCE)
+    set(HYPRE_PRINT_ERRORS ON CACHE BOOL "Print error messages" FORCE)
+    set(HYPRE_ENABLE_BIGINT OFF CACHE BOOL "Use 32-bit integers" FORCE)
+
+    FetchContent_MakeAvailable(hypre)
+
+    message(STATUS "  HYPRE source dir: ${hypre_SOURCE_DIR}")
+    message(STATUS "  HYPRE binary dir: ${hypre_BINARY_DIR}")
+endif()
+
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
@@ -48,9 +114,28 @@ if(USE_GPU_OFFLOAD)
     # Detect compiler and set appropriate flags
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
         # NVIDIA HPC SDK - best for NVIDIA GPUs
-        # No -gpu=ccXX specified - will auto-detect at runtime or use PTX JIT
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu")
-        message(STATUS "Using NVIDIA HPC SDK GPU offloading")
+        # Priority: 1. User-specified -DGPU_CC=XX, 2. Auto-detect, 3. Default to 80
+        if(NOT DEFINED GPU_CC)
+            execute_process(
+                COMMAND ${CMAKE_SOURCE_DIR}/scripts/detect_gpu_cc.sh
+                OUTPUT_VARIABLE DETECTED_GPU_CC
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE DETECT_RESULT
+            )
+            if(DETECT_RESULT EQUAL 0 AND DETECTED_GPU_CC MATCHES "^[0-9]+$")
+                set(GPU_CC "${DETECTED_GPU_CC}" CACHE STRING "GPU compute capability (auto-detected)")
+                message(STATUS "  GPU_CC auto-detected: ${GPU_CC}")
+            else()
+                set(GPU_CC "80" CACHE STRING "GPU compute capability (default=A100)")
+                message(STATUS "  GPU_CC fallback: ${GPU_CC}")
+            endif()
+        endif()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc${GPU_CC}")
+        # Add -cuda for OpenMP+CUDA interoperability
+        # Required for: hypre CUDA backend, FFT solver CUDA kernels
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")
+        message(STATUS "  Added -cuda for OpenMP+CUDA interop")
+        message(STATUS "Using NVIDIA HPC SDK GPU offloading (cc${GPU_CC})")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         # Clang/LLVM with CUDA backend (auto-detect GPU arch)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp-targets=nvptx64-nvidia-cuda")
@@ -104,6 +189,33 @@ if(USE_GPU_OFFLOAD)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
     target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
+endif()
+
+# Add HYPRE Poisson solver when enabled
+if(USE_HYPRE)
+    target_sources(nn_cfd_core PRIVATE src/poisson_solver_hypre.cpp)
+    target_include_directories(nn_cfd_core PUBLIC ${hypre_SOURCE_DIR}/src)
+    target_include_directories(nn_cfd_core PUBLIC ${hypre_BINARY_DIR})
+    target_link_libraries(nn_cfd_core HYPRE)
+    # Link CUDA runtime for hypre's CUDA backend
+    target_link_libraries(nn_cfd_core CUDA::cudart)
+    target_compile_definitions(nn_cfd_core PUBLIC USE_HYPRE)
+    message(STATUS "  HYPRE Poisson solver added to nn_cfd_core")
+endif()
+
+# Add FFT-hybrid Poisson solver (for periodic x/z cases)
+# Requires GPU offload and cuFFT
+if(USE_GPU_OFFLOAD)
+    # cuFFT is part of CUDA toolkit
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        target_sources(nn_cfd_core PRIVATE
+            src/poisson_solver_fft.cpp
+            src/poisson_solver_fft1d.cpp)
+        target_link_libraries(nn_cfd_core CUDA::cufft CUDA::cusparse CUDA::cudart)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
+        message(STATUS "  FFT Poisson solvers added (2D FFT + 1D FFT + cuSPARSE)")
+    endif()
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -326,6 +438,118 @@ if(BUILD_TESTS)
     add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
+
+    # FFT manufactured solution test - proves FFT correctness with O(h²) convergence
+    add_executable(test_poisson_fft_manufactured tests/test_poisson_fft_manufactured.cpp)
+    target_link_libraries(test_poisson_fft_manufactured nn_cfd_core)
+    add_test(NAME PoissonFFTManufacturedTest COMMAND test_poisson_fft_manufactured)
+
+    # HYPRE all BC configurations test
+    if(USE_HYPRE)
+        add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
+        target_link_libraries(test_hypre_all_bcs nn_cfd_core)
+        add_test(NAME HypreAllBCsTest COMMAND test_hypre_all_bcs)
+
+        # HYPRE validation test - compares HYPRE vs Multigrid
+        add_executable(test_hypre_validation tests/test_hypre_validation.cpp)
+        target_link_libraries(test_hypre_validation nn_cfd_core)
+        add_test(NAME HypreValidationTest COMMAND test_hypre_validation)
+
+        # HYPRE backend verification test - ensures GPU/CPU backend matches expectations
+        add_executable(test_hypre_backend tests/test_hypre_backend.cpp)
+        target_link_libraries(test_hypre_backend nn_cfd_core)
+        add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
+    endif()
+
+    # Poisson solver selection state machine test - prevents selection logic drift
+    add_executable(test_poisson_selection tests/test_poisson_selection.cpp)
+    target_link_libraries(test_poisson_selection nn_cfd_core)
+    add_test(NAME PoissonSelectionTest COMMAND test_poisson_selection)
+
+    # FFT1D dedicated validation test - forces FFT1D selection + correctness check
+    add_executable(test_fft1d_validation tests/test_fft1d_validation.cpp)
+    target_link_libraries(test_fft1d_validation nn_cfd_core)
+    add_test(NAME FFT1DValidationTest COMMAND test_fft1d_validation)
+
+    # Endurance stability test - catches NaN-after-N-steps class bugs
+    add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
+    target_link_libraries(test_endurance_stability nn_cfd_core)
+    add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
+
+    # Manufactured solution Poisson correctness test - catches "solver runs but wrong"
+    add_executable(test_poisson_manufactured tests/test_poisson_manufactured.cpp)
+    target_link_libraries(test_poisson_manufactured nn_cfd_core)
+    add_test(NAME PoissonManufacturedTest COMMAND test_poisson_manufactured)
+
+    # Dirichlet/mixed-BC Poisson test - validates BC handling
+    add_executable(test_poisson_dirichlet_mixed tests/test_poisson_dirichlet_mixed.cpp)
+    target_link_libraries(test_poisson_dirichlet_mixed nn_cfd_core)
+    add_test(NAME PoissonDirichletMixedTest COMMAND test_poisson_dirichlet_mixed)
+
+    # Repeatability envelope test - catches race conditions and nondeterminism
+    add_executable(test_repeatability tests/test_repeatability.cpp)
+    target_link_libraries(test_repeatability nn_cfd_core)
+    add_test(NAME RepeatabilityTest COMMAND test_repeatability)
+
+    # Performance regression sentinel - catches catastrophic slowdowns
+    add_executable(test_perf_sentinel tests/test_perf_sentinel.cpp)
+    target_link_libraries(test_perf_sentinel nn_cfd_core)
+    add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
+
+    # Stretched/anisotropic grid test - validates MG/HYPRE on high aspect ratio cells
+    add_executable(test_poisson_stretched_grid tests/test_poisson_stretched_grid.cpp)
+    target_link_libraries(test_poisson_stretched_grid nn_cfd_core)
+    add_test(NAME PoissonStretchedGridTest COMMAND test_poisson_stretched_grid)
+
+    # Nullspace/gauge handling test - validates singular Poisson (pure Neumann/periodic)
+    add_executable(test_poisson_nullspace tests/test_poisson_nullspace.cpp)
+    target_link_libraries(test_poisson_nullspace nn_cfd_core)
+    add_test(NAME PoissonNullspaceTest COMMAND test_poisson_nullspace)
+
+    # Cross-solver consistency test - validates all solvers produce equivalent results
+    add_executable(test_poisson_cross_solver tests/test_poisson_cross_solver.cpp)
+    target_link_libraries(test_poisson_cross_solver nn_cfd_core)
+    add_test(NAME PoissonCrossSolverTest COMMAND test_poisson_cross_solver)
+
+    # Projection method invariants test - validates time-stepper coupling
+    add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
+    target_link_libraries(test_projection_invariants nn_cfd_core)
+    add_test(NAME ProjectionInvariantsTest COMMAND test_projection_invariants)
+
+    # MPI guard policy test - validates multi-rank detection logic
+    add_executable(test_mpi_guard tests/test_mpi_guard.cpp)
+    target_link_libraries(test_mpi_guard nn_cfd_core)
+    add_test(NAME MpiGuardTest COMMAND test_mpi_guard)
+
+    # Turbulence golden snapshot test - catches model regressions
+    add_executable(test_turbulence_golden tests/test_turbulence_golden.cpp)
+    target_link_libraries(test_turbulence_golden nn_cfd_core)
+    add_test(NAME TurbulenceGoldenTest COMMAND test_turbulence_golden)
+
+    # Kernel parity test - verifies CPU/GPU path semantic equivalence
+    add_executable(test_kernel_parity tests/test_kernel_parity.cpp)
+    target_link_libraries(test_kernel_parity nn_cfd_core)
+    add_test(NAME KernelParityTest COMMAND test_kernel_parity)
+
+    # HYPRE canary test - monitors known HYPRE limitations (quarantined)
+    add_executable(test_hypre_canary tests/test_hypre_canary.cpp)
+    target_link_libraries(test_hypre_canary nn_cfd_core)
+    add_test(NAME HypreCanaryTest COMMAND test_hypre_canary)
+
+    # Residual consistency test - validates ||L(p)-rhs||/||rhs|| for each solver
+    add_executable(test_residual_consistency tests/test_residual_consistency.cpp)
+    target_link_libraries(test_residual_consistency nn_cfd_core)
+    add_test(NAME ResidualConsistencyTest COMMAND test_residual_consistency)
+
+    # FFT vs CPU reference test - validates FFT/FFT1D against MG on same node
+    add_executable(test_fft_cpu_reference tests/test_fft_cpu_reference.cpp)
+    target_link_libraries(test_fft_cpu_reference nn_cfd_core)
+    add_test(NAME FFTCpuReferenceTest COMMAND test_fft_cpu_reference)
+
+    # Detailed kernel parity test - CPU/GPU parity for non-Poisson kernels
+    add_executable(test_kernel_parity_detailed tests/test_kernel_parity_detailed.cpp)
+    target_link_libraries(test_kernel_parity_detailed nn_cfd_core)
+    add_test(NAME KernelParityDetailedTest COMMAND test_kernel_parity_detailed)
 endif()
 
 # Installation
