@@ -122,6 +122,7 @@ bool verify_gpu_available() {
 
 int run_dump_mode(const std::string& filename) {
 #ifdef USE_GPU_OFFLOAD
+    (void)filename;  // Suppress unused parameter warning
     std::cerr << "ERROR: --dump requires CPU build\n";
     return 1;
 #else
@@ -150,6 +151,7 @@ int run_dump_mode(const std::string& filename) {
 
 int run_compare_mode(const std::string& filename) {
 #ifndef USE_GPU_OFFLOAD
+    (void)filename;  // Suppress unused parameter warning
     std::cerr << "ERROR: --compare requires GPU build\n";
     return 1;
 #else
