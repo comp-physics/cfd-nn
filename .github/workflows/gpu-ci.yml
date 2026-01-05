@@ -53,6 +53,19 @@ jobs:
           hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-
         save-always: true
 
+    # Clean hypre-subbuild after cache restore - these contain CMakeCache.txt with
+    # absolute paths that break when restored on a different runner
+    - name: Clean HYPRE subbuild cache (path-sensitive)
+      run: |
+        echo "Cleaning hypre-subbuild directories (contain absolute paths)..."
+        for dir in build_cpu/_deps build_gpu/_deps build_cpu_hypre/_deps build_gpu_hypre/_deps; do
+          if [ -d "${dir}/hypre-subbuild" ]; then
+            echo "  Removing ${dir}/hypre-subbuild"
+            rm -rf "${dir}/hypre-subbuild"
+          fi
+        done
+        echo "Done - hypre-build (compiled libs) preserved, hypre-subbuild (CMake config) cleared"
+
     - name: Submit GPU correctness suite to Slurm (H200, 1 GPU)
       run: |
         ./.github/scripts/submit_and_monitor_slurm.sh \

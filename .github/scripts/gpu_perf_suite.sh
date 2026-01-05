@@ -39,6 +39,9 @@ cd build_gpu
 if [ -d _deps ]; then
     echo "Preserving HYPRE cache in _deps/"
     find . -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
+    # Clean hypre-subbuild - contains CMakeCache.txt with absolute paths
+    # that break when cache is restored to a different runner path
+    rm -rf _deps/hypre-subbuild 2>/dev/null || true
 fi
 # H200 requires cc90 (Hopper architecture)
 CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
