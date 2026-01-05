@@ -281,10 +281,18 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     double* packed = in_pack_;
     double* unpacked = out_pack_;
 
+    // IMPORTANT: 2D vs 3D indexing in Mesh class
+    // ===========================================
+    // For 2D meshes, the solver uses Mesh::index(i,j) which returns:
+    //   idx = j * Nx_full + i                    (range: [0, Nx_full*Ny_full-1])
+    // NOT Mesh::index(i,j,k) which returns:
+    //   idx = k * Nx_full * Ny_full + j * Nx_full + i  (different range!)
+    //
+    // The allocation IS 3D-sized (Nx_full * Ny_full * Nz_full), but the solver's
+    // 2D path only uses the first 2D plane [0, Nx_full*Ny_full-1].
+    // FFT2D must match this by using 2D indexing (no k offset).
+    //
     // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean subtraction
-    // NOTE: For 2D meshes, the solver uses 2D indexing (no k component):
-    //   idx = j * Nx_full + i  (NOT k * Nx_full * Ny_full + j * Nx_full + i)
-    // This is because Mesh::index(i,j) uses a DIFFERENT formula than Mesh::index(i,j,k)
     double sum = 0.0;
     #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum) \
         map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
