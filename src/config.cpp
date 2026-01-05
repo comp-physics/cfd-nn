@@ -346,6 +346,8 @@ void Config::parse_args(int argc, char** argv) {
             }
         } else if ((val = get_value(i, arg, "--perturbation_amplitude")) != "") {
             perturbation_amplitude = std::stod(val);
+        } else if ((val = get_value(i, arg, "--warmup_steps")) != "") {
+            warmup_steps = std::stoi(val);
         } else if (is_flag(arg, "--help") || is_flag(arg, "-h")) {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -390,6 +392,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
+                      << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"

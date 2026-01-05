@@ -342,6 +342,15 @@ int main(int argc, char** argv) {
         }
         residual = solver.step();
 
+        // Reset timers after warmup steps (excluded from reported timing)
+        if (config.warmup_steps > 0 && iter == config.warmup_steps) {
+            TimingStats::instance().reset();
+            if (config.verbose) {
+                std::cout << "    [Warmup complete: " << config.warmup_steps
+                          << " steps, timers reset]\n";
+            }
+        }
+
         // Write VTK snapshot
         if (!snapshot_prefix.empty() && snapshot_freq > 0 && (iter % snapshot_freq == 0)) {
 #ifdef USE_GPU_OFFLOAD

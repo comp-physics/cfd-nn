@@ -1,7 +1,13 @@
 #!/bin/bash
-# GPU Performance Suite - CPU vs GPU performance comparison
+# GPU Performance Suite - GPU absolute performance validation
 # Usage: gpu_perf_suite.sh <workdir>
 # Designed to run on an H200 GPU node via SLURM
+#
+# Strategy:
+#   - Gate on 3D FFT/FFT1D cases where GPU should win decisively
+#   - Use warmup steps to exclude initialization overhead from timing
+#   - Check absolute GPU performance (ms/step) rather than speedup ratios
+#   - Makes MG-only cases non-gating (logged for trending)
 
 set -euo pipefail
 
@@ -9,7 +15,7 @@ WORKDIR="${1:-.}"
 cd "$WORKDIR"
 
 echo "==================================================================="
-echo "  GPU Performance Suite - CPU vs GPU Comparison"
+echo "  GPU Performance Suite - Absolute Performance Validation"
 echo "==================================================================="
 echo ""
 echo "Host: $(hostname)"
@@ -21,28 +27,8 @@ echo ""
 
 chmod +x .github/scripts/*.sh
 
-# Build CPU-only binary (single-threaded)
+# Build GPU-offload binary only (we're validating GPU absolute perf, not speedup)
 # Preserves _deps (HYPRE cache) while rebuilding project code
-echo "==================================================================="
-echo "  Building CPU-only binary (Release, single-threaded)"
-echo "==================================================================="
-echo ""
-mkdir -p build_cpu
-cd build_cpu
-# Clean project artifacts but preserve _deps (HYPRE cache)
-if [ -d _deps ]; then
-    echo "Preserving HYPRE cache in _deps/"
-    find . -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
-fi
-CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF 2>&1 | tee cmake_config.log
-echo "=== Building ==="
-make -j8 channel duct
-mkdir -p output/cpu_perf
-cd ..
-
-# Build GPU-offload binary
-# Preserves _deps (HYPRE cache) while rebuilding project code
-echo ""
 echo "==================================================================="
 echo "  Building GPU-offload binary (Release)"
 echo "==================================================================="
@@ -61,86 +47,153 @@ make -j8 channel duct
 mkdir -p output/gpu_perf
 cd ..
 
-# Run comparison for one case
-run_comparison_case() {
+# Track test results
+TESTS_PASSED=0
+TESTS_FAILED=0
+FAILED_TESTS=""
+
+# Run GPU performance gate
+# Usage: run_gpu_perf_gate <name> <executable> <max_ms_per_step> [args...]
+run_gpu_perf_gate() {
     local name="$1"
-    shift 1
-    
+    local exe="$2"
+    local max_ms="$3"
+    shift 3
+
     echo ""
     echo "==================================================================="
-    echo "CASE: ${name}"
+    echo "GATE: ${name} (max ${max_ms} ms/step)"
     echo "==================================================================="
-    echo "CMD: $*"
+    echo "CMD: ./${exe} $*"
     echo ""
-    
-    # CPU run (single-threaded)
-    echo "--- CPU (single-threaded) ---"
-    export OMP_NUM_THREADS=1
-    export OMP_PROC_BIND=true
-    local cpu_log="cpu_${name}.log"
-    (cd build_cpu && "$@") 2>&1 | tee "$cpu_log"
-    
-    echo ""
-    echo "--- GPU ---"
+
     export OMP_TARGET_OFFLOAD=MANDATORY
-    unset OMP_NUM_THREADS
-    local gpu_log="gpu_${name}.log"
-    (cd build_gpu && "$@") 2>&1 | tee "$gpu_log"
-    
-    echo ""
-    echo "--- Quick Summary ---"
-    # Use Python script to extract timings and compute speedup
-    local summary=$(python3 .github/scripts/compute_speedup.py "${name}" "$cpu_log" "$gpu_log")
-    echo "$summary" | head -n 3
-    
-    # Last line is pipe-delimited data for table
-    echo "$summary" | tail -n 1 >> perf_results.txt
+    local log="gpu_${name}.log"
+    (cd build_gpu && "./${exe}" "$@") 2>&1 | tee "$log"
+
+    # Extract solver_step average time
+    local avg_ms=$(grep -E '^\s*solver_step\s+' "$log" | awk '{print $4}')
+
+    if [ -z "$avg_ms" ]; then
+        echo "[FAIL] ${name}: Could not extract timing"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS} ${name}"
+        return 1
+    fi
+
+    # Check threshold (using bc for floating point comparison)
+    local passed=$(echo "$avg_ms <= $max_ms" | bc -l)
+
+    if [ "$passed" -eq 1 ]; then
+        echo "[PASS] ${name}: ${avg_ms} ms/step <= ${max_ms} ms/step threshold"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    else
+        echo "[FAIL] ${name}: ${avg_ms} ms/step > ${max_ms} ms/step threshold"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS} ${name}"
+        return 1
+    fi
 }
 
-# Initialize results file
-rm -f perf_results.txt
-echo "Case|CPU_Total(s)|CPU_PerStep(ms)|GPU_Total(s)|GPU_PerStep(ms)|Speedup_Total|Speedup_PerStep" > perf_results.txt
+# Run non-gating GPU performance check (logged but doesn't fail CI)
+# Usage: run_gpu_perf_info <name> <executable> [args...]
+run_gpu_perf_info() {
+    local name="$1"
+    local exe="$2"
+    shift 2
+
+    echo ""
+    echo "==================================================================="
+    echo "INFO: ${name} (non-gating)"
+    echo "==================================================================="
+    echo "CMD: ./${exe} $*"
+    echo ""
+
+    export OMP_TARGET_OFFLOAD=MANDATORY
+    local log="gpu_${name}.log"
+    (cd build_gpu && "./${exe}" "$@") 2>&1 | tee "$log"
+
+    # Extract solver_step average time
+    local avg_ms=$(grep -E '^\s*solver_step\s+' "$log" | awk '{print $4}')
+
+    if [ -z "$avg_ms" ]; then
+        echo "[INFO] ${name}: Could not extract timing"
+    else
+        echo "[INFO] ${name}: ${avg_ms} ms/step"
+    fi
+}
 
 echo ""
 echo "==================================================================="
-echo "  Running Performance Benchmarks"
+echo "  Running Performance Gates"
 echo "==================================================================="
 
-# Case 1: Channel baseline (small grid for CI speed)
-# Use unsteady mode to run fixed number of steps without convergence checks
-run_comparison_case "channel_baseline_128x128_100" \
-    ./channel --Nx 128 --Ny 128 --nu 0.001 --max_iter 100 \
-             --model baseline --dp_dx -0.0001 --simulation_mode unsteady \
-             --output output/perf/channel_baseline --num_snapshots 0
+# Gate 1: 3D Duct with FFT1D (64x64x64, 25 steps with 5 warmup = 20 timed)
+# GPU FFT1D should be very fast - expect < 3 ms/step
+# This validates cuFFT + cuSPARSE tridiagonal solve is working
+run_gpu_perf_gate "duct_fft1d_64" \
+    duct 3.0 \
+    --Nx 64 --Ny 64 --Nz 64 \
+    --nu 0.001 --dp_dx -1.0 \
+    --max_iter 25 --warmup_steps 5 \
+    --poisson fft1d \
+    --simulation_mode unsteady \
+    --no_postprocess --no_write_fields --verbose
 
-# Case 2: Channel SST transport (small grid)
-run_comparison_case "channel_sst_128x128_50" \
-    ./channel --Nx 128 --Ny 128 --nu 0.001 --max_iter 50 \
-             --model sst --dp_dx -0.0001 --simulation_mode unsteady \
-             --output output/perf/channel_sst --num_snapshots 0
+# Gate 2: Larger 3D duct (128x64x64) to verify scaling
+# Expect < 8 ms/step with FFT1D
+run_gpu_perf_gate "duct_fft1d_128" \
+    duct 8.0 \
+    --Nx 128 --Ny 64 --Nz 64 \
+    --nu 0.001 --dp_dx -1.0 \
+    --max_iter 25 --warmup_steps 5 \
+    --poisson fft1d \
+    --simulation_mode unsteady \
+    --no_postprocess --no_write_fields --verbose
 
-# Case 3: 3D Duct flow (small 3D test)
-run_comparison_case "duct_baseline_16x32x32_50" \
-    ./duct --Nx 16 --Ny 32 --Nz 32 --nu 0.001 --max_iter 50 \
-           --model baseline --simulation_mode unsteady --num_snapshots 0
+# Gate 3: 2D channel with MG at larger size (512x512)
+# At 512x512, GPU MG should beat CPU - expect < 100 ms/step
+run_gpu_perf_gate "channel_mg_512" \
+    channel 100.0 \
+    --Nx 512 --Ny 512 \
+    --nu 0.001 --dp_dx -0.0001 \
+    --max_iter 25 --warmup_steps 5 \
+    --poisson mg \
+    --simulation_mode unsteady \
+    --no_postprocess --no_write_fields --verbose
 
-# Print final summary table
 echo ""
 echo "==================================================================="
-echo "  Performance Summary: CPU vs GPU"
+echo "  Running Non-Gating Performance Checks (for trending)"
+echo "==================================================================="
+
+# Info: Small 2D channel MG (expected to be slow on GPU due to overhead)
+# This is logged for trend tracking but won't fail CI
+run_gpu_perf_info "channel_mg_128_info" \
+    channel \
+    --Nx 128 --Ny 128 \
+    --nu 0.001 --dp_dx -0.0001 \
+    --max_iter 25 --warmup_steps 5 \
+    --poisson mg \
+    --simulation_mode unsteady \
+    --no_postprocess --no_write_fields --verbose
+
+echo ""
+echo "==================================================================="
+echo "  Performance Suite Summary"
 echo "==================================================================="
 echo ""
-printf "%-35s %12s %15s %12s %15s %10s %10s\n" \
-       "Case" "CPU Total" "CPU Per-Step" "GPU Total" "GPU Per-Step" "Speedup" "Speedup"
-printf "%-35s %12s %15s %12s %15s %10s %10s\n" \
-       "" "(s)" "(ms)" "(s)" "(ms)" "(Total)" "(Step)"
-printf "%s\n" "$(printf '%.0s-' {1..115})"
+echo "Gates passed: ${TESTS_PASSED}"
+echo "Gates failed: ${TESTS_FAILED}"
 
-tail -n +2 perf_results.txt | while IFS='|' read -r case cpu_t cpu_avg gpu_t gpu_avg sp_t sp_avg; do
-    printf "%-35s %12s %15s %12s %15s %9sx %9sx\n" \
-           "$case" "$cpu_t" "$cpu_avg" "$gpu_t" "$gpu_avg" "$sp_t" "$sp_avg"
-done
-
-echo ""
-echo "[PASS] GPU Performance Suite completed successfully"
-
+if [ "$TESTS_FAILED" -gt 0 ]; then
+    echo ""
+    echo "FAILED GATES:${FAILED_TESTS}"
+    echo ""
+    echo "[FAIL] GPU Performance Suite - ${TESTS_FAILED} gate(s) failed"
+    exit 1
+else
+    echo ""
+    echo "[PASS] GPU Performance Suite - all gates passed"
+fi

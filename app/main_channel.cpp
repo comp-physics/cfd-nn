@@ -362,6 +362,15 @@ int main(int argc, char** argv) {
             }
             double residual = solver.step();
 
+            // Reset timers after warmup steps (excluded from reported timing)
+            if (config.warmup_steps > 0 && step == config.warmup_steps) {
+                TimingStats::instance().reset();
+                if (config.verbose) {
+                    std::cout << "    [Warmup complete: " << config.warmup_steps
+                              << " steps, timers reset]\n";
+                }
+            }
+
             if (!prefix.empty() && snapshot_freq > 0 && (step % snapshot_freq == 0)) {
                 ++snap_count;
                 solver.write_vtk(prefix + "_" + std::to_string(snap_count) + ".vtk");
