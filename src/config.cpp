@@ -183,17 +183,32 @@ void Config::load(const std::string& filename) {
     poisson_max_iter = get_int("poisson_max_iter", poisson_max_iter);
     poisson_omega = get_double("poisson_omega", poisson_omega);
 
-    // Parse poisson_solver: auto, fft, hypre, mg
+    // Parse poisson_solver: auto, fft, fft2d, fft1d, hypre, mg
     std::string solver_str = get_string("poisson_solver", "auto");
     if (solver_str == "auto") {
         poisson_solver = PoissonSolverType::Auto;
     } else if (solver_str == "fft") {
         poisson_solver = PoissonSolverType::FFT;
+    } else if (solver_str == "fft2d") {
+        poisson_solver = PoissonSolverType::FFT2D;
+    } else if (solver_str == "fft1d") {
+        poisson_solver = PoissonSolverType::FFT1D;
     } else if (solver_str == "hypre") {
         poisson_solver = PoissonSolverType::HYPRE;
     } else if (solver_str == "mg" || solver_str == "multigrid") {
         poisson_solver = PoissonSolverType::MG;
+    } else {
+        std::cerr << "ERROR: Unknown poisson_solver='" << solver_str << "'.\n"
+                  << "Valid options: auto, fft, fft2d, fft1d, hypre, mg\n";
+        std::exit(1);
     }
+
+    // Poisson solver tuning
+    poisson_abs_tol_floor = get_double("poisson_abs_tol_floor", poisson_abs_tol_floor);
+
+    // Turbulence guard settings
+    turb_guard_enabled = get_bool("turb_guard_enabled", turb_guard_enabled);
+    turb_guard_interval = get_int("turb_guard_interval", turb_guard_interval);
 
     // Legacy flags (for backward compatibility)
     if (get_bool("use_hypre", false)) {
@@ -269,6 +284,8 @@ void Config::parse_args(int argc, char** argv) {
                 poisson_solver = PoissonSolverType::Auto;
             } else if (val == "fft") {
                 poisson_solver = PoissonSolverType::FFT;
+            } else if (val == "fft2d") {
+                poisson_solver = PoissonSolverType::FFT2D;
             } else if (val == "fft1d") {
                 poisson_solver = PoissonSolverType::FFT1D;
             } else if (val == "hypre") {
@@ -285,6 +302,14 @@ void Config::parse_args(int argc, char** argv) {
         } else if (is_flag(arg, "--use_fft")) {
             // Legacy flag (backward compatibility)
             poisson_solver = PoissonSolverType::FFT;
+        } else if ((val = get_value(i, arg, "--poisson_abs_tol_floor")) != "") {
+            poisson_abs_tol_floor = std::stod(val);
+        } else if ((val = get_value(i, arg, "--turb_guard_enabled")) != "") {
+            turb_guard_enabled = (val == "true" || val == "1" || val == "yes");
+        } else if (is_flag(arg, "--turb_guard_enabled")) {
+            turb_guard_enabled = true;
+        } else if ((val = get_value(i, arg, "--turb_guard_interval")) != "") {
+            turb_guard_interval = std::stoi(val);
         } else if ((val = get_value(i, arg, "--model")) != "") {
             std::string model = val;
             if (model == "none" || model == "laminar") {
@@ -367,14 +392,18 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --tol T           Convergence tolerance for steady solve\n"
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
                       << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
-                      << "  --poisson S       Poisson solver (auto, fft, fft1d, hypre, mg)\n"
-                      << "                      auto: FFT -> FFT1D -> HYPRE -> MG\n"
-                      << "                      fft: 2D FFT (requires periodic x AND z, uniform dx/dz)\n"
-                      << "                      fft1d: 1D FFT + 2D Helmholtz (periodic x OR z, uniform dx)\n"
+                      << "  --poisson S       Poisson solver (auto, fft, fft2d, fft1d, hypre, mg)\n"
+                      << "                      auto: FFT -> FFT2D -> FFT1D -> HYPRE -> MG\n"
+                      << "                      fft: 2D FFT (3D only, requires periodic x AND z, uniform dx/dz)\n"
+                      << "                      fft2d: 2D mesh FFT (2D only, periodic x, walls y, Nz=1)\n"
+                      << "                      fft1d: 1D FFT + 2D Helmholtz (3D only, periodic x OR z)\n"
                       << "                      hypre: HYPRE PFMG (requires USE_HYPRE build)\n"
-                      << "                      mg: native geometric multigrid\n"
+                      << "                      mg: native geometric multigrid (always available)\n"
                       << "  --use_hypre       [deprecated] Same as --poisson=hypre\n"
                       << "  --use_fft         [deprecated] Same as --poisson=fft\n"
+                      << "  --poisson_abs_tol_floor V  Absolute tolerance floor for Poisson (default 0)\n"
+                      << "  --turb_guard_enabled  Enable turbulence guard (NaN/Inf checks)\n"
+                      << "  --turb_guard_interval N  Check interval for turb guard (default 5)\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"
@@ -450,6 +479,251 @@ void Config::finalize() {
         }
     }
     
+    // =========================================================================
+    // CONFIGURATION VALIDATION
+    // =========================================================================
+
+    // Validate 3D-only options when Nz=1 (2D simulation)
+    if (Nz == 1) {
+        if (stretch_z) {
+            std::cerr << "ERROR: Invalid configuration: stretch_z=true with Nz=1 (2D simulation).\n"
+                      << "\n"
+                      << "The stretch_z option only applies to 3D simulations (Nz > 1).\n"
+                      << "For a 2D simulation, remove 'stretch_z' from your configuration.\n";
+            std::exit(1);
+        }
+
+        // FFT (doubly-periodic) requires 3D
+        if (poisson_solver == PoissonSolverType::FFT) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft with Nz=1 (2D simulation).\n"
+                      << "\n"
+                      << "The FFT solver requires a 3D mesh with periodic boundaries in both x and z.\n"
+                      << "For 2D simulations, use one of:\n"
+                      << "  --poisson auto    (recommended, auto-selects best solver)\n"
+                      << "  --poisson fft2d   (FFT for 2D meshes with periodic x)\n"
+                      << "  --poisson hypre   (HYPRE PFMG, requires USE_HYPRE build)\n"
+                      << "  --poisson mg      (native multigrid, always available)\n";
+            std::exit(1);
+        }
+
+        // FFT1D requires 3D
+        if (poisson_solver == PoissonSolverType::FFT1D) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft1d with Nz=1 (2D simulation).\n"
+                      << "\n"
+                      << "The FFT1D solver requires a 3D mesh with periodic boundary in x or z.\n"
+                      << "For 2D simulations, use one of:\n"
+                      << "  --poisson auto    (recommended, auto-selects best solver)\n"
+                      << "  --poisson fft2d   (FFT for 2D meshes with periodic x)\n"
+                      << "  --poisson hypre   (HYPRE PFMG, requires USE_HYPRE build)\n"
+                      << "  --poisson mg      (native multigrid, always available)\n";
+            std::exit(1);
+        }
+    }
+
+    // Validate 2D-only options when Nz>1 (3D simulation)
+    if (Nz > 1) {
+        if (poisson_solver == PoissonSolverType::FFT2D) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft2d with Nz=" << Nz << " (3D simulation).\n"
+                      << "\n"
+                      << "The FFT2D solver is only for 2D meshes (Nz=1).\n"
+                      << "For 3D simulations, use one of:\n"
+                      << "  --poisson auto    (recommended, auto-selects best solver)\n"
+                      << "  --poisson fft     (2D FFT, requires periodic x AND z)\n"
+                      << "  --poisson fft1d   (1D FFT, requires periodic x OR z)\n"
+                      << "  --poisson hypre   (HYPRE PFMG, requires USE_HYPRE build)\n"
+                      << "  --poisson mg      (native multigrid, always available)\n";
+            std::exit(1);
+        }
+    }
+
+    // Validate FFT solvers with stretched meshes
+    // FFT solvers require uniform grid spacing in their periodic directions
+    if (poisson_solver == PoissonSolverType::FFT) {
+        if (stretch_y) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft with stretch_y=true.\n"
+                      << "\n"
+                      << "The FFT solver requires uniform grid spacing in all directions.\n"
+                      << "Y-direction stretching creates non-uniform spacing that is incompatible\n"
+                      << "with the FFT algorithm's spectral decomposition.\n"
+                      << "\n"
+                      << "Options:\n"
+                      << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
+                      << "  2. Use --poisson hypre (HYPRE supports stretched meshes)\n"
+                      << "  3. Use --poisson auto (will select a compatible solver)\n"
+                      << "  4. Disable mesh stretching with stretch_y=false\n";
+            std::exit(1);
+        }
+        if (stretch_z) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft with stretch_z=true.\n"
+                      << "\n"
+                      << "The FFT solver requires uniform grid spacing in all periodic directions.\n"
+                      << "Z-direction stretching is incompatible with the doubly-periodic FFT solver.\n"
+                      << "\n"
+                      << "Options:\n"
+                      << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
+                      << "  2. Use --poisson hypre (HYPRE supports stretched meshes)\n"
+                      << "  3. Use --poisson auto (will select a compatible solver)\n"
+                      << "  4. Use --poisson fft1d (if only one direction is periodic)\n"
+                      << "  5. Disable z-stretching with stretch_z=false\n";
+            std::exit(1);
+        }
+    }
+
+    if (poisson_solver == PoissonSolverType::FFT2D && stretch_y) {
+        std::cerr << "ERROR: Invalid configuration: poisson_solver=fft2d with stretch_y=true.\n"
+                  << "\n"
+                  << "The FFT2D solver requires uniform grid spacing. Y-direction stretching\n"
+                  << "is incompatible with the FFT-based pressure solver.\n"
+                  << "\n"
+                  << "Options:\n"
+                  << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
+                  << "  2. Use --poisson hypre (HYPRE supports stretched meshes)\n"
+                  << "  3. Use --poisson auto (will select a compatible solver)\n"
+                  << "  4. Disable mesh stretching with stretch_y=false\n";
+        std::exit(1);
+    }
+
+    if (poisson_solver == PoissonSolverType::FFT1D) {
+        if (stretch_y) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft1d with stretch_y=true.\n"
+                      << "\n"
+                      << "The FFT1D solver performs a 1D FFT followed by 2D Helmholtz solves.\n"
+                      << "Y-direction stretching would require non-uniform tridiagonal systems\n"
+                      << "in the Helmholtz step, which is not currently supported.\n"
+                      << "\n"
+                      << "Options:\n"
+                      << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
+                      << "  2. Use --poisson hypre (HYPRE supports stretched meshes)\n"
+                      << "  3. Use --poisson auto (will select a compatible solver)\n"
+                      << "  4. Disable mesh stretching with stretch_y=false\n";
+            std::exit(1);
+        }
+        if (stretch_z) {
+            std::cerr << "ERROR: Invalid configuration: poisson_solver=fft1d with stretch_z=true.\n"
+                      << "\n"
+                      << "The FFT1D solver performs a 1D FFT followed by 2D Helmholtz solves.\n"
+                      << "Z-direction stretching would require non-uniform systems in the Helmholtz\n"
+                      << "step, which is not currently supported.\n"
+                      << "\n"
+                      << "Options:\n"
+                      << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
+                      << "  2. Use --poisson hypre (HYPRE supports stretched meshes)\n"
+                      << "  3. Use --poisson auto (will select a compatible solver)\n"
+                      << "  4. Disable z-stretching with stretch_z=false\n";
+            std::exit(1);
+        }
+    }
+
+    // Validate turbulence model configuration
+    const bool is_transport_model =
+        (turb_model == TurbulenceModelType::SSTKOmega ||
+         turb_model == TurbulenceModelType::KOmega ||
+         turb_model == TurbulenceModelType::EARSM_WJ ||
+         turb_model == TurbulenceModelType::EARSM_GS ||
+         turb_model == TurbulenceModelType::EARSM_Pope);
+
+    // NOTE: Transport model Re check is done AFTER Reynolds number computation below,
+    // so it catches low-Re cases regardless of whether Re was specified directly
+    // or computed from (nu, dp_dx).
+
+    // Validate mesh resolution for turbulence models
+    // Transport models need reasonable resolution to resolve boundary layers
+    if (is_transport_model && Ny < 32) {
+        std::cerr << "ERROR: Invalid configuration: transport turbulence model with Ny=" << Ny << ".\n"
+                  << "\n"
+                  << "Transport-equation turbulence models require adequate wall-normal resolution\n"
+                  << "to properly resolve the boundary layer and compute wall-bounded quantities\n"
+                  << "like y+ and the turbulent kinetic energy production.\n"
+                  << "\n"
+                  << "Recommended: Ny >= 64 for RANS turbulence modeling.\n"
+                  << "Minimum: Ny >= 32.\n"
+                  << "\n"
+                  << "If this is intentional (e.g., debugging), use a simpler model:\n"
+                  << "  --model none      (laminar)\n"
+                  << "  --model baseline  (algebraic mixing length)\n";
+        std::exit(1);
+    }
+
+    // Validate blend_alpha range
+    if (blend_alpha < 0.0 || blend_alpha > 1.0) {
+        std::cerr << "ERROR: Invalid configuration: blend_alpha=" << blend_alpha << ".\n"
+                  << "\n"
+                  << "The blending factor must be in the range [0, 1]:\n"
+                  << "  blend_alpha = 0.0  →  Use baseline model only\n"
+                  << "  blend_alpha = 1.0  →  Use NN model only (default)\n"
+                  << "  0 < blend_alpha < 1  →  Linear blend between baseline and NN\n";
+        std::exit(1);
+    }
+
+    // Validate nu_t_max is positive
+    if (nu_t_max <= 0.0) {
+        std::cerr << "ERROR: Invalid configuration: nu_t_max=" << nu_t_max << ".\n"
+                  << "\n"
+                  << "The maximum eddy viscosity clipping value must be positive.\n"
+                  << "Typical values are O(1) for channel flows. Default is 1.0.\n";
+        std::exit(1);
+    }
+
+    // Validate dt is positive (prevents invalid time integration)
+    if (dt <= 0.0) {
+        std::cerr << "ERROR: Invalid configuration: dt=" << dt << ".\n"
+                  << "\n"
+                  << "The time step must be a positive value.\n";
+        std::exit(1);
+    }
+
+    // Validate CFL_max is positive (unconditional - prevents division by zero)
+    if (CFL_max <= 0.0) {
+        std::cerr << "ERROR: Invalid configuration: CFL_max=" << CFL_max << ".\n"
+                  << "\n"
+                  << "The maximum CFL number must be a positive value.\n"
+                  << "Typical values: 0.5 (conservative) to 1.0 (maximum theoretical limit).\n";
+        std::exit(1);
+    }
+
+    // Validate CFL_max <= 1 for adaptive time stepping
+    if (adaptive_dt && CFL_max > 1.0) {
+        std::cerr << "ERROR: Invalid configuration: CFL_max=" << CFL_max << " with adaptive_dt=true.\n"
+                  << "\n"
+                  << "For stable explicit time integration, CFL must be in (0, 1].\n"
+                  << "Recommended values:\n"
+                  << "  CFL_max = 0.5  (default, conservative)\n"
+                  << "  CFL_max = 0.8  (aggressive but usually stable)\n"
+                  << "  CFL_max = 1.0  (maximum theoretical limit)\n";
+        std::exit(1);
+    }
+
+    // Validate turb_guard_interval
+    if (turb_guard_enabled && turb_guard_interval < 1) {
+        std::cerr << "ERROR: Invalid configuration: turb_guard_interval=" << turb_guard_interval << ".\n"
+                  << "\n"
+                  << "The turbulence guard check interval must be >= 1.\n"
+                  << "Recommended: 5-10 (checks every N time steps for NaN/Inf values).\n";
+        std::exit(1);
+    }
+
+    // Validate poisson_abs_tol_floor is non-negative
+    if (poisson_abs_tol_floor < 0.0) {
+        std::cerr << "ERROR: Invalid configuration: poisson_abs_tol_floor=" << poisson_abs_tol_floor << ".\n"
+                  << "\n"
+                  << "The absolute tolerance floor must be non-negative.\n"
+                  << "This sets a minimum threshold for the Poisson solver convergence check.\n"
+                  << "Typical values: 0.0 (disabled) or 1e-12 to 1e-10.\n";
+        std::exit(1);
+    }
+
+    // Validate poisson_abs_tol_floor <= poisson_tol (floor should not override tolerance)
+    if (poisson_abs_tol_floor > poisson_tol) {
+        std::cerr << "ERROR: Invalid configuration: poisson_abs_tol_floor=" << poisson_abs_tol_floor
+                  << " exceeds poisson_tol=" << poisson_tol << ".\n"
+                  << "\n"
+                  << "The absolute tolerance floor must be <= poisson_tol, otherwise it becomes\n"
+                  << "the effective stopping criterion for the Poisson solver.\n";
+        std::exit(1);
+    }
+
+    // =========================================================================
+
     // Reynolds number coupling for channel flow
     // For laminar Poiseuille: U_bulk = -dp_dx * delta^2 / (3*nu)
     // Re = U_bulk * delta / nu = -dp_dx * delta^3 / (3*nu^2)
@@ -526,11 +800,32 @@ void Config::finalize() {
         if (dp_dx < 0.0) {
             Re = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
             if (verbose) {
-                std::cout << "Using default parameters: nu = " << std::scientific << nu 
+                std::cout << "Using default parameters: nu = " << std::scientific << nu
                           << " (air at 20°C), dp_dx = " << dp_dx << "\n"
                           << "Computed Re = " << Re << "\n" << std::defaultfloat;
             }
         }
+    }
+
+    // =========================================================================
+    // POST-COMPUTATION VALIDATION
+    // =========================================================================
+
+    // Transport models with very low Reynolds numbers may have numerical issues
+    // The k-omega models are designed for turbulent flows (Re > ~2000 for channels)
+    // This check uses the COMPUTED Re, so it catches low-Re cases regardless of
+    // whether Re was specified directly or computed from (nu, dp_dx).
+    if (is_transport_model && Re < 500) {
+        std::cerr << "ERROR: Invalid configuration: transport turbulence model with Re=" << Re << ".\n"
+                  << "\n"
+                  << "Transport-equation turbulence models (k-omega, SST, EARSM) are designed\n"
+                  << "for turbulent flows. At Re=" << Re << ", the flow is likely laminar or\n"
+                  << "transitional, and these models may produce numerical instabilities.\n"
+                  << "\n"
+                  << "For low Reynolds number flows, use one of:\n"
+                  << "  --model none      (laminar, no turbulence model)\n"
+                  << "  --model baseline  (simple mixing length, if mild turbulence expected)\n";
+        std::exit(1);
     }
 }
 
@@ -555,8 +850,17 @@ void Config::print() const {
     std::cout << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
               << "Time stepping: Explicit Euler + Projection\n"
-              << "Poisson solver: Multigrid (warm-start enabled)\n"
-              << "Convective scheme: " 
+              << "Poisson solver: ";
+    switch (poisson_solver) {
+        case PoissonSolverType::Auto: std::cout << "Auto"; break;
+        case PoissonSolverType::FFT: std::cout << "FFT (doubly-periodic)"; break;
+        case PoissonSolverType::FFT2D: std::cout << "FFT2D (2D mesh)"; break;
+        case PoissonSolverType::FFT1D: std::cout << "FFT1D (singly-periodic)"; break;
+        case PoissonSolverType::HYPRE: std::cout << "HYPRE PFMG"; break;
+        case PoissonSolverType::MG: std::cout << "Multigrid"; break;
+    }
+    std::cout << "\n"
+              << "Convective scheme: "
               << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
               << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
               << "Turbulence model: ";

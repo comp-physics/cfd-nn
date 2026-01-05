@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-# always run from repo root regardless of cwd
-repo="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-exec bash "$repo/tools/slurm_packet.sh" "${1:-}"

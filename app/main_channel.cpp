@@ -322,7 +322,10 @@ int main(int argc, char** argv) {
             solver.set_turbulence_model(std::move(turb_model));
         }
     }
-    
+
+    // Print final solver configuration (after all setup)
+    solver.print_solver_info();
+
     // Branch based on simulation mode
     double final_residual = 0.0;
     int total_iterations = 0;
