@@ -23,27 +23,12 @@
 #include <cstring>  // for memcpy in debug
 #include <cassert>
 #include <limits>   // for std::numeric_limits (NaN handling)
-#include <cstdlib>  // for std::getenv
 
 namespace nncfd {
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
-
-    // Check environment variable for smoother selection (for CI/debugging)
-    // MG_SMOOTHER=jacobi|chebyshev (default: chebyshev)
-    const char* smoother_env = std::getenv("MG_SMOOTHER");
-    if (smoother_env) {
-        std::string s(smoother_env);
-        if (s == "jacobi" || s == "JACOBI") {
-            smoother_type_ = MGSmootherType::Jacobi;
-            std::cout << "[MG] Using Jacobi smoother (MG_SMOOTHER=jacobi)\n";
-        } else if (s == "chebyshev" || s == "CHEBYSHEV") {
-            smoother_type_ = MGSmootherType::Chebyshev;
-            std::cout << "[MG] Using Chebyshev smoother (MG_SMOOTHER=chebyshev)\n";
-        }
-    }
-
+    
 #ifdef USE_GPU_OFFLOAD
     // Initialize GPU buffers immediately - will throw if no GPU available
     initialize_gpu_buffers();
@@ -605,10 +590,9 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 }
 
 void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double omega) {
-    // Optimized weighted Jacobi smoother - UNIFIED CPU/GPU implementation
-    // Uses in-place red-black ordering to avoid ping-pong copies.
-    // Red cells depend only on black cells and vice versa, so in-place is safe.
-    // BC applied at start (ghost cells valid for first sweep) and end (consistent state).
+    // Weighted Jacobi smoother - UNIFIED CPU/GPU implementation
+    // Uses ping-pong buffers (u <-> tmp) for identical arithmetic on both paths.
+    // GPU uses omp target; CPU uses same algorithm for bitwise consistency.
     NVTX_SCOPE_POISSON("mg:smooth_jacobi");
 
     auto& grid = *levels_[level];
@@ -625,265 +609,95 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     const int Nz = grid.Nz;
     const int stride = Nx + 2;
     const int plane_stride = (Nx + 2) * (Ny + 2);
+    const size_t total_size = static_cast<size_t>(Nx + 2) *
+                              static_cast<size_t>(Ny + 2) *
+                              static_cast<size_t>(Nz + 2);
 
-    // Use raw pointers for unified CPU/GPU code
+    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
 #ifdef USE_GPU_OFFLOAD
     double* u_ptr = u_ptrs_[level];
+    double* tmp_ptr = tmp_ptrs_[level];  // Device-only scratch buffer
     const double* f_ptr = f_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
+    // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
+    #define JACOBI_TARGET_U_TO_TMP_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_U_TO_TMP_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+    #define JACOBI_TARGET_COPY \
+        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
 #else
     double* u_ptr = grid.u.data().data();
+    double* tmp_ptr = grid.r.data().data();  // Reuse r as scratch buffer
     const double* f_ptr = grid.f.data().data();
+    // CPU: no pragmas needed
+    #define JACOBI_TARGET_U_TO_TMP_2D
+    #define JACOBI_TARGET_TMP_TO_U_2D
+    #define JACOBI_TARGET_U_TO_TMP_3D
+    #define JACOBI_TARGET_TMP_TO_U_3D
+    #define JACOBI_TARGET_COPY
 #endif
 
-    // Apply BC before first sweep - ghost cells must be valid for red sweep reads
-    apply_bc(level);
-
-    // In-place Jacobi using red-black ordering
-    // Each iteration: update all red cells, then all black cells
-    // This is mathematically equivalent to standard Jacobi but avoids copies
-    if (is_2d) {
-        for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j even) - Jacobi update
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    if (((i + j) & 1) == 0) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
-                    }
-                }
-            }
-
-            // Black sweep (i + j odd) - Jacobi update
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    if (((i + j) & 1) == 1) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
-                    }
-                }
-            }
-
-            // Apply BC after each iteration - ghosts must be refreshed for next iteration
-            apply_bc(level);
-        }
-    } else {
-        // 3D path
-        for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j + k even)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int k = Ng; k < Nz + Ng; ++k) {
+    // Ping-pong Jacobi: u -> tmp, then tmp -> u
+    // Identical algorithm for CPU and GPU - only pragmas differ
+    for (int iter = 0; iter < iterations; ++iter) {
+        if (iter % 2 == 0) {
+            // u -> tmp
+            if (is_2d) {
+                JACOBI_TARGET_U_TO_TMP_2D
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j + k) & 1) == 0) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
+                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
+                                         - f_ptr[idx]) / coeff;
+                        tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
+                }
+            } else {
+                JACOBI_TARGET_U_TO_TMP_3D
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
                             int idx = k * plane_stride + j * stride + i;
                             double u_old = u_ptr[idx];
                             double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
                                              + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
                                              + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
                                              - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                            tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
                         }
                     }
                 }
             }
-
-            // Black sweep (i + j + k odd)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int k = Ng; k < Nz + Ng; ++k) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j + k) & 1) == 1) {
-                            int idx = k * plane_stride + j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                             + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                             + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
-                                             - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
-                        }
-                    }
-                }
-            }
-
-            // Apply BC after each iteration - ghosts must be refreshed for next iteration
-            apply_bc(level);
-        }
-    }
-}
-
-void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
-    // Chebyshev polynomial smoother for optimal high-frequency damping
-    // Uses Chebyshev roots to compute optimal relaxation parameters.
-    // For degree=4, this is equivalent to ~10 standard Jacobi iterations.
-    // Key insight: Chebyshev minimizes the max error over a frequency range.
-    NVTX_SCOPE_POISSON("mg:smooth_chebyshev");
-
-    auto& grid = *levels_[level];
-    const double dx2 = grid.dx * grid.dx;
-    const double dy2 = grid.dy * grid.dy;
-    const double dz2 = grid.dz * grid.dz;
-    const bool is_2d = grid.is2D();
-    const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
-                               : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
-
-    const int Ng = 1;
-    const int Nx = grid.Nx;
-    const int Ny = grid.Ny;
-    const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = (Nx + 2) * (Ny + 2);
-
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
-    double* u_ptr = u_ptrs_[level];
-    const double* f_ptr = f_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
-#else
-    double* u_ptr = grid.u.data().data();
-    const double* f_ptr = grid.f.data().data();
-#endif
-
-    // Chebyshev optimal relaxation parameters for high-frequency smoothing
-    // For MG smoothing, we target high-frequency errors with λ ∈ [λ_lo, λ_hi]
-    //
-    // For normalized D^{-1}A (7-point Laplacian), eigenvalues are ALWAYS in [0, 2]
-    // regardless of grid anisotropy. This is because the diagonal D = 2/dx² + 2/dy² + 2/dz²
-    // exactly normalizes the off-diagonal contributions.
-    //
-    // We use λ_lo = 1.0 (target upper half of spectrum) and λ_hi = 2.0.
-    // ω_k = 1 / (c * cos((2k+1)π/(2n)) + d) where d = (λ_hi + λ_lo)/2, c = (λ_hi - λ_lo)/2
-
-    // Fixed eigenvalue bounds for D^{-1}A: [0, 2] for any grid aspect ratio
-    constexpr double lambda_max = 2.0;
-    constexpr double lambda_lo = 1.0;  // Target upper half of spectrum for smoothing
-
-    // Chebyshev parameters
-    const double d = (lambda_max + lambda_lo) / 2.0;
-    const double c = (lambda_max - lambda_lo) / 2.0;
-
-    // Chebyshev roots: cos((2k+1)π/(2n)) for n=4
-    constexpr double cheb_roots[4] = {
-        0.92387953251128675613,   // cos(π/8)
-        0.38268343236508977173,   // cos(3π/8)
-        -0.38268343236508977173,  // cos(5π/8)
-        -0.92387953251128675613   // cos(7π/8)
-    };
-
-    // Compute ω values dynamically based on level-specific bounds
-    double omega_4[4];
-    for (int k = 0; k < 4; ++k) {
-        const double theta = c * cheb_roots[k] + d;
-        omega_4[k] = 1.0 / theta;
-        // Safety clamp: ensure ω < 1 for stability
-        if (omega_4[k] >= 1.0) {
-            omega_4[k] = 0.95;  // Fallback to safe damped Jacobi
-        }
-    }
-
-    // Apply BC before first sweep - ghost cells must be valid for red sweep reads
-    apply_bc(level);
-
-    // Perform degree=4 Chebyshev sub-iterations with optimal ω values
-    for (int k = 0; k < degree && k < 4; ++k) {
-        const double omega = omega_4[k];
-
-        if (is_2d) {
-            // Red sweep (i + j even) - Jacobi update with Chebyshev ω
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    if (((i + j) & 1) == 0) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
-                    }
-                }
-            }
-
-            // Black sweep (i + j odd) - Jacobi update with Chebyshev ω
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    if (((i + j) & 1) == 1) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
-                    }
-                }
-            }
-
         } else {
-            // 3D path
-            // Red sweep (i + j + k even)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int k_idx = Ng; k_idx < Nz + Ng; ++k_idx) {
+            // tmp -> u
+            if (is_2d) {
+                JACOBI_TARGET_TMP_TO_U_2D
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j + k_idx) & 1) == 0) {
-                            int idx = k_idx * plane_stride + j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                             + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                             + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
-                                             - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
-                        }
+                        int idx = j * stride + i;
+                        double u_old = tmp_ptr[idx];
+                        double u_jacobi = ((tmp_ptr[idx+1] + tmp_ptr[idx-1]) / dx2
+                                         + (tmp_ptr[idx+stride] + tmp_ptr[idx-stride]) / dy2
+                                         - f_ptr[idx]) / coeff;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
                     }
                 }
-            }
-
-            // Black sweep (i + j + k odd)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int k_idx = Ng; k_idx < Nz + Ng; ++k_idx) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j + k_idx) & 1) == 1) {
-                            int idx = k_idx * plane_stride + j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_jacobi = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                             + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                             + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
+            } else {
+                JACOBI_TARGET_TMP_TO_U_3D
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            int idx = k * plane_stride + j * stride + i;
+                            double u_old = tmp_ptr[idx];
+                            double u_jacobi = ((tmp_ptr[idx+1] + tmp_ptr[idx-1]) / dx2
+                                             + (tmp_ptr[idx+stride] + tmp_ptr[idx-stride]) / dy2
+                                             + (tmp_ptr[idx+plane_stride] + tmp_ptr[idx-plane_stride]) / dz2
                                              - f_ptr[idx]) / coeff;
                             u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
                         }
@@ -892,9 +706,31 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
             }
         }
 
-        // Apply BC after each sub-iteration - ghosts must be refreshed
+        // After even iter: result in tmp_ptr; after odd iter: result in u_ptr
+        // Copy result to u_ptr for BC application
+        if (iter % 2 == 0) {
+            JACOBI_TARGET_COPY
+            for (size_t idx = 0; idx < total_size; ++idx) {
+                u_ptr[idx] = tmp_ptr[idx];
+            }
+        }
         apply_bc(level);
+
+        // Copy updated BCs back to tmp for next iteration (if not last)
+        if (iter % 2 == 0 && iter + 1 < iterations) {
+            JACOBI_TARGET_COPY
+            for (size_t idx = 0; idx < total_size; ++idx) {
+                tmp_ptr[idx] = u_ptr[idx];
+            }
+        }
     }
+
+    // Clean up macros
+    #undef JACOBI_TARGET_U_TO_TMP_2D
+    #undef JACOBI_TARGET_TMP_TO_U_2D
+    #undef JACOBI_TARGET_U_TO_TMP_3D
+    #undef JACOBI_TARGET_TMP_TO_U_3D
+    #undef JACOBI_TARGET_COPY
 }
 
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
@@ -1297,39 +1133,19 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
-    const int num_levels = static_cast<int>(levels_.size());
-
-    if (level == num_levels - 1) {
-        // Coarsest level - solve approximately with many Jacobi iterations
-        // Chebyshev is less effective on very coarse grids, use standard Jacobi
+    if (level == static_cast<int>(levels_.size()) - 1) {
+        // Coarsest level - solve approximately
         // With MIN_COARSE_SIZE=8, coarsest is 8x8 (64 points)
+        // 20 iterations is sufficient for good convergence
         smooth_jacobi(level, 20, 0.8);
         return;
     }
 
-    // Per-level Chebyshev degree heuristic:
-    // - Fine levels (0-1): degree 2-3 (memory-bound, fewer passes preferred)
-    // - Mid levels: degree 4 (balanced)
-    // - Near-coarse levels: degree 4-6 (cheap, better coarse correction)
-    auto get_chebyshev_degree = [num_levels](int lvl) -> int {
-        if (lvl <= 1) return 3;           // Fine levels: degree 3
-        if (lvl >= num_levels - 2) return 4;  // Near-coarse: degree 4
-        return 4;                          // Mid levels: degree 4
-    };
-
-    // Pre-smoothing: select based on smoother_type_
-    if (smoother_type_ == MGSmootherType::Chebyshev) {
-        const int degree = get_chebyshev_degree(level);
-        for (int s = 0; s < nu1; ++s) {
-            smooth_chebyshev(level, degree);
-        }
-    } else {
-        // Jacobi fallback (for debugging/reference)
-        for (int s = 0; s < nu1; ++s) {
-            smooth_jacobi(level, 2, 0.8);  // 2 iterations per sweep
-        }
-    }
-
+    // Pre-smoothing with weighted Jacobi
+    // Jacobi has 1 target region per iteration (vs 2 for RB-SOR)
+    // omega=0.8 (damped Jacobi) for stability
+    smooth_jacobi(level, nu1, 0.8);
+    
     // Compute residual
     compute_residual(level);
 
@@ -1339,15 +1155,15 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
 
     // Restrict to coarse grid
     restrict_residual(level);
-
+    
     // Zero coarse grid solution
     auto& coarse = *levels_[level + 1];
-
+    
 #ifdef USE_GPU_OFFLOAD
     assert(gpu_ready_ && "GPU must be initialized");
     const size_t size_c = level_sizes_[level + 1];
     double* u_coarse = u_ptrs_[level + 1];
-
+    
     #pragma omp target teams distribute parallel for \
         map(present: u_coarse[0:size_c])
     for (int idx = 0; idx < (int)size_c; ++idx) {
@@ -1363,30 +1179,18 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
         }
     }
 #endif
-
+    
     // Recursive call to coarser level
     vcycle(level + 1, nu1, nu2);
 
-    // Prolongate correction to fine level
+    // Prolongate correction and apply boundary conditions
+    // (BC needed before post-smoothing reads ghost cells)
     prolongate_correction(level + 1);
+    apply_bc(level);
 
-    // Post-smoothing: select based on smoother_type_ (projection mode: nu2=0 skips this)
-    // Smoothers apply BC at end, so we only need explicit BC if no post-smoothing
+    // Post-smoothing with weighted Jacobi (projection mode: nu2=0 skips this)
     if (nu2 > 0) {
-        if (smoother_type_ == MGSmootherType::Chebyshev) {
-            const int degree = get_chebyshev_degree(level);
-            for (int s = 0; s < nu2; ++s) {
-                smooth_chebyshev(level, degree);
-            }
-        } else {
-            // Jacobi fallback (for debugging/reference)
-            for (int s = 0; s < nu2; ++s) {
-                smooth_jacobi(level, 2, 0.8);
-            }
-        }
-    } else {
-        // No post-smoothing - must apply BC explicitly after prolongation
-        apply_bc(level);
+        smooth_jacobi(level, nu2, 0.8);
     }
 }
 
