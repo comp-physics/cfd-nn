@@ -33,15 +33,21 @@ jobs:
     - name: Extract HYPRE version
       id: hypre_version
       run: |
-        HYPRE_VERSION=$(grep -oP 'GIT_TAG v\K[\d.]+' CMakeLists.txt || echo "unknown")
+        HYPRE_VERSION=$(grep -oP 'GIT_TAG v\K[\d.]+' CMakeLists.txt)
+        if [ -z "$HYPRE_VERSION" ]; then
+          echo "ERROR: Could not extract HYPRE version from CMakeLists.txt"
+          echo "Expected pattern: GIT_TAG v<version>"
+          exit 1
+        fi
         echo "version=${HYPRE_VERSION}" >> $GITHUB_OUTPUT
         echo "Detected HYPRE version: ${HYPRE_VERSION}"
 
-    # Cache HYPRE builds (slow to compile, rarely changes)
+    # Restore HYPRE cache (slow to compile, rarely changes)
     # Key includes HYPRE version extracted from CMakeLists.txt and GPU architecture
     # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
-    - name: Cache HYPRE builds
-      uses: actions/cache@v4
+    # Using separate restore/save steps as save-always is deprecated
+    - name: Restore HYPRE cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           build_cpu/_deps
@@ -51,7 +57,6 @@ jobs:
         key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
         restore-keys: |
           hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-
-        save-always: true
 
     # Clean hypre-subbuild after cache restore - these contain CMakeCache.txt with
     # absolute paths that break when restored on a different runner
@@ -101,6 +106,19 @@ jobs:
         echo ""
         echo "=== Test binaries ==="
         ls -lh build_gpu/test_* 2>/dev/null || echo "No test binaries found"
+
+    # Save HYPRE cache (always, even on failure - HYPRE builds are expensive)
+    # This replaces the deprecated save-always parameter
+    - name: Save HYPRE cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          build_cpu/_deps
+          build_gpu/_deps
+          build_cpu_hypre/_deps
+          build_gpu_hypre/_deps
+        key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
 
     - name: Cleanup (preserve HYPRE cache)
       if: always()
