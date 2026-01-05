@@ -439,6 +439,9 @@ And the relevant turbulence model papers (see individual example READMEs).
 | 02 | Model Comparison | Model evaluation | 25 min | [*][*] | All 5 |
 | 03 | Grid Refinement | Convergence study | 25 min | [*][*][*] | None |
 | 04 | Validation Suite | Benchmarking | 35 min | [*][*] | None, Baseline |
+| 05 | SST Channel | Transport equations | 20-60 min | [*][*][*] | SST k-ω |
+| 06 | Steady RANS | Model comparison | 15 min | [*][*] | Baseline, GEP, SST |
+| 07 | Unsteady Channel | Time-accurate | 5 min | [*][*] | None (laminar) |
 | 08 | Duct Flow | 3D Verification | 5-20 min | [*][*] | None |
 | 09 | Taylor-Green 3D | 3D Unsteady | 5-30 min | [*][*] | None |
 
