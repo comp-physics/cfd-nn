@@ -6,21 +6,22 @@
 #ifdef USE_GPU_OFFLOAD
 #include <cuda_runtime.h>
 #include <cufft.h>
+#include <cusparse.h>
 #endif
 
 namespace nncfd {
 
 /// 2D FFT Poisson solver for 2D meshes with periodic x, wall-bounded y
-/// Uses 1D FFT in x + Jacobi iteration for 1D Helmholtz in y
+/// Uses 1D FFT in x + cuSPARSE batched tridiagonal solve in y
 /// Optimal for 2D channel flows
 ///
 /// Algorithm:
 /// 1. Pack RHS from ghost layout to contiguous x-lines
-/// 2. 1D R2C FFT along x (batched over y)
-/// 3. For each mode m: solve 1D Helmholtz in y via Jacobi iteration
-///    (d²p/dy² - λ_x[m]*p = f_hat[m])
-/// 4. 1D C2R IFFT
-/// 5. Unpack solution to ghost layout
+/// 2. Subtract mean (for Neumann-Neumann singularity)
+/// 3. 1D R2C FFT along x (batched over y)
+/// 4. Batched tridiagonal solve: (d²/dy² - λ_x[m])*p_hat = rhs_hat
+/// 5. 1D C2R IFFT
+/// 6. Unpack solution to ghost layout with BCs
 class FFT2DPoissonSolver {
 public:
     explicit FFT2DPoissonSolver(const Mesh& mesh);
@@ -66,26 +67,33 @@ private:
     cufftHandle fft_plan_c2r_ = 0;
     bool plans_created_ = false;
 
-    // Device buffers
-    double* in_pack_ = nullptr;              // Packed real input [Ny * Nx]
-    double* out_pack_ = nullptr;             // Packed real output [Ny * Nx]
-    cufftDoubleComplex* rhs_hat_ = nullptr;  // Fourier coefficients [N_modes * Ny]
-    cufftDoubleComplex* p_hat_ = nullptr;    // Solution in Fourier space [N_modes * Ny]
+    // cuSPARSE for batched tridiagonal solve
+    cusparseHandle_t cusparse_handle_ = nullptr;
+    void* cusparse_buffer_ = nullptr;
+    size_t cusparse_buffer_size_ = 0;
 
-    // Work buffers for Jacobi iteration (split real/imag)
-    double* work_real_ = nullptr;
-    double* work_imag_ = nullptr;
+    // Precomputed tridiagonal coefficients [N_modes * Ny]
+    cufftDoubleComplex* tri_dl_ = nullptr;  // Lower diagonal
+    cufftDoubleComplex* tri_d_ = nullptr;   // Main diagonal
+    cufftDoubleComplex* tri_du_ = nullptr;  // Upper diagonal
+
+    // Device buffers (cudaMallocManaged for OMP interop)
+    double* in_pack_ = nullptr;              // Packed real input [Nx * Ny]
+    double* out_pack_ = nullptr;             // Packed real output [Nx * Ny]
+    cufftDoubleComplex* rhs_hat_ = nullptr;  // Fourier coefficients [N_modes * Ny]
 
     // Precomputed eigenvalues for x direction
     double* lambda_x_ = nullptr;  // [N_modes]
 
-    // Mean subtraction buffers
-    double* partial_sums_ = nullptr;
-    double* sum_dev_ = nullptr;
-    int num_blocks_ = 0;
+    // Y-direction stencil coefficients
+    double* tri_lower_ = nullptr;     // [Ny] - lower diagonal (a_j)
+    double* tri_upper_ = nullptr;     // [Ny] - upper diagonal (c_j)
+    double* tri_diag_base_ = nullptr; // [Ny] - base diagonal (before eigenvalue shift)
 
     void initialize_fft();
+    void initialize_cusparse();
     void initialize_eigenvalues();
+    void precompute_tridiagonal();
     void cleanup();
 #endif
 };

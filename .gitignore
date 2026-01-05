@@ -119,4 +119,5 @@ data/models/tbnn_hills_real/
 generate_channel_npz.py
 generate_phll_npz.py
 mcconkey_npz/
+profile_*
 

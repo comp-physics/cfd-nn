@@ -14,264 +14,6 @@
 namespace nncfd {
 
 // ============================================================================
-// CUDA Kernels for 2D FFT Poisson Solver
-// ============================================================================
-
-#ifdef USE_GPU_OFFLOAD
-
-// Block-level reduction using warp shuffle
-__device__ __forceinline__ double warpReduceSum_2d(double val) {
-    for (int offset = 16; offset > 0; offset /= 2) {
-        val += __shfl_down_sync(0xffffffff, val, offset);
-    }
-    return val;
-}
-
-__device__ __forceinline__ double blockReduceSum_2d(double val) {
-    static __shared__ double shared[32];
-    int lane = threadIdx.x % 32;
-    int wid = threadIdx.x / 32;
-
-    val = warpReduceSum_2d(val);
-
-    if (lane == 0) shared[wid] = val;
-    __syncthreads();
-
-    val = (threadIdx.x < blockDim.x / 32) ? shared[lane] : 0.0;
-    if (wid == 0) val = warpReduceSum_2d(val);
-
-    return val;
-}
-
-// Pack kernel: ghost layout [j+1][i+1] -> packed [j*Nx + i]
-__global__ void kernel_pack_2d(
-    const double* __restrict__ rhs_ghost,
-    double* __restrict__ in_pack,
-    double* __restrict__ partial_sums,
-    int Nx, int Ny, int stride)
-{
-    extern __shared__ double sdata[];
-
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = Nx * Ny;
-
-    double local_sum = 0.0;
-
-    if (tid < total) {
-        const int i = tid % Nx;
-        const int j = tid / Nx;
-
-        const size_t g = (size_t)(j + 1) * stride + (i + 1);
-
-        double val = rhs_ghost[g];
-        in_pack[tid] = val;
-        local_sum = val;
-    }
-
-    sdata[threadIdx.x] = local_sum;
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            sdata[threadIdx.x] += sdata[threadIdx.x + s];
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        partial_sums[blockIdx.x] = sdata[0];
-    }
-}
-
-// Final reduction kernel
-__global__ void kernel_reduce_sum_2d(
-    const double* __restrict__ partial_sums,
-    double* __restrict__ sum_out,
-    int num_blocks)
-{
-    extern __shared__ double sdata[];
-
-    double sum = 0.0;
-    for (int i = threadIdx.x; i < num_blocks; i += blockDim.x) {
-        sum += partial_sums[i];
-    }
-    sdata[threadIdx.x] = sum;
-    __syncthreads();
-
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            sdata[threadIdx.x] += sdata[threadIdx.x + s];
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        sum_out[0] = sdata[0];
-    }
-}
-
-// Subtract mean from packed array
-__global__ void kernel_subtract_mean_2d(
-    double* __restrict__ in_pack,
-    const double* __restrict__ sum_dev,
-    int total)
-{
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < total) {
-        double mean = sum_dev[0] / (double)total;
-        in_pack[tid] -= mean;
-    }
-}
-
-// Unpack kernel with BC application
-__global__ void kernel_unpack_and_bc_2d(
-    const double* __restrict__ out_pack,
-    double* __restrict__ p_ghost,
-    int Nx, int Ny, int stride,
-    double invNx,
-    int bc_y_lo, int bc_y_hi)
-{
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = Nx * Ny;
-    if (tid >= total) return;
-
-    const int i = tid % Nx;
-    const int j = tid / Nx;
-
-    const double val = out_pack[tid] * invNx;
-
-    const size_t g = (size_t)(j + 1) * stride + (i + 1);
-    p_ghost[g] = val;
-
-    // x-ghosts (periodic)
-    if (i == 0) {
-        double src_val = out_pack[j * Nx + (Nx - 1)] * invNx;
-        p_ghost[(j + 1) * stride + 0] = src_val;
-    }
-    if (i == Nx - 1) {
-        double src_val = out_pack[j * Nx + 0] * invNx;
-        p_ghost[(j + 1) * stride + (Nx + 1)] = src_val;
-    }
-
-    // y-ghosts (Neumann: copy, Dirichlet: negate)
-    if (j == 0) {
-        if (bc_y_lo == 1) {  // Neumann
-            p_ghost[0 * stride + (i + 1)] = val;
-        } else {
-            p_ghost[0 * stride + (i + 1)] = -val;
-        }
-    }
-    if (j == Ny - 1) {
-        if (bc_y_hi == 1) {  // Neumann
-            p_ghost[(Ny + 1) * stride + (i + 1)] = val;
-        } else {
-            p_ghost[(Ny + 1) * stride + (i + 1)] = -val;
-        }
-    }
-}
-
-// 1D Jacobi iteration for Helmholtz equation in y-direction
-// Solves: (d²/dy² - λ[m]) p = f for all modes m simultaneously
-// Layout: data[m * Ny + j] where m = mode, j = y-index
-__global__ void kernel_helmholtz_jacobi_1d(
-    const double* __restrict__ rhs_real,
-    const double* __restrict__ rhs_imag,
-    const double* __restrict__ p_real_in,
-    const double* __restrict__ p_imag_in,
-    double* __restrict__ p_real_out,
-    double* __restrict__ p_imag_out,
-    const double* __restrict__ lambda,
-    int N_modes, int Ny,
-    double ay,  // 1/dy²
-    double omega,
-    int bc_y_lo, int bc_y_hi)
-{
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = N_modes * Ny;
-    if (tid >= total) return;
-
-    const int j = tid % Ny;
-    const int m = tid / Ny;
-    const int idx = m * Ny + j;
-
-    // Diagonal: D = 2*ay + λ[m]
-    double D = 2.0 * ay + lambda[m];
-
-    // Neumann BC: reduce diagonal at boundaries
-    if (j == 0 && bc_y_lo == 1) D -= ay;
-    if (j == Ny - 1 && bc_y_hi == 1) D -= ay;
-
-    // Protect against singular m=0 mode
-    if (D < 1e-14) D = 1e-14;
-    double inv_D = 1.0 / D;
-
-    double p_r = p_real_in[idx];
-    double p_i = p_imag_in[idx];
-
-    // Neighbor contributions
-    double sum_r = 0.0, sum_i = 0.0;
-
-    if (j > 0) {
-        sum_r += ay * p_real_in[idx - 1];
-        sum_i += ay * p_imag_in[idx - 1];
-    }
-    if (j < Ny - 1) {
-        sum_r += ay * p_real_in[idx + 1];
-        sum_i += ay * p_imag_in[idx + 1];
-    }
-
-    // Ap = D*p - sum_neighbors
-    double Ap_r = D * p_r - sum_r;
-    double Ap_i = D * p_i - sum_i;
-
-    // Residual = b - Ap (note: we negate RHS for -Laplacian)
-    double res_r = -rhs_real[idx] - Ap_r;
-    double res_i = -rhs_imag[idx] - Ap_i;
-
-    // Jacobi update
-    p_real_out[idx] = p_r + omega * res_r * inv_D;
-    p_imag_out[idx] = p_i + omega * res_i * inv_D;
-}
-
-// Pin m=0, j=0 to zero for gauge (singular Neumann case)
-__global__ void kernel_pin_zero_mode_2d(
-    double* __restrict__ p_real,
-    double* __restrict__ p_imag,
-    int Ny)
-{
-    p_real[0] = 0.0;
-    p_imag[0] = 0.0;
-}
-
-// Convert complex array to split real/imag
-__global__ void kernel_complex_to_split_2d(
-    const cufftDoubleComplex* __restrict__ c,
-    double* __restrict__ real,
-    double* __restrict__ imag,
-    int total)
-{
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= total) return;
-    real[tid] = c[tid].x;
-    imag[tid] = c[tid].y;
-}
-
-// Convert split real/imag to complex array
-__global__ void kernel_split_to_complex_2d(
-    const double* __restrict__ real,
-    const double* __restrict__ imag,
-    cufftDoubleComplex* __restrict__ c,
-    int total)
-{
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= total) return;
-    c[tid].x = real[tid];
-    c[tid].y = imag[tid];
-}
-
-#endif // USE_GPU_OFFLOAD
-
-// ============================================================================
 // FFT2DPoissonSolver Implementation
 // ============================================================================
 
@@ -291,6 +33,8 @@ FFT2DPoissonSolver::FFT2DPoissonSolver(const Mesh& mesh)
 #ifdef USE_GPU_OFFLOAD
     initialize_fft();
     initialize_eigenvalues();
+    precompute_tridiagonal();
+    initialize_cusparse();
 #endif
 }
 
@@ -305,8 +49,71 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     if (x_lo != PoissonBC::Periodic || x_hi != PoissonBC::Periodic) {
         throw std::runtime_error("FFT2DPoissonSolver: x must be periodic");
     }
+
+    // Check if BCs actually changed
+    bool bc_changed = (bc_y_lo_ != y_lo || bc_y_hi_ != y_hi);
+
     bc_y_lo_ = y_lo;
     bc_y_hi_ = y_hi;
+
+#ifdef USE_GPU_OFFLOAD
+    // Recompute tridiagonal matrices if BCs changed and already initialized
+    if (bc_changed && tri_lower_ != nullptr) {
+        // Update y-direction base coefficients with new BCs
+        const double invDy2 = 1.0 / (dy_ * dy_);
+        for (int j = 0; j < Ny_; ++j) {
+            double aS = invDy2;
+            double aN = invDy2;
+
+            if (j == 0 && bc_y_lo_ == PoissonBC::Neumann) {
+                aS = 0.0;
+            }
+            if (j == Ny_ - 1 && bc_y_hi_ == PoissonBC::Neumann) {
+                aN = 0.0;
+            }
+
+            tri_lower_[j] = aS;
+            tri_upper_[j] = aN;
+            tri_diag_base_[j] = -(aS + aN);
+        }
+        cudaDeviceSynchronize();
+
+        // Rebuild cuSPARSE tridiagonal matrices with new coefficients
+        double* lam_x = lambda_x_;
+        double* aS = tri_lower_;
+        double* aN = tri_upper_;
+        double* diag_base = tri_diag_base_;
+        cufftDoubleComplex* dl = tri_dl_;
+        cufftDoubleComplex* d = tri_d_;
+        cufftDoubleComplex* du = tri_du_;
+        int N_modes = N_modes_;
+        int Ny = Ny_;
+
+        #pragma omp target teams distribute parallel for collapse(2) \
+            is_device_ptr(dl, d, du, lam_x, aS, aN, diag_base)
+        for (int m = 0; m < N_modes; ++m) {
+            for (int j = 0; j < Ny; ++j) {
+                const size_t idx = (size_t)m * Ny + j;
+                double shift = lam_x[m];
+                bool is_zero_mode = (m == 0);
+
+                if (is_zero_mode && j == 0) {
+                    dl[idx].x = 0.0; dl[idx].y = 0.0;
+                    d[idx].x = 1.0;  d[idx].y = 0.0;
+                    du[idx].x = 0.0; du[idx].y = 0.0;
+                } else {
+                    dl[idx].x = (j > 0) ? aS[j] : 0.0;
+                    dl[idx].y = 0.0;
+                    d[idx].x = diag_base[j] - shift;
+                    d[idx].y = 0.0;
+                    du[idx].x = (j < Ny - 1) ? aN[j] : 0.0;
+                    du[idx].y = 0.0;
+                }
+            }
+        }
+        cudaDeviceSynchronize();
+    }
+#endif
 }
 
 bool FFT2DPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
@@ -327,26 +134,15 @@ void FFT2DPoissonSolver::initialize_fft() {
     const int total = Nx_ * Ny_;
     const size_t hat_size = (size_t)N_modes_ * Ny_;
 
-    // Allocate packed buffers
-    cudaMalloc(&in_pack_, total * sizeof(double));
-    cudaMalloc(&out_pack_, total * sizeof(double));
-    cudaMalloc(&rhs_hat_, hat_size * sizeof(cufftDoubleComplex));
-    cudaMalloc(&p_hat_, hat_size * sizeof(cufftDoubleComplex));
-
-    // Work buffers for split real/imag (for Jacobi iteration)
-    cudaMalloc(&work_real_, hat_size * sizeof(double));
-    cudaMalloc(&work_imag_, hat_size * sizeof(double));
-
-    // Mean subtraction buffers
-    int block = 256;
-    num_blocks_ = (total + block - 1) / block;
-    cudaMalloc(&partial_sums_, num_blocks_ * sizeof(double));
-    cudaMalloc(&sum_dev_, sizeof(double));
+    // Allocate packed buffers using cudaMallocManaged for OMP interop
+    cudaMallocManaged(&in_pack_, total * sizeof(double));
+    cudaMallocManaged(&out_pack_, total * sizeof(double));
+    cudaMallocManaged(&rhs_hat_, hat_size * sizeof(cufftDoubleComplex));
 
     // Create cuFFT plans
     // For 2D: batch of Ny 1D FFTs along x
     // Input:  in_pack[j * Nx + i]  (row-major, i fastest)
-    // Output: rhs_hat[m * Ny + j]  (mode-major, j fastest)
+    // Output: rhs_hat[m * Ny + j]  (mode-major, j fastest for each mode)
 
     int rank = 1;
     int n[1] = { Nx_ };
@@ -386,14 +182,130 @@ void FFT2DPoissonSolver::initialize_eigenvalues() {
     // Discrete eigenvalues: lambda[m] = (2 - 2*cos(2*pi*m/Nx)) / dx^2
     const double h2 = dx_ * dx_;
 
-    std::vector<double> lambda_host(N_modes_);
+    cudaMallocManaged(&lambda_x_, N_modes_ * sizeof(double));
     for (int m = 0; m < N_modes_; ++m) {
         double theta = 2.0 * M_PI * m / Nx_;
-        lambda_host[m] = (2.0 - 2.0 * std::cos(theta)) / h2;
+        lambda_x_[m] = (2.0 - 2.0 * std::cos(theta)) / h2;
+    }
+    cudaDeviceSynchronize();
+}
+
+void FFT2DPoissonSolver::precompute_tridiagonal() {
+    // Compute y-direction tridiagonal coefficients
+    // For uniform grid: aS = aN = 1/dy^2, diag_base = -2/dy^2
+    const double invDy2 = 1.0 / (dy_ * dy_);
+
+    cudaMallocManaged(&tri_lower_, Ny_ * sizeof(double));
+    cudaMallocManaged(&tri_upper_, Ny_ * sizeof(double));
+    cudaMallocManaged(&tri_diag_base_, Ny_ * sizeof(double));
+
+    for (int j = 0; j < Ny_; ++j) {
+        double aS = invDy2;
+        double aN = invDy2;
+
+        // Apply Neumann BCs at walls
+        if (j == 0 && bc_y_lo_ == PoissonBC::Neumann) {
+            aS = 0.0;
+        }
+        if (j == Ny_ - 1 && bc_y_hi_ == PoissonBC::Neumann) {
+            aN = 0.0;
+        }
+
+        tri_lower_[j] = aS;
+        tri_upper_[j] = aN;
+        tri_diag_base_[j] = -(aS + aN);
+    }
+    cudaDeviceSynchronize();
+
+    std::cout << "[FFT2DPoissonSolver] Precomputed y-direction coefficients\n";
+}
+
+void FFT2DPoissonSolver::initialize_cusparse() {
+    // Create cuSPARSE handle
+    cusparseStatus_t status = cusparseCreate(&cusparse_handle_);
+    if (status != CUSPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("[FFT2DPoissonSolver] cuSPARSE initialization failed");
+    }
+    cusparseSetStream(cusparse_handle_, stream_);
+
+    // Allocate complex tridiagonal arrays for cuSPARSE
+    // Each mode m has Ny equations, total n_modes batches
+    const size_t tri_size = (size_t)N_modes_ * Ny_;
+    cudaMallocManaged(&tri_dl_, tri_size * sizeof(cufftDoubleComplex));
+    cudaMallocManaged(&tri_d_, tri_size * sizeof(cufftDoubleComplex));
+    cudaMallocManaged(&tri_du_, tri_size * sizeof(cufftDoubleComplex));
+
+    // Precompute the full tridiagonal matrices with eigenvalue shifts
+    // For each mode m and position j:
+    //   dl[m*Ny + j] = aS[j]                    (lower diagonal)
+    //   d[m*Ny + j]  = diag_base[j] - lambda[m] (main diagonal)
+    //   du[m*Ny + j] = aN[j]                    (upper diagonal)
+
+    double* lam_x = lambda_x_;
+    double* aS = tri_lower_;
+    double* aN = tri_upper_;
+    double* diag_base = tri_diag_base_;
+    cufftDoubleComplex* dl = tri_dl_;
+    cufftDoubleComplex* d = tri_d_;
+    cufftDoubleComplex* du = tri_du_;
+    int N_modes = N_modes_;
+    int Ny = Ny_;
+
+    #pragma omp target teams distribute parallel for collapse(2) \
+        is_device_ptr(dl, d, du, lam_x, aS, aN, diag_base)
+    for (int m = 0; m < N_modes; ++m) {
+        for (int j = 0; j < Ny; ++j) {
+            const size_t idx = (size_t)m * Ny + j;
+
+            // Eigenvalue shift for this mode
+            double shift = lam_x[m];
+            bool is_zero_mode = (m == 0);
+
+            // For zero mode (m=0), pin j=0 to zero for singularity
+            if (is_zero_mode && j == 0) {
+                dl[idx].x = 0.0;
+                dl[idx].y = 0.0;
+                d[idx].x = 1.0;
+                d[idx].y = 0.0;
+                du[idx].x = 0.0;
+                du[idx].y = 0.0;
+            } else {
+                // Lower diagonal (j > 0)
+                dl[idx].x = (j > 0) ? aS[j] : 0.0;
+                dl[idx].y = 0.0;
+
+                // Main diagonal with eigenvalue shift
+                d[idx].x = diag_base[j] - shift;
+                d[idx].y = 0.0;
+
+                // Upper diagonal (j < Ny-1)
+                du[idx].x = (j < Ny - 1) ? aN[j] : 0.0;
+                du[idx].y = 0.0;
+            }
+        }
+    }
+    cudaDeviceSynchronize();
+
+    // Query buffer size for gtsv2StridedBatch
+    status = cusparseZgtsv2StridedBatch_bufferSizeExt(
+        cusparse_handle_,
+        Ny_,             // m: system size
+        tri_dl_,         // dl: lower diagonal
+        tri_d_,          // d: main diagonal
+        tri_du_,         // du: upper diagonal
+        rhs_hat_,        // x: RHS/solution (in-place)
+        N_modes_,        // batchCount
+        Ny_,             // batchStride
+        &cusparse_buffer_size_
+    );
+
+    if (status != CUSPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("[FFT2DPoissonSolver] cuSPARSE buffer query failed");
     }
 
-    cudaMalloc(&lambda_x_, N_modes_ * sizeof(double));
-    cudaMemcpy(lambda_x_, lambda_host.data(), N_modes_ * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMalloc(&cusparse_buffer_, cusparse_buffer_size_);
+    std::cout << "[FFT2DPoissonSolver] cuSPARSE buffer: " << cusparse_buffer_size_ << " bytes\n";
+    std::cout << "[FFT2DPoissonSolver] Precomputed tridiagonal matrices\n";
 }
 
 void FFT2DPoissonSolver::cleanup() {
@@ -403,140 +315,157 @@ void FFT2DPoissonSolver::cleanup() {
     }
     if (stream_) cudaStreamDestroy(stream_);
 
+    if (cusparse_handle_) cusparseDestroy(cusparse_handle_);
+    if (cusparse_buffer_) cudaFree(cusparse_buffer_);
+
     if (in_pack_) cudaFree(in_pack_);
     if (out_pack_) cudaFree(out_pack_);
     if (rhs_hat_) cudaFree(rhs_hat_);
-    if (p_hat_) cudaFree(p_hat_);
-    if (work_real_) cudaFree(work_real_);
-    if (work_imag_) cudaFree(work_imag_);
     if (lambda_x_) cudaFree(lambda_x_);
-    if (partial_sums_) cudaFree(partial_sums_);
-    if (sum_dev_) cudaFree(sum_dev_);
+
+    if (tri_dl_) cudaFree(tri_dl_);
+    if (tri_d_) cudaFree(tri_d_);
+    if (tri_du_) cudaFree(tri_du_);
+    if (tri_lower_) cudaFree(tri_lower_);
+    if (tri_upper_) cudaFree(tri_upper_);
+    if (tri_diag_base_) cudaFree(tri_diag_base_);
 }
 
 int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
-    const int stride = Nx_ + 2;
-    const int total = Nx_ * Ny_;
-    const int hat_total = N_modes_ * Ny_;
+    const int Nx = Nx_;
+    const int Ny = Ny_;
+    const int Ng = mesh_->Nghost;
+    const int Nx_full = Nx + 2 * Ng;
+    const int Ny_full = Ny + 2 * Ng;
+    const int Nz_full = 1 + 2 * Ng;  // For 2D mesh
+    const size_t total_size = (size_t)Nx_full * Ny_full * Nz_full;
+    const double norm = 1.0 / Nx;  // FFT normalization
 
-    const int block = 256;
-    const int grid = (total + block - 1) / block;
-    const int grid_hat = (hat_total + block - 1) / block;
-    const size_t smem = block * sizeof(double);
+    double* packed = in_pack_;
+    double* unpacked = out_pack_;
 
-    // Convert OMP-mapped host pointers to CUDA device pointers
-    int device = omp_get_default_device();
-    double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_ptr, device));
-    double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_ptr, device));
+    // IMPORTANT: 2D vs 3D indexing in Mesh class
+    // ===========================================
+    // For 2D meshes, the solver uses Mesh::index(i,j) which returns:
+    //   idx = j * Nx_full + i                    (range: [0, Nx_full*Ny_full-1])
+    // NOT Mesh::index(i,j,k) which returns:
+    //   idx = k * Nx_full * Ny_full + j * Nx_full + i  (different range!)
+    //
+    // The allocation IS 3D-sized (Nx_full * Ny_full * Nz_full), but the solver's
+    // 2D path only uses the first 2D plane [0, Nx_full*Ny_full-1].
+    // FFT2D must match this by using 2D indexing (no k offset).
+    //
+    // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean subtraction
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum) \
+        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i < Nx; ++i) {
+            // Source: 2D indexing [j+Ng][i+Ng] - matches solver's 2D path
+            const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
+            // Dest: [j * Nx + i] (contiguous for FFT)
+            const size_t dst_idx = (size_t)j * Nx + i;
+            double val = rhs_ptr[src_idx];
+            packed[dst_idx] = val;
+            sum += val;
+        }
+    }
 
-    // 1. Pack RHS from ghost layout + compute partial sums
-    kernel_pack_2d<<<grid, block, smem, stream_>>>(
-        rhs_dev, in_pack_, partial_sums_,
-        Nx_, Ny_, stride
-    );
+    // 2. Subtract mean (for singular Neumann case)
+    double mean = sum / (Nx * Ny);
+    #pragma omp target teams distribute parallel for is_device_ptr(packed)
+    for (int idx = 0; idx < Nx * Ny; ++idx) {
+        packed[idx] -= mean;
+    }
 
-    // 2. Reduce to get total sum
-    kernel_reduce_sum_2d<<<1, 256, 256 * sizeof(double), stream_>>>(
-        partial_sums_, sum_dev_, num_blocks_
-    );
-
-    // 3. Subtract mean (for singular Neumann case)
-    kernel_subtract_mean_2d<<<grid, block, 0, stream_>>>(
-        in_pack_, sum_dev_, total
-    );
-
-    // 4. Forward FFT: real -> complex
+    // 3. Forward FFT: real -> complex (output to rhs_hat_)
+    cudaDeviceSynchronize();  // Ensure OMP target is done
     cufftResult fft_result = cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
     if (fft_result != CUFFT_SUCCESS) {
         std::cerr << "[FFT2D] cufftExecD2Z failed: " << fft_result << "\n";
         return -1;
     }
+    cudaStreamSynchronize(stream_);
 
-    // 5. Split complex RHS to real/imag for Jacobi iteration
-    kernel_complex_to_split_2d<<<grid_hat, block, 0, stream_>>>(
-        rhs_hat_, work_real_, work_imag_, hat_total
+    // 4. Fix zero mode (mode=0, j=0): set x[0] to 0 (pinned value for singularity)
+    cudaMemsetAsync(rhs_hat_, 0, sizeof(cufftDoubleComplex), stream_);
+
+    // 5. cuSPARSE batched tridiagonal solve (in-place in rhs_hat_)
+    // Solves: (d²/dy² - λ[m]) p_hat = rhs_hat for each mode m
+    cusparseStatus_t status = cusparseZgtsv2StridedBatch(
+        cusparse_handle_,
+        Ny_,             // m: system size
+        tri_dl_,         // dl: lower diagonal
+        tri_d_,          // d: main diagonal
+        tri_du_,         // du: upper diagonal
+        rhs_hat_,        // x: RHS/solution (in-place)
+        N_modes_,        // batchCount
+        Ny_,             // batchStride
+        cusparse_buffer_
     );
 
-    // 6. Allocate ping-pong buffers for Jacobi
-    double* p_real_A = nullptr;
-    double* p_imag_A = nullptr;
-    double* p_real_B = nullptr;
-    double* p_imag_B = nullptr;
-
-    cudaMalloc(&p_real_A, hat_total * sizeof(double));
-    cudaMalloc(&p_imag_A, hat_total * sizeof(double));
-    cudaMalloc(&p_real_B, hat_total * sizeof(double));
-    cudaMalloc(&p_imag_B, hat_total * sizeof(double));
-
-    cudaMemsetAsync(p_real_A, 0, hat_total * sizeof(double), stream_);
-    cudaMemsetAsync(p_imag_A, 0, hat_total * sizeof(double), stream_);
-    cudaMemsetAsync(p_real_B, 0, hat_total * sizeof(double), stream_);
-    cudaMemsetAsync(p_imag_B, 0, hat_total * sizeof(double), stream_);
-
-    // 7. Jacobi iteration to solve 1D Helmholtz
-    const double ay = 1.0 / (dy_ * dy_);
-    const double omega = 0.8;  // Damped Jacobi
-    const int iterations = 10;  // Enough for 1D problem
-
-    int bc_y_lo_int = static_cast<int>(bc_y_lo_);
-    int bc_y_hi_int = static_cast<int>(bc_y_hi_);
-
-    double* p_real_in = p_real_A;
-    double* p_imag_in = p_imag_A;
-    double* p_real_out = p_real_B;
-    double* p_imag_out = p_imag_B;
-
-    for (int iter = 0; iter < iterations; ++iter) {
-        kernel_helmholtz_jacobi_1d<<<grid_hat, block, 0, stream_>>>(
-            work_real_, work_imag_,
-            p_real_in, p_imag_in,
-            p_real_out, p_imag_out,
-            lambda_x_,
-            N_modes_, Ny_,
-            ay, omega,
-            bc_y_lo_int, bc_y_hi_int
-        );
-
-        // Pin zero mode for gauge
-        kernel_pin_zero_mode_2d<<<1, 1, 0, stream_>>>(p_real_out, p_imag_out, Ny_);
-
-        // Swap buffers
-        std::swap(p_real_in, p_real_out);
-        std::swap(p_imag_in, p_imag_out);
+    if (status != CUSPARSE_STATUS_SUCCESS) {
+        std::cerr << "[FFT2D] cuSPARSE gtsv2StridedBatch failed: " << status << "\n";
+        return -1;
     }
 
-    // 8. Convert back to complex (result is in p_real_in/p_imag_in after swap)
-    kernel_split_to_complex_2d<<<grid_hat, block, 0, stream_>>>(
-        p_real_in, p_imag_in, p_hat_, hat_total
-    );
-
-    // Cleanup ping-pong buffers
-    cudaFree(p_real_A);
-    cudaFree(p_imag_A);
-    cudaFree(p_real_B);
-    cudaFree(p_imag_B);
-
-    // 9. Inverse FFT: complex -> real
-    fft_result = cufftExecZ2D(fft_plan_c2r_, p_hat_, out_pack_);
+    // 6. Inverse FFT: complex -> real
+    fft_result = cufftExecZ2D(fft_plan_c2r_, rhs_hat_, out_pack_);
     if (fft_result != CUFFT_SUCCESS) {
         std::cerr << "[FFT2D] cufftExecZ2D failed: " << fft_result << "\n";
         return -1;
     }
-
-    // 10. Unpack to ghost layout with normalization and BC
-    const double invNx = 1.0 / (double)Nx_;
-    kernel_unpack_and_bc_2d<<<grid, block, 0, stream_>>>(
-        out_pack_, p_dev,
-        Nx_, Ny_, stride,
-        invNx,
-        bc_y_lo_int, bc_y_hi_int
-    );
-
-    // 11. Synchronize
     cudaStreamSynchronize(stream_);
 
+    // 7. Unpack to ghost layout with normalization and BC application
+    // NOTE: Use 2D indexing to match solver's 2D path (no k component)
+    int bc_y_lo_int = (bc_y_lo_ == PoissonBC::Neumann) ? 1 : 0;
+    int bc_y_hi_int = (bc_y_hi_ == PoissonBC::Neumann) ? 1 : 0;
+
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: p_ptr[0:total_size]) is_device_ptr(unpacked)
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i < Nx; ++i) {
+            // Source: [j * Nx + i] (contiguous FFT output)
+            const size_t src_idx = (size_t)j * Nx + i;
+            const double val = unpacked[src_idx] * norm;
+
+            // Destination: 2D indexing [j+Ng][i+Ng] - matches solver's 2D path
+            const size_t dst_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
+            p_ptr[dst_idx] = val;
+
+            // x-ghosts (periodic) - 2D indexing
+            if (i == 0) {
+                // x_lo ghost: copy from x_hi interior
+                double src_val = unpacked[j * Nx + (Nx - 1)] * norm;
+                p_ptr[(j + Ng) * Nx_full + 0] = src_val;
+            }
+            if (i == Nx - 1) {
+                // x_hi ghost: copy from x_lo interior
+                double src_val = unpacked[j * Nx + 0] * norm;
+                p_ptr[(j + Ng) * Nx_full + (Nx + Ng)] = src_val;
+            }
+
+            // y-ghosts (Neumann: copy, Dirichlet: negate) - 2D indexing
+            if (j == 0) {
+                if (bc_y_lo_int == 1) {  // Neumann
+                    p_ptr[0 * Nx_full + (i + Ng)] = val;
+                } else {  // Dirichlet
+                    p_ptr[0 * Nx_full + (i + Ng)] = -val;
+                }
+            }
+            if (j == Ny - 1) {
+                if (bc_y_hi_int == 1) {  // Neumann
+                    p_ptr[(Ny + Ng) * Nx_full + (i + Ng)] = val;
+                } else {  // Dirichlet
+                    p_ptr[(Ny + Ng) * Nx_full + (i + Ng)] = -val;
+                }
+            }
+        }
+    }
+
     residual_ = 0.0;
-    return iterations;
+    return 1;  // 1 iteration (direct solve)
 }
 
 #endif // USE_GPU_OFFLOAD

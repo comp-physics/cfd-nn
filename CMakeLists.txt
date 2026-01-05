@@ -445,6 +445,16 @@ if(BUILD_TESTS)
     target_link_libraries(test_poisson_fft_manufactured nn_cfd_core)
     add_test(NAME PoissonFFTManufacturedTest COMMAND test_poisson_fft_manufactured)
 
+    # FFT2D debug test - compares GPU FFT2D vs CPU reference
+    add_executable(test_fft2d_debug tests/test_fft2d_debug.cpp)
+    target_link_libraries(test_fft2d_debug nn_cfd_core)
+    add_test(NAME FFT2DDebugTest COMMAND test_fft2d_debug)
+
+    # FFT2D integration test - compares FFT2D vs MG in solver context
+    add_executable(test_fft2d_integration tests/test_fft2d_integration.cpp)
+    target_link_libraries(test_fft2d_integration nn_cfd_core)
+    add_test(NAME FFT2DIntegrationTest COMMAND test_fft2d_integration)
+
     # HYPRE all BC configurations test
     if(USE_HYPRE)
         add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)

@@ -1084,17 +1084,17 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     bool uniform_xz = true;   // Default for channel: uniform x/z spacing
 
     if (mesh.is2D()) {
-        // 2D mesh: FFT2D disabled for now (causes flux conservation issues)
-        // TODO: Debug FFT2D solver and re-enable
-        // try {
-        //     fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
-        //     fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-        //                                    PoissonBC::Neumann, PoissonBC::Neumann);
-        //     fft2d_applicable = true;
-        // } catch (const std::exception& e) {
-        //     std::cerr << "[Solver] FFT2D solver initialization failed: " << e.what() << "\n";
-        // }
-        fft2d_applicable = false;  // Force MG for 2D until FFT2D is fixed
+        // 2D mesh: try FFT2D solver (periodic x, non-periodic y)
+        try {
+            fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
+            fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                          PoissonBC::Neumann, PoissonBC::Neumann);
+            fft2d_applicable = true;
+            std::cout << "[Solver] FFT2D solver initialized for 2D mesh\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[Solver] FFT2D solver initialization failed: " << e.what() << "\n";
+            fft2d_applicable = false;
+        }
     } else {
         // 3D mesh: try 2D FFT first (periodic x AND z)
         if (periodic_xz && uniform_xz) {
@@ -1350,6 +1350,22 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
             // FFT1D was selected but BCs are now incompatible - switch to MG
             std::cerr << "[Poisson] Warning: FFT1D solver incompatible with BCs "
                       << "(requires periodic in exactly one of x or z). Switching to MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+        }
+    }
+
+    // FFT2D requires periodic x AND 2D mesh AND non-periodic y
+    bool periodic_y = (p_y_lo == PoissonBC::Periodic && p_y_hi == PoissonBC::Periodic);
+    bool fft2d_compatible = periodic_x && !periodic_y && mesh_->is2D();
+
+    if (fft2d_poisson_solver_) {
+        if (fft2d_compatible) {
+            // Update FFT2D solver BCs (y direction can be Neumann or Dirichlet)
+            fft2d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
+        } else if (selected_solver_ == PoissonSolverType::FFT2D) {
+            // FFT2D was selected but BCs are now incompatible - switch to MG
+            std::cerr << "[Poisson] Warning: FFT2D solver incompatible with BCs "
+                      << "(requires periodic x for 2D mesh). Switching to MG.\n";
             selected_solver_ = PoissonSolverType::MG;
         }
     }
