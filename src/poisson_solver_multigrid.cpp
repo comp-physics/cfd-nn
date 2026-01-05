@@ -593,7 +593,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     // Optimized weighted Jacobi smoother - UNIFIED CPU/GPU implementation
     // Uses in-place red-black ordering to avoid ping-pong copies.
     // Red cells depend only on black cells and vice versa, so in-place is safe.
-    // BC applied once at end to minimize kernel launches.
+    // BC applied at start (ghost cells valid for first sweep) and end (consistent state).
     NVTX_SCOPE_POISSON("mg:smooth_jacobi");
 
     auto& grid = *levels_[level];
@@ -620,6 +620,9 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     double* u_ptr = grid.u.data().data();
     const double* f_ptr = grid.f.data().data();
 #endif
+
+    // Apply BC before first sweep - ghost cells must be valid for red sweep reads
+    apply_bc(level);
 
     // In-place Jacobi using red-black ordering
     // Each iteration: update all red cells, then all black cells
@@ -746,18 +749,52 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
 #endif
 
     // Chebyshev optimal relaxation parameters for high-frequency smoothing
-    // For MG smoothing, we target high-frequency errors with λ ∈ [1.0, 2.0]
-    // (normalized D^{-1}A eigenvalues for 5/7-point Laplacian stencil)
+    // For MG smoothing, we target high-frequency errors with λ ∈ [λ_lo, λ_hi]
+    //
+    // For normalized D^{-1}A (7-point Laplacian), eigenvalues are in [0, 2] for uniform grids.
+    // For anisotropic grids, λ_max depends on aspect ratios:
+    //   λ_max = 2 * max(1/dx², 1/dy², 1/dz²) / (1/dx² + 1/dy² + 1/dz²)
+    // We use λ_lo = 1.0 (target upper half of spectrum) and λ_hi = λ_max for robustness.
+    //
     // ω_k = 1 / (c * cos((2k+1)π/(2n)) + d) where d = (λ_hi + λ_lo)/2, c = (λ_hi - λ_lo)/2
-    // For [1.0, 2.0]: d = 1.5, c = 0.5
-    // All ω values are < 1, ensuring stability while optimally damping high frequencies
-    constexpr double omega_4[4] = {
-        1.0 / (0.5 * 0.92387953251128675613 + 1.5),  // k=0: cos(π/8) ≈ 0.924 → ω ≈ 0.51
-        1.0 / (0.5 * 0.38268343236508977173 + 1.5),  // k=1: cos(3π/8) ≈ 0.383 → ω ≈ 0.59
-        1.0 / (0.5 * -0.38268343236508977173 + 1.5), // k=2: cos(5π/8) ≈ -0.383 → ω ≈ 0.76
-        1.0 / (0.5 * -0.92387953251128675613 + 1.5)  // k=3: cos(7π/8) ≈ -0.924 → ω ≈ 0.96
+
+    // Compute level-aware λ_max for anisotropic grids
+    const double inv_dx2 = 1.0 / dx2;
+    const double inv_dy2 = 1.0 / dy2;
+    const double inv_dz2 = is_2d ? 0.0 : (1.0 / dz2);
+    const double max_inv_h2 = is_2d ? std::max(inv_dx2, inv_dy2)
+                                    : std::max({inv_dx2, inv_dy2, inv_dz2});
+    const double sum_inv_h2 = is_2d ? (inv_dx2 + inv_dy2) : (inv_dx2 + inv_dy2 + inv_dz2);
+
+    // λ_max for normalized Jacobi: 2 * max_term / sum_terms, capped at 2.0 for safety
+    const double lambda_max = std::min(2.0, 2.0 * max_inv_h2 / sum_inv_h2);
+    const double lambda_lo = 1.0;  // Target upper half of spectrum for smoothing
+
+    // Chebyshev parameters
+    const double d = (lambda_max + lambda_lo) / 2.0;
+    const double c = (lambda_max - lambda_lo) / 2.0;
+
+    // Chebyshev roots: cos((2k+1)π/(2n)) for n=4
+    constexpr double cheb_roots[4] = {
+        0.92387953251128675613,   // cos(π/8)
+        0.38268343236508977173,   // cos(3π/8)
+        -0.38268343236508977173,  // cos(5π/8)
+        -0.92387953251128675613   // cos(7π/8)
     };
-    // Computed values: 0.51, 0.59, 0.76, 0.96 (all < 1 for stability)
+
+    // Compute ω values dynamically based on level-specific bounds
+    double omega_4[4];
+    for (int k = 0; k < 4; ++k) {
+        const double theta = c * cheb_roots[k] + d;
+        omega_4[k] = 1.0 / theta;
+        // Safety clamp: ensure ω < 1 for stability
+        if (omega_4[k] >= 1.0) {
+            omega_4[k] = 0.95;  // Fallback to safe damped Jacobi
+        }
+    }
+
+    // Apply BC before first sweep - ghost cells must be valid for red sweep reads
+    apply_bc(level);
 
     // Perform degree=4 Chebyshev sub-iterations with optimal ω values
     for (int k = 0; k < degree && k < 4; ++k) {
