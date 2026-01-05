@@ -16,7 +16,8 @@ This document provides a comprehensive overview of all Poisson solvers available
 ## Solver Selection
 
 The solver is auto-selected with the following priority:
-```
+
+```text
 FFT (3D) → FFT2D (2D mesh) → FFT1D (3D 1-periodic) → HYPRE → MG
 ```
 
@@ -147,6 +148,7 @@ CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_HYPRE=ON
 ```
 
 ### PFMG Configuration
+
 | Parameter | Value | Reason |
 |-----------|-------|--------|
 | MaxLevels | 2 | Limits coarsening depth for efficiency |

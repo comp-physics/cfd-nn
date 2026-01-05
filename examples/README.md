@@ -99,6 +99,36 @@ Demonstrates full transport equation turbulence modeling with SST k-ω.
 
 ---
 
+### [06_steady_rans_channel/](06_steady_rans_channel/) - **Steady RANS Comparison**
+
+**What**: Compare Baseline, GEP, and SST k-ω turbulence models
+**Time**: ~15 minutes
+**Level**: Intermediate
+
+Demonstrates steady-state RANS simulations comparing three turbulence closures on Re_τ = 180 channel flow.
+
+**Key Learning**:
+- Algebraic vs transport model differences
+- Model accuracy comparison
+- Steady-state convergence behavior
+
+---
+
+### [07_unsteady_developing_channel/](07_unsteady_developing_channel/) - **Time-Accurate Laminar**
+
+**What**: Unsteady laminar flow with divergence-free initialization
+**Time**: ~5 minutes
+**Level**: Intermediate
+
+Demonstrates time-accurate integration (no turbulence model) showing transient dynamics and viscous decay.
+
+**Key Learning**:
+- Divergence-free initialization
+- Time-accurate vs steady-state simulation
+- Laminar flow dynamics
+
+---
+
 ## Phase 2: 3D Validation Examples
 
 ### [08_duct_flow/](08_duct_flow/) - **3D Square Duct**
