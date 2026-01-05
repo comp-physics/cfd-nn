@@ -197,6 +197,10 @@ void Config::load(const std::string& filename) {
         poisson_solver = PoissonSolverType::HYPRE;
     } else if (solver_str == "mg" || solver_str == "multigrid") {
         poisson_solver = PoissonSolverType::MG;
+    } else {
+        std::cerr << "ERROR: Unknown poisson_solver='" << solver_str << "'.\n"
+                  << "Valid options: auto, fft, fft2d, fft1d, hypre, mg\n";
+        std::exit(1);
     }
 
     // Poisson solver tuning
@@ -298,6 +302,12 @@ void Config::parse_args(int argc, char** argv) {
         } else if (is_flag(arg, "--use_fft")) {
             // Legacy flag (backward compatibility)
             poisson_solver = PoissonSolverType::FFT;
+        } else if ((val = get_value(i, arg, "--poisson_abs_tol_floor")) != "") {
+            poisson_abs_tol_floor = std::stod(val);
+        } else if (is_flag(arg, "--turb_guard_enabled")) {
+            turb_guard_enabled = true;
+        } else if ((val = get_value(i, arg, "--turb_guard_interval")) != "") {
+            turb_guard_interval = std::stoi(val);
         } else if ((val = get_value(i, arg, "--model")) != "") {
             std::string model = val;
             if (model == "none" || model == "laminar") {
@@ -389,6 +399,9 @@ void Config::parse_args(int argc, char** argv) {
                       << "                      mg: native geometric multigrid (always available)\n"
                       << "  --use_hypre       [deprecated] Same as --poisson=hypre\n"
                       << "  --use_fft         [deprecated] Same as --poisson=fft\n"
+                      << "  --poisson_abs_tol_floor V  Absolute tolerance floor for Poisson (default 0)\n"
+                      << "  --turb_guard_enabled  Enable turbulence guard (NaN/Inf checks)\n"
+                      << "  --turb_guard_interval N  Check interval for turb guard (default 5)\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"
@@ -527,9 +540,9 @@ void Config::finalize() {
         if (stretch_y) {
             std::cerr << "ERROR: Invalid configuration: poisson_solver=fft with stretch_y=true.\n"
                       << "\n"
-                      << "The FFT solver requires uniform grid spacing in the periodic directions.\n"
-                      << "While y is typically non-periodic (channel walls), the FFT algorithm\n"
-                      << "assumes uniform spacing for its spectral decomposition.\n"
+                      << "The FFT solver requires uniform grid spacing in all directions.\n"
+                      << "Y-direction stretching creates non-uniform spacing that is incompatible\n"
+                      << "with the FFT algorithm's spectral decomposition.\n"
                       << "\n"
                       << "Options:\n"
                       << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
@@ -586,8 +599,9 @@ void Config::finalize() {
         if (stretch_z) {
             std::cerr << "ERROR: Invalid configuration: poisson_solver=fft1d with stretch_z=true.\n"
                       << "\n"
-                      << "The FFT1D solver requires uniform spacing in the periodic direction.\n"
-                      << "Z-direction stretching is incompatible with FFT-based solvers.\n"
+                      << "The FFT1D solver performs a 1D FFT followed by 2D Helmholtz solves.\n"
+                      << "Z-direction stretching would require non-uniform systems in the Helmholtz\n"
+                      << "step, which is not currently supported.\n"
                       << "\n"
                       << "Options:\n"
                       << "  1. Use --poisson mg (multigrid supports stretched meshes)\n"
@@ -662,8 +676,17 @@ void Config::finalize() {
         std::exit(1);
     }
 
-    // Validate CFL_max for adaptive time stepping
-    if (adaptive_dt && (CFL_max <= 0.0 || CFL_max > 1.0)) {
+    // Validate CFL_max is positive (unconditional - prevents division by zero)
+    if (CFL_max <= 0.0) {
+        std::cerr << "ERROR: Invalid configuration: CFL_max=" << CFL_max << ".\n"
+                  << "\n"
+                  << "The maximum CFL number must be a positive value.\n"
+                  << "Typical values: 0.5 (conservative) to 1.0 (maximum theoretical limit).\n";
+        std::exit(1);
+    }
+
+    // Validate CFL_max <= 1 for adaptive time stepping
+    if (adaptive_dt && CFL_max > 1.0) {
         std::cerr << "ERROR: Invalid configuration: CFL_max=" << CFL_max << " with adaptive_dt=true.\n"
                   << "\n"
                   << "For stable explicit time integration, CFL must be in (0, 1].\n"
@@ -680,6 +703,16 @@ void Config::finalize() {
                   << "\n"
                   << "The turbulence guard check interval must be >= 1.\n"
                   << "Recommended: 5-10 (checks every N time steps for NaN/Inf values).\n";
+        std::exit(1);
+    }
+
+    // Validate poisson_abs_tol_floor is non-negative
+    if (poisson_abs_tol_floor < 0.0) {
+        std::cerr << "ERROR: Invalid configuration: poisson_abs_tol_floor=" << poisson_abs_tol_floor << ".\n"
+                  << "\n"
+                  << "The absolute tolerance floor must be non-negative.\n"
+                  << "This sets a minimum threshold for the Poisson solver convergence check.\n"
+                  << "Typical values: 0.0 (disabled) or 1e-12 to 1e-10.\n";
         std::exit(1);
     }
 

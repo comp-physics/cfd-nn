@@ -4147,6 +4147,60 @@ void RANSSolver::write_vtk(const std::string& filename) const {
                 file << compute_dpdy_2d(i, j) << "\n";
             }
         }
+
+        // Vorticity (omega_z = dv/dx - du/dy) - scalar in 2D
+        auto compute_vorticity_2d = [&](int i, int j) -> double {
+            // dv/dx
+            double dvdx;
+            if (periodic_x) {
+                int im = (i == mesh_->i_begin()) ? mesh_->i_end() - 1 : i - 1;
+                int ip = (i == mesh_->i_end() - 1) ? mesh_->i_begin() : i + 1;
+                dvdx = (velocity_.v_center(ip, j) - velocity_.v_center(im, j)) / (2.0 * mesh_->dx);
+            } else {
+                if (i == mesh_->i_begin()) {
+                    dvdx = (velocity_.v_center(i + 1, j) - velocity_.v_center(i, j)) / mesh_->dx;
+                } else if (i == mesh_->i_end() - 1) {
+                    dvdx = (velocity_.v_center(i, j) - velocity_.v_center(i - 1, j)) / mesh_->dx;
+                } else {
+                    dvdx = (velocity_.v_center(i + 1, j) - velocity_.v_center(i - 1, j)) / (2.0 * mesh_->dx);
+                }
+            }
+
+            // du/dy
+            double dudy;
+            if (periodic_y) {
+                int jm = (j == mesh_->j_begin()) ? mesh_->j_end() - 1 : j - 1;
+                int jp = (j == mesh_->j_end() - 1) ? mesh_->j_begin() : j + 1;
+                dudy = (velocity_.u_center(i, jp) - velocity_.u_center(i, jm)) / (2.0 * mesh_->dy);
+            } else {
+                if (j == mesh_->j_begin()) {
+                    dudy = (velocity_.u_center(i, j + 1) - velocity_.u_center(i, j)) / mesh_->dy;
+                } else if (j == mesh_->j_end() - 1) {
+                    dudy = (velocity_.u_center(i, j) - velocity_.u_center(i, j - 1)) / mesh_->dy;
+                } else {
+                    dudy = (velocity_.u_center(i, j + 1) - velocity_.u_center(i, j - 1)) / (2.0 * mesh_->dy);
+                }
+            }
+
+            return dvdx - dudy;
+        };
+
+        file << "SCALARS vorticity double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << compute_vorticity_2d(i, j) << "\n";
+            }
+        }
+
+        // Vorticity magnitude (same as |omega_z| in 2D)
+        file << "SCALARS vorticity_magnitude double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                file << std::abs(compute_vorticity_2d(i, j)) << "\n";
+            }
+        }
     } else {
         // 3D output
         file << "DIMENSIONS " << Nx << " " << Ny << " " << Nz << "\n";
@@ -4327,6 +4381,247 @@ void RANSSolver::write_vtk(const std::string& filename) const {
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                 for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
                     file << compute_dpdz_3d(i, j, k) << "\n";
+                }
+            }
+        }
+
+        // Vorticity (vector in 3D):
+        //   omega_x = dw/dy - dv/dz
+        //   omega_y = du/dz - dw/dx
+        //   omega_z = dv/dx - du/dy
+
+        // Helper lambda for dw/dy
+        auto compute_dwdy = [&](int i, int j, int k) -> double {
+            if (periodic_y) {
+                int jm = (j == mesh_->j_begin()) ? mesh_->j_end() - 1 : j - 1;
+                int jp = (j == mesh_->j_end() - 1) ? mesh_->j_begin() : j + 1;
+                return (velocity_.w_center(i, jp, k) - velocity_.w_center(i, jm, k)) / (2.0 * mesh_->dy);
+            } else {
+                if (j == mesh_->j_begin()) {
+                    return (velocity_.w_center(i, j + 1, k) - velocity_.w_center(i, j, k)) / mesh_->dy;
+                } else if (j == mesh_->j_end() - 1) {
+                    return (velocity_.w_center(i, j, k) - velocity_.w_center(i, j - 1, k)) / mesh_->dy;
+                } else {
+                    return (velocity_.w_center(i, j + 1, k) - velocity_.w_center(i, j - 1, k)) / (2.0 * mesh_->dy);
+                }
+            }
+        };
+
+        // Helper lambda for dv/dz
+        auto compute_dvdz = [&](int i, int j, int k) -> double {
+            if (periodic_z) {
+                int km = (k == mesh_->k_begin()) ? mesh_->k_end() - 1 : k - 1;
+                int kp = (k == mesh_->k_end() - 1) ? mesh_->k_begin() : k + 1;
+                return (velocity_.v_center(i, j, kp) - velocity_.v_center(i, j, km)) / (2.0 * mesh_->dz);
+            } else {
+                if (k == mesh_->k_begin()) {
+                    return (velocity_.v_center(i, j, k + 1) - velocity_.v_center(i, j, k)) / mesh_->dz;
+                } else if (k == mesh_->k_end() - 1) {
+                    return (velocity_.v_center(i, j, k) - velocity_.v_center(i, j, k - 1)) / mesh_->dz;
+                } else {
+                    return (velocity_.v_center(i, j, k + 1) - velocity_.v_center(i, j, k - 1)) / (2.0 * mesh_->dz);
+                }
+            }
+        };
+
+        // Helper lambda for du/dz
+        auto compute_dudz = [&](int i, int j, int k) -> double {
+            if (periodic_z) {
+                int km = (k == mesh_->k_begin()) ? mesh_->k_end() - 1 : k - 1;
+                int kp = (k == mesh_->k_end() - 1) ? mesh_->k_begin() : k + 1;
+                return (velocity_.u_center(i, j, kp) - velocity_.u_center(i, j, km)) / (2.0 * mesh_->dz);
+            } else {
+                if (k == mesh_->k_begin()) {
+                    return (velocity_.u_center(i, j, k + 1) - velocity_.u_center(i, j, k)) / mesh_->dz;
+                } else if (k == mesh_->k_end() - 1) {
+                    return (velocity_.u_center(i, j, k) - velocity_.u_center(i, j, k - 1)) / mesh_->dz;
+                } else {
+                    return (velocity_.u_center(i, j, k + 1) - velocity_.u_center(i, j, k - 1)) / (2.0 * mesh_->dz);
+                }
+            }
+        };
+
+        // Helper lambda for dw/dx
+        auto compute_dwdx = [&](int i, int j, int k) -> double {
+            if (periodic_x) {
+                int im = (i == mesh_->i_begin()) ? mesh_->i_end() - 1 : i - 1;
+                int ip = (i == mesh_->i_end() - 1) ? mesh_->i_begin() : i + 1;
+                return (velocity_.w_center(ip, j, k) - velocity_.w_center(im, j, k)) / (2.0 * mesh_->dx);
+            } else {
+                if (i == mesh_->i_begin()) {
+                    return (velocity_.w_center(i + 1, j, k) - velocity_.w_center(i, j, k)) / mesh_->dx;
+                } else if (i == mesh_->i_end() - 1) {
+                    return (velocity_.w_center(i, j, k) - velocity_.w_center(i - 1, j, k)) / mesh_->dx;
+                } else {
+                    return (velocity_.w_center(i + 1, j, k) - velocity_.w_center(i - 1, j, k)) / (2.0 * mesh_->dx);
+                }
+            }
+        };
+
+        // Helper lambda for dv/dx
+        auto compute_dvdx = [&](int i, int j, int k) -> double {
+            if (periodic_x) {
+                int im = (i == mesh_->i_begin()) ? mesh_->i_end() - 1 : i - 1;
+                int ip = (i == mesh_->i_end() - 1) ? mesh_->i_begin() : i + 1;
+                return (velocity_.v_center(ip, j, k) - velocity_.v_center(im, j, k)) / (2.0 * mesh_->dx);
+            } else {
+                if (i == mesh_->i_begin()) {
+                    return (velocity_.v_center(i + 1, j, k) - velocity_.v_center(i, j, k)) / mesh_->dx;
+                } else if (i == mesh_->i_end() - 1) {
+                    return (velocity_.v_center(i, j, k) - velocity_.v_center(i - 1, j, k)) / mesh_->dx;
+                } else {
+                    return (velocity_.v_center(i + 1, j, k) - velocity_.v_center(i - 1, j, k)) / (2.0 * mesh_->dx);
+                }
+            }
+        };
+
+        // Helper lambda for du/dy
+        auto compute_dudy = [&](int i, int j, int k) -> double {
+            if (periodic_y) {
+                int jm = (j == mesh_->j_begin()) ? mesh_->j_end() - 1 : j - 1;
+                int jp = (j == mesh_->j_end() - 1) ? mesh_->j_begin() : j + 1;
+                return (velocity_.u_center(i, jp, k) - velocity_.u_center(i, jm, k)) / (2.0 * mesh_->dy);
+            } else {
+                if (j == mesh_->j_begin()) {
+                    return (velocity_.u_center(i, j + 1, k) - velocity_.u_center(i, j, k)) / mesh_->dy;
+                } else if (j == mesh_->j_end() - 1) {
+                    return (velocity_.u_center(i, j, k) - velocity_.u_center(i, j - 1, k)) / mesh_->dy;
+                } else {
+                    return (velocity_.u_center(i, j + 1, k) - velocity_.u_center(i, j - 1, k)) / (2.0 * mesh_->dy);
+                }
+            }
+        };
+
+        // Vorticity components
+        auto compute_omega_x = [&](int i, int j, int k) -> double {
+            return compute_dwdy(i, j, k) - compute_dvdz(i, j, k);
+        };
+
+        auto compute_omega_y = [&](int i, int j, int k) -> double {
+            return compute_dudz(i, j, k) - compute_dwdx(i, j, k);
+        };
+
+        auto compute_omega_z = [&](int i, int j, int k) -> double {
+            return compute_dvdx(i, j, k) - compute_dudy(i, j, k);
+        };
+
+        // Vorticity vector field
+        file << "VECTORS vorticity double\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    file << compute_omega_x(i, j, k) << " "
+                         << compute_omega_y(i, j, k) << " "
+                         << compute_omega_z(i, j, k) << "\n";
+                }
+            }
+        }
+
+        // Vorticity magnitude
+        file << "SCALARS vorticity_magnitude double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    double ox = compute_omega_x(i, j, k);
+                    double oy = compute_omega_y(i, j, k);
+                    double oz = compute_omega_z(i, j, k);
+                    file << std::sqrt(ox*ox + oy*oy + oz*oz) << "\n";
+                }
+            }
+        }
+
+        // Q-criterion: Q = 0.5 * (||Omega||^2 - ||S||^2)
+        // Positive Q indicates vortex cores (rotation dominates strain)
+        // Requires diagonal derivatives (dudx, dvdy, dwdz) in addition to existing off-diagonals
+
+        // Helper lambda for du/dx
+        auto compute_dudx = [&](int i, int j, int k) -> double {
+            if (periodic_x) {
+                int im = (i == mesh_->i_begin()) ? mesh_->i_end() - 1 : i - 1;
+                int ip = (i == mesh_->i_end() - 1) ? mesh_->i_begin() : i + 1;
+                return (velocity_.u_center(ip, j, k) - velocity_.u_center(im, j, k)) / (2.0 * mesh_->dx);
+            } else {
+                if (i == mesh_->i_begin()) {
+                    return (velocity_.u_center(i + 1, j, k) - velocity_.u_center(i, j, k)) / mesh_->dx;
+                } else if (i == mesh_->i_end() - 1) {
+                    return (velocity_.u_center(i, j, k) - velocity_.u_center(i - 1, j, k)) / mesh_->dx;
+                } else {
+                    return (velocity_.u_center(i + 1, j, k) - velocity_.u_center(i - 1, j, k)) / (2.0 * mesh_->dx);
+                }
+            }
+        };
+
+        // Helper lambda for dv/dy
+        auto compute_dvdy = [&](int i, int j, int k) -> double {
+            if (periodic_y) {
+                int jm = (j == mesh_->j_begin()) ? mesh_->j_end() - 1 : j - 1;
+                int jp = (j == mesh_->j_end() - 1) ? mesh_->j_begin() : j + 1;
+                return (velocity_.v_center(i, jp, k) - velocity_.v_center(i, jm, k)) / (2.0 * mesh_->dy);
+            } else {
+                if (j == mesh_->j_begin()) {
+                    return (velocity_.v_center(i, j + 1, k) - velocity_.v_center(i, j, k)) / mesh_->dy;
+                } else if (j == mesh_->j_end() - 1) {
+                    return (velocity_.v_center(i, j, k) - velocity_.v_center(i, j - 1, k)) / mesh_->dy;
+                } else {
+                    return (velocity_.v_center(i, j + 1, k) - velocity_.v_center(i, j - 1, k)) / (2.0 * mesh_->dy);
+                }
+            }
+        };
+
+        // Helper lambda for dw/dz
+        auto compute_dwdz = [&](int i, int j, int k) -> double {
+            if (periodic_z) {
+                int km = (k == mesh_->k_begin()) ? mesh_->k_end() - 1 : k - 1;
+                int kp = (k == mesh_->k_end() - 1) ? mesh_->k_begin() : k + 1;
+                return (velocity_.w_center(i, j, kp) - velocity_.w_center(i, j, km)) / (2.0 * mesh_->dz);
+            } else {
+                if (k == mesh_->k_begin()) {
+                    return (velocity_.w_center(i, j, k + 1) - velocity_.w_center(i, j, k)) / mesh_->dz;
+                } else if (k == mesh_->k_end() - 1) {
+                    return (velocity_.w_center(i, j, k) - velocity_.w_center(i, j, k - 1)) / mesh_->dz;
+                } else {
+                    return (velocity_.w_center(i, j, k + 1) - velocity_.w_center(i, j, k - 1)) / (2.0 * mesh_->dz);
+                }
+            }
+        };
+
+        file << "SCALARS Q_criterion double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    // Velocity gradients (reuse existing lambdas + new diagonal ones)
+                    double dudx = compute_dudx(i, j, k);
+                    double dudy = compute_dudy(i, j, k);
+                    double dudz = compute_dudz(i, j, k);
+                    double dvdx = compute_dvdx(i, j, k);
+                    double dvdy = compute_dvdy(i, j, k);
+                    double dvdz = compute_dvdz(i, j, k);
+                    double dwdx = compute_dwdx(i, j, k);
+                    double dwdy = compute_dwdy(i, j, k);
+                    double dwdz = compute_dwdz(i, j, k);
+
+                    // Strain rate tensor components: S_ij = 0.5*(du_i/dx_j + du_j/dx_i)
+                    double Sxx = dudx;
+                    double Syy = dvdy;
+                    double Szz = dwdz;
+                    double Sxy = 0.5 * (dudy + dvdx);
+                    double Sxz = 0.5 * (dudz + dwdx);
+                    double Syz = 0.5 * (dvdz + dwdy);
+
+                    // Rotation rate tensor components: Omega_ij = 0.5*(du_i/dx_j - du_j/dx_i)
+                    double Oxy = 0.5 * (dudy - dvdx);
+                    double Oxz = 0.5 * (dudz - dwdx);
+                    double Oyz = 0.5 * (dvdz - dwdy);
+
+                    // Squared Frobenius norms
+                    double S_sq = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0*(Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+                    double O_sq = 2.0 * (Oxy*Oxy + Oxz*Oxz + Oyz*Oyz);
+
+                    // Q-criterion
+                    double Q = 0.5 * (O_sq - S_sq);
+                    file << Q << "\n";
                 }
             }
         }
