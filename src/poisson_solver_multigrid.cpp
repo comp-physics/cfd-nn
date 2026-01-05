@@ -23,12 +23,27 @@
 #include <cstring>  // for memcpy in debug
 #include <cassert>
 #include <limits>   // for std::numeric_limits (NaN handling)
+#include <cstdlib>  // for std::getenv
 
 namespace nncfd {
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
-    
+
+    // Check environment variable for smoother selection (for CI/debugging)
+    // MG_SMOOTHER=jacobi|chebyshev (default: chebyshev)
+    const char* smoother_env = std::getenv("MG_SMOOTHER");
+    if (smoother_env) {
+        std::string s(smoother_env);
+        if (s == "jacobi" || s == "JACOBI") {
+            smoother_type_ = MGSmootherType::Jacobi;
+            std::cout << "[MG] Using Jacobi smoother (MG_SMOOTHER=jacobi)\n";
+        } else if (s == "chebyshev" || s == "CHEBYSHEV") {
+            smoother_type_ = MGSmootherType::Chebyshev;
+            std::cout << "[MG] Using Chebyshev smoother (MG_SMOOTHER=chebyshev)\n";
+        }
+    }
+
 #ifdef USE_GPU_OFFLOAD
     // Initialize GPU buffers immediately - will throw if no GPU available
     initialize_gpu_buffers();
@@ -664,6 +679,9 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                     }
                 }
             }
+
+            // Apply BC after each iteration - ghosts must be refreshed for next iteration
+            apply_bc(level);
         }
     } else {
         // 3D path
@@ -709,11 +727,11 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                     }
                 }
             }
+
+            // Apply BC after each iteration - ghosts must be refreshed for next iteration
+            apply_bc(level);
         }
     }
-
-    // Apply boundary conditions once after all smoothing iterations
-    apply_bc(level);
 }
 
 void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
@@ -751,24 +769,16 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     // Chebyshev optimal relaxation parameters for high-frequency smoothing
     // For MG smoothing, we target high-frequency errors with λ ∈ [λ_lo, λ_hi]
     //
-    // For normalized D^{-1}A (7-point Laplacian), eigenvalues are in [0, 2] for uniform grids.
-    // For anisotropic grids, λ_max depends on aspect ratios:
-    //   λ_max = 2 * max(1/dx², 1/dy², 1/dz²) / (1/dx² + 1/dy² + 1/dz²)
-    // We use λ_lo = 1.0 (target upper half of spectrum) and λ_hi = λ_max for robustness.
+    // For normalized D^{-1}A (7-point Laplacian), eigenvalues are ALWAYS in [0, 2]
+    // regardless of grid anisotropy. This is because the diagonal D = 2/dx² + 2/dy² + 2/dz²
+    // exactly normalizes the off-diagonal contributions.
     //
+    // We use λ_lo = 1.0 (target upper half of spectrum) and λ_hi = 2.0.
     // ω_k = 1 / (c * cos((2k+1)π/(2n)) + d) where d = (λ_hi + λ_lo)/2, c = (λ_hi - λ_lo)/2
 
-    // Compute level-aware λ_max for anisotropic grids
-    const double inv_dx2 = 1.0 / dx2;
-    const double inv_dy2 = 1.0 / dy2;
-    const double inv_dz2 = is_2d ? 0.0 : (1.0 / dz2);
-    const double max_inv_h2 = is_2d ? std::max(inv_dx2, inv_dy2)
-                                    : std::max({inv_dx2, inv_dy2, inv_dz2});
-    const double sum_inv_h2 = is_2d ? (inv_dx2 + inv_dy2) : (inv_dx2 + inv_dy2 + inv_dz2);
-
-    // λ_max for normalized Jacobi: 2 * max_term / sum_terms, capped at 2.0 for safety
-    const double lambda_max = std::min(2.0, 2.0 * max_inv_h2 / sum_inv_h2);
-    const double lambda_lo = 1.0;  // Target upper half of spectrum for smoothing
+    // Fixed eigenvalue bounds for D^{-1}A: [0, 2] for any grid aspect ratio
+    constexpr double lambda_max = 2.0;
+    constexpr double lambda_lo = 1.0;  // Target upper half of spectrum for smoothing
 
     // Chebyshev parameters
     const double d = (lambda_max + lambda_lo) / 2.0;
@@ -836,6 +846,7 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
                     }
                 }
             }
+
         } else {
             // 3D path
             // Red sweep (i + j + k even)
@@ -880,10 +891,10 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
                 }
             }
         }
-    }
 
-    // Apply boundary conditions once after all sub-iterations
-    apply_bc(level);
+        // Apply BC after each sub-iteration - ghosts must be refreshed
+        apply_bc(level);
+    }
 }
 
 void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
@@ -1286,7 +1297,9 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
-    if (level == static_cast<int>(levels_.size()) - 1) {
+    const int num_levels = static_cast<int>(levels_.size());
+
+    if (level == num_levels - 1) {
         // Coarsest level - solve approximately with many Jacobi iterations
         // Chebyshev is less effective on very coarse grids, use standard Jacobi
         // With MIN_COARSE_SIZE=8, coarsest is 8x8 (64 points)
@@ -1294,11 +1307,27 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
         return;
     }
 
-    // Pre-smoothing with Chebyshev polynomial smoother
-    // Chebyshev degree=4 gives ~2-3x faster convergence than standard Jacobi
-    // nu1 controls number of Chebyshev passes (each pass = 4 optimal iterations)
-    for (int s = 0; s < nu1; ++s) {
-        smooth_chebyshev(level, 4);
+    // Per-level Chebyshev degree heuristic:
+    // - Fine levels (0-1): degree 2-3 (memory-bound, fewer passes preferred)
+    // - Mid levels: degree 4 (balanced)
+    // - Near-coarse levels: degree 4-6 (cheap, better coarse correction)
+    auto get_chebyshev_degree = [num_levels](int lvl) -> int {
+        if (lvl <= 1) return 3;           // Fine levels: degree 3
+        if (lvl >= num_levels - 2) return 4;  // Near-coarse: degree 4
+        return 4;                          // Mid levels: degree 4
+    };
+
+    // Pre-smoothing: select based on smoother_type_
+    if (smoother_type_ == MGSmootherType::Chebyshev) {
+        const int degree = get_chebyshev_degree(level);
+        for (int s = 0; s < nu1; ++s) {
+            smooth_chebyshev(level, degree);
+        }
+    } else {
+        // Jacobi fallback (for debugging/reference)
+        for (int s = 0; s < nu1; ++s) {
+            smooth_jacobi(level, 2, 0.8);  // 2 iterations per sweep
+        }
     }
 
     // Compute residual
@@ -1341,11 +1370,19 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     // Prolongate correction to fine level
     prolongate_correction(level + 1);
 
-    // Post-smoothing with Chebyshev (projection mode: nu2=0 skips this)
-    // smooth_chebyshev applies BC at end, so we only need explicit BC if no post-smoothing
+    // Post-smoothing: select based on smoother_type_ (projection mode: nu2=0 skips this)
+    // Smoothers apply BC at end, so we only need explicit BC if no post-smoothing
     if (nu2 > 0) {
-        for (int s = 0; s < nu2; ++s) {
-            smooth_chebyshev(level, 4);
+        if (smoother_type_ == MGSmootherType::Chebyshev) {
+            const int degree = get_chebyshev_degree(level);
+            for (int s = 0; s < nu2; ++s) {
+                smooth_chebyshev(level, degree);
+            }
+        } else {
+            // Jacobi fallback (for debugging/reference)
+            for (int s = 0; s < nu2; ++s) {
+                smooth_jacobi(level, 2, 0.8);
+            }
         }
     } else {
         // No post-smoothing - must apply BC explicitly after prolongation
