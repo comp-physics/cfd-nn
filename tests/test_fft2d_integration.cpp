@@ -37,18 +37,16 @@ bool test_fft2d_vs_mg_channel() {
     ScalarField p_fft(mesh), p_mg(mesh);
 
     // RHS = sin(x) * cos(pi*y/Ly) - has zero x-integral (good for periodic x)
-    // NOTE: Use 2D accessor (i,j) for MG, 3D accessor (i,j,k) for FFT2D
-    // The 2D and 3D indexing formulas are DIFFERENT in Mesh class
+    // NOTE: FFT2D and MG both use 2D indexing for 2D meshes
+    // The solver's 2D path uses Mesh::index(i,j) = j*Nx_full + i
     double rhs_sum = 0.0;
-    const int k = mesh.Nghost;  // k=1 for 2D with Nghost=1
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double x = (i - mesh.Nghost + 0.5) * mesh.dx;
             double y = (j - mesh.Nghost + 0.5) * mesh.dy;
             double val = std::sin(x) * std::cos(M_PI * y / Ly);
-            // FFT2D uses 3D indexing internally (k=Nghost for 2D slice)
-            rhs_fft(i, j, k) = val;
-            // MG uses 2D indexing for 2D meshes
+            // Both FFT2D and MG use 2D indexing for 2D meshes
+            rhs_fft(i, j) = val;
             rhs_mg(i, j) = val;
             rhs_sum += val;
         }
@@ -165,11 +163,11 @@ bool test_fft2d_vs_mg_channel() {
     double max_diff = 0.0, l2_diff = 0.0;
     int count = 0;
 
-    const int k_2d = mesh.Nghost;  // k=1 for 2D with Nghost=1
+    // Both FFT2D and MG use 2D indexing for 2D meshes
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double v_fft = p_fft(i, j, k_2d);  // FFT2D uses 3D indexing
-            double v_mg = p_mg(i, j);          // MG uses 2D indexing
+            double v_fft = p_fft(i, j);  // 2D indexing
+            double v_mg = p_mg(i, j);    // 2D indexing
 
             max_fft = std::max(max_fft, std::abs(v_fft));
             max_mg = std::max(max_mg, std::abs(v_mg));
@@ -200,7 +198,7 @@ bool test_fft2d_vs_mg_channel() {
     int j_mid = mesh.j_begin() + Ny / 2;
     for (int i = mesh.i_begin(); i < std::min(mesh.i_begin() + 8, mesh.i_end()); ++i) {
         std::cout << "    i=" << i - mesh.i_begin()
-                  << ": FFT=" << p_fft(i, j_mid, k_2d)
+                  << ": FFT=" << p_fft(i, j_mid)
                   << ", MG=" << p_mg(i, j_mid) << "\n";
     }
 
@@ -230,45 +228,40 @@ bool test_pack_unpack_identity() {
     Mesh mesh;
     mesh.init_uniform(Nx, Ny, 0.0, Lx, 0.0, Ly);
 
-    // Create input field with known pattern
+    // Create input field with known pattern using 2D indexing
     ScalarField input(mesh), output(mesh);
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // Unique value at each cell
-            input(i, j, 1) = (j - mesh.j_begin()) * Nx + (i - mesh.i_begin()) + 1.0;
+            // Unique value at each cell (2D indexing)
+            input(i, j) = (j - mesh.j_begin()) * Nx + (i - mesh.i_begin()) + 1.0;
         }
     }
     output.fill(0.0);
 
-    // The pack/unpack in FFT2D should preserve this pattern
-    // (after accounting for FFT which would transform it)
-    // For now, just verify field access is correct
+    // The pack/unpack in FFT2D uses 2D indexing for 2D meshes
+    // Verify field access is correct with 2D formula: idx = j * Nx_full + i
 
     double* in_ptr = input.data().data();
     double* out_ptr = output.data().data();
     size_t size = mesh.total_cells();
 
-    // Manually pack and unpack using same indexing as FFT2D
+    // FFT2D uses 2D indexing for 2D meshes
     const int Ng = mesh.Nghost;
     const int Nx_full = Nx + 2 * Ng;
     const int Ny_full = Ny + 2 * Ng;
     const int Nz_full = 1 + 2 * Ng;
+    const size_t size_2d = (size_t)Nx_full * Ny_full;  // 2D plane size
 
     std::cout << "  Nx_full=" << Nx_full << ", Ny_full=" << Ny_full << ", Nz_full=" << Nz_full << "\n";
-    std::cout << "  Expected size=" << (Nx_full * Ny_full * Nz_full) << ", actual=" << size << "\n";
+    std::cout << "  2D plane size=" << size_2d << ", total_cells()=" << size << "\n";
 
-    if ((size_t)(Nx_full * Ny_full * Nz_full) != size) {
-        std::cout << "  [FAIL] Size mismatch!\n";
-        return false;
-    }
-
-    // Test the indexing formula
+    // Test the 2D indexing formula (no k offset)
     double max_err = 0.0;
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
-            // FFT2D pack formula:
-            const size_t src_idx = (size_t)Ng * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng);
+            // FFT2D pack formula (2D indexing, no k offset):
+            const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
             double val = in_ptr[src_idx];
             double expected = j * Nx + i + 1.0;
 

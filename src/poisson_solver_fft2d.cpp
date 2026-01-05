@@ -49,8 +49,71 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     if (x_lo != PoissonBC::Periodic || x_hi != PoissonBC::Periodic) {
         throw std::runtime_error("FFT2DPoissonSolver: x must be periodic");
     }
+
+    // Check if BCs actually changed
+    bool bc_changed = (bc_y_lo_ != y_lo || bc_y_hi_ != y_hi);
+
     bc_y_lo_ = y_lo;
     bc_y_hi_ = y_hi;
+
+#ifdef USE_GPU_OFFLOAD
+    // Recompute tridiagonal matrices if BCs changed and already initialized
+    if (bc_changed && tri_lower_ != nullptr) {
+        // Update y-direction base coefficients with new BCs
+        const double invDy2 = 1.0 / (dy_ * dy_);
+        for (int j = 0; j < Ny_; ++j) {
+            double aS = invDy2;
+            double aN = invDy2;
+
+            if (j == 0 && bc_y_lo_ == PoissonBC::Neumann) {
+                aS = 0.0;
+            }
+            if (j == Ny_ - 1 && bc_y_hi_ == PoissonBC::Neumann) {
+                aN = 0.0;
+            }
+
+            tri_lower_[j] = aS;
+            tri_upper_[j] = aN;
+            tri_diag_base_[j] = -(aS + aN);
+        }
+        cudaDeviceSynchronize();
+
+        // Rebuild cuSPARSE tridiagonal matrices with new coefficients
+        double* lam_x = lambda_x_;
+        double* aS = tri_lower_;
+        double* aN = tri_upper_;
+        double* diag_base = tri_diag_base_;
+        cufftDoubleComplex* dl = tri_dl_;
+        cufftDoubleComplex* d = tri_d_;
+        cufftDoubleComplex* du = tri_du_;
+        int N_modes = N_modes_;
+        int Ny = Ny_;
+
+        #pragma omp target teams distribute parallel for collapse(2) \
+            is_device_ptr(dl, d, du, lam_x, aS, aN, diag_base)
+        for (int m = 0; m < N_modes; ++m) {
+            for (int j = 0; j < Ny; ++j) {
+                const size_t idx = (size_t)m * Ny + j;
+                double shift = lam_x[m];
+                bool is_zero_mode = (m == 0);
+
+                if (is_zero_mode && j == 0) {
+                    dl[idx].x = 0.0; dl[idx].y = 0.0;
+                    d[idx].x = 1.0;  d[idx].y = 0.0;
+                    du[idx].x = 0.0; du[idx].y = 0.0;
+                } else {
+                    dl[idx].x = (j > 0) ? aS[j] : 0.0;
+                    dl[idx].y = 0.0;
+                    d[idx].x = diag_base[j] - shift;
+                    d[idx].y = 0.0;
+                    du[idx].x = (j < Ny - 1) ? aN[j] : 0.0;
+                    du[idx].y = 0.0;
+                }
+            }
+        }
+        cudaDeviceSynchronize();
+    }
+#endif
 }
 
 bool FFT2DPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
