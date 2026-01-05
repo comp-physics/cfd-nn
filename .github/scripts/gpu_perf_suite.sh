@@ -27,6 +27,12 @@ echo ""
 
 chmod +x .github/scripts/*.sh
 
+# Check for required tools
+if ! command -v bc &>/dev/null; then
+    echo "ERROR: bc is required for floating-point comparison but not installed"
+    exit 1
+fi
+
 # Build GPU-offload binary only (we're validating GPU absolute perf, not speedup)
 # Preserves _deps (HYPRE cache) while rebuilding project code
 echo "==================================================================="
@@ -74,8 +80,9 @@ run_gpu_perf_gate() {
     local log="gpu_${name}.log"
     (cd build_gpu && "./${exe}" "$@") 2>&1 | tee "$log"
 
-    # Extract solver_step average time
-    local avg_ms=$(grep -E '^\s*solver_step\s+' "$log" | awk '{print $4}')
+    # Extract solver_step average time (SC2155: declare separately from assignment)
+    local avg_ms
+    avg_ms=$(grep -E '^\s*solver_step\s+' "$log" | awk '{print $4}')
 
     if [ -z "$avg_ms" ]; then
         echo "[FAIL] ${name}: Could not extract timing"
@@ -84,8 +91,17 @@ run_gpu_perf_gate() {
         return 1
     fi
 
+    # Validate timing is numeric before passing to bc
+    if ! [[ "$avg_ms" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+        echo "[FAIL] ${name}: Invalid timing format: $avg_ms"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS} ${name}"
+        return 1
+    fi
+
     # Check threshold (using bc for floating point comparison)
-    local passed=$(echo "$avg_ms <= $max_ms" | bc -l)
+    local passed
+    passed=$(echo "$avg_ms <= $max_ms" | bc -l)
 
     if [ "$passed" -eq 1 ]; then
         echo "[PASS] ${name}: ${avg_ms} ms/step <= ${max_ms} ms/step threshold"
@@ -117,8 +133,9 @@ run_gpu_perf_info() {
     local log="gpu_${name}.log"
     (cd build_gpu && "./${exe}" "$@") 2>&1 | tee "$log"
 
-    # Extract solver_step average time
-    local avg_ms=$(grep -E '^\s*solver_step\s+' "$log" | awk '{print $4}')
+    # Extract solver_step average time (SC2155: declare separately from assignment)
+    local avg_ms
+    avg_ms=$(grep -E '^\s*solver_step\s+' "$log" | awk '{print $4}')
 
     if [ -z "$avg_ms" ]; then
         echo "[INFO] ${name}: Could not extract timing"

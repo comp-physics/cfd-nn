@@ -23,8 +23,8 @@ jobs:
             rm -rf "${GITHUB_WORKSPACE}/${dir}/_deps/hypre-subbuild" 2>/dev/null || true
           fi
         done
-        rm -rf ${GITHUB_WORKSPACE}/CMakeCache.txt
-        rm -rf ${GITHUB_WORKSPACE}/CMakeFiles
+        rm -rf "${GITHUB_WORKSPACE}/CMakeCache.txt"
+        rm -rf "${GITHUB_WORKSPACE}/CMakeFiles"
         echo "Workspace cleaned (HYPRE cache preserved if present)"
 
     - uses: actions/checkout@v4
@@ -105,12 +105,12 @@ jobs:
     - name: Cleanup (preserve HYPRE cache)
       if: always()
       run: |
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out || true
-        rm -f ${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" || true
         # Clean build artifacts but keep _deps for cache
         # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
         for dir in build_gpu build_cpu build_gpu_hypre build_cpu_hypre; do
