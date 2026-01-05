@@ -620,23 +620,9 @@ void Config::finalize() {
          turb_model == TurbulenceModelType::EARSM_GS ||
          turb_model == TurbulenceModelType::EARSM_Pope);
 
-    // Transport models with very low Reynolds numbers may have numerical issues
-    // The k-omega models are designed for turbulent flows (Re > ~2000 for channels)
-    if (is_transport_model && Re_specified && Re < 500) {
-        std::cerr << "ERROR: Invalid configuration: transport turbulence model with Re=" << Re << ".\n"
-                  << "\n"
-                  << "Transport-equation turbulence models (k-omega, SST, EARSM) are designed\n"
-                  << "for turbulent flows. At Re=" << Re << ", the flow is likely laminar or\n"
-                  << "transitional, and these models may produce numerical instabilities.\n"
-                  << "\n"
-                  << "For low Reynolds number flows, use one of:\n"
-                  << "  --model none      (laminar, no turbulence model)\n"
-                  << "  --model baseline  (simple mixing length, if mild turbulence expected)\n"
-                  << "\n"
-                  << "If you need to run a transport model at low Re for testing purposes,\n"
-                  << "specify nu and dp_dx directly instead of Re.\n";
-        std::exit(1);
-    }
+    // NOTE: Transport model Re check is done AFTER Reynolds number computation below,
+    // so it catches low-Re cases regardless of whether Re was specified directly
+    // or computed from (nu, dp_dx).
 
     // Validate mesh resolution for turbulence models
     // Transport models need reasonable resolution to resolve boundary layers
@@ -794,11 +780,32 @@ void Config::finalize() {
         if (dp_dx < 0.0) {
             Re = -dp_dx * delta * delta * delta / (3.0 * nu * nu);
             if (verbose) {
-                std::cout << "Using default parameters: nu = " << std::scientific << nu 
+                std::cout << "Using default parameters: nu = " << std::scientific << nu
                           << " (air at 20°C), dp_dx = " << dp_dx << "\n"
                           << "Computed Re = " << Re << "\n" << std::defaultfloat;
             }
         }
+    }
+
+    // =========================================================================
+    // POST-COMPUTATION VALIDATION
+    // =========================================================================
+
+    // Transport models with very low Reynolds numbers may have numerical issues
+    // The k-omega models are designed for turbulent flows (Re > ~2000 for channels)
+    // This check uses the COMPUTED Re, so it catches low-Re cases regardless of
+    // whether Re was specified directly or computed from (nu, dp_dx).
+    if (is_transport_model && Re < 500) {
+        std::cerr << "ERROR: Invalid configuration: transport turbulence model with Re=" << Re << ".\n"
+                  << "\n"
+                  << "Transport-equation turbulence models (k-omega, SST, EARSM) are designed\n"
+                  << "for turbulent flows. At Re=" << Re << ", the flow is likely laminar or\n"
+                  << "transitional, and these models may produce numerical instabilities.\n"
+                  << "\n"
+                  << "For low Reynolds number flows, use one of:\n"
+                  << "  --model none      (laminar, no turbulence model)\n"
+                  << "  --model baseline  (simple mixing length, if mild turbulence expected)\n";
+        std::exit(1);
     }
 }
 
@@ -823,8 +830,17 @@ void Config::print() const {
     std::cout << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
               << "Time stepping: Explicit Euler + Projection\n"
-              << "Poisson solver: Multigrid (warm-start enabled)\n"
-              << "Convective scheme: " 
+              << "Poisson solver: ";
+    switch (poisson_solver) {
+        case PoissonSolverType::Auto: std::cout << "Auto"; break;
+        case PoissonSolverType::FFT: std::cout << "FFT (doubly-periodic)"; break;
+        case PoissonSolverType::FFT2D: std::cout << "FFT2D (2D mesh)"; break;
+        case PoissonSolverType::FFT1D: std::cout << "FFT1D (singly-periodic)"; break;
+        case PoissonSolverType::HYPRE: std::cout << "HYPRE PFMG"; break;
+        case PoissonSolverType::MG: std::cout << "Multigrid"; break;
+    }
+    std::cout << "\n"
+              << "Convective scheme: "
               << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
               << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
               << "Turbulence model: ";

@@ -4149,6 +4149,8 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         }
 
         // Vorticity (omega_z = dv/dx - du/dy) - scalar in 2D
+        // NOTE: Uses uniform dx/dy spacing. On stretched meshes, this is an approximation
+        // suitable for visualization but not metrically consistent with the solver discretization.
         auto compute_vorticity_2d = [&](int i, int j) -> double {
             // dv/dx
             double dvdx;
@@ -4389,6 +4391,8 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         //   omega_x = dw/dy - dv/dz
         //   omega_y = du/dz - dw/dx
         //   omega_z = dv/dx - du/dy
+        // NOTE: Uses uniform dx/dy/dz spacing. On stretched meshes, this is an approximation
+        // suitable for visualization but not metrically consistent with the solver discretization.
 
         // Helper lambda for dw/dy
         auto compute_dwdy = [&](int i, int j, int k) -> double {
@@ -4534,6 +4538,9 @@ void RANSSolver::write_vtk(const std::string& filename) const {
         // Q-criterion: Q = 0.5 * (||Omega||^2 - ||S||^2)
         // Positive Q indicates vortex cores (rotation dominates strain)
         // Requires diagonal derivatives (dudx, dvdy, dwdz) in addition to existing off-diagonals
+        // NOTE: Uses uniform dx/dy/dz spacing (same assumption as vorticity above).
+        // TODO: For large grids, consider precomputing the 3x3 gradient tensor per cell
+        //       to avoid redundant lambda calls in the output loop.
 
         // Helper lambda for du/dx
         auto compute_dudx = [&](int i, int j, int k) -> double {
