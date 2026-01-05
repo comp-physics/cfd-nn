@@ -339,7 +339,13 @@ if(BUILD_TESTS)
     add_executable(test_backend_execution tests/test_backend_execution.cpp)
     target_link_libraries(test_backend_execution nn_cfd_core)
     add_test(NAME BackendExecutionTest COMMAND test_backend_execution)
-    
+
+    # Backend canary test - verifies CPU and GPU produce different FP results
+    # This catches "same backend" false coverage in parity tests
+    add_executable(test_backend_canary tests/test_backend_canary.cpp)
+    target_link_libraries(test_backend_canary nn_cfd_core)
+    add_test(NAME BackendCanaryTest COMMAND test_backend_canary)
+
     add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
     target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
     add_test(NAME ConsistencyTest COMMAND test_cpu_gpu_consistency)
