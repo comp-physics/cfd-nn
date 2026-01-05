@@ -1084,15 +1084,17 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     bool uniform_xz = true;   // Default for channel: uniform x/z spacing
 
     if (mesh.is2D()) {
-        // 2D mesh: try FFT2D solver (periodic x, walls y)
-        try {
-            fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
-            fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                                           PoissonBC::Neumann, PoissonBC::Neumann);
-            fft2d_applicable = true;
-        } catch (const std::exception& e) {
-            std::cerr << "[Solver] FFT2D solver initialization failed: " << e.what() << "\n";
-        }
+        // 2D mesh: FFT2D disabled for now (causes flux conservation issues)
+        // TODO: Debug FFT2D solver and re-enable
+        // try {
+        //     fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
+        //     fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+        //                                    PoissonBC::Neumann, PoissonBC::Neumann);
+        //     fft2d_applicable = true;
+        // } catch (const std::exception& e) {
+        //     std::cerr << "[Solver] FFT2D solver initialization failed: " << e.what() << "\n";
+        // }
+        fft2d_applicable = false;  // Force MG for 2D until FFT2D is fixed
     } else {
         // 3D mesh: try 2D FFT first (periodic x AND z)
         if (periodic_xz && uniform_xz) {
