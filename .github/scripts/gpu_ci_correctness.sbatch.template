@@ -48,7 +48,7 @@ echo "HYPRE cache status (CMake will detect libHYPRE.a and skip rebuild):"
 for dir in build_cpu_hypre build_gpu_hypre; do
     if [ -f "${dir}/_deps/hypre-build/libHYPRE.a" ]; then
         echo "  [CACHED] ${dir}/_deps/hypre-build/libHYPRE.a exists"
-        ls -la "${dir}/_deps/" 2>/dev/null | grep hypre
+        ls -la "${dir}/_deps/" 2>/dev/null | grep hypre || true
     else
         echo "  [MISS] ${dir} - will build HYPRE from source"
     fi
