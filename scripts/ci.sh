@@ -584,8 +584,8 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = 
     run_test "Features" "$BUILD_DIR/test_features" 30
     run_test "NN Core" "$BUILD_DIR/test_nn_core" 30
 
-    # Data-driven test framework demo (24 tests in ~30s)
-    run_test "Data-Driven Demo" "$BUILD_DIR/test_data_driven_demo" 60
+    # Data-driven test framework demo (24 tests x 2 runs = ~90s)
+    run_test "Data-Driven Demo" "$BUILD_DIR/test_data_driven_demo" 180
 
     # Configuration and I/O tests (very fast)
     run_test "Config" "$BUILD_DIR/test_config" 30
