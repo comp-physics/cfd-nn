@@ -363,7 +363,7 @@ void test_kovasznay_flow() {
     std::cout << "  KE theory:  " << KE_theory << "\n";
     std::cout << "  KE error:   " << std::fixed << std::setprecision(1) << ke_error * 100 << "%\n";
 
-    // Allow 20% error (numerical dissipation adds to physical)
+    // Allow 30% error (numerical dissipation adds to physical)
     if (ke_error > 0.30) {
         throw std::runtime_error("Vortex decay error too large: " + std::to_string(ke_error*100) + "%");
     }
@@ -402,12 +402,8 @@ void test_mms_navier_stokes() {
         return -std::cos(k * x) * std::sin(k * y);
     };
 
-    // Source terms (these balance the viscous term at steady state)
-    // For N-S: du/dt + u*du/dx + v*du/dy = -dp/dx + nu*nabla^2(u) + f_u
-    // At steady state with this solution, advective terms vanish due to symmetry
-    // So we just need f = -nu * nabla^2(u) to balance
-    double source_coeff = 2.0 * nu * k * k;  // 2*nu*k^2
-
+    // Note: True MMS would require position-dependent source to balance viscous term.
+    // Here we initialize at exact solution and verify it stays reasonably close.
     std::vector<int> Ns = {16, 32};
     std::vector<double> errors;
 

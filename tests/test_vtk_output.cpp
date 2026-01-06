@@ -449,15 +449,7 @@ void test_vtk_turbulence_fields() {
 
     std::string content = read_file(filename);
 
-    // Should contain turbulence fields
-    // Note: field names may vary (k, omega, nu_t, tke, etc.)
-    bool has_turb_field = (content.find("nu_t") != std::string::npos) ||
-                          (content.find("k") != std::string::npos) ||
-                          (content.find("omega") != std::string::npos) ||
-                          (content.find("tke") != std::string::npos);
-
-    // This may not always be true depending on what's written
-    // Just verify file was created successfully
+    // Verify file was created successfully
     require_file_exists(filename);
 
     remove_file(filename);

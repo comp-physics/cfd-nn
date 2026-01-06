@@ -13,7 +13,7 @@
 #include "turbulence_model.hpp"
 #include <iostream>
 #include <cmath>
-#include <cassert>
+#include <stdexcept>
 #include <limits>
 
 using namespace nncfd;
@@ -54,23 +54,24 @@ void test_poisson_limited_iterations() {
     int iters = solver.solve(rhs, p, cfg);
 
     // Should return after max_iter iterations
-    assert(iters == 1);
+    if (iters != 1) {
+        throw std::runtime_error("Expected 1 iteration, got " + std::to_string(iters));
+    }
 
     // Residual should be high (not converged)
     double residual = solver.residual();
-    assert(residual > 1e-6);  // Definitely not converged
+    if (residual <= 1e-6) {
+        throw std::runtime_error("Residual unexpectedly low: " + std::to_string(residual));
+    }
 
     // But solution should still be finite (no NaN)
-    bool all_finite = true;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             if (!std::isfinite(p(i, j))) {
-                all_finite = false;
-                break;
+                throw std::runtime_error("NaN/Inf detected in pressure field");
             }
         }
     }
-    assert(all_finite);
 
     std::cout << "PASSED (iters=" << iters << ", res=" << residual << ")\n";
 }
@@ -100,7 +101,9 @@ void test_poisson_singular_neumann() {
     int iters = solver.solve(rhs, p, cfg);
 
     // Should converge (mean subtraction handles singular system)
-    assert(solver.residual() < 1e-4);
+    if (solver.residual() >= 1e-4) {
+        throw std::runtime_error("Poisson solver did not converge: residual=" + std::to_string(solver.residual()));
+    }
 
     // Solution should be nearly constant (since RHS=0)
     double p_mean = 0.0;
@@ -123,7 +126,9 @@ void test_poisson_singular_neumann() {
     }
     variance /= count;
 
-    assert(variance < 1e-8);  // Solution is nearly constant
+    if (variance >= 1e-8) {
+        throw std::runtime_error("Solution not constant: variance=" + std::to_string(variance));
+    }
 
     std::cout << "PASSED (iters=" << iters << ", variance=" << variance << ")\n";
 }
@@ -161,7 +166,9 @@ void test_poisson_singular_periodic() {
     int iters = solver.solve(rhs, p, cfg);
 
     // Should converge
-    assert(solver.residual() < 1e-4);
+    if (solver.residual() >= 1e-4) {
+        throw std::runtime_error("Poisson solver did not converge: residual=" + std::to_string(solver.residual()));
+    }
 
     // Check against analytical solution (up to constant)
     double p_mean = 0.0, exact_mean = 0.0;
@@ -189,7 +196,9 @@ void test_poisson_singular_periodic() {
         }
     }
 
-    assert(max_error < 0.1);
+    if (max_error >= 0.1) {
+        throw std::runtime_error("Solution error too large: " + std::to_string(max_error));
+    }
 
     std::cout << "PASSED (iters=" << iters << ", max_err=" << max_error << ")\n";
 }
@@ -226,9 +235,7 @@ void test_nan_detection_velocity() {
     // Inject NaN into u-velocity
     solver.velocity().u(mesh.Nx/2, mesh.Ny/2) = std::numeric_limits<double>::quiet_NaN();
 
-#ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
-#endif
 
     bool detected = false;
     try {
@@ -240,7 +247,9 @@ void test_nan_detection_velocity() {
         }
     }
 
-    assert(detected);
+    if (!detected) {
+        throw std::runtime_error("NaN in velocity was not detected");
+    }
     std::cout << "PASSED\n";
 }
 
@@ -272,9 +281,7 @@ void test_inf_detection_pressure() {
     // Inject Inf into pressure
     solver.pressure()(mesh.Nx/2, mesh.Ny/2) = std::numeric_limits<double>::infinity();
 
-#ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
-#endif
 
     bool detected = false;
     try {
@@ -286,7 +293,9 @@ void test_inf_detection_pressure() {
         }
     }
 
-    assert(detected);
+    if (!detected) {
+        throw std::runtime_error("Inf in pressure was not detected");
+    }
     std::cout << "PASSED\n";
 }
 
@@ -321,27 +330,27 @@ void test_realizability_k_positive() {
 
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
+    solver.sync_to_gpu();
 
     // Run some steps
     for (int i = 0; i < 50; ++i) {
         solver.step();
     }
+    solver.sync_from_gpu();
 
     // Check k is positive everywhere
     const ScalarField& k = solver.k();
-    bool all_positive = true;
     double k_min = 1e10;
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             if (k(i, j) < 0.0) {
-                all_positive = false;
+                throw std::runtime_error("Negative k found: " + std::to_string(k(i, j)));
             }
             k_min = std::min(k_min, k(i, j));
         }
     }
 
-    assert(all_positive);
     std::cout << "PASSED (k_min=" << k_min << ")\n";
 }
 
@@ -372,27 +381,27 @@ void test_realizability_omega_positive() {
 
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
+    solver.sync_to_gpu();
 
     // Run some steps
     for (int i = 0; i < 50; ++i) {
         solver.step();
     }
+    solver.sync_from_gpu();
 
     // Check omega is positive everywhere
     const ScalarField& omega = solver.omega();
-    bool all_positive = true;
     double omega_min = 1e10;
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             if (omega(i, j) < 0.0) {
-                all_positive = false;
+                throw std::runtime_error("Negative omega found: " + std::to_string(omega(i, j)));
             }
             omega_min = std::min(omega_min, omega(i, j));
         }
     }
 
-    assert(all_positive);
     std::cout << "PASSED (omega_min=" << omega_min << ")\n";
 }
 
@@ -424,27 +433,28 @@ void test_nu_t_bounded() {
 
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
+    solver.sync_to_gpu();
 
     // Run some steps
     for (int i = 0; i < 50; ++i) {
         solver.step();
     }
+    solver.sync_from_gpu();
 
     // Check nu_t is bounded
     const ScalarField& nu_t = solver.nu_t();
-    bool all_bounded = true;
     double nu_t_max_actual = 0.0;
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             if (nu_t(i, j) > config.nu_t_max * 1.01) {  // 1% tolerance
-                all_bounded = false;
+                throw std::runtime_error("nu_t exceeds bound: " + std::to_string(nu_t(i, j)) +
+                                       " > " + std::to_string(config.nu_t_max));
             }
             nu_t_max_actual = std::max(nu_t_max_actual, nu_t(i, j));
         }
     }
 
-    assert(all_bounded);
     std::cout << "PASSED (nu_t_max=" << nu_t_max_actual << ")\n";
 }
 
@@ -475,11 +485,13 @@ void test_zero_velocity_field() {
 
     // Initialize with zero velocity
     solver.initialize_uniform(0.0, 0.0);
+    solver.sync_to_gpu();
 
     // Should not crash
     for (int i = 0; i < 10; ++i) {
         solver.step();
     }
+    solver.sync_from_gpu();
 
     // Velocity should remain zero (no forcing)
     const VectorField& vel = solver.velocity();
@@ -491,7 +503,9 @@ void test_zero_velocity_field() {
         }
     }
 
-    assert(max_vel < 1e-10);
+    if (max_vel >= 1e-10) {
+        throw std::runtime_error("Velocity grew from zero without forcing: " + std::to_string(max_vel));
+    }
     std::cout << "PASSED (max_vel=" << max_vel << ")\n";
 }
 
@@ -519,23 +533,23 @@ void test_very_small_dt() {
 
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(1.0, 0.0);
+    solver.sync_to_gpu();
 
     // Should not crash or produce NaN
     for (int i = 0; i < 10; ++i) {
         solver.step();
     }
+    solver.sync_from_gpu();
 
     const VectorField& vel = solver.velocity();
-    bool all_finite = true;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             if (!std::isfinite(vel.u(i, j)) || !std::isfinite(vel.v(i, j))) {
-                all_finite = false;
+                throw std::runtime_error("NaN/Inf detected in velocity field with small dt");
             }
         }
     }
 
-    assert(all_finite);
     std::cout << "PASSED\n";
 }
 
@@ -546,24 +560,43 @@ void test_very_small_dt() {
 int main() {
     std::cout << "=== Error Recovery Tests ===\n\n";
 
+    int passed = 0, failed = 0;
+
+    auto run_test = [&](const char* name, void(*func)()) {
+        try {
+            func();
+            ++passed;
+        } catch (const std::exception& e) {
+            std::cout << "FAILED: " << e.what() << "\n";
+            ++failed;
+        }
+    };
+
     // Poisson solver tests
-    test_poisson_limited_iterations();
-    test_poisson_singular_neumann();
-    test_poisson_singular_periodic();
+    run_test("Poisson limited iterations", test_poisson_limited_iterations);
+    run_test("Poisson singular Neumann", test_poisson_singular_neumann);
+    run_test("Poisson singular Periodic", test_poisson_singular_periodic);
 
     // NaN detection tests
-    test_nan_detection_velocity();
-    test_inf_detection_pressure();
+    run_test("NaN detection velocity", test_nan_detection_velocity);
+    run_test("Inf detection pressure", test_inf_detection_pressure);
 
     // Turbulence realizability tests
-    test_realizability_k_positive();
-    test_realizability_omega_positive();
-    test_nu_t_bounded();
+    run_test("Realizability k positive", test_realizability_k_positive);
+    run_test("Realizability omega positive", test_realizability_omega_positive);
+    run_test("nu_t bounded", test_nu_t_bounded);
 
     // Edge case tests
-    test_zero_velocity_field();
-    test_very_small_dt();
+    run_test("Zero velocity field", test_zero_velocity_field);
+    run_test("Very small dt", test_very_small_dt);
 
-    std::cout << "\nAll tests PASSED!\n";
+    std::cout << "\n=== Results: " << passed << "/" << (passed + failed) << " tests passed ===\n";
+
+    if (failed > 0) {
+        std::cout << "[FAILURE] " << failed << " test(s) failed\n";
+        return 1;
+    }
+
+    std::cout << "All tests PASSED!\n";
     return 0;
 }

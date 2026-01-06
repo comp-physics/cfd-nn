@@ -382,20 +382,6 @@ void test_poisson_3d_dirichlet_all() {
 
     assert(solver.residual() < 1e-4);
 
-    // Solution should be positive in interior (Laplacian of positive = positive RHS)
-    bool interior_positive = true;
-    for (int k = mesh.k_begin() + 1; k < mesh.k_end() - 1; ++k) {
-        for (int j = mesh.j_begin() + 1; j < mesh.j_end() - 1; ++j) {
-            for (int i = mesh.i_begin() + 1; i < mesh.i_end() - 1; ++i) {
-                if (p(i, j, k) < 0) {
-                    interior_positive = false;
-                }
-            }
-        }
-    }
-    // Note: This may not always be true depending on solver behavior
-    // Just check convergence for now
-
     std::cout << "PASSED (iters=" << iters << ")\n";
 }
 
