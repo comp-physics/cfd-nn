@@ -661,6 +661,11 @@ if(BUILD_TESTS)
     add_executable(test_vtk_output tests/test_vtk_output.cpp)
     target_link_libraries(test_vtk_output nn_cfd_core)
     add_test(NAME VTKOutputTest COMMAND test_vtk_output)
+
+    # Advanced physics validation tests - 9 analytical/benchmark tests
+    add_executable(test_physics_validation_advanced tests/test_physics_validation_advanced.cpp)
+    target_link_libraries(test_physics_validation_advanced nn_cfd_core)
+    add_test(NAME PhysicsValidationAdvancedTest COMMAND test_physics_validation_advanced)
 endif()
 
 # Installation
