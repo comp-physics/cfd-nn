@@ -97,10 +97,8 @@ ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& 
 FieldComparison compare_fields(const Mesh& mesh, const ScalarField& cpu, const ScalarField& gpu, const std::string& name = "") {
     FieldComparison result;
 
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            result.update(i, j, cpu(i, j), gpu(i, j));
-        }
+    FOR_INTERIOR_2D(mesh, i, j) {
+        result.update(i, j, cpu(i, j), gpu(i, j));
     }
     result.finalize();
     result.print(name);
@@ -139,19 +137,17 @@ void test_harness_sanity() {
 void create_test_velocity_field(const Mesh& mesh, VectorField& vel, int seed = 0) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<double> dist(-0.1, 0.1);
-    
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double y = mesh.yc[j];
-            double x = mesh.xc[i];
-            
-            // Parabolic + perturbation
-            double u_base = 4.0 * y * (1.0 - y);
-            double v_base = 0.1 * std::sin(2.0 * M_PI * x);
-            
-            vel.u(i, j) = u_base + 0.01 * dist(rng);
-            vel.v(i, j) = v_base + 0.01 * dist(rng);
-        }
+
+    FOR_INTERIOR_2D(mesh, i, j) {
+        double y = mesh.yc[j];
+        double x = mesh.xc[i];
+
+        // Parabolic + perturbation
+        double u_base = 4.0 * y * (1.0 - y);
+        double v_base = 0.1 * std::sin(2.0 * M_PI * x);
+
+        vel.u(i, j) = u_base + 0.01 * dist(rng);
+        vel.v(i, j) = v_base + 0.01 * dist(rng);
     }
 }
 
@@ -226,19 +222,17 @@ void test_mixing_length_consistency() {
         std::vector<double> wall_dist_data(total_cells, 0.0);
         
         // Precompute wall distance
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                int idx = mesh.index(i, j);
-                wall_dist_data[idx] = mesh.wall_distance(i, j);
-            }
+        FOR_INTERIOR_2D(mesh, i, j) {
+            int idx = mesh.index(i, j);
+            wall_dist_data[idx] = mesh.wall_distance(i, j);
         }
-        
+
         double* dudx_ptr = dudx_data.data();
         double* dudy_ptr = dudy_data.data();
         double* dvdx_ptr = dvdx_data.data();
         double* dvdy_ptr = dvdy_data.data();
         double* wall_dist_ptr = wall_dist_data.data();
-        
+
         // Map to GPU
         #pragma omp target enter data map(to: u_ptr[0:u_total])
         #pragma omp target enter data map(to: v_ptr[0:v_total])
@@ -412,19 +406,17 @@ void test_gep_consistency() {
         std::vector<double> wall_dist_data(total_cells, 0.0);
         
         // Precompute wall distance
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                int idx = mesh.index(i, j);
-                wall_dist_data[idx] = mesh.wall_distance(i, j);
-            }
+        FOR_INTERIOR_2D(mesh, i, j) {
+            int idx = mesh.index(i, j);
+            wall_dist_data[idx] = mesh.wall_distance(i, j);
         }
-        
+
         double* dudx_ptr = dudx_data.data();
         double* dudy_ptr = dudy_data.data();
         double* dvdx_ptr = dvdx_data.data();
         double* dvdy_ptr = dvdy_data.data();
         double* wall_dist_ptr = wall_dist_data.data();
-        
+
         // Map to GPU
         #pragma omp target enter data map(to: u_ptr[0:u_total])
         #pragma omp target enter data map(to: v_ptr[0:v_total])
@@ -597,12 +589,10 @@ void test_nn_mlp_consistency() {
             std::vector<double> wall_dist_data(total_cells, 0.0);
             
             // Precompute wall distance
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    wall_dist_data[mesh.index(i, j)] = mesh.wall_distance(i, j);
-                }
+            FOR_INTERIOR_2D(mesh, i, j) {
+                wall_dist_data[mesh.index(i, j)] = mesh.wall_distance(i, j);
             }
-            
+
             // Get pointers
             double* u_ptr = vel.u_data().data();
             double* v_ptr = vel.v_data().data();
@@ -806,15 +796,13 @@ void test_randomized_regression() {
         
         // Compare
         double max_abs = 0.0, max_rel = 0.0;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double diff = std::abs(nu_t_cpu(i, j) - nu_t_gpu(i, j));
-                double rel = diff / (std::abs(nu_t_cpu(i, j)) + 1e-20);
-                max_abs = std::max(max_abs, diff);
-                max_rel = std::max(max_rel, rel);
-            }
+        FOR_INTERIOR_2D(mesh, i, j) {
+            double diff = std::abs(nu_t_cpu(i, j) - nu_t_gpu(i, j));
+            double rel = diff / (std::abs(nu_t_cpu(i, j)) + 1e-20);
+            max_abs = std::max(max_abs, diff);
+            max_rel = std::max(max_rel, rel);
         }
-        
+
         if (max_abs > worst_abs) {
             worst_abs = max_abs;
             worst_rel = max_rel;
@@ -1018,13 +1006,11 @@ int main(int argc, char* argv[]) {
                 std::vector<double> dvdx_data(total_cells, 0.0);
                 std::vector<double> dvdy_data(total_cells, 0.0);
                 std::vector<double> wall_dist_data(total_cells, 0.0);
-                
-                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                        wall_dist_data[mesh.index(i, j)] = mesh.wall_distance(i, j);
-                    }
+
+                FOR_INTERIOR_2D(mesh, i, j) {
+                    wall_dist_data[mesh.index(i, j)] = mesh.wall_distance(i, j);
                 }
-                
+
                 double* dudx_ptr = dudx_data.data();
                 double* dudy_ptr = dudy_data.data();
                 double* dvdx_ptr = dvdx_data.data();
