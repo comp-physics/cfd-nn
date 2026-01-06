@@ -14,6 +14,8 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <random>
+#include <vector>
 
 namespace nncfd {
 namespace test {
@@ -265,3 +267,84 @@ inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const 
     for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
     for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
     for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
+
+//=============================================================================
+// GPU/CPU Test Utilities
+//=============================================================================
+
+namespace nncfd {
+namespace test {
+
+/// Test case configuration for turbulence model tests
+struct TurbulenceTestCase {
+    int nx, ny;
+    int seed;
+};
+
+/// Default test cases for turbulence model testing
+inline std::vector<TurbulenceTestCase> default_turbulence_cases() {
+    return {{64, 64, 0}, {48, 96, 1}, {63, 97, 2}, {128, 128, 3}};
+}
+
+/// Smaller test cases for computationally expensive tests (GEP, NN-MLP)
+inline std::vector<TurbulenceTestCase> small_turbulence_cases() {
+    return {{64, 64, 0}, {48, 96, 1}, {128, 128, 2}};
+}
+
+/// Create a deterministic but non-trivial velocity field for testing
+/// Parabolic base profile + sinusoidal + random perturbation
+template<typename MeshT, typename VectorFieldT>
+inline void create_test_velocity_field(const MeshT& mesh, VectorFieldT& vel, int seed = 0) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> dist(-0.1, 0.1);
+
+    FOR_INTERIOR_2D(mesh, i, j) {
+        double y = mesh.yc[j];
+        double x = mesh.xc[i];
+
+        // Parabolic + perturbation
+        double u_base = 4.0 * y * (1.0 - y);
+        double v_base = 0.1 * std::sin(2.0 * M_PI * x);
+
+        vel.u(i, j) = u_base + 0.01 * dist(rng);
+        vel.v(i, j) = v_base + 0.01 * dist(rng);
+    }
+}
+
+/// Tolerance check result with combined abs/rel check
+struct ToleranceCheck {
+    bool passed;
+    double abs_diff;
+    double rel_diff;
+
+    ToleranceCheck(double abs_d, double rel_d, double tol_abs, double tol_rel)
+        : passed(abs_d <= tol_abs || rel_d <= tol_rel), abs_diff(abs_d), rel_diff(rel_d) {}
+
+    void print_result(const std::string& test_name = "") const {
+        if (!test_name.empty()) {
+            std::cout << "    " << test_name << ": ";
+        }
+        std::cout << (passed ? "PASSED" : "FAILED") << "\n";
+    }
+};
+
+/// CPU/GPU comparison tolerances (tight for MAC-consistent paths)
+constexpr double GPU_CPU_ABS_TOL = 1e-12;
+constexpr double GPU_CPU_REL_TOL = 1e-10;
+
+/// Cross-build comparison tolerances (CPU reference vs GPU with different compiler/rounding)
+constexpr double CROSS_BUILD_ABS_TOL = 1e-6;
+constexpr double CROSS_BUILD_REL_TOL = 1e-5;
+
+/// Check GPU/CPU consistency with tight tolerances
+inline ToleranceCheck check_gpu_cpu_consistency(const FieldComparison& cmp) {
+    return ToleranceCheck(cmp.max_abs_diff, cmp.max_rel_diff, GPU_CPU_ABS_TOL, GPU_CPU_REL_TOL);
+}
+
+/// Check cross-build consistency with relaxed tolerances
+inline ToleranceCheck check_cross_build_consistency(const FieldComparison& cmp) {
+    return ToleranceCheck(cmp.max_abs_diff, cmp.max_rel_diff, CROSS_BUILD_ABS_TOL, CROSS_BUILD_REL_TOL);
+}
+
+} // namespace test
+} // namespace nncfd
