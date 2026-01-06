@@ -583,6 +583,9 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = 
     run_test "Mesh" "$BUILD_DIR/test_mesh" 30
     run_test "Features" "$BUILD_DIR/test_features" 30
     run_test "NN Core" "$BUILD_DIR/test_nn_core" 30
+
+    # Configuration and I/O tests (very fast)
+    run_test "Config" "$BUILD_DIR/test_config" 30
 fi
 
 # Medium tests (~2-5 minutes total)
@@ -597,6 +600,13 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "Turbulence Features" "$BUILD_DIR/test_turbulence_features" 120
     run_test "Turbulence Guard" "$BUILD_DIR/test_turbulence_guard" 60
     run_test "All Turbulence Models Smoke" "$BUILD_DIR/test_all_turbulence_models_smoke" 300
+
+    # New tests: error handling, adaptive dt, mesh edge cases, 3D BCs, VTK output
+    run_test "Error Recovery" "$BUILD_DIR/test_error_recovery" 120
+    run_test "Adaptive Dt" "$BUILD_DIR/test_adaptive_dt" 120
+    run_test "Mesh Edge Cases" "$BUILD_DIR/test_mesh_edge_cases" 120
+    run_test "3D BC Corners" "$BUILD_DIR/test_3d_bc_corners" 180
+    run_test "VTK Output" "$BUILD_DIR/test_vtk_output" 60
 fi
 
 # GPU-specific tests
@@ -713,6 +723,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "Solver" "$BUILD_DIR/test_solver" 900
     run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
     run_test "Physics Validation" "$BUILD_DIR/test_physics_validation" 600
+    run_test "Physics Validation Advanced" "$BUILD_DIR/test_physics_validation_advanced" 600
     run_test "Taylor-Green" "$BUILD_DIR/test_tg_validation" 120
     run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
 fi

@@ -631,6 +631,41 @@ if(BUILD_TESTS)
     add_executable(test_kernel_parity_detailed tests/test_kernel_parity_detailed.cpp)
     target_link_libraries(test_kernel_parity_detailed nn_cfd_core)
     add_test(NAME KernelParityDetailedTest COMMAND test_kernel_parity_detailed)
+
+    # Configuration module tests - validates config parsing and validation
+    add_executable(test_config tests/test_config.cpp)
+    target_link_libraries(test_config nn_cfd_core)
+    add_test(NAME ConfigTest COMMAND test_config)
+
+    # Error recovery tests - validates solver failure modes and NaN handling
+    add_executable(test_error_recovery tests/test_error_recovery.cpp)
+    target_link_libraries(test_error_recovery nn_cfd_core)
+    add_test(NAME ErrorRecoveryTest COMMAND test_error_recovery)
+
+    # Adaptive time-stepping tests - validates CFL and diffusive stability
+    add_executable(test_adaptive_dt tests/test_adaptive_dt.cpp)
+    target_link_libraries(test_adaptive_dt nn_cfd_core)
+    add_test(NAME AdaptiveDtTest COMMAND test_adaptive_dt)
+
+    # Mesh edge cases tests - validates extreme mesh configurations
+    add_executable(test_mesh_edge_cases tests/test_mesh_edge_cases.cpp)
+    target_link_libraries(test_mesh_edge_cases nn_cfd_core)
+    add_test(NAME MeshEdgeCasesTest COMMAND test_mesh_edge_cases)
+
+    # 3D BC corner cases tests - validates 3D boundary handling
+    add_executable(test_3d_bc_corners tests/test_3d_bc_corners.cpp)
+    target_link_libraries(test_3d_bc_corners nn_cfd_core)
+    add_test(NAME BC3DCornersTest COMMAND test_3d_bc_corners)
+
+    # VTK output tests - validates VTK file format and I/O
+    add_executable(test_vtk_output tests/test_vtk_output.cpp)
+    target_link_libraries(test_vtk_output nn_cfd_core)
+    add_test(NAME VTKOutputTest COMMAND test_vtk_output)
+
+    # Advanced physics validation tests - 9 analytical/benchmark tests
+    add_executable(test_physics_validation_advanced tests/test_physics_validation_advanced.cpp)
+    target_link_libraries(test_physics_validation_advanced nn_cfd_core)
+    add_test(NAME PhysicsValidationAdvancedTest COMMAND test_physics_validation_advanced)
 endif()
 
 # Installation
