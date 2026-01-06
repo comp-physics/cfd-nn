@@ -276,6 +276,11 @@ void test_edge_cell_values() {
     solver.set_velocity_bc(bc);
 
     solver.initialize_uniform(1.0, 0.0);
+    solver.sync_to_gpu();
+
+    // Take a step to apply boundary conditions
+    solver.step();
+    solver.sync_from_gpu();
 
     // After BC application, check edge cells (where y and z walls meet)
     const VectorField& vel = solver.velocity();
