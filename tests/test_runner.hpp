@@ -88,16 +88,37 @@ struct ConfigSpec {
     bool verbose = false;
     int poisson_max_iter = 50;
 
-    static ConfigSpec laminar(double nu = 0.01) {
-        return {nu, 0.001, true, 1000, 1e-6, TurbulenceModelType::None};
+    static ConfigSpec laminar(double nu_val = 0.01) {
+        ConfigSpec c;
+        c.nu = nu_val;
+        c.dt = 0.001;
+        c.adaptive_dt = true;
+        c.max_iter = 1000;
+        c.tol = 1e-6;
+        c.turb_model = TurbulenceModelType::None;
+        return c;
     }
 
-    static ConfigSpec turbulent_komega(double nu = 0.00005) {
-        return {nu, 0.001, true, 5000, 1e-5, TurbulenceModelType::KOmega};
+    static ConfigSpec turbulent_komega(double nu_val = 0.00005) {
+        ConfigSpec c;
+        c.nu = nu_val;
+        c.dt = 0.001;
+        c.adaptive_dt = true;
+        c.max_iter = 5000;
+        c.tol = 1e-5;
+        c.turb_model = TurbulenceModelType::KOmega;
+        return c;
     }
 
-    static ConfigSpec unsteady(double nu = 0.01, double dt = 0.01) {
-        return {nu, dt, false, 100, 1e-6, TurbulenceModelType::None};
+    static ConfigSpec unsteady(double nu_val = 0.01, double dt_val = 0.01) {
+        ConfigSpec c;
+        c.nu = nu_val;
+        c.dt = dt_val;
+        c.adaptive_dt = false;
+        c.max_iter = 100;
+        c.tol = 1e-6;
+        c.turb_model = TurbulenceModelType::None;
+        return c;
     }
 };
 
@@ -150,13 +171,21 @@ struct InitSpec {
     double scale = 0.9;  // For Poiseuille: fraction of analytical
     std::function<void(RANSSolver&, const Mesh&)> custom_init;
 
-    static InitSpec zero() { return {ZERO}; }
-    static InitSpec uniform(double u, double v = 0.0) { return {UNIFORM, u, v}; }
-    static InitSpec poiseuille(double dp_dx, double scale = 0.9) {
-        return {POISEUILLE, 0, 0, 0, dp_dx, scale};
+    static InitSpec zero() {
+        InitSpec i; i.type = ZERO; return i;
     }
-    static InitSpec taylor_green() { return {TAYLOR_GREEN}; }
-    static InitSpec perturbed() { return {PERTURBED}; }
+    static InitSpec uniform(double u, double v = 0.0) {
+        InitSpec i; i.type = UNIFORM; i.u0 = u; i.v0 = v; return i;
+    }
+    static InitSpec poiseuille(double dp, double sc = 0.9) {
+        InitSpec i; i.type = POISEUILLE; i.dp_dx = dp; i.scale = sc; return i;
+    }
+    static InitSpec taylor_green() {
+        InitSpec i; i.type = TAYLOR_GREEN; return i;
+    }
+    static InitSpec perturbed() {
+        InitSpec i; i.type = PERTURBED; return i;
+    }
 };
 
 //=============================================================================
@@ -170,7 +199,7 @@ struct RunSpec {
     double body_force_x = 0.0;
     double body_force_y = 0.0;
 
-    static RunSpec steady(double tol = 1e-6, int max_iter = 2000) {
+    static RunSpec steady() {
         RunSpec r; r.mode = STEADY; return r;
     }
     static RunSpec steps(int n) {

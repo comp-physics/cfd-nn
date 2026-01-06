@@ -10,21 +10,7 @@
 using namespace nncfd;
 using namespace nncfd::test;
 
-// Helper to build TestSpec (avoids designated initializer issues)
-TestSpec make_test(const std::string& name, const std::string& cat,
-                   MeshSpec mesh, ConfigSpec config, BCSpec bc,
-                   InitSpec init, RunSpec run, CheckSpec check) {
-    TestSpec t;
-    t.name = name;
-    t.category = cat;
-    t.mesh = mesh;
-    t.config = config;
-    t.bc = bc;
-    t.init = init;
-    t.run = run;
-    t.check = check;
-    return t;
-}
+// Note: make_test() is now provided by test_runner.hpp
 
 //=============================================================================
 // Physics Validation Tests (replaces test_physics_validation*.cpp)
