@@ -3961,46 +3961,104 @@ double RANSSolver::compute_adaptive_dt() const {
     const int v_stride = Nx + 2*Ng;
     const int stride = Nx + 2*Ng;
 
-    // Compute max velocity magnitude (for advective CFL)
-#ifdef USE_GPU_OFFLOAD
-    #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: velocity_u_ptr_[0:u_total_size], velocity_v_ptr_[0:v_total_size]) \
-        reduction(max:u_max)
-#endif
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            int ii = i + Ng;
-            int jj = j + Ng;
-            // Interpolate u and v to cell center for staggered grid
-            double u_avg = 0.5 * (velocity_u_ptr_[jj * u_stride + ii] +
-                                  velocity_u_ptr_[jj * u_stride + ii + 1]);
-            double v_avg = 0.5 * (velocity_v_ptr_[jj * v_stride + ii] +
-                                  velocity_v_ptr_[(jj + 1) * v_stride + ii]);
-            double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
-            if (u_mag > u_max) u_max = u_mag;
-        }
-    }
-
-    // Compute max effective viscosity (for diffusive CFL) if turbulence active
-    if (turb_model_) {
+    if (mesh_->is2D()) {
+        // 2D: Compute max velocity magnitude (for advective CFL)
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: nu_t_ptr_[0:field_total_size]) \
-            reduction(max:nu_eff_max)
+            map(present: velocity_u_ptr_[0:u_total_size], velocity_v_ptr_[0:v_total_size]) \
+            reduction(max:u_max)
 #endif
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
                 int ii = i + Ng;
                 int jj = j + Ng;
-                int idx = jj * stride + ii;
-                double nu_eff = nu + nu_t_ptr_[idx];
-                if (nu_eff > nu_eff_max) nu_eff_max = nu_eff;
+                // Interpolate u and v to cell center for staggered grid
+                double u_avg = 0.5 * (velocity_u_ptr_[jj * u_stride + ii] +
+                                      velocity_u_ptr_[jj * u_stride + ii + 1]);
+                double v_avg = 0.5 * (velocity_v_ptr_[jj * v_stride + ii] +
+                                      velocity_v_ptr_[(jj + 1) * v_stride + ii]);
+                double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
+                if (u_mag > u_max) u_max = u_mag;
+            }
+        }
+
+        // 2D: Compute max effective viscosity (for diffusive CFL) if turbulence active
+        if (turb_model_) {
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: nu_t_ptr_[0:field_total_size]) \
+                reduction(max:nu_eff_max)
+#endif
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + Ng;
+                    int jj = j + Ng;
+                    int idx = jj * stride + ii;
+                    double nu_eff = nu + nu_t_ptr_[idx];
+                    if (nu_eff > nu_eff_max) nu_eff_max = nu_eff;
+                }
+            }
+        }
+    } else {
+        // 3D case
+        const int Nz = mesh_->Nz;
+        [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
+        const int u_plane_stride = u_stride * (Ny + 2*Ng);
+        const int v_plane_stride = v_stride * (Ny + 2*Ng + 1);
+        const int w_stride = Nx + 2*Ng;
+        const int w_plane_stride = w_stride * (Ny + 2*Ng);
+        const int plane_stride = stride * (Ny + 2*Ng);
+
+        // 3D: Compute max velocity magnitude (for advective CFL)
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: velocity_u_ptr_[0:u_total_size], velocity_v_ptr_[0:v_total_size], velocity_w_ptr_[0:w_total_size]) \
+            reduction(max:u_max)
+#endif
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + Ng;
+                    int jj = j + Ng;
+                    int kk = k + Ng;
+                    // Interpolate u, v, w to cell center for staggered grid
+                    double u_avg = 0.5 * (velocity_u_ptr_[kk * u_plane_stride + jj * u_stride + ii] +
+                                          velocity_u_ptr_[kk * u_plane_stride + jj * u_stride + ii + 1]);
+                    double v_avg = 0.5 * (velocity_v_ptr_[kk * v_plane_stride + jj * v_stride + ii] +
+                                          velocity_v_ptr_[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
+                    double w_avg = 0.5 * (velocity_w_ptr_[kk * w_plane_stride + jj * w_stride + ii] +
+                                          velocity_w_ptr_[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
+                    double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
+                    if (u_mag > u_max) u_max = u_mag;
+                }
+            }
+        }
+
+        // 3D: Compute max effective viscosity (for diffusive CFL) if turbulence active
+        if (turb_model_) {
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: nu_t_ptr_[0:field_total_size]) \
+                reduction(max:nu_eff_max)
+#endif
+            for (int k = 0; k < Nz; ++k) {
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ii = i + Ng;
+                        int jj = j + Ng;
+                        int kk = k + Ng;
+                        int idx = kk * plane_stride + jj * stride + ii;
+                        double nu_eff = nu + nu_t_ptr_[idx];
+                        if (nu_eff > nu_eff_max) nu_eff_max = nu_eff;
+                    }
+                }
             }
         }
     }
-    
+
     // Compute time step constraints (same for GPU and CPU)
-    double dx_min = std::min(mesh_->dx, mesh_->dy);
+    double dx_min = mesh_->is2D() ? std::min(mesh_->dx, mesh_->dy)
+                                  : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
     double dt_cfl = config_.CFL_max * dx_min / u_max;
     
     // Diffusive stability: dt < 0.25 * dx² / ν (hard limit from von Neumann analysis)
