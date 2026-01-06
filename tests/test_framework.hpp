@@ -149,9 +149,9 @@ struct Solution {
     virtual ~Solution() = default;
     virtual double p(double x, double y, double z = 0) const = 0;
     virtual double rhs(double x, double y, double z = 0) const = 0;
-    virtual double u(double x, double y, double z = 0) const { return 0; }
-    virtual double v(double x, double y, double z = 0) const { return 0; }
-    virtual double w(double x, double y, double z = 0) const { return 0; }
+    virtual double u(double /*x*/, double /*y*/, double /*z*/ = 0) const { return 0; }
+    virtual double v(double /*x*/, double /*y*/, double /*z*/ = 0) const { return 0; }
+    virtual double w(double /*x*/, double /*y*/, double /*z*/ = 0) const { return 0; }
 };
 
 /// Sinusoidal solution: p = sin(kx*x) * sin(ky*y) * sin(kz*z)
