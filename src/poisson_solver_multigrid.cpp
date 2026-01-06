@@ -29,11 +29,10 @@ namespace nncfd {
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
-    
-#ifdef USE_GPU_OFFLOAD
-    // Initialize GPU buffers immediately - will throw if no GPU available
+
+    // Initialize GPU buffers (maps to device) OR set up raw pointers for CPU
+    // This enables unified loops to use cached pointers on both CPU and GPU
     initialize_gpu_buffers();
-#endif
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
@@ -124,10 +123,10 @@ void MultigridPoissonSolver::apply_bc(int level) {
     const int bc_z_hi = static_cast<int>(bc_z_hi_);
     const double dval = dirichlet_val_;
 
-    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
-#ifdef USE_GPU_OFFLOAD
+    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
     double* u_ptr = u_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+#ifdef USE_GPU_OFFLOAD
     #define BC_TARGET_FOR_X \
         _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
     #define BC_TARGET_FOR_Y \
@@ -135,7 +134,6 @@ void MultigridPoissonSolver::apply_bc(int level) {
     #define BC_TARGET_FOR_Z \
         _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
 #else
-    double* u_ptr = grid.u.data().data();
     #define BC_TARGET_FOR_X
     #define BC_TARGET_FOR_Y
     #define BC_TARGET_FOR_Z
@@ -631,11 +629,11 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const double d = (lambda_max + lambda_min) / 2.0;
     const double c = (lambda_max - lambda_min) / 2.0;
 
-    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
-#ifdef USE_GPU_OFFLOAD
+    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
     double* u_ptr = u_ptrs_[level];
-    double* tmp_ptr = tmp_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
+#ifdef USE_GPU_OFFLOAD
+    double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
     #define CHEBY_TARGET_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define CHEBY_TARGET_3D \
@@ -643,9 +641,7 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     #define CHEBY_TARGET_COPY \
         _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
 #else
-    double* u_ptr = grid.u.data().data();
-    double* tmp_ptr = grid.r.data().data();  // Reuse r as scratch buffer
-    const double* f_ptr = grid.f.data().data();
+    double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     #define CHEBY_TARGET_2D
     #define CHEBY_TARGET_3D
     #define CHEBY_TARGET_COPY
@@ -731,11 +727,11 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                               static_cast<size_t>(Ny + 2) *
                               static_cast<size_t>(Nz + 2);
 
-    // Set up pointers - GPU uses device buffers, CPU uses grid arrays
-#ifdef USE_GPU_OFFLOAD
+    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
     double* u_ptr = u_ptrs_[level];
-    double* tmp_ptr = tmp_ptrs_[level];  // Device-only scratch buffer
     const double* f_ptr = f_ptrs_[level];
+#ifdef USE_GPU_OFFLOAD
+    double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
     // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
     #define JACOBI_TARGET_U_TO_TMP_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
@@ -748,9 +744,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     #define JACOBI_TARGET_COPY \
         _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
 #else
-    double* u_ptr = grid.u.data().data();
-    double* tmp_ptr = grid.r.data().data();  // Reuse r as scratch buffer
-    const double* f_ptr = grid.f.data().data();
+    double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     // CPU: no pragmas needed
     #define JACOBI_TARGET_U_TO_TMP_2D
     #define JACOBI_TARGET_TMP_TO_U_2D
@@ -872,15 +866,10 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
     const int stride = Nx + 2;
     const int plane_stride = (Nx + 2) * (Ny + 2);
 
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
+    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
-#else
-    double* u_ptr = grid.u.data().data();
-    const double* f_ptr = grid.f.data().data();
-#endif
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
 
     if (is_2d) {
         for (int iter = 0; iter < iterations; ++iter) {
@@ -989,17 +978,11 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const int stride = Nx + 2;
     const int plane_stride = (Nx + 2) * (Ny + 2);
 
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
+    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
-#else
-    const double* u_ptr = grid.u.data().data();
-    const double* f_ptr = grid.f.data().data();
-    double* r_ptr = grid.r.data().data();
-#endif
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
 
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
@@ -1052,16 +1035,11 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
     const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
 
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
+    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
     const double* r_fine = r_ptrs_[fine_level];
     double* f_coarse = f_ptrs_[fine_level + 1];
-    const size_t size_f = level_sizes_[fine_level];
-    const size_t size_c = level_sizes_[fine_level + 1];
-#else
-    const double* r_fine = fine.r.data().data();
-    double* f_coarse = coarse.f.data().data();
-#endif
+    [[maybe_unused]] const size_t size_f = level_sizes_[fine_level];
+    [[maybe_unused]] const size_t size_c = level_sizes_[fine_level + 1];
 
     if (is_2d) {
         // 2D: 9-point stencil
@@ -1149,16 +1127,11 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
     const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
 
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
+    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
     const double* u_coarse = u_ptrs_[coarse_level];
     double* u_fine = u_ptrs_[coarse_level - 1];
-    const size_t size_f = level_sizes_[coarse_level - 1];
-    const size_t size_c = level_sizes_[coarse_level];
-#else
-    const double* u_coarse = coarse.u.data().data();
-    double* u_fine = fine.u.data().data();
-#endif
+    [[maybe_unused]] const size_t size_f = level_sizes_[coarse_level - 1];
+    [[maybe_unused]] const size_t size_c = level_sizes_[coarse_level];
 
     if (is_2d) {
         // 2D owner-computes bilinear interpolation
@@ -1352,13 +1325,9 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     const int stride = Nx + 2;
     const int plane_stride = stride * (Ny + 2);
 
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
+    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
     const double* r_ptr = r_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
-#else
-    const double* r_ptr = grid.r.data().data();
-#endif
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
 
     if (Nz == 1) {
         // 2D case
@@ -1421,13 +1390,9 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     const int stride = Nx + 2;
     const int plane_stride = stride * (Ny + 2);
 
-    // Use raw pointers for unified CPU/GPU code
-#ifdef USE_GPU_OFFLOAD
+    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
     double* u_ptr = u_ptrs_[level];
-    const size_t total_size = level_sizes_[level];
-#else
-    double* u_ptr = grid.u.data().data();
-#endif
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
 
     if (Nz == 1) {
         // 2D case - compute sum
@@ -1745,8 +1710,23 @@ void MultigridPoissonSolver::sync_level_from_gpu(int level) {
     #pragma omp target update from(r_ptrs_[level][0:total_size])
 }
 #else
-// No-op implementations when GPU offloading is disabled
+// CPU: Set raw pointers for unified code paths (no GPU mapping)
 void MultigridPoissonSolver::initialize_gpu_buffers() {
+    // Set up raw pointers so unified loops can use them on CPU
+    u_ptrs_.resize(levels_.size());
+    f_ptrs_.resize(levels_.size());
+    r_ptrs_.resize(levels_.size());
+    level_sizes_.resize(levels_.size());
+
+    for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
+        auto& grid = *levels_[lvl];
+        level_sizes_[lvl] = static_cast<size_t>(grid.Nx + 2) *
+                           static_cast<size_t>(grid.Ny + 2) *
+                           static_cast<size_t>(grid.Nz + 2);
+        u_ptrs_[lvl] = grid.u.data().data();
+        f_ptrs_[lvl] = grid.f.data().data();
+        r_ptrs_[lvl] = grid.r.data().data();
+    }
     gpu_ready_ = false;
 }
 
