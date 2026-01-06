@@ -567,7 +567,7 @@ int main() {
             func();
             ++passed;
         } catch (const std::exception& e) {
-            std::cout << "FAILED: " << e.what() << "\n";
+            std::cout << "[" << name << "] FAILED: " << e.what() << "\n";
             ++failed;
         }
     };
