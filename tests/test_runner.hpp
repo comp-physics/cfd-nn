@@ -204,22 +204,28 @@ struct CheckSpec {
     std::function<double(double, double)> u_exact;
     std::function<double(double, double)> v_exact;
 
-    static CheckSpec none() { return {NONE}; }
-    static CheckSpec converges() { return {CONVERGES}; }
+    static CheckSpec none() {
+        CheckSpec c; c.type = NONE; return c;
+    }
+    static CheckSpec converges() {
+        CheckSpec c; c.type = CONVERGES; return c;
+    }
     static CheckSpec l2_error(double tol,
                               std::function<double(double,double)> u_ex = nullptr) {
         CheckSpec c; c.type = L2_ERROR; c.tolerance = tol; c.u_exact = u_ex;
         return c;
     }
     static CheckSpec divergence_free(double tol = 1e-10) {
-        return {DIVERGENCE_FREE, tol};
+        CheckSpec c; c.type = DIVERGENCE_FREE; c.tolerance = tol; return c;
     }
-    static CheckSpec energy_decay() { return {ENERGY_DECAY}; }
+    static CheckSpec energy_decay() {
+        CheckSpec c; c.type = ENERGY_DECAY; return c;
+    }
     static CheckSpec bounded(double max_vel = 10.0) {
-        return {BOUNDED, max_vel};
+        CheckSpec c; c.type = BOUNDED; c.tolerance = max_vel; return c;
     }
     static CheckSpec residual(double tol = 1e-6) {
-        return {RESIDUAL, tol};
+        CheckSpec c; c.type = RESIDUAL; c.tolerance = tol; return c;
     }
 };
 
@@ -240,6 +246,22 @@ struct TestSpec {
     bool skip = false;  // For conditional tests
     std::string skip_reason;
 };
+
+// Helper to build TestSpec without C++20 designated initializers
+inline TestSpec make_test(const std::string& name, const std::string& cat,
+                          MeshSpec mesh, ConfigSpec config, BCSpec bc,
+                          InitSpec init, RunSpec run, CheckSpec check) {
+    TestSpec t;
+    t.name = name;
+    t.category = cat;
+    t.mesh = mesh;
+    t.config = config;
+    t.bc = bc;
+    t.init = init;
+    t.run = run;
+    t.check = check;
+    return t;
+}
 
 //=============================================================================
 // Test Result
@@ -571,16 +593,16 @@ inline std::vector<TestSpec> channel_flow_suite(double dp_dx = -0.001) {
             return -dp_dx / (2.0 * nu) * (H * H - y * y);
         };
 
-        tests.push_back({
-            .name = "channel_" + std::to_string(nx) + "x" + std::to_string(ny),
-            .category = "physics",
-            .mesh = MeshSpec::channel(nx, ny),
-            .config = ConfigSpec::laminar(nu),
-            .bc = BCSpec::channel(),
-            .init = InitSpec::poiseuille(dp_dx, init_factor),
-            .run = RunSpec::channel(dp_dx),
-            .check = CheckSpec::l2_error(0.05, u_exact)
-        });
+        tests.push_back(make_test(
+            "channel_" + std::to_string(nx) + "x" + std::to_string(ny),
+            "physics",
+            MeshSpec::channel(nx, ny),
+            ConfigSpec::laminar(nu),
+            BCSpec::channel(),
+            InitSpec::poiseuille(dp_dx, init_factor),
+            RunSpec::channel(dp_dx),
+            CheckSpec::l2_error(0.05, u_exact)
+        ));
     }
 
     return tests;
@@ -591,16 +613,16 @@ inline std::vector<TestSpec> taylor_green_suite() {
     std::vector<TestSpec> tests;
 
     for (int n : {32, 48, 64}) {
-        tests.push_back({
-            .name = "taylor_green_" + std::to_string(n),
-            .category = "physics",
-            .mesh = MeshSpec::taylor_green(n),
-            .config = ConfigSpec::unsteady(0.01, 0.01),
-            .bc = BCSpec::periodic(),
-            .init = InitSpec::taylor_green(),
-            .run = RunSpec::steps(50),
-            .check = CheckSpec::energy_decay()
-        });
+        tests.push_back(make_test(
+            "taylor_green_" + std::to_string(n),
+            "physics",
+            MeshSpec::taylor_green(n),
+            ConfigSpec::unsteady(0.01, 0.01),
+            BCSpec::periodic(),
+            InitSpec::taylor_green(),
+            RunSpec::steps(50),
+            CheckSpec::energy_decay()
+        ));
     }
 
     return tests;
