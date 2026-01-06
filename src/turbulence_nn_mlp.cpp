@@ -243,7 +243,7 @@ void TurbulenceNNMLP::update(
     
 #else
     // CPU path (only for CPU builds)
-    ensure_initialized(mesh);
+    // Note: ensure_initialized() already called above (line 153)
 
     // Compute features for all cells (CPU)
     {
