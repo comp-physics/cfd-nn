@@ -13,7 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
-#include <cassert>
+#include <stdexcept>
 #include <cstdio>
 #include <string>
 
@@ -110,12 +110,18 @@ void test_vtk_header_format() {
     std::string content = read_file(filename);
 
     // Check VTK header
-    assert(content.find("# vtk DataFile Version") != std::string::npos);
-    assert(content.find("ASCII") != std::string::npos ||
-           content.find("BINARY") != std::string::npos);
-    assert(content.find("STRUCTURED_GRID") != std::string::npos ||
-           content.find("RECTILINEAR_GRID") != std::string::npos ||
-           content.find("STRUCTURED_POINTS") != std::string::npos);
+    if (content.find("# vtk DataFile Version") == std::string::npos) {
+        throw std::runtime_error("VTK header missing version string");
+    }
+    if (content.find("ASCII") == std::string::npos &&
+        content.find("BINARY") == std::string::npos) {
+        throw std::runtime_error("VTK file missing ASCII/BINARY format");
+    }
+    if (content.find("STRUCTURED_GRID") == std::string::npos &&
+        content.find("RECTILINEAR_GRID") == std::string::npos &&
+        content.find("STRUCTURED_POINTS") == std::string::npos) {
+        throw std::runtime_error("VTK file missing grid type");
+    }
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -164,8 +170,12 @@ void test_vtk_dimensions_match() {
 
         // Dimensions should be Nx+1, Ny+1, Nz+1 for cell-centered data
         // or Nx, Ny, 1 depending on format
-        assert(dim_x >= Nx);
-        assert(dim_y >= Ny);
+        if (dim_x < Nx) {
+            throw std::runtime_error("VTK x-dimension too small: " + std::to_string(dim_x) + " < " + std::to_string(Nx));
+        }
+        if (dim_y < Ny) {
+            throw std::runtime_error("VTK y-dimension too small: " + std::to_string(dim_y) + " < " + std::to_string(Ny));
+        }
     }
 
     remove_file(filename);
@@ -210,7 +220,9 @@ void test_vtk_velocity_data() {
                         (content.find("VECTORS") != std::string::npos) ||
                         (content.find("u_velocity") != std::string::npos);
 
-    assert(has_velocity);
+    if (!has_velocity) {
+        throw std::runtime_error("VTK file missing velocity data");
+    }
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -252,7 +264,9 @@ void test_vtk_pressure_data() {
                         (content.find("SCALARS p") != std::string::npos) ||
                         (content.find("p ") != std::string::npos);
 
-    assert(has_pressure);
+    if (!has_pressure) {
+        throw std::runtime_error("VTK file missing pressure data");
+    }
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -299,12 +313,18 @@ void test_vtk_after_gpu_compute() {
     require_file_exists(filename);
 
     std::string content = read_file(filename);
-    assert(content.length() > 100);  // Should have substantial content
+    if (content.length() <= 100) {
+        throw std::runtime_error("VTK file too small: " + std::to_string(content.length()) + " bytes");
+    }
 
     // Verify no NaN in output
-    assert(content.find("nan") == std::string::npos);
-    assert(content.find("NaN") == std::string::npos);
-    assert(content.find("inf") == std::string::npos);
+    if (content.find("nan") != std::string::npos ||
+        content.find("NaN") != std::string::npos) {
+        throw std::runtime_error("VTK file contains NaN values");
+    }
+    if (content.find("inf") != std::string::npos) {
+        throw std::runtime_error("VTK file contains Inf values");
+    }
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -403,7 +423,9 @@ void test_vtk_3d_output() {
     std::string content = read_file(filename);
 
     // Should have 3D dimensions
-    assert(content.find("DIMENSIONS") != std::string::npos);
+    if (content.find("DIMENSIONS") == std::string::npos) {
+        throw std::runtime_error("3D VTK file missing DIMENSIONS");
+    }
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -531,8 +553,12 @@ void test_vtk_overwrite() {
     std::string content2 = read_file(filename);
 
     // Both should be valid VTK files
-    assert(content1.find("vtk") != std::string::npos);
-    assert(content2.find("vtk") != std::string::npos);
+    if (content1.find("vtk") == std::string::npos) {
+        throw std::runtime_error("First VTK file missing vtk marker");
+    }
+    if (content2.find("vtk") == std::string::npos) {
+        throw std::runtime_error("Second VTK file missing vtk marker");
+    }
 
     remove_file(filename);
     std::cout << "PASSED\n";
