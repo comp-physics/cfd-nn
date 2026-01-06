@@ -4841,15 +4841,12 @@ void RANSSolver::initialize_gpu_buffers() {
     // Allocate device-resident "old velocity" buffers for residual computation
     // Host storage exists but is never used - device copy is authoritative
     // This eliminates per-step H→D upload for residual computation
-    velocity_old_u_ptr_ = velocity_old_.u_data().data();
-    velocity_old_v_ptr_ = velocity_old_.v_data().data();
-
+    // Note: velocity_old_*_ptr_ already set above with other pointer assignments
     #pragma omp target enter data map(alloc: velocity_old_u_ptr_[0:u_total_size])
     #pragma omp target enter data map(alloc: velocity_old_v_ptr_[0:v_total_size])
 
     // 3D old velocity
     if (!mesh_->is2D()) {
-        velocity_old_w_ptr_ = velocity_old_.w_data().data();
         const size_t w_total_size = velocity_.w_total_size();
         #pragma omp target enter data map(alloc: velocity_old_w_ptr_[0:w_total_size])
     }
@@ -5169,8 +5166,12 @@ SolverDeviceView RANSSolver::get_solver_view() const {
 }
 #else
 // CPU: Set raw pointers for unified code paths (no GPU mapping)
+//
+// This function enables the same loop code to work on both CPU and GPU builds.
+// In GPU builds, these pointers are mapped to device memory with OpenMP target pragmas.
+// In CPU builds, the loops simply use these raw pointers directly (no pragmas applied).
+// This unification eliminates divergent CPU/GPU arithmetic and reduces code duplication.
 void RANSSolver::initialize_gpu_buffers() {
-    // Set up raw pointers so unified loops can use them on CPU
     field_total_size_ = mesh_->total_cells();
 
     // Staggered grid velocity fields
