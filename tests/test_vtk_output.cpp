@@ -20,10 +20,13 @@
 using namespace nncfd;
 
 namespace {
-// Helper to check if file exists
-bool file_exists(const std::string& filename) {
+// Helper to check if file exists and abort if not
+void require_file_exists(const std::string& filename) {
     std::ifstream f(filename);
-    return f.good();
+    if (!f.good()) {
+        std::cerr << "FAILED: File does not exist: " << filename << "\n";
+        std::exit(1);
+    }
 }
 
 // Helper to remove file
@@ -72,7 +75,7 @@ void test_vtk_file_created() {
 
     solver.write_vtk(filename);
 
-    assert(file_exists(filename));
+    require_file_exists(filename);
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -293,7 +296,7 @@ void test_vtk_after_gpu_compute() {
     solver.write_vtk(filename);
 
     // Verify file was created and has content
-    assert(file_exists(filename));
+    require_file_exists(filename);
 
     std::string content = read_file(filename);
     assert(content.length() > 100);  // Should have substantial content
@@ -348,7 +351,7 @@ void test_vtk_sequential_outputs() {
 
     // All files should exist
     for (const auto& f : files) {
-        assert(file_exists(f));
+        require_file_exists(f);
     }
 
     // Clean up
@@ -395,7 +398,7 @@ void test_vtk_3d_output() {
     std::string filename = "/tmp/test_vtk_3d.vtk";
     solver.write_vtk(filename);
 
-    assert(file_exists(filename));
+    require_file_exists(filename);
 
     std::string content = read_file(filename);
 
@@ -455,7 +458,7 @@ void test_vtk_turbulence_fields() {
 
     // This may not always be true depending on what's written
     // Just verify file was created successfully
-    assert(file_exists(filename));
+    require_file_exists(filename);
 
     remove_file(filename);
     std::cout << "PASSED\n";
@@ -491,7 +494,7 @@ void test_vtk_small_grid() {
     std::string filename = "/tmp/test_vtk_small.vtk";
     solver.write_vtk(filename);
 
-    assert(file_exists(filename));
+    require_file_exists(filename);
 
     remove_file(filename);
     std::cout << "PASSED\n";
