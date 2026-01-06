@@ -11,6 +11,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "poisson_solver_multigrid.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -25,22 +26,16 @@
 #endif
 
 using namespace nncfd;
-
-// Tolerance for CPU vs GPU comparison
-constexpr double TOLERANCE = 1e-10;
-
-// Minimum expected difference - if below this, CPU and GPU may be running same code path
-// Machine epsilon for double is ~2.2e-16, so any real FP difference should exceed this
-[[maybe_unused]] constexpr double MIN_EXPECTED_DIFF = 1e-14;
+using nncfd::test::FieldComparison;
+using nncfd::test::file_exists;
+using nncfd::test::BITWISE_TOLERANCE;
+using nncfd::test::MIN_EXPECTED_DIFF;
 
 //=============================================================================
 // File I/O helpers
 //=============================================================================
 
-bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
-}
+// file_exists() imported from test_utilities.hpp
 
 // Write scalar field to file
 void write_scalar_field(const std::string& filename, const ScalarField& field, const Mesh& mesh) {
@@ -122,56 +117,7 @@ FieldData read_field_data(const std::string& filename) {
     return data;
 }
 
-//=============================================================================
-// Comparison helper
-//=============================================================================
-
-struct ComparisonResult {
-    double max_abs_diff = 0.0;
-    double max_rel_diff = 0.0;
-    double rms_diff = 0.0;
-    int worst_i = 0, worst_j = 0, worst_k = 0;
-    double ref_at_worst = 0.0;
-    double gpu_at_worst = 0.0;
-    int count = 0;
-
-    void update(int i, int j, int k, double ref_val, double gpu_val) {
-        double abs_diff = std::abs(ref_val - gpu_val);
-        double rel_diff = abs_diff / (std::abs(ref_val) + 1e-15);
-
-        rms_diff += abs_diff * abs_diff;
-        count++;
-
-        if (abs_diff > max_abs_diff) {
-            max_abs_diff = abs_diff;
-            max_rel_diff = rel_diff;
-            worst_i = i; worst_j = j; worst_k = k;
-            ref_at_worst = ref_val;
-            gpu_at_worst = gpu_val;
-        }
-    }
-
-    void finalize() {
-        if (count > 0) {
-            rms_diff = std::sqrt(rms_diff / count);
-        }
-    }
-
-    void print() const {
-        std::cout << std::scientific << std::setprecision(6);
-        std::cout << "  Max absolute difference: " << max_abs_diff << "\n";
-        std::cout << "  Max relative difference: " << max_rel_diff << "\n";
-        std::cout << "  RMS difference:          " << rms_diff << "\n";
-        if (max_abs_diff > 0) {
-            std::cout << "  Worst at (" << worst_i << "," << worst_j << "," << worst_k << "): "
-                      << "CPU=" << ref_at_worst << ", GPU=" << gpu_at_worst << "\n";
-        }
-    }
-
-    bool within_tolerance(double tol) const {
-        return max_abs_diff < tol;
-    }
-};
+// FieldComparison imported from test_utilities.hpp
 
 //=============================================================================
 // Test parameters
@@ -330,7 +276,7 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     std::cout << "\nLoading CPU reference and comparing...\n\n";
 
     auto ref = read_field_data(prefix + "_pressure.dat");
-    ComparisonResult result;
+    FieldComparison result;
 
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -355,8 +301,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     }
 
     std::cout << "\n";
-    if (!result.within_tolerance(TOLERANCE)) {
-        std::cout << "[FAILURE] GPU results differ from CPU reference beyond tolerance " << TOLERANCE << "\n";
+    if (!result.within_tolerance(BITWISE_TOLERANCE)) {
+        std::cout << "[FAILURE] GPU results differ from CPU reference beyond tolerance " << BITWISE_TOLERANCE << "\n";
         return 1;
     } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
         // Small diff is fine - canary test verifies backend execution.
@@ -416,7 +362,7 @@ int main(int argc, char* argv[]) {
 #else
         std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
 #endif
-        std::cout << "Tolerance: " << std::scientific << TOLERANCE << "\n\n";
+        std::cout << "Tolerance: " << std::scientific << BITWISE_TOLERANCE << "\n\n";
 
         if (!dump_prefix.empty()) {
             return run_dump_mode(dump_prefix);

@@ -20,6 +20,7 @@
 #include "fields.hpp"
 #include "poisson_solver.hpp"
 #include "poisson_solver_multigrid.hpp"
+#include "test_fixtures.hpp"
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
 #endif
@@ -32,106 +33,16 @@
 #include <functional>
 
 using namespace nncfd;
+using nncfd::test::ChannelSolution;
+using nncfd::test::DuctSolution;
+using nncfd::test::PeriodicSolution;
+using nncfd::test::Channel2DSolution;
 
-// ============================================================================
-// Manufactured Solutions
-// ============================================================================
-
-// Solution for periodic x,z + Neumann y (channel flow BCs)
-// p = sin(2πx/Lx) * cos(πy/Ly) * sin(2πz/Lz)
-// ∇²p = -[(2π/Lx)² + (π/Ly)² + (2π/Lz)²] * p
-struct ChannelSolution {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-    double lap_coeff;
-
-    ChannelSolution(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = 2.0 * M_PI / Lx;
-        ky = M_PI / Ly;  // cos for Neumann-compatible
-        kz = 2.0 * M_PI / Lz;
-        lap_coeff = -(kx*kx + ky*ky + kz*kz);
-    }
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::cos(ky * y) * std::sin(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        return lap_coeff * p(x, y, z);
-    }
-};
-
-// Solution for periodic x + Neumann yz (duct flow BCs for FFT1D)
-// p = sin(2πx/Lx) * cos(πy/Ly) * cos(πz/Lz)
-struct DuctSolution {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-    double lap_coeff;
-
-    DuctSolution(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = 2.0 * M_PI / Lx;
-        ky = M_PI / Ly;
-        kz = M_PI / Lz;
-        lap_coeff = -(kx*kx + ky*ky + kz*kz);
-    }
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::cos(ky * y) * std::cos(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        return lap_coeff * p(x, y, z);
-    }
-};
-
-// Solution for fully periodic (Taylor-Green like)
-// p = sin(2πx/Lx) * sin(2πy/Ly) * sin(2πz/Lz)
-struct PeriodicSolution {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-    double lap_coeff;
-
-    PeriodicSolution(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = 2.0 * M_PI / Lx;
-        ky = 2.0 * M_PI / Ly;
-        kz = 2.0 * M_PI / Lz;
-        lap_coeff = -(kx*kx + ky*ky + kz*kz);
-    }
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::sin(ky * y) * std::sin(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        return lap_coeff * p(x, y, z);
-    }
-};
-
-// Solution for 2D periodic (x) + Neumann (y) - 2D channel
-// p = sin(2πx/Lx) * cos(πy/Ly)
-struct Channel2DSolution {
-    double Lx, Ly;
-    double kx, ky;
-    double lap_coeff;
-
-    Channel2DSolution(double lx, double ly)
-        : Lx(lx), Ly(ly) {
-        kx = 2.0 * M_PI / Lx;
-        ky = M_PI / Ly;
-        lap_coeff = -(kx*kx + ky*ky);
-    }
-
-    double p(double x, double y) const {
-        return std::sin(kx * x) * std::cos(ky * y);
-    }
-
-    double rhs(double x, double y) const {
-        return lap_coeff * p(x, y);
-    }
-};
+// Manufactured solutions imported from test_fixtures.hpp:
+// - ChannelSolution: periodic x/z, Neumann y (channel flow BCs)
+// - DuctSolution: periodic x, Neumann y/z (duct flow BCs)
+// - PeriodicSolution: fully periodic (Taylor-Green like)
+// - Channel2DSolution: 2D periodic x, Neumann y
 
 // ============================================================================
 // Error computation

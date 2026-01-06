@@ -10,6 +10,7 @@
 #include "turbulence_nn_tbnn.hpp"
 #include "turbulence_transport.hpp"
 #include "features.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <cmath>
 #include <cassert>
@@ -25,12 +26,10 @@
 #endif
 
 using namespace nncfd;
+using nncfd::test::FieldComparison;
+using nncfd::test::file_exists;
 
-// Helper to check if a file exists
-bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
-}
+// file_exists() imported from test_utilities.hpp
 
 // Helper to read a scalar field from .dat file (format: x y value)
 ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& mesh) {
@@ -92,57 +91,20 @@ ScalarField read_scalar_field_from_dat(const std::string& filename, const Mesh& 
     return field;
 }
 
-// Utility: compare two scalar fields
-struct FieldComparison {
-    double max_abs_diff = 0.0;
-    double max_rel_diff = 0.0;
-    double rms_diff = 0.0;
-    int max_i = -1;
-    int max_j = -1;
-    double cpu_val_at_max = 0.0;
-    double gpu_val_at_max = 0.0;
-    int n_points = 0;
-};
+// FieldComparison imported from test_utilities.hpp
 
+// Compare two scalar fields using the shared FieldComparison utility
 FieldComparison compare_fields(const Mesh& mesh, const ScalarField& cpu, const ScalarField& gpu, const std::string& name = "") {
     FieldComparison result;
-    
-    double sum_sq = 0.0;
+
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double c = cpu(i, j);
-            double g = gpu(i, j);
-            double abs_diff = std::abs(c - g);
-            double rel_diff = abs_diff / (std::abs(c) + 1e-20);
-            
-            sum_sq += abs_diff * abs_diff;
-            result.n_points++;
-            
-            if (abs_diff > result.max_abs_diff) {
-                result.max_abs_diff = abs_diff;
-                result.max_rel_diff = rel_diff;
-                result.max_i = i;
-                result.max_j = j;
-                result.cpu_val_at_max = c;
-                result.gpu_val_at_max = g;
-            }
+            result.update(i, j, cpu(i, j), gpu(i, j));
         }
     }
-    
-    result.rms_diff = std::sqrt(sum_sq / result.n_points);
-    
-    if (!name.empty()) {
-        std::cout << "  Field: " << name << "\n";
-    }
-    std::cout << "    Max abs diff: " << std::scientific << std::setprecision(6) << result.max_abs_diff << "\n";
-    std::cout << "    Max rel diff: " << result.max_rel_diff << "\n";
-    std::cout << "    RMS diff:     " << result.rms_diff << "\n";
-    if (result.max_abs_diff > 0) {
-        std::cout << "    Location:     (" << result.max_i << ", " << result.max_j << ")\n";
-        std::cout << "      CPU value: " << std::fixed << std::setprecision(12) << result.cpu_val_at_max << "\n";
-        std::cout << "      GPU value: " << result.gpu_val_at_max << "\n";
-    }
-    
+    result.finalize();
+    result.print(name);
+
     return result;
 }
 
