@@ -24,66 +24,21 @@
 #include "fields.hpp"
 #include "poisson_solver_fft.hpp"
 #include "poisson_solver_fft1d.hpp"
+#include "test_fixtures.hpp"
 #include <omp.h>
 
 using namespace nncfd;
+
+// Manufactured solutions imported from test_fixtures.hpp:
+// - ChannelSolution3D: periodic x,z + Neumann y (channel flow BCs)
+// - DuctSolution3D: periodic x + Neumann y,z (duct flow BCs)
+using nncfd::test::ChannelSolution3D;
+using nncfd::test::DuctSolution3D;
+
+// Type aliases to keep existing test code working
+using ChannelManufactured = ChannelSolution3D;
+using DuctManufactured = DuctSolution3D;
 #endif
-
-// ============================================================================
-// Manufactured solutions
-// ============================================================================
-
-/// Channel flow configuration: periodic x,z + Neumann y walls
-/// p(x,y,z) = sin(2πx/Lx) * cos(πy/Ly) * sin(2πz/Lz)
-///
-/// This satisfies:
-///   - Periodic in x: p(0,y,z) = p(Lx,y,z)
-///   - Periodic in z: p(x,y,0) = p(x,y,Lz)
-///   - Neumann in y: ∂p/∂y = 0 at y=0 and y=Ly (cos'(0)=0, cos'(π)=0)
-struct ChannelManufactured {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;  // Wave numbers
-
-    ChannelManufactured(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz)
-        , kx(2.0 * M_PI / Lx)
-        , ky(M_PI / Ly)
-        , kz(2.0 * M_PI / Lz) {}
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::cos(ky * y) * std::sin(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        // ∇²p = -(kx² + ky² + kz²) * p  (Laplacian of sin*cos*sin)
-        // Poisson solver solves ∇²p = rhs, so rhs = ∇²p
-        double laplacian_coeff = -(kx*kx + ky*ky + kz*kz);
-        return laplacian_coeff * p(x, y, z);
-    }
-};
-
-/// Duct flow configuration: periodic x only, Neumann y,z walls
-/// p(x,y,z) = sin(2πx/Lx) * cos(πy/Ly) * cos(πz/Lz)
-struct DuctManufactured {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-
-    DuctManufactured(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz)
-        , kx(2.0 * M_PI / Lx)
-        , ky(M_PI / Ly)
-        , kz(M_PI / Lz) {}
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::cos(ky * y) * std::cos(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        // ∇²p = -(kx² + ky² + kz²) * p
-        double laplacian_coeff = -(kx*kx + ky*ky + kz*kz);
-        return laplacian_coeff * p(x, y, z);
-    }
-};
 
 // ============================================================================
 // Test functions

@@ -15,6 +15,12 @@
 #include <iomanip>
 #include <fstream>
 
+// Forward declarations for field operations
+namespace nncfd {
+class Mesh;
+class ScalarField;
+}
+
 namespace nncfd {
 namespace test {
 
@@ -176,6 +182,176 @@ inline void sync_from_gpu_if_available([[maybe_unused]] Solver& solver) {
 #ifdef USE_GPU_OFFLOAD
     solver.sync_from_gpu();
 #endif
+}
+
+//=============================================================================
+// Field Helper Functions (require mesh.hpp and fields.hpp to be included)
+//=============================================================================
+
+/// Compute relative L2 difference between two scalar fields
+/// Returns sqrt(sum((p1-p2)^2) / sum(p1^2))
+template<typename MeshT, typename FieldT>
+inline double compute_l2_diff(const FieldT& p1, const FieldT& p2, const MeshT& mesh) {
+    double diff = 0.0;
+    double norm = 0.0;
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double d = p1(i, j) - p2(i, j);
+                diff += d * d;
+                norm += p1(i, j) * p1(i, j);
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double d = p1(i, j, k) - p2(i, j, k);
+                    diff += d * d;
+                    norm += p1(i, j, k) * p1(i, j, k);
+                }
+            }
+        }
+    }
+
+    if (norm < 1e-30) norm = 1.0;  // Avoid division by zero
+    return std::sqrt(diff / norm);
+}
+
+/// Compute max absolute difference between two scalar fields
+template<typename MeshT, typename FieldT>
+inline double compute_max_diff(const FieldT& p1, const FieldT& p2, const MeshT& mesh) {
+    double max_diff = 0.0;
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double d = std::abs(p1(i, j) - p2(i, j));
+                max_diff = std::max(max_diff, d);
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double d = std::abs(p1(i, j, k) - p2(i, j, k));
+                    max_diff = std::max(max_diff, d);
+                }
+            }
+        }
+    }
+    return max_diff;
+}
+
+/// Compute mean of a scalar field over interior cells
+template<typename MeshT, typename FieldT>
+inline double compute_mean(const FieldT& p, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += p(i, j);
+                ++count;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    sum += p(i, j, k);
+                    ++count;
+                }
+            }
+        }
+    }
+    return sum / count;
+}
+
+/// Subtract mean from a scalar field (pressure gauge normalization)
+template<typename MeshT, typename FieldT>
+inline void subtract_mean(FieldT& p, const MeshT& mesh) {
+    double mean = compute_mean(p, mesh);
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                p(i, j) -= mean;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    p(i, j, k) -= mean;
+                }
+            }
+        }
+    }
+}
+
+/// Compute L2 error against an exact solution (3D)
+/// Template parameter Solution must have method: double p(double x, double y, double z)
+template<typename MeshT, typename FieldT, typename Solution>
+inline double compute_l2_error_3d(const FieldT& p_num, const MeshT& mesh, const Solution& sol) {
+    // Compute means (pressure determined up to constant)
+    double p_mean = 0.0, exact_mean = 0.0;
+    int count = 0;
+
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                p_mean += p_num(i, j, k);
+                exact_mean += sol.p(mesh.x(i), mesh.y(j), mesh.z(k));
+                ++count;
+            }
+        }
+    }
+    p_mean /= count;
+    exact_mean /= count;
+
+    // Compute L2 error
+    double l2_error = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double exact = sol.p(mesh.x(i), mesh.y(j), mesh.z(k));
+                double diff = (p_num(i, j, k) - p_mean) - (exact - exact_mean);
+                l2_error += diff * diff;
+            }
+        }
+    }
+    return std::sqrt(l2_error / count);
+}
+
+/// Compute L2 error against an exact solution (2D)
+/// Template parameter Solution must have method: double p(double x, double y)
+template<typename MeshT, typename FieldT, typename Solution>
+inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const Solution& sol) {
+    double p_mean = 0.0, exact_mean = 0.0;
+    int count = 0;
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            p_mean += p_num(i, j);
+            exact_mean += sol.p(mesh.x(i), mesh.y(j));
+            ++count;
+        }
+    }
+    p_mean /= count;
+    exact_mean /= count;
+
+    double l2_error = 0.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double exact = sol.p(mesh.x(i), mesh.y(j));
+            double diff = (p_num(i, j) - p_mean) - (exact - exact_mean);
+            l2_error += diff * diff;
+        }
+    }
+    return std::sqrt(l2_error / count);
 }
 
 //=============================================================================

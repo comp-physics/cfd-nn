@@ -27,6 +27,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "poisson_solver_multigrid.hpp"
+#include "test_utilities.hpp"
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
 #endif
@@ -40,9 +41,12 @@
 #include <memory>
 
 using namespace nncfd;
+using nncfd::test::compute_l2_diff;
+using nncfd::test::compute_max_diff;
+using nncfd::test::subtract_mean;
 
 // ============================================================================
-// Manufactured solutions
+// Manufactured solutions (specialized for this test's domain [0, 2π])
 // ============================================================================
 
 // Fully periodic solution: sin(x)*sin(y) on [0, 2π]^2
@@ -77,100 +81,10 @@ struct ChannelSolution3D {
     }
 };
 
-// ============================================================================
-// Helper functions
-// ============================================================================
-
-double compute_l2_diff(const ScalarField& p1, const ScalarField& p2, const Mesh& mesh) {
-    double diff = 0.0;
-    double norm = 0.0;
-    int count = 0;
-
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double d = p1(i, j) - p2(i, j);
-                diff += d * d;
-                norm += p1(i, j) * p1(i, j);
-                ++count;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double d = p1(i, j, k) - p2(i, j, k);
-                    diff += d * d;
-                    norm += p1(i, j, k) * p1(i, j, k);
-                    ++count;
-                }
-            }
-        }
-    }
-
-    if (norm < 1e-30) norm = 1.0;  // Avoid division by zero
-    return std::sqrt(diff / norm);
-}
-
-double compute_max_diff(const ScalarField& p1, const ScalarField& p2, const Mesh& mesh) {
-    double max_diff = 0.0;
-
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double d = std::abs(p1(i, j) - p2(i, j));
-                max_diff = std::max(max_diff, d);
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double d = std::abs(p1(i, j, k) - p2(i, j, k));
-                    max_diff = std::max(max_diff, d);
-                }
-            }
-        }
-    }
-    return max_diff;
-}
-
-void subtract_mean(ScalarField& p, const Mesh& mesh) {
-    double sum = 0.0;
-    int count = 0;
-
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                sum += p(i, j);
-                ++count;
-            }
-        }
-        double mean = sum / count;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                p(i, j) -= mean;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    sum += p(i, j, k);
-                    ++count;
-                }
-            }
-        }
-        double mean = sum / count;
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    p(i, j, k) -= mean;
-                }
-            }
-        }
-    }
-}
+// Helper functions imported from test_utilities.hpp:
+// - compute_l2_diff(p1, p2, mesh) - relative L2 difference
+// - compute_max_diff(p1, p2, mesh) - max absolute difference
+// - subtract_mean(p, mesh) - subtract mean for pressure gauge normalization
 
 // ============================================================================
 // Test: Fully periodic 2D comparison

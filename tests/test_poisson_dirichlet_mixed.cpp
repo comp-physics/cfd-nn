@@ -17,6 +17,8 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "poisson_solver_multigrid.hpp"
+#include "test_fixtures.hpp"
+#include "test_utilities.hpp"
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
 #endif
@@ -27,95 +29,28 @@
 #include <string>
 
 using namespace nncfd;
+using nncfd::test::DirichletSolution3D;
+using nncfd::test::DirichletSolution2D;
+using nncfd::test::MixedBCSolution3D;
+using nncfd::test::compute_l2_error_3d;
+using nncfd::test::compute_l2_error_2d;
 
-// ============================================================================
-// Manufactured Solutions for Dirichlet/Mixed BCs
-// ============================================================================
+// Manufactured solutions imported from test_fixtures.hpp:
+// - DirichletSolution3D: pure Dirichlet (p=0 at all boundaries)
+// - DirichletSolution2D: 2D pure Dirichlet
+// - MixedBCSolution3D: periodic x, Dirichlet y, Neumann z
 
-// Solution for pure Dirichlet (homogeneous at boundaries)
-// p = sin(πx/Lx) * sin(πy/Ly) * sin(πz/Lz)
-// This is zero at all boundaries (x=0,Lx, y=0,Ly, z=0,Lz)
-struct DirichletSolution3D {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-    double lap_coeff;
+// Error computation imported from test_utilities.hpp:
+// - compute_l2_error_3d(p_num, mesh, sol) - with mean subtraction
+// - compute_l2_error_2d(p_num, mesh, sol) - with mean subtraction
 
-    DirichletSolution3D(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = M_PI / Lx;
-        ky = M_PI / Ly;
-        kz = M_PI / Lz;
-        lap_coeff = -(kx*kx + ky*ky + kz*kz);
-    }
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::sin(ky * y) * std::sin(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        return lap_coeff * p(x, y, z);
-    }
-};
-
-// Solution for pure Dirichlet 2D
-struct DirichletSolution2D {
-    double Lx, Ly;
-    double kx, ky;
-    double lap_coeff;
-
-    DirichletSolution2D(double lx, double ly)
-        : Lx(lx), Ly(ly) {
-        kx = M_PI / Lx;
-        ky = M_PI / Ly;
-        lap_coeff = -(kx*kx + ky*ky);
-    }
-
-    double p(double x, double y) const {
-        return std::sin(kx * x) * std::sin(ky * y);
-    }
-
-    double rhs(double x, double y) const {
-        return lap_coeff * p(x, y);
-    }
-};
-
-// Solution for mixed BC: periodic x, Dirichlet y, Neumann z
-// p = sin(2πx/Lx) * sin(πy/Ly) * cos(πz/Lz)
-// Periodic in x (sin(2πx/Lx) is 2π-periodic)
-// Zero at y=0,Ly (sin)
-// Zero derivative at z=0,Lz (cos)
-struct MixedBCSolution3D {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-    double lap_coeff;
-
-    MixedBCSolution3D(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = 2.0 * M_PI / Lx;  // Periodic
-        ky = M_PI / Ly;         // Dirichlet-compatible
-        kz = M_PI / Lz;         // Neumann-compatible (cos)
-        lap_coeff = -(kx*kx + ky*ky + kz*kz);
-    }
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::sin(ky * y) * std::cos(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        return lap_coeff * p(x, y, z);
-    }
-};
-
-// ============================================================================
-// Error computation
-// ============================================================================
-
+// For pure Dirichlet, no mean subtraction needed (solution is unique)
+// Use local wrapper that skips mean subtraction
 template<typename Solution>
-double compute_l2_error_3d(const ScalarField& p_num, const Mesh& mesh, const Solution& sol) {
+double compute_l2_error_dirichlet_3d(const ScalarField& p_num, const Mesh& mesh, const Solution& sol) {
     double l2_error = 0.0;
     int count = 0;
 
-    // For Dirichlet, no mean subtraction needed (solution is unique)
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -129,7 +64,8 @@ double compute_l2_error_3d(const ScalarField& p_num, const Mesh& mesh, const Sol
     return std::sqrt(l2_error / count);
 }
 
-double compute_l2_error_2d(const ScalarField& p_num, const Mesh& mesh, const DirichletSolution2D& sol) {
+template<typename Solution>
+double compute_l2_error_dirichlet_2d(const ScalarField& p_num, const Mesh& mesh, const Solution& sol) {
     double l2_error = 0.0;
     int count = 0;
 
@@ -144,37 +80,7 @@ double compute_l2_error_2d(const ScalarField& p_num, const Mesh& mesh, const Dir
     return std::sqrt(l2_error / count);
 }
 
-// For mixed BC with periodic direction, need mean subtraction in that direction
-template<typename Solution>
-double compute_l2_error_mixed(const ScalarField& p_num, const Mesh& mesh, const Solution& sol) {
-    // Compute means (periodic direction introduces constant ambiguity)
-    double p_mean = 0.0, exact_mean = 0.0;
-    int count = 0;
-
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                p_mean += p_num(i, j, k);
-                exact_mean += sol.p(mesh.x(i), mesh.y(j), mesh.z(k));
-                ++count;
-            }
-        }
-    }
-    p_mean /= count;
-    exact_mean /= count;
-
-    double l2_error = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double exact = sol.p(mesh.x(i), mesh.y(j), mesh.z(k));
-                double diff = (p_num(i, j, k) - p_mean) - (exact - exact_mean);
-                l2_error += diff * diff;
-            }
-        }
-    }
-    return std::sqrt(l2_error / count);
-}
+// For mixed BC with periodic direction, use compute_l2_error_3d which includes mean subtraction
 
 // ============================================================================
 // Test result structure
@@ -249,7 +155,7 @@ TestResult test_mg_dirichlet_3d() {
 
         solver.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_3d(p, mesh, sol);
+        double err = compute_l2_error_dirichlet_3d(p, mesh, sol);
         result.grid_sizes.push_back(N);
         result.errors.push_back(err);
     }
@@ -299,7 +205,7 @@ TestResult test_mg_dirichlet_2d() {
 
         solver.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_2d(p, mesh, sol);
+        double err = compute_l2_error_dirichlet_2d(p, mesh, sol);
         result.grid_sizes.push_back(N);
         result.errors.push_back(err);
     }
@@ -352,7 +258,8 @@ TestResult test_mg_mixed_bc() {
 
         solver.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_mixed(p, mesh, sol);
+        // Mixed BC with periodic direction needs mean subtraction
+        double err = compute_l2_error_3d(p, mesh, sol);
         result.grid_sizes.push_back(N);
         result.errors.push_back(err);
     }
@@ -410,7 +317,8 @@ TestResult test_hypre_dirichlet_3d() {
 
         solver.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_3d(p, mesh, sol);
+        // Pure Dirichlet: no mean subtraction needed
+        double err = compute_l2_error_dirichlet_3d(p, mesh, sol);
         result.grid_sizes.push_back(N);
         result.errors.push_back(err);
     }
@@ -460,7 +368,8 @@ TestResult test_hypre_dirichlet_2d() {
 
         solver.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_2d(p, mesh, sol);
+        // Pure Dirichlet: no mean subtraction needed
+        double err = compute_l2_error_dirichlet_2d(p, mesh, sol);
         result.grid_sizes.push_back(N);
         result.errors.push_back(err);
     }
@@ -513,7 +422,8 @@ TestResult test_hypre_mixed_bc() {
 
         solver.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_mixed(p, mesh, sol);
+        // Mixed BC with periodic direction needs mean subtraction
+        double err = compute_l2_error_3d(p, mesh, sol);
         result.grid_sizes.push_back(N);
         result.errors.push_back(err);
     }

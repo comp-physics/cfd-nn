@@ -14,6 +14,8 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
+#include "test_fixtures.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <cmath>
 #include <iomanip>
@@ -21,64 +23,14 @@
 
 using namespace nncfd;
 
-// Manufactured solution for duct flow (periodic X, walls YZ)
-// Solve: nabla^2 p = f(x,y,z)
-// Exact: p = sin(2*pi*x/Lx) * cos(pi*y/Ly) * cos(pi*z/Lz)
-// RHS:  f = -[(2*pi/Lx)^2 + (pi/Ly)^2 + (pi/Lz)^2] * p
+// Manufactured solution imported from test_fixtures.hpp:
+// - DuctSolution3D: periodic X + Neumann Y,Z (duct flow BCs)
+// Uses exact() alias which maps to p()
+using nncfd::test::DuctSolution3D;
+using ManufacturedSolution = DuctSolution3D;
 
-struct ManufacturedSolution {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;  // Wave numbers
-
-    ManufacturedSolution(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = 2.0 * M_PI / Lx;  // Periodic in X
-        ky = M_PI / Ly;         // Neumann in Y (cos)
-        kz = M_PI / Lz;         // Neumann in Z (cos)
-    }
-
-    double exact(double x, double y, double z) const {
-        return std::sin(kx * x) * std::cos(ky * y) * std::cos(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        double lap_coeff = -(kx*kx + ky*ky + kz*kz);
-        return lap_coeff * exact(x, y, z);
-    }
-};
-
-// Compute L2 error against manufactured solution
-double compute_l2_error(const ScalarField& p, const Mesh& mesh,
-                        const ManufacturedSolution& sol) {
-    // Compute means (pressure is determined up to a constant)
-    double p_mean = 0.0, exact_mean = 0.0;
-    int count = 0;
-
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                p_mean += p(i, j, k);
-                exact_mean += sol.exact(mesh.x(i), mesh.y(j), mesh.z(k));
-                ++count;
-            }
-        }
-    }
-    p_mean /= count;
-    exact_mean /= count;
-
-    // Compute L2 error
-    double l2_error = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double exact = sol.exact(mesh.x(i), mesh.y(j), mesh.z(k));
-                double diff = (p(i, j, k) - p_mean) - (exact - exact_mean);
-                l2_error += diff * diff;
-            }
-        }
-    }
-    return std::sqrt(l2_error / count);
-}
+// Use compute_l2_error_3d from test_utilities.hpp (includes mean subtraction)
+using nncfd::test::compute_l2_error_3d;
 
 // Compute L-infinity norm of a field
 double compute_linf(const ScalarField& f, const Mesh& mesh) {

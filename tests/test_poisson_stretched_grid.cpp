@@ -18,6 +18,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "poisson_solver_multigrid.hpp"
+#include "test_fixtures.hpp"
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
 #endif
@@ -29,59 +30,24 @@
 
 using namespace nncfd;
 
-// ============================================================================
-// Manufactured solution for stretched grids
-// p = sin(πx/Lx) * sin(πy/Ly) * sin(πz/Lz) for Dirichlet
-// Works with any dx, dy, dz spacing
-// ============================================================================
+// Manufactured solutions imported from test_fixtures.hpp:
+// - DirichletSolution3D: p = sin(πx/Lx) * sin(πy/Ly) * sin(πz/Lz)
+// - DirichletSolution2D: p = sin(πx/Lx) * sin(πy/Ly)
+// These are identical to the StretchedSolution structs that were here.
+using nncfd::test::DirichletSolution3D;
+using nncfd::test::DirichletSolution2D;
 
-struct StretchedSolution {
-    double Lx, Ly, Lz;
-    double kx, ky, kz;
-
-    StretchedSolution(double lx, double ly, double lz)
-        : Lx(lx), Ly(ly), Lz(lz) {
-        kx = M_PI / Lx;
-        ky = M_PI / Ly;
-        kz = M_PI / Lz;
-    }
-
-    double p(double x, double y, double z) const {
-        return std::sin(kx * x) * std::sin(ky * y) * std::sin(kz * z);
-    }
-
-    double rhs(double x, double y, double z) const {
-        double lap_coeff = -(kx*kx + ky*ky + kz*kz);
-        return lap_coeff * p(x, y, z);
-    }
-};
-
-struct StretchedSolution2D {
-    double Lx, Ly;
-    double kx, ky;
-
-    StretchedSolution2D(double lx, double ly)
-        : Lx(lx), Ly(ly) {
-        kx = M_PI / Lx;
-        ky = M_PI / Ly;
-    }
-
-    double p(double x, double y) const {
-        return std::sin(kx * x) * std::sin(ky * y);
-    }
-
-    double rhs(double x, double y) const {
-        double lap_coeff = -(kx*kx + ky*ky);
-        return lap_coeff * p(x, y);
-    }
-};
+// Type aliases to keep existing test code working
+using StretchedSolution = DirichletSolution3D;
+using StretchedSolution2D = DirichletSolution2D;
 
 // ============================================================================
-// Error and residual computation
+// Error computation (no mean subtraction for pure Dirichlet)
 // ============================================================================
 
+template<typename Solution>
 double compute_l2_error_3d(const ScalarField& p_num, const Mesh& mesh,
-                           const StretchedSolution& sol) {
+                           const Solution& sol) {
     double l2_error = 0.0;
     int count = 0;
 
@@ -98,8 +64,9 @@ double compute_l2_error_3d(const ScalarField& p_num, const Mesh& mesh,
     return std::sqrt(l2_error / count);
 }
 
+template<typename Solution>
 double compute_l2_error_2d(const ScalarField& p_num, const Mesh& mesh,
-                           const StretchedSolution2D& sol) {
+                           const Solution& sol) {
     double l2_error = 0.0;
     int count = 0;
 
