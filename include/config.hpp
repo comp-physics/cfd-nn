@@ -95,7 +95,6 @@ struct Config {
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
     double nu_t_max = 1.0;      ///< Maximum eddy viscosity (clipping)
-    double blend_alpha = 1.0;   ///< Blending factor for NN (0=baseline, 1=NN)
     
     // NN model paths (must be explicitly specified - no legacy fallback)
     std::string nn_weights_path;

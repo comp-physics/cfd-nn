@@ -1,5 +1,4 @@
 #include "turbulence_nn_mlp.hpp"
-#include "turbulence_baseline.hpp"
 #include "timing.hpp"
 #include "gpu_kernels.hpp"
 #include <algorithm>
@@ -129,21 +128,11 @@ void TurbulenceNNMLP::ensure_initialized(const Mesh& mesh) {
     if (!initialized_) {
         feature_computer_ = FeatureComputer(mesh);
         feature_computer_.set_reference(nu_, delta_, u_ref_);
-        
+
         // Allocate work buffers
         int n_interior = mesh.Nx * mesh.Ny;
         features_.resize(n_interior);
-        
-        if (blend_with_baseline_ && !baseline_) {
-            baseline_ = std::make_unique<MixingLengthModel>();
-            baseline_->set_nu(nu_);
-            auto* ml = dynamic_cast<MixingLengthModel*>(baseline_.get());
-            if (ml) {
-                ml->set_delta(delta_);
-            }
-            baseline_nu_t_ = ScalarField(mesh);
-        }
-        
+
         initialized_ = true;
     }
 }
@@ -255,59 +244,46 @@ void TurbulenceNNMLP::update(
 #else
     // CPU path (only for CPU builds)
     ensure_initialized(mesh);
-    
+
     // Compute features for all cells (CPU)
     {
         TIMED_SCOPE("nn_mlp_features");
         feature_computer_.compute_scalar_features(velocity, k, omega, features_);
     }
-    
-    // Compute baseline if blending
-    if (blend_with_baseline_ && baseline_) {
-        TIMED_SCOPE("nn_mlp_baseline");
-        baseline_->update(mesh, velocity, k, omega, baseline_nu_t_);
-    }
-    
+
     // Sequential inference path (host build)
     {
         TIMED_SCOPE("nn_mlp_inference_cpu");
-        
+
         int idx = 0;
         int nan_count = 0;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 // Forward pass
                 std::vector<double> output = mlp_.forward(features_[idx].values);
-                
+
                 // Output is raw nu_t prediction
                 double nu_t_nn = output.empty() ? 0.0 : output[0];
-                
+
                 // Check for NaN/Inf and replace with safe value
                 if (!std::isfinite(nu_t_nn)) {
                     ++nan_count;
-                    nu_t_nn = (blend_with_baseline_ && baseline_) ? baseline_nu_t_(i, j) : 0.0;
+                    nu_t_nn = 0.0;
                 } else {
                     // Ensure positivity and apply clipping
                     nu_t_nn = std::max(0.0, nu_t_nn);
                     nu_t_nn = std::min(nu_t_nn, nu_t_max_);
                 }
-                
-                // Apply blending with baseline if enabled
-                if (blend_with_baseline_ && baseline_) {
-                    nu_t(i, j) = (1.0 - blend_alpha_) * baseline_nu_t_(i, j) 
-                               + blend_alpha_ * nu_t_nn;
-                } else {
-                    nu_t(i, j) = nu_t_nn;
-                }
-                
+
+                nu_t(i, j) = nu_t_nn;
                 ++idx;
             }
         }
-        
+
         // Warn if NaN/Inf detected
         if (nan_count > 0) {
-            std::cerr << "[WARNING] NN-MLP (CPU) produced " << nan_count 
-                      << " NaN/Inf values (replaced with fallback)" << std::endl;
+            std::cerr << "[WARNING] NN-MLP (CPU) produced " << nan_count
+                      << " NaN/Inf values (replaced with 0)" << std::endl;
         }
     }
 #endif  // USE_GPU_OFFLOAD

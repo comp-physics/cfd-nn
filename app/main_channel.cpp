@@ -313,7 +313,6 @@ int main(int argc, char** argv) {
             if (auto* nn_mlp = dynamic_cast<TurbulenceNNMLP*>(turb_model.get())) {
                 nn_mlp->set_delta(H);
                 nn_mlp->set_nu_t_max(config.nu_t_max);
-                nn_mlp->set_blend_alpha(config.blend_alpha);
             }
             if (auto* nn_tbnn = dynamic_cast<TurbulenceNNTBNN*>(turb_model.get())) {
                 nn_tbnn->set_delta(H);

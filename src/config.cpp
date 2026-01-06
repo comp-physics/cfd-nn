@@ -165,7 +165,6 @@ void Config::load(const std::string& filename) {
     }
     
     nu_t_max = get_double("nu_t_max", nu_t_max);
-    blend_alpha = get_double("blend_alpha", blend_alpha);
     nn_weights_path = get_string("nn_weights_path", nn_weights_path);
     nn_scaling_path = get_string("nn_scaling_path", nn_scaling_path);
     nn_preset = get_string("nn_preset", nn_preset);
@@ -644,17 +643,6 @@ void Config::finalize() {
         std::exit(1);
     }
 
-    // Validate blend_alpha range
-    if (blend_alpha < 0.0 || blend_alpha > 1.0) {
-        std::cerr << "ERROR: Invalid configuration: blend_alpha=" << blend_alpha << ".\n"
-                  << "\n"
-                  << "The blending factor must be in the range [0, 1]:\n"
-                  << "  blend_alpha = 0.0  →  Use baseline model only\n"
-                  << "  blend_alpha = 1.0  →  Use NN model only (default)\n"
-                  << "  0 < blend_alpha < 1  →  Linear blend between baseline and NN\n";
-        std::exit(1);
-    }
-
     // Validate nu_t_max is positive
     if (nu_t_max <= 0.0) {
         std::cerr << "ERROR: Invalid configuration: nu_t_max=" << nu_t_max << ".\n"
@@ -884,8 +872,7 @@ void Config::print() const {
             std::cout << "NN preset: " << nn_preset << "\n";
         }
         std::cout << "NN weights: " << nn_weights_path << "\n"
-                  << "NN scaling: " << nn_scaling_path << "\n"
-                  << "Blend alpha: " << blend_alpha << "\n";
+                  << "NN scaling: " << nn_scaling_path << "\n";
     }
     
     std::cout << "=====================\n";

@@ -46,12 +46,8 @@ public:
     
     /// Configuration
     void set_nu_t_max(double val) { nu_t_max_ = val; }
-    void set_blend_alpha(double alpha) { blend_alpha_ = alpha; }
     void set_delta(double delta) { delta_ = delta; }
     void set_u_ref(double u_ref) { u_ref_ = u_ref; }
-    
-    /// Enable baseline blending
-    void enable_baseline_blend(bool enable) { blend_with_baseline_ = enable; }
     
     /// Access the MLP
     const MLP& mlp() const { return mlp_; }
@@ -67,20 +63,14 @@ public:
 private:
     MLP mlp_;
     FeatureComputer feature_computer_;
-    
+
     double nu_t_max_ = 1.0;
-    double blend_alpha_ = 1.0;  // 1 = pure NN, 0 = pure baseline
     double delta_ = 1.0;
     double u_ref_ = 1.0;
-    bool blend_with_baseline_ = false;
-    
-    // Baseline model for blending
-    std::unique_ptr<TurbulenceModel> baseline_;
-    
+
     // Work buffers to avoid allocation in update()
     std::vector<Features> features_;
     std::vector<double> buffer1_, buffer2_;
-    ScalarField baseline_nu_t_;
     
     // GPU batching buffers
     std::vector<double> features_flat_;
