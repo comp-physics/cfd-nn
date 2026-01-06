@@ -55,6 +55,11 @@ struct FieldComparison {
         update(i, j, 0, ref_val, test_val);
     }
 
+    /// Update comparison without location tracking (simple value comparison)
+    void update(double ref_val, double test_val) {
+        update(0, 0, 0, ref_val, test_val);
+    }
+
     /// Finalize RMS computation after all updates
     void finalize() {
         if (count > 0) {
