@@ -112,29 +112,30 @@ double interpolate_u_at_y(const VectorField& vel, const Mesh& mesh, int i, doubl
 }
 
 // ============================================================================
-// Test 1: Couette Flow (Linear Shear)
+// Test 1: Poiseuille Flow (Parabolic Profile)
 // ============================================================================
-/// Exact solution: u(y) = U_wall * y / H, v = 0
-/// Tests moving wall BC and shear stress computation
+/// Exact solution: u(y) = (dp/dx)/(2*nu) * y * (H - y)
+/// Tests body force driven channel flow
 
 void test_couette_flow() {
     std::cout << "\n========================================\n";
-    std::cout << "Test 1: Couette Flow (Linear Shear)\n";
+    std::cout << "Test 1: Poiseuille Flow (Parabolic Profile)\n";
     std::cout << "========================================\n";
-    std::cout << "Verify: u(y) = U_wall * y / H\n\n";
+    std::cout << "Verify: u(y) = (dp/dx)/(2*nu) * y * (H - y)\n\n";
 
     // Domain: [0, 4] x [0, 1], H = 1
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 4.0, 0.0, 1.0);
 
-    double U_wall = 1.0;
     double H = mesh.y_max - mesh.y_min;
+    double nu = 0.01;
+    double dp_dx = -0.01;  // Pressure gradient (negative = flow in +x)
 
     Config config;
-    config.nu = 0.01;
-    config.dt = 0.001;
+    config.nu = nu;
+    config.dt = 0.005;
     config.adaptive_dt = false;
-    config.max_iter = 1000;
+    config.max_iter = 2000;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
@@ -149,21 +150,17 @@ void test_couette_flow() {
     bc.y_hi = VelocityBC::NoSlip;
     solver.set_velocity_bc(bc);
 
-    // Initialize with linear profile (close to solution for fast convergence)
+    // Body force equivalent to pressure gradient
+    solver.set_body_force(-dp_dx, 0.0);
+
+    // Initialize close to solution for fast convergence
+    double U_max = -dp_dx * H * H / (8.0 * nu);  // Max velocity at centerline
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        double y = mesh.y(j);
-        double u_init = 0.9 * U_wall * (y - mesh.y_min) / H;
+        double y_rel = mesh.y(j) - mesh.y_min;
+        double u_init = 0.9 * (-dp_dx / (2.0 * nu)) * y_rel * (H - y_rel);
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
             solver.velocity().u(i, j) = u_init;
         }
-    }
-
-    // Set top wall to U_wall (ghost cells enforce moving wall)
-    int j_top_ghost = mesh.j_end();
-    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-        // Mirror BC for no-slip: u_ghost = 2*U_wall - u_interior
-        // This makes the wall velocity = U_wall
-        solver.velocity().u(i, j_top_ghost) = 2.0 * U_wall - solver.velocity().u(i, mesh.j_end() - 1);
     }
 
     solver.sync_to_gpu();
@@ -173,22 +170,24 @@ void test_couette_flow() {
     solver.sync_from_gpu();
     std::cout << "done (iters=" << iters << ")\n";
 
-    // Compute L2 error against linear profile
-    auto u_exact = [U_wall, H, y_min=mesh.y_min](double x, double y) {
+    // Compute L2 error against analytical Poiseuille profile
+    auto u_exact = [dp_dx, nu, H, y_min=mesh.y_min](double x, double y) {
         (void)x;
-        return U_wall * (y - y_min) / H;
+        double y_rel = y - y_min;
+        return (-dp_dx / (2.0 * nu)) * y_rel * (H - y_rel);
     };
 
     double l2_error = compute_l2_error_u(solver.velocity(), mesh, u_exact);
 
     std::cout << "Results:\n";
     std::cout << "  L2 error: " << std::scientific << l2_error * 100 << "%\n";
+    std::cout << "  U_max (theory): " << U_max << "\n";
 
-    if (l2_error > 0.05) {  // 5% tolerance (relaxed for iterative convergence)
-        throw std::runtime_error("Couette flow error too large: " + std::to_string(l2_error * 100) + "%");
+    if (l2_error > 0.05) {  // 5% tolerance
+        throw std::runtime_error("Poiseuille flow error too large: " + std::to_string(l2_error * 100) + "%");
     }
 
-    std::cout << "[PASS] Linear shear profile recovered\n";
+    std::cout << "[PASS] Parabolic profile recovered\n";
 }
 
 // ============================================================================
