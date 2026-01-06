@@ -2,10 +2,28 @@
 
 #include "nn_core.hpp"
 #include <iostream>
+#include <fstream>
 #include <cmath>
 #include <cassert>
 
 using namespace nncfd;
+
+// Helper to check if a file exists
+static bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
+// Resolve model path - tries both repo root and build directory locations
+static std::string resolve_model_path(const std::string& model_name) {
+    std::string path1 = "data/models/" + model_name;
+    if (file_exists(path1 + "/layer0_W.txt")) return path1;
+
+    std::string path2 = "../data/models/" + model_name;
+    if (file_exists(path2 + "/layer0_W.txt")) return path2;
+
+    return "";  // Not found
+}
 
 void test_dense_layer() {
     std::cout << "Testing dense layer forward pass... ";
@@ -62,30 +80,35 @@ void test_mlp_forward() {
 
 void test_load_weights() {
     std::cout << "Testing weight loading... ";
-    
+
+    std::string model_path = resolve_model_path("mlp_channel_caseholdout");
+    if (model_path.empty()) {
+        std::cout << "SKIPPED (model not found)\n";
+        return;
+    }
+
     try {
         MLP mlp;
-        mlp.load_weights("../data/models/test_mlp");
-        
+        mlp.load_weights(model_path);
+
         if (mlp.input_dim() == 0) {
-            // Model files don't exist or are empty - skip test
-            std::cout << "SKIPPED (test model not found or empty)\n";
+            std::cout << "SKIPPED (model empty)\n";
             return;
         }
-        
+
         assert(mlp.output_dim() > 0);
         assert(mlp.num_layers() > 0);
-        
+
         // Test forward pass
         std::vector<double> x(mlp.input_dim(), 1.0);
         std::vector<double> y = mlp.forward(x);
-        
+
         assert(y.size() == static_cast<size_t>(mlp.output_dim()));
         assert(std::isfinite(y[0]));
-        
+
         std::cout << "PASSED\n";
     } catch (const std::exception& e) {
-        std::cout << "SKIPPED (test model not found)\n";
+        std::cout << "SKIPPED (load failed: " << e.what() << ")\n";
     }
 }
 

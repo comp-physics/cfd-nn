@@ -12,6 +12,7 @@
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
 #include <iostream>
+#include <fstream>
 #include <cmath>
 #include <cassert>
 
@@ -20,6 +21,23 @@
 #endif
 
 using namespace nncfd;
+
+// Helper to check if a file exists
+static bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
+// Resolve model path - tries both repo root and build directory locations
+static std::string resolve_model_path(const std::string& model_name) {
+    std::string path1 = "data/models/" + model_name;
+    if (file_exists(path1 + "/layer0_W.txt")) return path1;
+
+    std::string path2 = "../data/models/" + model_name;
+    if (file_exists(path2 + "/layer0_W.txt")) return path2;
+
+    return "";  // Not found
+}
 
 void test_baseline_model() {
     std::cout << "Testing baseline mixing length model... ";
@@ -97,9 +115,15 @@ void test_nn_mlp_model() {
     TurbulenceNNMLP model;
     model.set_nu(0.001);
     
+    std::string model_path = resolve_model_path("mlp_channel_caseholdout");
+    if (model_path.empty()) {
+        std::cout << "SKIPPED (model not found)\n";
+        return;
+    }
+
     try {
-        model.load("../data/models/test_mlp", "../data/models/test_mlp");
-        
+        model.load(model_path, model_path);
+
 #ifdef USE_GPU_OFFLOAD
         // Upload to GPU if available
         if (omp_get_num_devices() > 0) {
@@ -107,9 +131,9 @@ void test_nn_mlp_model() {
             std::cout << "[GPU mode] ";
         }
 #endif
-        
+
         model.update(mesh, vel, k, omega, nu_t);
-        
+
         // Check all values are finite and positive
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -117,10 +141,10 @@ void test_nn_mlp_model() {
                 assert(nu_t(i, j) >= 0.0);
             }
         }
-        
+
         std::cout << "PASSED\n";
     } catch (const std::exception& e) {
-        std::cout << "SKIPPED (model not found)\n";
+        std::cout << "SKIPPED (load failed: " << e.what() << ")\n";
     }
 }
 
@@ -140,9 +164,15 @@ void test_nn_tbnn_model() {
     model.set_delta(1.0);
     model.set_u_ref(1.0);
     
+    std::string model_path = resolve_model_path("tbnn_channel_caseholdout");
+    if (model_path.empty()) {
+        std::cout << "SKIPPED (model not found)\n";
+        return;
+    }
+
     try {
-        model.load("../data/models/test_tbnn", "../data/models/test_tbnn");
-        
+        model.load(model_path, model_path);
+
 #ifdef USE_GPU_OFFLOAD
         // Upload to GPU if available
         if (omp_get_num_devices() > 0) {
@@ -150,9 +180,9 @@ void test_nn_tbnn_model() {
             std::cout << "[GPU mode] ";
         }
 #endif
-        
+
         model.update(mesh, vel, k, omega, nu_t);
-        
+
         // Check validity
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -160,10 +190,10 @@ void test_nn_tbnn_model() {
                 assert(nu_t(i, j) >= 0.0);
             }
         }
-        
+
         std::cout << "PASSED\n";
     } catch (const std::exception& e) {
-        std::cout << "SKIPPED (model not found)\n";
+        std::cout << "SKIPPED (load failed: " << e.what() << ")\n";
     }
 }
 
