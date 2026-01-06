@@ -1241,11 +1241,11 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 #ifdef USE_GPU_OFFLOAD
     // Fail-fast if GPU offload is enabled but no device is available
     gpu::verify_device_available();
-    
-    initialize_gpu_buffers();
-    // GPU buffers are now mapped and will persist for solver lifetime
-    // NOTE: Turbulence models manage their own GPU buffers independently
 #endif
+
+    // Initialize raw pointers for unified code paths
+    // In GPU builds, this also maps data to device; in CPU builds, just sets pointers
+    initialize_gpu_buffers();
 }
 
 RANSSolver::~RANSSolver() {
@@ -4682,6 +4682,8 @@ void RANSSolver::initialize_gpu_buffers() {
     velocity_v_ptr_ = velocity_.v_data().data();
     velocity_star_u_ptr_ = velocity_star_.u_data().data();
     velocity_star_v_ptr_ = velocity_star_.v_data().data();
+    velocity_old_u_ptr_ = velocity_old_.u_data().data();
+    velocity_old_v_ptr_ = velocity_old_.v_data().data();
     pressure_ptr_ = pressure_.data().data();
     pressure_corr_ptr_ = pressure_correction_.data().data();
     nu_t_ptr_ = nu_t_.data().data();  // Keep for nu_eff calculation
@@ -4697,6 +4699,7 @@ void RANSSolver::initialize_gpu_buffers() {
     if (!mesh_->is2D()) {
         velocity_w_ptr_ = velocity_.w_data().data();
         velocity_star_w_ptr_ = velocity_star_.w_data().data();
+        velocity_old_w_ptr_ = velocity_old_.w_data().data();
         conv_w_ptr_ = conv_.w_data().data();
         diff_w_ptr_ = diff_.w_data().data();
     }
@@ -4734,6 +4737,8 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target enter data map(to: velocity_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: velocity_star_u_ptr_[0:u_total_size])
     #pragma omp target enter data map(to: velocity_star_v_ptr_[0:v_total_size])
+    #pragma omp target enter data map(to: velocity_old_u_ptr_[0:u_total_size])
+    #pragma omp target enter data map(to: velocity_old_v_ptr_[0:v_total_size])
     #pragma omp target enter data map(to: pressure_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])  // Keep for nu_eff = nu + nu_t
@@ -4750,6 +4755,7 @@ void RANSSolver::initialize_gpu_buffers() {
         const size_t w_total_size = velocity_.w_total_size();
         #pragma omp target enter data map(to: velocity_w_ptr_[0:w_total_size])
         #pragma omp target enter data map(to: velocity_star_w_ptr_[0:w_total_size])
+        #pragma omp target enter data map(to: velocity_old_w_ptr_[0:w_total_size])
         #pragma omp target enter data map(to: conv_w_ptr_[0:w_total_size])
         #pragma omp target enter data map(to: diff_w_ptr_[0:w_total_size])
     }
