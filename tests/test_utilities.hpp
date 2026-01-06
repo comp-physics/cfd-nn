@@ -1,5 +1,5 @@
 /// @file test_utilities.hpp
-/// @brief Common test utilities for CPU/GPU comparison, field validation, and iteration helpers
+/// @brief Common test utilities for CPU/GPU comparison and field validation
 ///
 /// This header consolidates duplicated test code from:
 ///   - test_cpu_gpu_bitwise.cpp (ComparisonResult)
@@ -14,12 +14,6 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
-
-// Forward declarations for field operations
-namespace nncfd {
-class Mesh;
-class ScalarField;
-}
 
 namespace nncfd {
 namespace test {
@@ -59,11 +53,6 @@ struct FieldComparison {
     /// Update comparison with a new point (2D version)
     void update(int i, int j, double ref_val, double test_val) {
         update(i, j, 0, ref_val, test_val);
-    }
-
-    /// Update comparison without location tracking (simple value comparison)
-    void update(double ref_val, double test_val) {
-        update(0, 0, 0, ref_val, test_val);
     }
 
     /// Finalize RMS computation after all updates
@@ -113,44 +102,8 @@ struct FieldComparison {
 };
 
 //=============================================================================
-// Tolerance Configuration
+// Tolerance Constants
 //=============================================================================
-
-/// GPU vs CPU tolerance - relaxed for GPU smoke tests
-inline double gpu_error_tolerance() {
-#ifdef USE_GPU_OFFLOAD
-    return 0.05;  // 5% for GPU (fast smoke test)
-#else
-    return 0.03;  // 3% for CPU (stricter validation)
-#endif
-}
-
-/// Maximum iterations for steady-state tests
-inline int steady_max_iter() {
-#ifdef USE_GPU_OFFLOAD
-    return 120;   // Fast GPU smoke test
-#else
-    return 3000;  // Full CPU convergence
-#endif
-}
-
-/// Poiseuille flow error limit
-inline double poiseuille_error_limit() {
-#ifdef USE_GPU_OFFLOAD
-    return 0.05;  // 5% for GPU (120 iters with analytical init)
-#else
-    return 0.03;  // 3% for CPU (3000 iters, near steady state)
-#endif
-}
-
-/// Steady-state residual limit
-inline double steady_residual_limit() {
-#ifdef USE_GPU_OFFLOAD
-    return 5e-3;  // Relaxed for fast GPU test
-#else
-    return 1e-4;  // Strict for CPU validation
-#endif
-}
 
 /// CPU/GPU bitwise comparison tolerance
 constexpr double BITWISE_TOLERANCE = 1e-10;
@@ -168,54 +121,24 @@ inline bool file_exists(const std::string& path) {
     return f.good();
 }
 
-/// GPU synchronization helper (no-op on CPU builds)
-template<typename Solver>
-inline void sync_to_gpu_if_available([[maybe_unused]] Solver& solver) {
-#ifdef USE_GPU_OFFLOAD
-    solver.sync_to_gpu();
-#endif
-}
-
-/// GPU synchronization from GPU to host
-template<typename Solver>
-inline void sync_from_gpu_if_available([[maybe_unused]] Solver& solver) {
-#ifdef USE_GPU_OFFLOAD
-    solver.sync_from_gpu();
-#endif
-}
-
 //=============================================================================
-// Field Helper Functions (require mesh.hpp and fields.hpp to be included)
+// Field Helper Functions
 //=============================================================================
 
 /// Compute relative L2 difference between two scalar fields
-/// Returns sqrt(sum((p1-p2)^2) / sum(p1^2))
 template<typename MeshT, typename FieldT>
 inline double compute_l2_diff(const FieldT& p1, const FieldT& p2, const MeshT& mesh) {
-    double diff = 0.0;
-    double norm = 0.0;
-
-    if (mesh.is2D()) {
+    double diff = 0.0, norm = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double d = p1(i, j) - p2(i, j);
+                double d = p1(i, j, k) - p2(i, j, k);
                 diff += d * d;
-                norm += p1(i, j) * p1(i, j);
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double d = p1(i, j, k) - p2(i, j, k);
-                    diff += d * d;
-                    norm += p1(i, j, k) * p1(i, j, k);
-                }
+                norm += p1(i, j, k) * p1(i, j, k);
             }
         }
     }
-
-    if (norm < 1e-30) norm = 1.0;  // Avoid division by zero
+    if (norm < 1e-30) norm = 1.0;
     return std::sqrt(diff / norm);
 }
 
@@ -223,21 +146,10 @@ inline double compute_l2_diff(const FieldT& p1, const FieldT& p2, const MeshT& m
 template<typename MeshT, typename FieldT>
 inline double compute_max_diff(const FieldT& p1, const FieldT& p2, const MeshT& mesh) {
     double max_diff = 0.0;
-
-    if (mesh.is2D()) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double d = std::abs(p1(i, j) - p2(i, j));
-                max_diff = std::max(max_diff, d);
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double d = std::abs(p1(i, j, k) - p2(i, j, k));
-                    max_diff = std::max(max_diff, d);
-                }
+                max_diff = std::max(max_diff, std::abs(p1(i, j, k) - p2(i, j, k)));
             }
         }
     }
@@ -249,21 +161,11 @@ template<typename MeshT, typename FieldT>
 inline double compute_mean(const FieldT& p, const MeshT& mesh) {
     double sum = 0.0;
     int count = 0;
-
-    if (mesh.is2D()) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                sum += p(i, j);
+                sum += p(i, j, k);
                 ++count;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    sum += p(i, j, k);
-                    ++count;
-                }
             }
         }
     }
@@ -274,29 +176,18 @@ inline double compute_mean(const FieldT& p, const MeshT& mesh) {
 template<typename MeshT, typename FieldT>
 inline void subtract_mean(FieldT& p, const MeshT& mesh) {
     double mean = compute_mean(p, mesh);
-
-    if (mesh.is2D()) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                p(i, j) -= mean;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    p(i, j, k) -= mean;
-                }
+                p(i, j, k) -= mean;
             }
         }
     }
 }
 
-/// Compute L2 error against an exact solution (3D)
-/// Template parameter Solution must have method: double p(double x, double y, double z)
+/// Compute L2 error against exact solution (3D, with mean subtraction for Neumann)
 template<typename MeshT, typename FieldT, typename Solution>
 inline double compute_l2_error_3d(const FieldT& p_num, const MeshT& mesh, const Solution& sol) {
-    // Compute means (pressure determined up to constant)
     double p_mean = 0.0, exact_mean = 0.0;
     int count = 0;
 
@@ -312,7 +203,6 @@ inline double compute_l2_error_3d(const FieldT& p_num, const MeshT& mesh, const 
     p_mean /= count;
     exact_mean /= count;
 
-    // Compute L2 error
     double l2_error = 0.0;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -326,8 +216,7 @@ inline double compute_l2_error_3d(const FieldT& p_num, const MeshT& mesh, const 
     return std::sqrt(l2_error / count);
 }
 
-/// Compute L2 error against an exact solution (2D)
-/// Template parameter Solution must have method: double p(double x, double y)
+/// Compute L2 error against exact solution (2D, with mean subtraction for Neumann)
 template<typename MeshT, typename FieldT, typename Solution>
 inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const Solution& sol) {
     double p_mean = 0.0, exact_mean = 0.0;
@@ -354,63 +243,20 @@ inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const 
     return std::sqrt(l2_error / count);
 }
 
+} // namespace test
+} // namespace nncfd
+
 //=============================================================================
 // Domain Iteration Macros
 //=============================================================================
 
-} // namespace test
-} // namespace nncfd
-
 /// Iterate over interior cells of a 2D mesh
-/// Usage: FOR_INTERIOR_2D(mesh, i, j) { ... }
 #define FOR_INTERIOR_2D(mesh, i, j) \
     for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
     for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
 
 /// Iterate over interior cells of a 3D mesh
-/// Usage: FOR_INTERIOR_3D(mesh, i, j, k) { ... }
 #define FOR_INTERIOR_3D(mesh, i, j, k) \
     for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
-    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
-    for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
-
-/// Iterate over all cells including ghosts (2D)
-/// Usage: FOR_ALL_2D(mesh, i, j) { ... }
-#define FOR_ALL_2D(mesh, i, j) \
-    for (int j = 0; j < (mesh).Ny_total(); ++j) \
-    for (int i = 0; i < (mesh).Nx_total(); ++i)
-
-/// Iterate over all cells including ghosts (3D)
-/// Usage: FOR_ALL_3D(mesh, i, j, k) { ... }
-#define FOR_ALL_3D(mesh, i, j, k) \
-    for (int k = 0; k < (mesh).Nz_total(); ++k) \
-    for (int j = 0; j < (mesh).Ny_total(); ++j) \
-    for (int i = 0; i < (mesh).Nx_total(); ++i)
-
-/// Iterate over u-velocity staggered points (2D interior)
-#define FOR_U_INTERIOR_2D(mesh, i, j) \
-    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
-    for (int i = (mesh).i_begin(); i <= (mesh).i_end(); ++i)
-
-/// Iterate over v-velocity staggered points (2D interior)
-#define FOR_V_INTERIOR_2D(mesh, i, j) \
-    for (int j = (mesh).j_begin(); j <= (mesh).j_end(); ++j) \
-    for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
-
-/// Iterate over u-velocity staggered points (3D interior)
-#define FOR_U_INTERIOR_3D(mesh, i, j, k) \
-    for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
-    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
-    for (int i = (mesh).i_begin(); i <= (mesh).i_end(); ++i)
-
-/// Iterate over v-velocity staggered points (3D interior)
-#define FOR_V_INTERIOR_3D(mesh, i, j, k) \
-    for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
-    for (int j = (mesh).j_begin(); j <= (mesh).j_end(); ++j) \
-    for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
-
-/// Iterate over w-velocity staggered points (3D interior)
-#define FOR_W_INTERIOR_3D(mesh, i, j, k) \
-    for (int k = (mesh).k_begin(); k <= (mesh).k_end(); ++k) \
     for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
     for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
