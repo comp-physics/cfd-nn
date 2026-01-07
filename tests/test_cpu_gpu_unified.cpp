@@ -48,7 +48,7 @@ static void record(const char* name, bool pass, bool skip = false) {
 // Helpers
 //=============================================================================
 
-static bool gpu_available() {
+[[maybe_unused]] static bool gpu_available() {
 #ifdef USE_GPU_OFFLOAD
     return omp_get_num_devices() > 0;
 #else
@@ -56,7 +56,7 @@ static bool gpu_available() {
 #endif
 }
 
-static bool verify_gpu_execution() {
+[[maybe_unused]] static bool verify_gpu_execution() {
 #ifdef USE_GPU_OFFLOAD
     if (omp_get_num_devices() == 0) return false;
     int on_device = 0;
@@ -72,7 +72,7 @@ struct SolverMetrics {
     double max_u = 0, max_v = 0, u_l2 = 0, v_l2 = 0, p_l2 = 0;
 };
 
-static SolverMetrics compute_solver_metrics(const Mesh& mesh, const VectorField& vel, const ScalarField& p) {
+[[maybe_unused]] static SolverMetrics compute_solver_metrics(const Mesh& mesh, const VectorField& vel, const ScalarField& p) {
     SolverMetrics m;
     const int Ng = mesh.Nghost;
     double sum_u2 = 0, sum_v2 = 0, sum_p2 = 0;
@@ -473,7 +473,7 @@ struct TimeSnapshot {
     double ke = 0, flux = 0, max_u = 0, max_v = 0, avg_nu_t = 0;
 };
 
-static TimeSnapshot compute_diagnostics(const Mesh& mesh, const VectorField& vel, const ScalarField& nu_t) {
+[[maybe_unused]] static TimeSnapshot compute_diagnostics(const Mesh& mesh, const VectorField& vel, const ScalarField& nu_t) {
     TimeSnapshot s;
     int n = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {

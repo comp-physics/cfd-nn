@@ -39,7 +39,7 @@ static void record(const char* name, bool pass, bool skip = false) {
 // Helpers
 //=============================================================================
 
-static double l2_norm(const ScalarField& f, const Mesh& mesh) {
+[[maybe_unused]] static double l2_norm(const ScalarField& f, const Mesh& mesh) {
     double sum = 0.0;
     int count = 0;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
@@ -53,7 +53,7 @@ static double l2_norm(const ScalarField& f, const Mesh& mesh) {
     return std::sqrt(sum / std::max(1, count));
 }
 
-static double l2_diff(const ScalarField& a, const ScalarField& b, const Mesh& mesh) {
+[[maybe_unused]] static double l2_diff(const ScalarField& a, const ScalarField& b, const Mesh& mesh) {
     double sum = 0.0;
     int count = 0;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
@@ -82,7 +82,7 @@ static double mean_field(const ScalarField& f, const Mesh& mesh) {
     return sum / std::max(1, count);
 }
 
-static void remove_mean(ScalarField& f, const Mesh& mesh) {
+[[maybe_unused]] static void remove_mean(ScalarField& f, const Mesh& mesh) {
     double m = mean_field(f, mesh);
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -93,7 +93,7 @@ static void remove_mean(ScalarField& f, const Mesh& mesh) {
     }
 }
 
-static double linf_field(const ScalarField& f, const Mesh& mesh) {
+[[maybe_unused]] static double linf_field(const ScalarField& f, const Mesh& mesh) {
     double max_val = 0.0;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
