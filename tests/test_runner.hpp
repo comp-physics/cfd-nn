@@ -71,6 +71,19 @@ struct MeshSpec {
         return {nx, ny, 1, 4.0, 2.0, 1.0, 0.0, -1.0, 0.0, STRETCHED_Y, stretch};
     }
 
+    // 3D mesh factories
+    static MeshSpec taylor_green_3d(int n = 32) {
+        return {n, n, n, 2.0*M_PI, 2.0*M_PI, 2.0*M_PI, 0.0, 0.0, 0.0, UNIFORM, 2.0};
+    }
+
+    static MeshSpec channel_3d(int nx = 16, int ny = 16, int nz = 8) {
+        return {nx, ny, nz, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0, UNIFORM, 2.0};
+    }
+
+    static MeshSpec cube(int n = 16, double L = 1.0) {
+        return {n, n, n, L, L, L, 0.0, 0.0, 0.0, UNIFORM, 2.0};
+    }
+
     bool is_3d() const { return nz > 1; }
 };
 
@@ -164,7 +177,7 @@ struct BCSpec {
 // Initialization Specification
 //=============================================================================
 struct InitSpec {
-    enum Type { ZERO, UNIFORM, POISEUILLE, TAYLOR_GREEN, PERTURBED, CUSTOM };
+    enum Type { ZERO, UNIFORM, POISEUILLE, TAYLOR_GREEN, TAYLOR_GREEN_3D, Z_INVARIANT, PERTURBED, CUSTOM };
     Type type = ZERO;
     double u0 = 0.0, v0 = 0.0, w0 = 0.0;
     double dp_dx = 0.0;
@@ -182,6 +195,12 @@ struct InitSpec {
     }
     static InitSpec taylor_green() {
         InitSpec i; i.type = TAYLOR_GREEN; return i;
+    }
+    static InitSpec taylor_green_3d() {
+        InitSpec i; i.type = TAYLOR_GREEN_3D; return i;
+    }
+    static InitSpec z_invariant(double dp = -0.001, double sc = 1.0) {
+        InitSpec i; i.type = Z_INVARIANT; i.dp_dx = dp; i.scale = sc; return i;
     }
     static InitSpec perturbed() {
         InitSpec i; i.type = PERTURBED; return i;
@@ -224,7 +243,12 @@ struct CheckSpec {
         DIVERGENCE_FREE,   // Check |div(u)| < tol
         ENERGY_DECAY,      // Verify KE decreases monotonically
         BOUNDED,           // Verify max velocity stays bounded
-        RESIDUAL           // Check final residual < tol
+        RESIDUAL,          // Check final residual < tol
+        SYMMETRY,          // Check flow symmetry about centerline
+        FINITE,            // Check all fields are finite (no NaN/Inf)
+        REALIZABILITY,     // Check nu_t >= 0, k >= 0, omega > 0
+        Z_INVARIANT,       // Check 3D flow stays z-invariant
+        CUSTOM             // User-provided check function
     };
     Type type = NONE;
     double tolerance = 0.05;
@@ -232,6 +256,9 @@ struct CheckSpec {
     // For L2_ERROR: analytical solution
     std::function<double(double, double)> u_exact;
     std::function<double(double, double)> v_exact;
+
+    // For CUSTOM: user-provided check
+    std::function<bool(const RANSSolver&, const Mesh&, std::string&)> custom_check;
 
     static CheckSpec none() {
         CheckSpec c; c.type = NONE; return c;
@@ -255,6 +282,21 @@ struct CheckSpec {
     }
     static CheckSpec residual(double tol = 1e-6) {
         CheckSpec c; c.type = RESIDUAL; c.tolerance = tol; return c;
+    }
+    static CheckSpec symmetry(double tol = 0.01) {
+        CheckSpec c; c.type = SYMMETRY; c.tolerance = tol; return c;
+    }
+    static CheckSpec finite() {
+        CheckSpec c; c.type = FINITE; return c;
+    }
+    static CheckSpec realizability() {
+        CheckSpec c; c.type = REALIZABILITY; return c;
+    }
+    static CheckSpec z_invariant(double tol = 1e-4) {
+        CheckSpec c; c.type = Z_INVARIANT; c.tolerance = tol; return c;
+    }
+    static CheckSpec custom(std::function<bool(const RANSSolver&, const Mesh&, std::string&)> fn) {
+        CheckSpec c; c.type = CUSTOM; c.custom_check = fn; return c;
     }
 };
 
@@ -349,6 +391,49 @@ inline void apply_init(RANSSolver& solver, const Mesh& mesh, const InitSpec& ini
             }
             break;
 
+        case InitSpec::TAYLOR_GREEN_3D:
+            // u = sin(x)cos(y)cos(z)
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        double x = (i < mesh.i_end()) ? mesh.x(i) + mesh.dx/2.0 : mesh.x_max;
+                        double y = mesh.y(j);
+                        double z = mesh.z(k);
+                        solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
+                    }
+                }
+            }
+            // v = -cos(x)sin(y)cos(z)
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        double x = mesh.x(i);
+                        double y = (j < mesh.j_end()) ? mesh.y(j) + mesh.dy/2.0 : mesh.y_max;
+                        double z = mesh.z(k);
+                        solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
+                    }
+                }
+            }
+            // w = 0 (already initialized to 0)
+            break;
+
+        case InitSpec::Z_INVARIANT: {
+            // 3D Poiseuille-like profile, invariant in z
+            double dp_dx = init.dp_dx;
+            double y_center = 0.5 * (mesh.y_min + mesh.y_max);
+            double half_height = 0.5 * (mesh.y_max - mesh.y_min);
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    double y = mesh.y(j) - y_center;
+                    double u_ex = -dp_dx / (2.0 * nu) * (half_height * half_height - y * y);
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        solver.velocity().u(i, j, k) = init.scale * u_ex;
+                    }
+                }
+            }
+            break;
+        }
+
         case InitSpec::CUSTOM:
             if (init.custom_init) init.custom_init(solver, mesh);
             break;
@@ -377,11 +462,24 @@ inline double compute_l2_error(const VectorField& vel, const Mesh& mesh,
 
 inline double compute_max_divergence(const VectorField& vel, const Mesh& mesh) {
     double max_div = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dudx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
-            double dvdy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
-            max_div = std::max(max_div, std::abs(dudx + dvdy));
+    if (!mesh.is2D()) {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
+                    double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
+                    double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
+                    max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
+                }
+            }
+        }
+    } else {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
+                double dvdy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
+                max_div = std::max(max_div, std::abs(dudx + dvdy));
+            }
         }
     }
     return max_div;
@@ -389,11 +487,24 @@ inline double compute_max_divergence(const VectorField& vel, const Mesh& mesh) {
 
 inline double compute_kinetic_energy(const VectorField& vel, const Mesh& mesh) {
     double KE = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-            KE += 0.5 * (u*u + v*v) * mesh.dx * mesh.dy;
+    if (!mesh.is2D()) {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                    KE += 0.5 * (u*u + v*v + w*w) * mesh.dx * mesh.dy * mesh.dz;
+                }
+            }
+        }
+    } else {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                KE += 0.5 * (u*u + v*v) * mesh.dx * mesh.dy;
+            }
         }
     }
     return KE;
@@ -401,14 +512,44 @@ inline double compute_kinetic_energy(const VectorField& vel, const Mesh& mesh) {
 
 inline double compute_max_velocity(const VectorField& vel, const Mesh& mesh) {
     double max_vel = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double u = vel.u(i, j);
-            double v = vel.v(i, j);
-            max_vel = std::max(max_vel, std::sqrt(u*u + v*v));
+    if (!mesh.is2D()) {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = vel.u(i, j, k);
+                    double v = vel.v(i, j, k);
+                    double w = vel.w(i, j, k);
+                    max_vel = std::max(max_vel, std::sqrt(u*u + v*v + w*w));
+                }
+            }
+        }
+    } else {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = vel.u(i, j);
+                double v = vel.v(i, j);
+                max_vel = std::max(max_vel, std::sqrt(u*u + v*v));
+            }
         }
     }
     return max_vel;
+}
+
+// 3D-specific: Check z-invariance of a 3D field
+inline double compute_z_variation(const VectorField& vel, const Mesh& mesh) {
+    if (mesh.is2D()) return 0.0;
+
+    double max_var = 0.0;
+    int k0 = mesh.k_begin();
+    for (int k = k0 + 1; k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                double diff = std::abs(vel.u(i, j, k) - vel.u(i, j, k0));
+                max_var = std::max(max_var, diff);
+            }
+        }
+    }
+    return max_var;
 }
 
 inline TestResult run_test(const TestSpec& spec) {
@@ -552,6 +693,66 @@ inline TestResult run_test(const TestSpec& spec) {
                 result.passed = (residual < spec.check.tolerance);
                 result.message = "res=" + std::to_string(residual);
                 break;
+
+            case CheckSpec::SYMMETRY: {
+                const VectorField& vel = solver.velocity();
+                double max_asymmetry = 0.0;
+                int i_mid = mesh.i_begin() + mesh.Nx / 2;
+                for (int j = mesh.j_begin(); j < mesh.j_begin() + mesh.Ny/2; ++j) {
+                    int j_mirror = mesh.j_end() - 1 - (j - mesh.j_begin());
+                    double u_lower = vel.u(i_mid, j);
+                    double u_upper = vel.u(i_mid, j_mirror);
+                    double asymmetry = std::abs(u_lower - u_upper) / std::max(std::abs(u_lower), 1e-10);
+                    max_asymmetry = std::max(max_asymmetry, asymmetry);
+                }
+                result.error = max_asymmetry;
+                result.passed = (max_asymmetry < spec.check.tolerance);
+                result.message = "asymmetry=" + std::to_string(max_asymmetry * 100) + "%";
+                break;
+            }
+
+            case CheckSpec::FINITE: {
+                const VectorField& vel = solver.velocity();
+                bool all_finite = true;
+                for (int j = mesh.j_begin(); j < mesh.j_end() && all_finite; ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end() && all_finite; ++i) {
+                        if (!std::isfinite(vel.u(i,j)) || !std::isfinite(vel.v(i,j))) {
+                            all_finite = false;
+                        }
+                    }
+                }
+                result.passed = all_finite;
+                result.message = all_finite ? "all finite" : "NaN/Inf detected";
+                break;
+            }
+
+            case CheckSpec::REALIZABILITY: {
+                const ScalarField& nu_t = solver.nu_t();
+                double min_nu_t = 1e100;
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        min_nu_t = std::min(min_nu_t, nu_t(i,j));
+                    }
+                }
+                result.passed = (min_nu_t >= -1e-12);
+                result.message = "min_nu_t=" + std::to_string(min_nu_t);
+                break;
+            }
+
+            case CheckSpec::Z_INVARIANT: {
+                double z_var = compute_z_variation(solver.velocity(), mesh);
+                result.error = z_var;
+                result.passed = (z_var < spec.check.tolerance);
+                result.message = "z_variation=" + std::to_string(z_var);
+                break;
+            }
+
+            case CheckSpec::CUSTOM: {
+                std::string msg;
+                result.passed = spec.check.custom_check(solver, mesh, msg);
+                result.message = msg;
+                break;
+            }
         }
 
     } catch (const std::exception& e) {
@@ -653,6 +854,61 @@ inline std::vector<TestSpec> taylor_green_suite() {
             CheckSpec::energy_decay()
         ));
     }
+
+    return tests;
+}
+
+// 3D validation test suite
+inline std::vector<TestSpec> validation_3d_suite() {
+    std::vector<TestSpec> tests;
+
+    // 3D Taylor-Green energy decay
+    tests.push_back(make_test(
+        "taylor_green_3d_32",
+        "3d",
+        MeshSpec::taylor_green_3d(32),
+        ConfigSpec::unsteady(0.01, 0.01),
+        BCSpec::periodic(),
+        InitSpec::taylor_green_3d(),
+        RunSpec::steps(50),
+        CheckSpec::energy_decay()
+    ));
+
+    // 3D divergence-free check
+    tests.push_back(make_test(
+        "divergence_free_3d",
+        "3d",
+        MeshSpec::channel_3d(16, 16, 8),
+        ConfigSpec::laminar(0.01),
+        BCSpec::channel(),
+        InitSpec::z_invariant(-0.001, 0.99),
+        RunSpec::steps(20),
+        CheckSpec::divergence_free(1e-3)
+    ));
+
+    // z-invariant flow preservation
+    tests.push_back(make_test(
+        "z_invariant_preservation",
+        "3d",
+        MeshSpec::channel_3d(16, 16, 8),
+        ConfigSpec::unsteady(0.01, 0.001),
+        BCSpec::channel(),
+        InitSpec::z_invariant(-0.001, 1.0),
+        RunSpec::steps(10),
+        CheckSpec::z_invariant(1e-4)
+    ));
+
+    // 3D stability test
+    tests.push_back(make_test(
+        "stability_3d",
+        "3d",
+        MeshSpec::channel_3d(16, 16, 8),
+        ConfigSpec::unsteady(0.01, 0.001),
+        BCSpec::channel(),
+        InitSpec::z_invariant(-0.001, 1.0),
+        RunSpec::steps(50),
+        CheckSpec::bounded(10.0)
+    ));
 
     return tests;
 }

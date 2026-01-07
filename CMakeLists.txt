@@ -435,6 +435,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_data_driven_demo nn_cfd_core)
     add_test(NAME DataDrivenDemoTest COMMAND test_data_driven_demo)
 
+    # Unified test suite - consolidates physics, solver, stability, turbulence tests
+    add_executable(test_unified_suite tests/test_unified_suite.cpp)
+    target_link_libraries(test_unified_suite nn_cfd_core)
+    add_test(NAME UnifiedSuiteTest COMMAND test_unified_suite)
+
     # Taylor-Green vortex validation - verifies viscous decay and time integration
     add_executable(test_tg_validation tests/test_taylor_green.cpp)
     target_link_libraries(test_tg_validation nn_cfd_core)
