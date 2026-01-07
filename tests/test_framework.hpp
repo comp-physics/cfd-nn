@@ -579,15 +579,15 @@ inline SteadyStateResult run_steady_flow(
         solver.set_body_force(body_force_x, body_force_y);
     }
 
-    // Initialize near exact solution for fast convergence
+    // Initialize near exact solution for fast convergence (use staggered coordinates)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            solver.velocity().u(i, j) = 0.9 * exact.u(mesh.x(i), mesh.y(j));
+            solver.velocity().u(i, j) = 0.9 * exact.u(mesh.xf[i], mesh.y(j));
         }
     }
     for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            solver.velocity().v(i, j) = 0.9 * exact.v(mesh.x(i), mesh.y(j));
+            solver.velocity().v(i, j) = 0.9 * exact.v(mesh.x(i), mesh.yf[j]);
         }
     }
 

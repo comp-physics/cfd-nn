@@ -719,8 +719,12 @@ inline TestResult run_test(const TestSpec& spec) {
                 }
                 break;
             case RunSpec::TIME_EVOLVE: {
+                if (spec.config.dt <= 0.0) {
+                    throw std::runtime_error("TIME_EVOLVE requires dt > 0");
+                }
                 double t = 0.0;
-                while (t < spec.run.t_end) {
+                int max_steps = static_cast<int>(std::ceil(spec.run.t_end / spec.config.dt)) + 10;
+                for (int step = 0; step < max_steps && t < spec.run.t_end; ++step) {
                     residual = solver.step();
                     t += spec.config.dt;
                     ++iters;
@@ -802,10 +806,23 @@ inline TestResult run_test(const TestSpec& spec) {
             case CheckSpec::FINITE: {
                 const VectorField& vel = solver.velocity();
                 bool all_finite = true;
-                for (int j = mesh.j_begin(); j < mesh.j_end() && all_finite; ++j) {
-                    for (int i = mesh.i_begin(); i < mesh.i_end() && all_finite; ++i) {
-                        if (!std::isfinite(vel.u(i,j)) || !std::isfinite(vel.v(i,j))) {
-                            all_finite = false;
+                if (!mesh.is2D()) {
+                    for (int k = mesh.k_begin(); k < mesh.k_end() && all_finite; ++k) {
+                        for (int j = mesh.j_begin(); j < mesh.j_end() && all_finite; ++j) {
+                            for (int i = mesh.i_begin(); i < mesh.i_end() && all_finite; ++i) {
+                                if (!std::isfinite(vel.u(i,j,k)) || !std::isfinite(vel.v(i,j,k)) ||
+                                    !std::isfinite(vel.w(i,j,k))) {
+                                    all_finite = false;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for (int j = mesh.j_begin(); j < mesh.j_end() && all_finite; ++j) {
+                        for (int i = mesh.i_begin(); i < mesh.i_end() && all_finite; ++i) {
+                            if (!std::isfinite(vel.u(i,j)) || !std::isfinite(vel.v(i,j))) {
+                                all_finite = false;
+                            }
                         }
                     }
                 }

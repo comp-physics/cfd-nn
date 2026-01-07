@@ -170,6 +170,7 @@ inline double compute_mean(const FieldT& p, const MeshT& mesh) {
             }
         }
     }
+    if (count == 0) return 0.0;
     return sum / count;
 }
 
