@@ -31,7 +31,7 @@ using nncfd::test::check_gpu_cpu_consistency;
 using nncfd::test::GPU_CPU_ABS_TOL;
 using nncfd::test::GPU_CPU_REL_TOL;
 using nncfd::test::harness::record;
-namespace gpu = nncfd::test::gpu;
+namespace test_gpu = nncfd::test::gpu;
 
 struct SolverMetrics {
     double max_u = 0, max_v = 0, u_l2 = 0, v_l2 = 0, p_l2 = 0;
@@ -87,7 +87,7 @@ void test_mixing_length() {
     m2.set_nu(0.001); m2.set_delta(0.5);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu::available()) {
+    if (test_gpu::available()) {
         const int total = mesh.total_cells();
         const int u_sz = vel.u_total_size(), v_sz = vel.v_total_size();
         double *u_p = vel.u_data().data(), *v_p = vel.v_data().data();
@@ -148,7 +148,7 @@ void test_gep() {
     g2.set_nu(0.001); g2.set_delta(0.5);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu::available()) {
+    if (test_gpu::available()) {
         const int total = mesh.total_cells();
         const int u_sz = vel.u_total_size(), v_sz = vel.v_total_size();
         double *u_p = vel.u_data().data(), *v_p = vel.v_data().data();
@@ -218,7 +218,7 @@ void test_nn_mlp() {
     cpu_model.update(mesh, vel, k, omega, nu_t_cpu);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu::available()) {
+    if (test_gpu::available()) {
         TurbulenceNNMLP gpu_model;
         gpu_model.set_nu(0.001);
         gpu_model.load(path, path);
@@ -452,11 +452,11 @@ struct TimeSnapshot {
 
 void test_time_history() {
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu::available()) {
+    if (!test_gpu::available()) {
         record("Time-history consistency (no drift)", true, true);
         return;
     }
-    if (!gpu::verify_execution()) {
+    if (!test_gpu::verify_execution()) {
         record("Time-history consistency (no drift)", false);
         return;
     }
