@@ -371,9 +371,7 @@ if(BUILD_TESTS)
     target_link_libraries(test_poisson_solvers nn_cfd_core)
     add_test(NAME PoissonSolversTest COMMAND test_poisson_solvers)
 
-    add_executable(test_solver tests/test_solver.cpp)
-    target_link_libraries(test_solver nn_cfd_core)
-    add_test(NAME SolverTest COMMAND test_solver)
+    # test_solver.cpp removed - covered by test_unified_suite.cpp
 
     add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
     target_link_libraries(test_2d_3d_comparison nn_cfd_core)
@@ -387,15 +385,9 @@ if(BUILD_TESTS)
     target_link_libraries(test_nn_core nn_cfd_core)
     add_test(NAME NNCoreTest COMMAND test_nn_core)
     
-    add_executable(test_turbulence tests/test_turbulence.cpp)
-    target_link_libraries(test_turbulence nn_cfd_core)
-    add_test(NAME TurbulenceTest COMMAND test_turbulence)
-    # Turbulence models now use unified persistent mapping - GPU enabled
-    
-    add_executable(test_stability tests/test_stability.cpp)
-    target_link_libraries(test_stability nn_cfd_core)
-    add_test(NAME StabilityTest COMMAND test_stability)
-    
+    # test_turbulence.cpp removed - covered by test_unified_suite.cpp
+    # test_stability.cpp removed - covered by test_unified_suite.cpp
+
     add_executable(test_nn_integration tests/test_nn_integration.cpp)
     target_link_libraries(test_nn_integration nn_cfd_core)
     add_test(NAME NNIntegrationTest COMMAND test_nn_integration)
@@ -418,17 +410,13 @@ if(BUILD_TESTS)
     target_link_libraries(test_solver_cpu_gpu nn_cfd_core)
     add_test(NAME SolverCPUGPUTest COMMAND test_solver_cpu_gpu)
     
-    add_executable(test_divergence_all_bcs tests/test_divergence_all_bcs.cpp)
-    target_link_libraries(test_divergence_all_bcs nn_cfd_core)
-    add_test(NAME DivergenceAllBCsTest COMMAND test_divergence_all_bcs)
-    
+    # test_divergence_all_bcs.cpp removed - covered by test_unified_suite.cpp
+
     add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
     target_link_libraries(test_time_history_consistency nn_cfd_core)
     add_test(NAME TimeHistoryConsistencyTest COMMAND test_time_history_consistency)
     
-    add_executable(test_physics_validation tests/test_physics_validation.cpp)
-    target_link_libraries(test_physics_validation nn_cfd_core)
-    add_test(NAME PhysicsValidationTest COMMAND test_physics_validation)
+    # test_physics_validation.cpp removed - covered by test_unified_suite.cpp
 
     # Data-driven test framework demo
     add_executable(test_data_driven_demo tests/test_data_driven_demo.cpp)
@@ -440,11 +428,8 @@ if(BUILD_TESTS)
     target_link_libraries(test_unified_suite nn_cfd_core)
     add_test(NAME UnifiedSuiteTest COMMAND test_unified_suite)
 
-    # Taylor-Green vortex validation - verifies viscous decay and time integration
-    add_executable(test_tg_validation tests/test_taylor_green.cpp)
-    target_link_libraries(test_tg_validation nn_cfd_core)
-    add_test(NAME TaylorGreenValidationTest COMMAND test_tg_validation)
-    
+    # test_taylor_green.cpp removed - covered by test_unified_suite.cpp
+
     # Perturbed channel validation - comprehensive turbulence model testing (1000 steps on GPU)
     add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
     target_link_libraries(test_perturbed_channel nn_cfd_core)
@@ -465,10 +450,7 @@ if(BUILD_TESTS)
     target_link_libraries(test_poisson_cpu_gpu_3d nn_cfd_core)
     add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
 
-    # Fast 3D validation tests - quick smoke tests (~5s)
-    add_executable(test_3d_quick_validation tests/test_3d_quick_validation.cpp)
-    target_link_libraries(test_3d_quick_validation nn_cfd_core)
-    add_test(NAME Quick3DValidationTest COMMAND test_3d_quick_validation)
+    # test_3d_quick_validation.cpp removed - covered by test_unified_suite.cpp
 
     # Fast 3D Poiseuille tests - analytical validation (~10s)
     add_executable(test_3d_poiseuille_fast tests/test_3d_poiseuille_fast.cpp)
@@ -495,10 +477,7 @@ if(BUILD_TESTS)
     target_link_libraries(test_3d_w_velocity nn_cfd_core)
     add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
 
-    # 3D Taylor-Green vortex - verifies 3D viscous decay and time integration
-    add_executable(test_taylor_green_3d tests/test_taylor_green_3d.cpp)
-    target_link_libraries(test_taylor_green_3d nn_cfd_core)
-    add_test(NAME TaylorGreen3DTest COMMAND test_taylor_green_3d)
+    # test_taylor_green_3d.cpp removed - covered by test_unified_suite.cpp
 
     # All turbulence models smoke test - verifies all 10 models run without crashing
     add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
