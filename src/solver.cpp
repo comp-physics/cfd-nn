@@ -3252,6 +3252,8 @@ double RANSSolver::step() {
         pcfg.tol_rhs = config_.poisson_tol_rhs;
         pcfg.tol_rel = config_.poisson_tol_rel;
         pcfg.check_interval = config_.poisson_check_interval;
+        pcfg.use_l2_norm = config_.poisson_use_l2_norm;
+        pcfg.linf_safety_factor = config_.poisson_linf_safety;
 
         // Legacy tolerance for backward compatibility (non-MG solvers use this)
         double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
@@ -3367,14 +3369,25 @@ double RANSSolver::step() {
             std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles
                       << " residual=" << std::scientific << std::setprecision(6)
                       << final_residual;
-            // For MG solver, also print ||b||, ||r0||, ||r||/||b|| for convergence analysis
+            // For MG solver, also print norms and ratios for convergence analysis
             if (selected_solver_ == PoissonSolverType::MG) {
+                // Get both L∞ and L2 norms
+                double r_inf = mg_poisson_solver_.residual();
+                double r_l2 = mg_poisson_solver_.residual_l2();
                 double b_inf = mg_poisson_solver_.rhs_norm();
-                double r0 = mg_poisson_solver_.initial_residual();
-                double r_over_b = (b_inf > 1e-30) ? final_residual / b_inf : 0.0;
-                double r_over_r0 = (r0 > 1e-30) ? final_residual / r0 : 0.0;
-                std::cout << " ||b||=" << b_inf
-                          << " ||r0||=" << r0
+                double b_l2 = mg_poisson_solver_.rhs_norm_l2();
+                double r0_inf = mg_poisson_solver_.initial_residual();
+                double r0_l2 = mg_poisson_solver_.initial_residual_l2();
+
+                // Show which norm is used for convergence
+                const char* norm_type = pcfg.use_l2_norm ? "L2" : "Linf";
+                double r_norm = pcfg.use_l2_norm ? r_l2 : r_inf;
+                double b_norm = pcfg.use_l2_norm ? b_l2 : b_inf;
+                double r0_norm = pcfg.use_l2_norm ? r0_l2 : r0_inf;
+                double r_over_b = (b_norm > 1e-30) ? r_norm / b_norm : 0.0;
+                double r_over_r0 = (r0_norm > 1e-30) ? r_norm / r0_norm : 0.0;
+                std::cout << " [" << norm_type << "] ||b||=" << b_norm
+                          << " ||r0||=" << r0_norm
                           << " ||r||/||b||=" << r_over_b
                           << " ||r||/||r0||=" << r_over_r0;
             }

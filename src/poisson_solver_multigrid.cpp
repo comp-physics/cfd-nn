@@ -1017,6 +1017,81 @@ void MultigridPoissonSolver::compute_residual(int level) {
     }
 }
 
+void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf, double& r_l2) {
+    NVTX_SCOPE_RESIDUAL("mg:residual+norms");
+
+    // Fused residual computation + norm calculation (single pass over memory)
+    // Computes r = f - L(u) AND ||r||_∞ AND ||r||_2 in one kernel
+    // Much more efficient than separate compute_residual() + compute_max_residual()
+    auto& grid = *levels_[level];
+    const double dx2 = grid.dx * grid.dx;
+    const double dy2 = grid.dy * grid.dy;
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
+
+    const int Ng = 1;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = (Nx + 2) * (Ny + 2);
+
+    const double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    double* r_ptr = r_ptrs_[level];
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+
+    double max_res = 0.0;
+    double sum_sq = 0.0;
+
+    if (is_2d) {
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
+            reduction(max: max_res) reduction(+: sum_sq)
+#endif
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * stride + i;
+                double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                 + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
+                double r = f_ptr[idx] - laplacian;
+                r_ptr[idx] = r;
+                // Compute norms
+                double abs_r = (r >= 0.0) ? r : -r;
+                if (abs_r > max_res) max_res = abs_r;
+                sum_sq += r * r;
+            }
+        }
+    } else {
+        // 3D path
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
+            reduction(max: max_res) reduction(+: sum_sq)
+#endif
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
+                                     + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                    double r = f_ptr[idx] - laplacian;
+                    r_ptr[idx] = r;
+                    // Compute norms
+                    double abs_r = (r >= 0.0) ? r : -r;
+                    if (abs_r > max_res) max_res = abs_r;
+                    sum_sq += r * r;
+                }
+            }
+        }
+    }
+
+    r_inf = max_res;
+    r_l2 = std::sqrt(sum_sq);
+}
+
 void MultigridPoissonSolver::restrict_residual(int fine_level) {
     NVTX_SCOPE_MG("mg:restrict");
 
@@ -1495,28 +1570,35 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     const int check_interval = std::max(1, cfg.check_interval);
 
     // Compute reference norms for relative tolerances (CPU path)
-    // ||b||_∞ = max|f| on finest level - store in member for diagnostics
+    // ||b||_∞ = max|f| and ||b||_2 = sqrt(sum(f^2)) on finest level - store in member for diagnostics
     auto& finest_cpu = *levels_[0];
     b_inf_ = 0.0;
+    double b_sum_sq = 0.0;
     if (mesh_->is2D()) {
         for (int j = 1; j <= finest_cpu.Ny; ++j) {
             for (int i = 1; i <= finest_cpu.Nx; ++i) {
-                b_inf_ = std::max(b_inf_, std::abs(finest_cpu.f(i, j)));
+                double val = finest_cpu.f(i, j);
+                b_inf_ = std::max(b_inf_, std::abs(val));
+                b_sum_sq += val * val;
             }
         }
     } else {
         for (int k = 1; k <= finest_cpu.Nz; ++k) {
             for (int j = 1; j <= finest_cpu.Ny; ++j) {
                 for (int i = 1; i <= finest_cpu.Nx; ++i) {
-                    b_inf_ = std::max(b_inf_, std::abs(finest_cpu.f(i, j, k)));
+                    double val = finest_cpu.f(i, j, k);
+                    b_inf_ = std::max(b_inf_, std::abs(val));
+                    b_sum_sq += val * val;
                 }
             }
         }
     }
+    b_l2_ = std::sqrt(b_sum_sq);
 
-    // Initial residual ||r0||_∞ - store in member for diagnostics
-    r0_ = compute_max_residual(0);
+    // Initial residual - use fused function to compute residual + both norms in single pass
+    compute_residual_and_norms(0, r0_, r0_l2_);
     residual_ = r0_;
+    residual_l2_ = r0_l2_;
 
     int cycles_used = 0;
     for (int cycle = 0; cycle < max_cycles; ++cycle) {
@@ -1525,22 +1607,38 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
         // Check convergence every check_interval cycles (reduces overhead)
         if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
-            residual_ = compute_max_residual(0);
+            // Fused residual + norm computation (single pass over memory, single GPU reduction)
+            compute_residual_and_norms(0, residual_, residual_l2_);
+
+            // Select norm for convergence based on config (L2 is smoother, less sensitive to hot cells)
+            const double r_norm = cfg.use_l2_norm ? residual_l2_ : residual_;
+            const double b_norm = cfg.use_l2_norm ? b_l2_ : b_inf_;
+            const double r0_norm = cfg.use_l2_norm ? r0_l2_ : r0_;
 
             // Robust convergence check: any criterion triggers exit
             bool converged = false;
-            if (cfg.tol_abs > 0.0 && residual_ <= cfg.tol_abs) {
+            if (cfg.tol_abs > 0.0 && r_norm <= cfg.tol_abs) {
                 converged = true;  // Absolute tolerance met
             }
-            if (cfg.tol_rhs > 0.0 && residual_ <= cfg.tol_rhs * (b_inf_ + 1e-30)) {
+            if (cfg.tol_rhs > 0.0 && r_norm <= cfg.tol_rhs * (b_norm + 1e-30)) {
                 converged = true;  // RHS-relative tolerance met
             }
-            if (cfg.tol_rel > 0.0 && residual_ <= cfg.tol_rel * (r0_ + 1e-30)) {
+            if (cfg.tol_rel > 0.0 && r_norm <= cfg.tol_rel * (r0_norm + 1e-30)) {
                 converged = true;  // Initial-residual relative tolerance met
             }
             // Legacy: also check cfg.tol for backward compatibility
-            if (cfg.tol > 0.0 && residual_ <= cfg.tol) {
+            if (cfg.tol > 0.0 && r_norm <= cfg.tol) {
                 converged = true;
+            }
+
+            // L∞ safety cap: when using L2, also enforce loose L∞ bound to catch "bad cells"
+            // This prevents L2 from hiding localized divergence spikes
+            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0) {
+                double linf_ratio = residual_ / (b_inf_ + 1e-30);
+                double linf_cap = cfg.tol_rhs * cfg.linf_safety_factor;
+                if (linf_ratio > linf_cap) {
+                    converged = false;  // L∞ still too high, keep iterating
+                }
             }
 
             if (converged) {
@@ -1637,7 +1735,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
     const int check_interval = std::max(1, cfg.check_interval);
 
-    // Compute ||b||_∞ on device via reduction - store in member for diagnostics
+    // Compute ||b||_∞ and ||b||_2 on device via fused reduction - store in members for diagnostics
     auto& finest_gpu = *levels_[0];
     const int Ng = 1;
     const int Nx_g = finest_gpu.Nx;
@@ -1648,32 +1746,39 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     const bool is_2d_gpu = finest_gpu.is2D();
 
     double b_inf_local = 0.0;
+    double b_sum_sq = 0.0;
     if (is_2d_gpu) {
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local)
+            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
         for (int j = Ng; j < Ny_g + Ng; ++j) {
             for (int i = Ng; i < Nx_g + Ng; ++i) {
                 int idx = j * stride_gpu + i;
-                b_inf_local = std::max(b_inf_local, std::abs(f_dev[idx]));
+                double val = f_dev[idx];
+                b_inf_local = std::max(b_inf_local, std::abs(val));
+                b_sum_sq += val * val;
             }
         }
     } else {
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local)
+            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
         for (int k = Ng; k < Nz_g + Ng; ++k) {
             for (int j = Ng; j < Ny_g + Ng; ++j) {
                 for (int i = Ng; i < Nx_g + Ng; ++i) {
                     int idx = k * plane_stride_gpu + j * stride_gpu + i;
-                    b_inf_local = std::max(b_inf_local, std::abs(f_dev[idx]));
+                    double val = f_dev[idx];
+                    b_inf_local = std::max(b_inf_local, std::abs(val));
+                    b_sum_sq += val * val;
                 }
             }
         }
     }
     b_inf_ = b_inf_local;  // Store for diagnostics
+    b_l2_ = std::sqrt(b_sum_sq);
 
-    // Initial residual ||r0||_∞ - store in member for diagnostics
-    r0_ = compute_max_residual(0);
+    // Initial residual - use fused function to compute residual + both norms in single pass
+    compute_residual_and_norms(0, r0_, r0_l2_);
     residual_ = r0_;
+    residual_l2_ = r0_l2_;
 
     int cycles_used = 0;
     for (int cycle = 0; cycle < max_cycles; ++cycle) {
@@ -1682,22 +1787,38 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
         // Check convergence every check_interval cycles (reduces overhead)
         if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
-            residual_ = compute_max_residual(0);
+            // Fused residual + norm computation (single pass over memory, single GPU reduction)
+            compute_residual_and_norms(0, residual_, residual_l2_);
+
+            // Select norm for convergence based on config (L2 is smoother, less sensitive to hot cells)
+            const double r_norm = cfg.use_l2_norm ? residual_l2_ : residual_;
+            const double b_norm = cfg.use_l2_norm ? b_l2_ : b_inf_;
+            const double r0_norm = cfg.use_l2_norm ? r0_l2_ : r0_;
 
             // Robust convergence check: any criterion triggers exit
             bool converged = false;
-            if (cfg.tol_abs > 0.0 && residual_ <= cfg.tol_abs) {
+            if (cfg.tol_abs > 0.0 && r_norm <= cfg.tol_abs) {
                 converged = true;  // Absolute tolerance met
             }
-            if (cfg.tol_rhs > 0.0 && residual_ <= cfg.tol_rhs * (b_inf_ + 1e-30)) {
+            if (cfg.tol_rhs > 0.0 && r_norm <= cfg.tol_rhs * (b_norm + 1e-30)) {
                 converged = true;  // RHS-relative tolerance met
             }
-            if (cfg.tol_rel > 0.0 && residual_ <= cfg.tol_rel * (r0_ + 1e-30)) {
+            if (cfg.tol_rel > 0.0 && r_norm <= cfg.tol_rel * (r0_norm + 1e-30)) {
                 converged = true;  // Initial-residual relative tolerance met
             }
             // Legacy: also check cfg.tol for backward compatibility
-            if (cfg.tol > 0.0 && residual_ <= cfg.tol) {
+            if (cfg.tol > 0.0 && r_norm <= cfg.tol) {
                 converged = true;
+            }
+
+            // L∞ safety cap: when using L2, also enforce loose L∞ bound to catch "bad cells"
+            // This prevents L2 from hiding localized divergence spikes
+            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0) {
+                double linf_ratio = residual_ / (b_inf_ + 1e-30);
+                double linf_cap = cfg.tol_rhs * cfg.linf_safety_factor;
+                if (linf_ratio > linf_cap) {
+                    converged = false;  // L∞ still too high, keep iterating
+                }
             }
 
             if (converged) {

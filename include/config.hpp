@@ -129,6 +129,8 @@ struct Config {
     double poisson_tol_rhs = 1e-3;   ///< RHS-relative: ||r||/||b|| (recommended for projection)
     double poisson_tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0||
     int poisson_check_interval = 2;  ///< Check convergence every N V-cycles (reduces overhead)
+    bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
+    double poisson_linf_safety = 10.0; ///< L∞ safety cap multiplier (prevent L2 from hiding bad cells)
 
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

@@ -28,6 +28,8 @@ struct PoissonConfig {
     double tol_rhs = 1e-3;   ///< RHS-relative tolerance: ||r||/||b|| (recommended for projection)
     double tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0|| (backup criterion)
     int check_interval = 2;  ///< Check convergence every N V-cycles (reduces overhead)
+    bool use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less sensitive to hot cells)
+    double linf_safety_factor = 10.0; ///< L∞ safety cap: even with L2 convergence, require ||r||_∞/||b||_∞ ≤ tol_rhs * factor
 };
 
 /// Poisson solver for pressure equation

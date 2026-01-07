@@ -211,6 +211,8 @@ void Config::load(const std::string& filename) {
     poisson_tol_rhs = get_double("poisson_tol_rhs", poisson_tol_rhs);
     poisson_tol_rel = get_double("poisson_tol_rel", poisson_tol_rel);
     poisson_check_interval = get_int("poisson_check_interval", poisson_check_interval);
+    poisson_use_l2_norm = get_bool("poisson_use_l2_norm", poisson_use_l2_norm);
+    poisson_linf_safety = get_double("poisson_linf_safety", poisson_linf_safety);
 
     // Turbulence guard settings
     turb_guard_enabled = get_bool("turb_guard_enabled", turb_guard_enabled);

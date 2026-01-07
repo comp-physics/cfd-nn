@@ -55,11 +55,20 @@ public:
     /// Get final residual ||r||_∞
     double residual() const { return residual_; }
 
+    /// Get final residual ||r||_2
+    double residual_l2() const { return residual_l2_; }
+
     /// Get RHS norm ||b||_∞ (computed at start of solve)
     double rhs_norm() const { return b_inf_; }
 
+    /// Get RHS norm ||b||_2 (computed at start of solve)
+    double rhs_norm_l2() const { return b_l2_; }
+
     /// Get initial residual ||r0||_∞
     double initial_residual() const { return r0_; }
+
+    /// Get initial residual ||r0||_2
+    double initial_residual_l2() const { return r0_l2_; }
 
     /// Set smoother type (Jacobi for reference/debugging, Chebyshev for performance)
     /// Can also be set via environment variable MG_SMOOTHER=jacobi|chebyshev
@@ -115,9 +124,12 @@ private:
     PoissonBC bc_z_lo_ = PoissonBC::Periodic;
     PoissonBC bc_z_hi_ = PoissonBC::Periodic;
     
-    double residual_ = 0.0;
-    double b_inf_ = 0.0;     // ||b||_∞ from last solve
-    double r0_ = 0.0;        // Initial residual ||r0||_∞ from last solve
+    double residual_ = 0.0;      // Final ||r||_∞
+    double residual_l2_ = 0.0;   // Final ||r||_2
+    double b_inf_ = 0.0;         // ||b||_∞ from last solve
+    double b_l2_ = 0.0;          // ||b||_2 from last solve
+    double r0_ = 0.0;            // Initial residual ||r0||_∞ from last solve
+    double r0_l2_ = 0.0;         // Initial residual ||r0||_2 from last solve
     double dirichlet_val_ = 0.0;
     MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
 
@@ -138,6 +150,12 @@ private:
     
     // Utility
     double compute_max_residual(int level);
+
+    /// Fused residual computation + norm calculation (single pass over memory)
+    /// Returns {||r||_∞, ||r||_2} and stores residual in r array
+    /// Much faster than compute_residual() followed by compute_max_residual()
+    void compute_residual_and_norms(int level, double& r_inf, double& r_l2);
+
     void subtract_mean(int level);
     
     // GPU buffer management (always present for ABI stability)
