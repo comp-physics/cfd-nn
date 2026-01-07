@@ -596,8 +596,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Medium Tests (~2-5 minutes)"
 
     run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 300
-    run_test "Poisson" "$BUILD_DIR/test_poisson" 120
-    run_test "Poisson Solvers 2D/3D" "$BUILD_DIR/test_poisson_solvers" 300
+    run_test "Poisson Unified" "$BUILD_DIR/test_poisson_unified" 180
     run_test "Stability" "$BUILD_DIR/test_stability" 120
     run_test "Turbulence" "$BUILD_DIR/test_turbulence" 120
     run_test "Turbulence Features" "$BUILD_DIR/test_turbulence_features" 120
@@ -624,7 +623,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
         log_info "Cross-build tests require GPU to compare CPU vs GPU outputs"
     else
         run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
-        run_cross_build_test "Poisson CPU/GPU 3D" "test_poisson_cpu_gpu_3d" 180 "poisson3d"
+        # Poisson CPU/GPU 3D test consolidated into test_poisson_unified
         run_cross_build_test "CPU/GPU Consistency" "test_cpu_gpu_consistency" 180 "consistency"
         run_cross_build_test "Solver CPU/GPU" "test_solver_cpu_gpu" 180 "solver"
         run_cross_build_test "Time History Consistency" "test_time_history_consistency" 180 "timehistory"
