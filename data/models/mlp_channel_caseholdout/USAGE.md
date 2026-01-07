@@ -276,7 +276,7 @@ McConkey, R., Yee, E., & Lien, F. S. (2021). A curated dataset for data-driven t
 For issues or questions:
 
 1. Check the main documentation: `docs/TRAINING_GUIDE.md`
-2. Review test cases: `tests/test_backend_execution.cpp`
+2. Review test cases: `tests/test_backend_unified.cpp`
 3. See model zoo: `data/models/README.md`
 
 ## Version History
