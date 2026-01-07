@@ -110,9 +110,8 @@ run_test "3D Gradients" "./test_3d_gradients" 60
 # Poisson solver tests
 echo ""
 echo "--- Poisson Solver Tests ---"
-run_test "Poisson Selection" "./test_poisson_selection" 60
+run_test "Poisson Unified" "./test_poisson_unified" 180
 run_test "Residual Consistency" "./test_residual_consistency" 120
-run_test "Poisson Nullspace" "./test_poisson_nullspace" 120
 
 # MPI guard test
 echo ""

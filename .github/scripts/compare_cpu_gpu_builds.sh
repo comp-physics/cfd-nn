@@ -33,10 +33,7 @@ mkdir -p cpu_gpu_comparison
     echo "[FAIL] Bitwise CPU reference generation failed!"
     exit 1
 }
-./test_poisson_cpu_gpu_3d --dump-prefix cpu_gpu_comparison/poisson3d || {
-    echo "[FAIL] Poisson 3D CPU reference generation failed!"
-    exit 1
-}
+# test_poisson_cpu_gpu_3d consolidated into test_poisson_unified
 ./test_cpu_gpu_consistency --dump-prefix cpu_gpu_comparison/consistency || {
     echo "[FAIL] Consistency CPU reference generation failed!"
     exit 1
@@ -74,10 +71,7 @@ fi
     echo "[FAIL] Bitwise GPU vs CPU comparison failed!"
     exit 1
 }
-./test_poisson_cpu_gpu_3d --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/poisson3d" || {
-    echo "[FAIL] Poisson 3D GPU vs CPU comparison failed!"
-    exit 1
-}
+# test_poisson_cpu_gpu_3d consolidated into test_poisson_unified
 ./test_cpu_gpu_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/consistency" || {
     echo "[FAIL] Consistency GPU vs CPU comparison failed!"
     exit 1
