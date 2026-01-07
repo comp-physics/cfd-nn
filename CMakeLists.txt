@@ -401,13 +401,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_perturbed_channel nn_cfd_core)
     add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
 
-    add_executable(test_turbulence_guard tests/test_turbulence_guard.cpp)
-    target_link_libraries(test_turbulence_guard nn_cfd_core)
-    add_test(NAME NanInfGuardTest COMMAND test_turbulence_guard)
-
-    add_executable(test_turbulence_features tests/test_turbulence_features.cpp)
-    target_link_libraries(test_turbulence_features nn_cfd_core)
-    add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
+    # Unified turbulence test (consolidates 6 files: turbulence_features, turbulence_guard,
+    # all_turbulence_models_smoke, transport_realizability, earsm_trace_free, turbulence_golden)
+    add_executable(test_turbulence_unified tests/test_turbulence_unified.cpp)
+    target_link_libraries(test_turbulence_unified nn_cfd_core)
+    add_test(NAME TurbulenceUnifiedTest COMMAND test_turbulence_unified)
 
     # Unified 3D test (consolidates 3d_bc_application + 3d_gradients + 3d_w_velocity + 3d_bc_corners)
     add_executable(test_3d_unified tests/test_3d_unified.cpp)
@@ -418,17 +416,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
     add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
 
-    add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
-    target_link_libraries(test_all_turbulence_models_smoke nn_cfd_core)
-    add_test(NAME AllTurbulenceModelsSmokeTest COMMAND test_all_turbulence_models_smoke)
-
-    add_executable(test_transport_realizability tests/test_transport_realizability.cpp)
-    target_link_libraries(test_transport_realizability nn_cfd_core)
-    add_test(NAME TransportRealizabilityTest COMMAND test_transport_realizability)
-
-    add_executable(test_earsm_trace_free tests/test_earsm_trace_free.cpp)
-    target_link_libraries(test_earsm_trace_free nn_cfd_core)
-    add_test(NAME EARSMTraceFreeTest COMMAND test_earsm_trace_free)
 
     add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
@@ -477,10 +464,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_mpi_guard nn_cfd_core)
     add_test(NAME MpiGuardTest COMMAND test_mpi_guard)
 
-    # Turbulence golden snapshot test - catches model regressions
-    add_executable(test_turbulence_golden tests/test_turbulence_golden.cpp)
-    target_link_libraries(test_turbulence_golden nn_cfd_core)
-    add_test(NAME TurbulenceGoldenTest COMMAND test_turbulence_golden)
 
 
     # Residual consistency test - validates ||L(p)-rhs||/||rhs|| for each solver

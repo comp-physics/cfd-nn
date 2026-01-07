@@ -240,7 +240,7 @@ GPU_BUILD_ENSURED=0
 # Known flaky tests on GPU (pre-existing issues, not related to 3D work)
 # These will be skipped when USE_GPU=ON until root causes are addressed.
 # Note: test_solver and test_physics_validation were slow (not flaky) - fixed by increasing timeouts
-# Note: test_turbulence_guard was flaky - fixed by calling check_for_nan_inf directly instead of step()
+# Note: turbulence guard (now in test_turbulence_unified) uses check_for_nan_inf directly instead of step()
 GPU_FLAKY_TESTS=""
 
 is_gpu_flaky() {
@@ -531,10 +531,8 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 300
     run_test "Poisson Unified" "$BUILD_DIR/test_poisson_unified" 180
     run_test "Stability" "$BUILD_DIR/test_stability" 120
-    run_test "Turbulence" "$BUILD_DIR/test_turbulence" 120
-    run_test "Turbulence Features" "$BUILD_DIR/test_turbulence_features" 120
-    run_test "Turbulence Guard" "$BUILD_DIR/test_turbulence_guard" 60
-    run_test "All Turbulence Models Smoke" "$BUILD_DIR/test_all_turbulence_models_smoke" 300
+    # Unified turbulence test (consolidates 6 turbulence test files)
+    run_test "Turbulence Unified" "$BUILD_DIR/test_turbulence_unified" 300
 
     # New tests: error handling, adaptive dt, mesh edge cases, 3D BCs, VTK output
     run_test "Error Recovery" "$BUILD_DIR/test_error_recovery" 120
