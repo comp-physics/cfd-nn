@@ -1,11 +1,5 @@
 /// @file test_fixtures.hpp
 /// @brief Common test fixtures: manufactured solutions for Poisson solver validation
-///
-/// This header consolidates duplicated manufactured solution structs from:
-///   - test_poisson_manufactured.cpp (ChannelSolution, DuctSolution, etc.)
-///   - test_poisson_fft_manufactured.cpp (ChannelManufactured, DuctManufactured)
-///   - test_poisson_dirichlet_mixed.cpp (DirichletSolution3D, MixedBCSolution3D)
-///   - test_fft1d_validation.cpp (ManufacturedSolution)
 
 #pragma once
 

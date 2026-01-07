@@ -1,11 +1,5 @@
 /// @file test_utilities.hpp
 /// @brief Common test utilities for CPU/GPU comparison and field validation
-///
-/// This header consolidates duplicated test code from:
-///   - test_cpu_gpu_bitwise.cpp (ComparisonResult)
-///   - test_poisson_cpu_gpu_3d.cpp (ComparisonResult)
-///   - test_hypre_validation.cpp (ComparisonResult)
-///   - test_cpu_gpu_consistency.cpp (FieldComparison)
 
 #pragma once
 

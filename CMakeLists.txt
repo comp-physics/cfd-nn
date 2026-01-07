@@ -363,12 +363,9 @@ if(BUILD_TESTS)
     target_link_libraries(test_mesh nn_cfd_core)
     add_test(NAME MeshTest COMMAND test_mesh)
     
-    # Unified Poisson test suite - consolidates 10 Poisson test files
     add_executable(test_poisson_unified tests/test_poisson_unified.cpp)
     target_link_libraries(test_poisson_unified nn_cfd_core)
     add_test(NAME PoissonUnifiedTest COMMAND test_poisson_unified)
-
-    # test_solver.cpp removed - covered by test_unified_suite.cpp
 
     add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
     target_link_libraries(test_2d_3d_comparison nn_cfd_core)
@@ -381,9 +378,6 @@ if(BUILD_TESTS)
     add_executable(test_nn_core tests/test_nn_core.cpp)
     target_link_libraries(test_nn_core nn_cfd_core)
     add_test(NAME NNCoreTest COMMAND test_nn_core)
-    
-    # test_turbulence.cpp removed - covered by test_unified_suite.cpp
-    # test_stability.cpp removed - covered by test_unified_suite.cpp
 
     add_executable(test_nn_integration tests/test_nn_integration.cpp)
     target_link_libraries(test_nn_integration nn_cfd_core)
@@ -406,102 +400,71 @@ if(BUILD_TESTS)
     add_executable(test_solver_cpu_gpu tests/test_solver_cpu_gpu.cpp)
     target_link_libraries(test_solver_cpu_gpu nn_cfd_core)
     add_test(NAME SolverCPUGPUTest COMMAND test_solver_cpu_gpu)
-    
-    # test_divergence_all_bcs.cpp removed - covered by test_unified_suite.cpp
 
     add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
     target_link_libraries(test_time_history_consistency nn_cfd_core)
     add_test(NAME TimeHistoryConsistencyTest COMMAND test_time_history_consistency)
-    
-    # test_physics_validation.cpp removed - covered by test_unified_suite.cpp
 
-    # Data-driven test framework demo
     add_executable(test_data_driven_demo tests/test_data_driven_demo.cpp)
     target_link_libraries(test_data_driven_demo nn_cfd_core)
     add_test(NAME DataDrivenDemoTest COMMAND test_data_driven_demo)
 
-    # Unified test suite - consolidates physics, solver, stability, turbulence tests
     add_executable(test_unified_suite tests/test_unified_suite.cpp)
     target_link_libraries(test_unified_suite nn_cfd_core)
     add_test(NAME UnifiedSuiteTest COMMAND test_unified_suite)
 
-    # test_taylor_green.cpp removed - covered by test_unified_suite.cpp
-
-    # Perturbed channel validation - comprehensive turbulence model testing (1000 steps on GPU)
     add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
     target_link_libraries(test_perturbed_channel nn_cfd_core)
     add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
-    
-    # NaN/Inf guard test - verifies abort-on-NaN behavior
+
     add_executable(test_turbulence_guard tests/test_turbulence_guard.cpp)
     target_link_libraries(test_turbulence_guard nn_cfd_core)
     add_test(NAME NanInfGuardTest COMMAND test_turbulence_guard)
-    
-    # Turbulence feature tests - analytic validation of features, invariants, and model response
+
     add_executable(test_turbulence_features tests/test_turbulence_features.cpp)
     target_link_libraries(test_turbulence_features nn_cfd_core)
     add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
 
-    # test_poisson_cpu_gpu_3d.cpp removed - covered by test_poisson_unified.cpp
-
-    # test_3d_quick_validation.cpp removed - covered by test_unified_suite.cpp
-    # test_3d_poiseuille_fast.cpp removed - covered by test_unified_suite.cpp
-
-    # 3D boundary condition tests (~5s)
     add_executable(test_3d_bc_application tests/test_3d_bc_application.cpp)
     target_link_libraries(test_3d_bc_application nn_cfd_core)
     add_test(NAME BC3DApplicationTest COMMAND test_3d_bc_application)
 
-    # CPU/GPU bitwise comparison - enforces code sharing paradigm (~15s)
     add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
     target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
     add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
 
-    # 3D gradient tests - verifies gradient computation (~5s)
     add_executable(test_3d_gradients tests/test_3d_gradients.cpp)
     target_link_libraries(test_3d_gradients nn_cfd_core)
     add_test(NAME Gradients3DTest COMMAND test_3d_gradients)
 
-    # 3D w-velocity tests - tests the 3D-specific component (~5s)
     add_executable(test_3d_w_velocity tests/test_3d_w_velocity.cpp)
     target_link_libraries(test_3d_w_velocity nn_cfd_core)
     add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
 
-    # test_taylor_green_3d.cpp removed - covered by test_unified_suite.cpp
-
-    # All turbulence models smoke test - verifies all 10 models run without crashing
     add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
     target_link_libraries(test_all_turbulence_models_smoke nn_cfd_core)
     add_test(NAME AllTurbulenceModelsSmokeTest COMMAND test_all_turbulence_models_smoke)
 
-    # Transport equation realizability - verifies k>0, omega>0 over long runs
     add_executable(test_transport_realizability tests/test_transport_realizability.cpp)
     target_link_libraries(test_transport_realizability nn_cfd_core)
     add_test(NAME TransportRealizabilityTest COMMAND test_transport_realizability)
 
-    # EARSM trace-free constraint - verifies b_xx + b_yy = 0
     add_executable(test_earsm_trace_free tests/test_earsm_trace_free.cpp)
     target_link_libraries(test_earsm_trace_free nn_cfd_core)
     add_test(NAME EARSMTraceFreeTest COMMAND test_earsm_trace_free)
 
-    # GPU utilization test - validates compute runs on GPU for GPU builds
     add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 
-    # test_poisson_fft_manufactured.cpp removed - covered by test_poisson_unified.cpp
-
-    # FFT2D debug test - compares GPU FFT2D vs CPU reference
     add_executable(test_fft2d_debug tests/test_fft2d_debug.cpp)
     target_link_libraries(test_fft2d_debug nn_cfd_core)
     add_test(NAME FFT2DDebugTest COMMAND test_fft2d_debug)
 
-    # FFT2D integration test - compares FFT2D vs MG in solver context
     add_executable(test_fft2d_integration tests/test_fft2d_integration.cpp)
     target_link_libraries(test_fft2d_integration nn_cfd_core)
     add_test(NAME FFT2DIntegrationTest COMMAND test_fft2d_integration)
 
-    # HYPRE all BC configurations test
     if(USE_HYPRE)
         add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
         target_link_libraries(test_hypre_all_bcs nn_cfd_core)
@@ -518,36 +481,22 @@ if(BUILD_TESTS)
         add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
     endif()
 
-    # test_poisson_selection.cpp removed - covered by test_poisson_unified.cpp
-
-    # FFT1D dedicated validation test - forces FFT1D selection + correctness check
     add_executable(test_fft1d_validation tests/test_fft1d_validation.cpp)
     target_link_libraries(test_fft1d_validation nn_cfd_core)
     add_test(NAME FFT1DValidationTest COMMAND test_fft1d_validation)
 
-    # Endurance stability test - catches NaN-after-N-steps class bugs
     add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
     target_link_libraries(test_endurance_stability nn_cfd_core)
     add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
 
-    # test_poisson_manufactured.cpp removed - covered by test_poisson_unified.cpp
-    # test_poisson_dirichlet_mixed.cpp removed - covered by test_poisson_unified.cpp
-
-    # Repeatability envelope test - catches race conditions and nondeterminism
     add_executable(test_repeatability tests/test_repeatability.cpp)
     target_link_libraries(test_repeatability nn_cfd_core)
     add_test(NAME RepeatabilityTest COMMAND test_repeatability)
 
-    # Performance regression sentinel - catches catastrophic slowdowns
     add_executable(test_perf_sentinel tests/test_perf_sentinel.cpp)
     target_link_libraries(test_perf_sentinel nn_cfd_core)
     add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
 
-    # test_poisson_stretched_grid.cpp removed - covered by test_poisson_unified.cpp
-    # test_poisson_nullspace.cpp removed - covered by test_poisson_unified.cpp
-    # test_poisson_cross_solver.cpp removed - covered by test_poisson_unified.cpp
-
-    # Projection method invariants test - validates time-stepper coupling
     add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
     target_link_libraries(test_projection_invariants nn_cfd_core)
     add_test(NAME ProjectionInvariantsTest COMMAND test_projection_invariants)
