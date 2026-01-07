@@ -434,9 +434,10 @@ if(BUILD_TESTS)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 
-    add_executable(test_fft2d_integration tests/test_fft2d_integration.cpp)
-    target_link_libraries(test_fft2d_integration nn_cfd_core)
-    add_test(NAME FFT2DIntegrationTest COMMAND test_fft2d_integration)
+    # Unified FFT test (consolidates fft1d_validation + fft2d_integration + fft_cpu_reference)
+    add_executable(test_fft_unified tests/test_fft_unified.cpp)
+    target_link_libraries(test_fft_unified nn_cfd_core)
+    add_test(NAME FFTUnifiedTest COMMAND test_fft_unified)
 
     if(USE_HYPRE)
         add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
@@ -454,9 +455,6 @@ if(BUILD_TESTS)
         add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
     endif()
 
-    add_executable(test_fft1d_validation tests/test_fft1d_validation.cpp)
-    target_link_libraries(test_fft1d_validation nn_cfd_core)
-    add_test(NAME FFT1DValidationTest COMMAND test_fft1d_validation)
 
     add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
     target_link_libraries(test_endurance_stability nn_cfd_core)
@@ -489,11 +487,6 @@ if(BUILD_TESTS)
     add_executable(test_residual_consistency tests/test_residual_consistency.cpp)
     target_link_libraries(test_residual_consistency nn_cfd_core)
     add_test(NAME ResidualConsistencyTest COMMAND test_residual_consistency)
-
-    # FFT vs CPU reference test - validates FFT/FFT1D against MG on same node
-    add_executable(test_fft_cpu_reference tests/test_fft_cpu_reference.cpp)
-    target_link_libraries(test_fft_cpu_reference nn_cfd_core)
-    add_test(NAME FFTCpuReferenceTest COMMAND test_fft_cpu_reference)
 
     # Detailed kernel parity test - CPU/GPU parity for non-Poisson kernels
     add_executable(test_kernel_parity_detailed tests/test_kernel_parity_detailed.cpp)
