@@ -363,13 +363,10 @@ if(BUILD_TESTS)
     target_link_libraries(test_mesh nn_cfd_core)
     add_test(NAME MeshTest COMMAND test_mesh)
     
-    add_executable(test_poisson tests/test_poisson.cpp)
-    target_link_libraries(test_poisson nn_cfd_core)
-    add_test(NAME PoissonTest COMMAND test_poisson)
-
-    add_executable(test_poisson_solvers tests/test_poisson_solvers.cpp)
-    target_link_libraries(test_poisson_solvers nn_cfd_core)
-    add_test(NAME PoissonSolversTest COMMAND test_poisson_solvers)
+    # Unified Poisson test suite - consolidates 10 Poisson test files
+    add_executable(test_poisson_unified tests/test_poisson_unified.cpp)
+    target_link_libraries(test_poisson_unified nn_cfd_core)
+    add_test(NAME PoissonUnifiedTest COMMAND test_poisson_unified)
 
     # test_solver.cpp removed - covered by test_unified_suite.cpp
 
@@ -445,10 +442,7 @@ if(BUILD_TESTS)
     target_link_libraries(test_turbulence_features nn_cfd_core)
     add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
 
-    # 3D Poisson CPU vs GPU comparison - verifies GPU implementation matches CPU exactly
-    add_executable(test_poisson_cpu_gpu_3d tests/test_poisson_cpu_gpu_3d.cpp)
-    target_link_libraries(test_poisson_cpu_gpu_3d nn_cfd_core)
-    add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
+    # test_poisson_cpu_gpu_3d.cpp removed - covered by test_poisson_unified.cpp
 
     # test_3d_quick_validation.cpp removed - covered by test_unified_suite.cpp
     # test_3d_poiseuille_fast.cpp removed - covered by test_unified_suite.cpp
@@ -495,10 +489,7 @@ if(BUILD_TESTS)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 
-    # FFT manufactured solution test - proves FFT correctness with O(h²) convergence
-    add_executable(test_poisson_fft_manufactured tests/test_poisson_fft_manufactured.cpp)
-    target_link_libraries(test_poisson_fft_manufactured nn_cfd_core)
-    add_test(NAME PoissonFFTManufacturedTest COMMAND test_poisson_fft_manufactured)
+    # test_poisson_fft_manufactured.cpp removed - covered by test_poisson_unified.cpp
 
     # FFT2D debug test - compares GPU FFT2D vs CPU reference
     add_executable(test_fft2d_debug tests/test_fft2d_debug.cpp)
@@ -527,10 +518,7 @@ if(BUILD_TESTS)
         add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
     endif()
 
-    # Poisson solver selection state machine test - prevents selection logic drift
-    add_executable(test_poisson_selection tests/test_poisson_selection.cpp)
-    target_link_libraries(test_poisson_selection nn_cfd_core)
-    add_test(NAME PoissonSelectionTest COMMAND test_poisson_selection)
+    # test_poisson_selection.cpp removed - covered by test_poisson_unified.cpp
 
     # FFT1D dedicated validation test - forces FFT1D selection + correctness check
     add_executable(test_fft1d_validation tests/test_fft1d_validation.cpp)
@@ -542,15 +530,8 @@ if(BUILD_TESTS)
     target_link_libraries(test_endurance_stability nn_cfd_core)
     add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
 
-    # Manufactured solution Poisson correctness test - catches "solver runs but wrong"
-    add_executable(test_poisson_manufactured tests/test_poisson_manufactured.cpp)
-    target_link_libraries(test_poisson_manufactured nn_cfd_core)
-    add_test(NAME PoissonManufacturedTest COMMAND test_poisson_manufactured)
-
-    # Dirichlet/mixed-BC Poisson test - validates BC handling
-    add_executable(test_poisson_dirichlet_mixed tests/test_poisson_dirichlet_mixed.cpp)
-    target_link_libraries(test_poisson_dirichlet_mixed nn_cfd_core)
-    add_test(NAME PoissonDirichletMixedTest COMMAND test_poisson_dirichlet_mixed)
+    # test_poisson_manufactured.cpp removed - covered by test_poisson_unified.cpp
+    # test_poisson_dirichlet_mixed.cpp removed - covered by test_poisson_unified.cpp
 
     # Repeatability envelope test - catches race conditions and nondeterminism
     add_executable(test_repeatability tests/test_repeatability.cpp)
@@ -562,20 +543,9 @@ if(BUILD_TESTS)
     target_link_libraries(test_perf_sentinel nn_cfd_core)
     add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
 
-    # Stretched/anisotropic grid test - validates MG/HYPRE on high aspect ratio cells
-    add_executable(test_poisson_stretched_grid tests/test_poisson_stretched_grid.cpp)
-    target_link_libraries(test_poisson_stretched_grid nn_cfd_core)
-    add_test(NAME PoissonStretchedGridTest COMMAND test_poisson_stretched_grid)
-
-    # Nullspace/gauge handling test - validates singular Poisson (pure Neumann/periodic)
-    add_executable(test_poisson_nullspace tests/test_poisson_nullspace.cpp)
-    target_link_libraries(test_poisson_nullspace nn_cfd_core)
-    add_test(NAME PoissonNullspaceTest COMMAND test_poisson_nullspace)
-
-    # Cross-solver consistency test - validates all solvers produce equivalent results
-    add_executable(test_poisson_cross_solver tests/test_poisson_cross_solver.cpp)
-    target_link_libraries(test_poisson_cross_solver nn_cfd_core)
-    add_test(NAME PoissonCrossSolverTest COMMAND test_poisson_cross_solver)
+    # test_poisson_stretched_grid.cpp removed - covered by test_poisson_unified.cpp
+    # test_poisson_nullspace.cpp removed - covered by test_poisson_unified.cpp
+    # test_poisson_cross_solver.cpp removed - covered by test_poisson_unified.cpp
 
     # Projection method invariants test - validates time-stepper coupling
     add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
