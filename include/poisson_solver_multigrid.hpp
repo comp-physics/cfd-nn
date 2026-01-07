@@ -52,8 +52,14 @@ public:
     int solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg);
 #endif
     
-    /// Get final residual
+    /// Get final residual ||r||_∞
     double residual() const { return residual_; }
+
+    /// Get RHS norm ||b||_∞ (computed at start of solve)
+    double rhs_norm() const { return b_inf_; }
+
+    /// Get initial residual ||r0||_∞
+    double initial_residual() const { return r0_; }
 
     /// Set smoother type (Jacobi for reference/debugging, Chebyshev for performance)
     /// Can also be set via environment variable MG_SMOOTHER=jacobi|chebyshev
@@ -110,6 +116,8 @@ private:
     PoissonBC bc_z_hi_ = PoissonBC::Periodic;
     
     double residual_ = 0.0;
+    double b_inf_ = 0.0;     // ||b||_∞ from last solve
+    double r0_ = 0.0;        // Initial residual ||r0||_∞ from last solve
     double dirichlet_val_ = 0.0;
     MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
 

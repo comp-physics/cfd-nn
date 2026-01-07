@@ -3237,17 +3237,26 @@ double RANSSolver::step() {
         
         double rhs_rms = std::sqrt(rhs_norm_sq / std::max(rhs_count, 1));
         
-        // Scale tolerance by RHS magnitude (relative convergence)
-        // Use max(rhs_rms, 1e-12) to avoid making tolerance too tight for near-zero RHS
-        // Also enforce absolute floor to prevent over-solving when near steady state
-        double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
-        double effective_tol = std::max(relative_tol, config_.poisson_abs_tol_floor);
-        
+        // Configure Poisson solver with robust convergence criteria
+        // The MG solver now supports three convergence criteria (any triggers exit):
+        //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
+        //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
+        //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
         PoissonConfig pcfg;
-        pcfg.tol = effective_tol;
         pcfg.max_iter = config_.poisson_max_iter;
         pcfg.omega = config_.poisson_omega;
         pcfg.verbose = false;  // Disable per-cycle output (too verbose)
+
+        // New robust tolerance parameters (preferred for MG)
+        pcfg.tol_abs = config_.poisson_tol_abs;
+        pcfg.tol_rhs = config_.poisson_tol_rhs;
+        pcfg.tol_rel = config_.poisson_tol_rel;
+        pcfg.check_interval = config_.poisson_check_interval;
+
+        // Legacy tolerance for backward compatibility (non-MG solvers use this)
+        double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
+        double effective_tol = std::max(relative_tol, config_.poisson_abs_tol_floor);
+        pcfg.tol = effective_tol;
         
         // Environment variable to enable detailed Poisson cycle diagnostics
         static bool poisson_diagnostics = (std::getenv("NNCFD_POISSON_DIAGNOSTICS") != nullptr);
@@ -3356,8 +3365,20 @@ double RANSSolver::step() {
         // Print cycle count diagnostics if enabled
         if (poisson_diagnostics && (iter_ % poisson_diagnostics_interval == 0)) {
             std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles
-                      << " residual=" << std::scientific << std::setprecision(15)
-                      << final_residual << "\n";
+                      << " residual=" << std::scientific << std::setprecision(6)
+                      << final_residual;
+            // For MG solver, also print ||b||, ||r0||, ||r||/||b|| for convergence analysis
+            if (selected_solver_ == PoissonSolverType::MG) {
+                double b_inf = mg_poisson_solver_.rhs_norm();
+                double r0 = mg_poisson_solver_.initial_residual();
+                double r_over_b = (b_inf > 1e-30) ? final_residual / b_inf : 0.0;
+                double r_over_r0 = (r0 > 1e-30) ? final_residual / r0 : 0.0;
+                std::cout << " ||b||=" << b_inf
+                          << " ||r0||=" << r0
+                          << " ||r||/||b||=" << r_over_b
+                          << " ||r||/||r0||=" << r_over_r0;
+            }
+            std::cout << "\n";
         }
         
         NVTX_POP();
@@ -3370,9 +3391,41 @@ double RANSSolver::step() {
         correct_velocity();
         NVTX_POP();
     }
-    
+
     // 6. Apply boundary conditions
     apply_velocity_bc();
+
+    // Post-projection divergence check (diagnostic only)
+    // This is the actual measure of projection quality: max|div(u^{n+1})|
+    {
+        static bool div_diagnostics = (std::getenv("NNCFD_POISSON_DIAGNOSTICS") != nullptr);
+        static int div_diagnostics_interval = []() {
+            const char* env = std::getenv("NNCFD_POISSON_DIAGNOSTICS_INTERVAL");
+            int v = env ? std::atoi(env) : 1;
+            return (v > 0) ? v : 1;
+        }();
+        if (div_diagnostics && (iter_ % div_diagnostics_interval == 0)) {
+            compute_divergence(VelocityWhich::Current, div_velocity_);  // Divergence of corrected velocity
+            double max_div = 0.0;
+            if (mesh_->is2D()) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        max_div = std::max(max_div, std::abs(div_velocity_(i, j)));
+                    }
+                }
+            } else {
+                for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+                    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                            max_div = std::max(max_div, std::abs(div_velocity_(i, j, k)));
+                        }
+                    }
+                }
+            }
+            std::cout << "[Projection] max|div(u)|=" << std::scientific << std::setprecision(6)
+                      << max_div << " dt*max|div|=" << current_dt_ * max_div << "\n";
+        }
+    }
     
     // Note: iter_ is managed by the outer solve loop, don't increment here
     

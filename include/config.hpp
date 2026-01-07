@@ -81,6 +81,7 @@ struct Config {
     double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
     int max_iter = 10000;       ///< Maximum iterations for steady-state convergence
+    double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_iter)
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
     
     // Numerical schemes
@@ -117,11 +118,17 @@ struct Config {
     int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)
     
     // Poisson solver
-    double poisson_tol = 1e-6;
-    int poisson_max_iter = 5;  ///< MG V-cycles per solve (5 for projection, increase for accurate solve)
-    double poisson_omega = 1.8; ///< SOR relaxation parameter
+    double poisson_tol = 1e-6;       ///< Legacy absolute tolerance (deprecated)
+    int poisson_max_iter = 20;       ///< Max MG V-cycles per solve (safety limit)
+    double poisson_omega = 1.8;      ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     PoissonSolverType poisson_solver = PoissonSolverType::Auto;  ///< Poisson solver selection
+
+    // Robust MG convergence criteria (recommended for projection)
+    double poisson_tol_abs = 0.0;    ///< Absolute tolerance on ||r||_∞ (0 = disabled)
+    double poisson_tol_rhs = 1e-3;   ///< RHS-relative: ||r||/||b|| (recommended for projection)
+    double poisson_tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0||
+    int poisson_check_interval = 2;  ///< Check convergence every N V-cycles (reduces overhead)
 
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

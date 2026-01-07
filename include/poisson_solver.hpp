@@ -15,12 +15,19 @@ enum class PoissonBC {
 
 /// Configuration for Poisson solver
 struct PoissonConfig {
-    double tol = 1e-6;       ///< Convergence tolerance
+    double tol = 1e-6;       ///< Legacy absolute tolerance (deprecated, use tol_abs)
     int max_iter = 10000;    ///< Maximum Poisson iterations per solve (per time step).
                              ///< For SOR-based PoissonSolver: max SOR sweeps.
                              ///< For MultigridPoissonSolver: max V-cycles.
     double omega = 1.5;      ///< SOR relaxation parameter (1 < omega < 2 for over-relaxation)
     bool verbose = false;    ///< Print convergence info
+
+    // Robust convergence criteria for multigrid (recommended for projection)
+    // Converged when: ||r||_∞ ≤ tol_abs  OR  ||r||/||b|| ≤ tol_rhs  OR  ||r||/||r0|| ≤ tol_rel
+    double tol_abs = 0.0;    ///< Absolute tolerance on ||r||_∞ (0 = disabled)
+    double tol_rhs = 1e-3;   ///< RHS-relative tolerance: ||r||/||b|| (recommended for projection)
+    double tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0|| (backup criterion)
+    int check_interval = 2;  ///< Check convergence every N V-cycles (reduces overhead)
 };
 
 /// Poisson solver for pressure equation

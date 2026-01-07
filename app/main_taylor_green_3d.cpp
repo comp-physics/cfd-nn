@@ -116,8 +116,9 @@ int main(int argc, char** argv) {
 
     // Taylor-Green specific parameters
     double Re = 100.0;
-    double T_final = 10.0;
+    double T_final = -1.0;  // Will use config.T_final or default
     double V0 = 1.0;  // Initial velocity amplitude
+    bool T_final_from_cmdline = false;  // Track if T_final was set via command line
 
     // Configuration with Taylor-Green defaults (cubic domain [0, 2π]³)
     Config config;
@@ -153,6 +154,7 @@ int main(int argc, char** argv) {
             Re = std::stod(argv[++i]);
         } else if (arg == "--T" && i+1 < argc) {
             T_final = std::stod(argv[++i]);
+            T_final_from_cmdline = true;
         }
     }
     // Let Config handle remaining standard args
@@ -164,8 +166,23 @@ int main(int argc, char** argv) {
     double nu = V0 * L / Re;
     config.nu = nu;
 
-    // Estimate number of steps
-    config.max_iter = static_cast<int>(T_final / config.dt) + 1;
+    // Determine T_final: command line > config file > default
+    if (T_final_from_cmdline) {
+        // Use command line value (already set)
+    } else if (config.T_final > 0) {
+        // Use config file value
+        T_final = config.T_final;
+    } else {
+        // Default value
+        T_final = 10.0;
+    }
+
+    // Only override max_iter from T_final if T_final was explicitly set
+    // This allows config file to set max_iter directly for profiling
+    if (T_final_from_cmdline || config.T_final > 0) {
+        config.max_iter = static_cast<int>(T_final / config.dt) + 1;
+    }
+    // Otherwise, use max_iter from config file (or default)
 
     std::cout << "=== Configuration ===\n";
     std::cout << "Grid: " << config.Nx << "³ cells\n";

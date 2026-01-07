@@ -1478,25 +1478,77 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     assert(gpu_ready_ && "GPU must be initialized");
     sync_level_to_gpu(0);
 #endif
-    
+
     apply_bc(0);
 
-    // MG V-cycles: use cfg.max_iter to control number of V-cycles
-    // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
-    // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    // MG V-cycles with robust tolerance-based early termination
+    // Convergence criteria (any one triggers exit):
+    //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
+    //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
+    //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
+    // Check every check_interval cycles to reduce overhead.
     assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
-    const int num_cycles = cfg.max_iter;
-    const bool accurate_mode = (num_cycles > 5);
+    const int max_cycles = cfg.max_iter;
+    const bool accurate_mode = (max_cycles > 5);
     const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
     const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
+    const int check_interval = std::max(1, cfg.check_interval);
 
-    for (int cycle = 0; cycle < num_cycles; ++cycle) {
-        vcycle(0, nu1, nu2);
+    // Compute reference norms for relative tolerances (CPU path)
+    // ||b||_∞ = max|f| on finest level - store in member for diagnostics
+    auto& finest_cpu = *levels_[0];
+    b_inf_ = 0.0;
+    if (mesh_->is2D()) {
+        for (int j = 1; j <= finest_cpu.Ny; ++j) {
+            for (int i = 1; i <= finest_cpu.Nx; ++i) {
+                b_inf_ = std::max(b_inf_, std::abs(finest_cpu.f(i, j)));
+            }
+        }
+    } else {
+        for (int k = 1; k <= finest_cpu.Nz; ++k) {
+            for (int j = 1; j <= finest_cpu.Ny; ++j) {
+                for (int i = 1; i <= finest_cpu.Nx; ++i) {
+                    b_inf_ = std::max(b_inf_, std::abs(finest_cpu.f(i, j, k)));
+                }
+            }
+        }
     }
 
-    // Final residual
-    residual_ = compute_max_residual(0);
-    
+    // Initial residual ||r0||_∞ - store in member for diagnostics
+    r0_ = compute_max_residual(0);
+    residual_ = r0_;
+
+    int cycles_used = 0;
+    for (int cycle = 0; cycle < max_cycles; ++cycle) {
+        vcycle(0, nu1, nu2);
+        cycles_used = cycle + 1;
+
+        // Check convergence every check_interval cycles (reduces overhead)
+        if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
+            residual_ = compute_max_residual(0);
+
+            // Robust convergence check: any criterion triggers exit
+            bool converged = false;
+            if (cfg.tol_abs > 0.0 && residual_ <= cfg.tol_abs) {
+                converged = true;  // Absolute tolerance met
+            }
+            if (cfg.tol_rhs > 0.0 && residual_ <= cfg.tol_rhs * (b_inf_ + 1e-30)) {
+                converged = true;  // RHS-relative tolerance met
+            }
+            if (cfg.tol_rel > 0.0 && residual_ <= cfg.tol_rel * (r0_ + 1e-30)) {
+                converged = true;  // Initial-residual relative tolerance met
+            }
+            // Legacy: also check cfg.tol for backward compatibility
+            if (cfg.tol > 0.0 && residual_ <= cfg.tol) {
+                converged = true;
+            }
+
+            if (converged) {
+                break;
+            }
+        }
+    }
+
     // Subtract mean for singular Poisson problems (no Dirichlet BCs)
     // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
     // and we must fix the nullspace by subtracting the mean
@@ -1535,7 +1587,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         }
     }
 
-    return num_cycles;  // Number of V-cycles executed
+    return cycles_used;  // Actual number of V-cycles executed
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -1572,22 +1624,88 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
     apply_bc(0);
 
-    // MG V-cycles: use cfg.max_iter to control number of V-cycles
-    // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
-    // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    // MG V-cycles with robust tolerance-based early termination (GPU path)
+    // Convergence criteria (any one triggers exit):
+    //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
+    //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
+    //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
+    // Check every check_interval cycles to reduce overhead.
     assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
-    const int num_cycles = cfg.max_iter;
-    const bool accurate_mode = (num_cycles > 5);
+    const int max_cycles = cfg.max_iter;
+    const bool accurate_mode = (max_cycles > 5);
     const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
     const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
+    const int check_interval = std::max(1, cfg.check_interval);
 
-    for (int cycle = 0; cycle < num_cycles; ++cycle) {
+    // Compute ||b||_∞ on device via reduction - store in member for diagnostics
+    auto& finest_gpu = *levels_[0];
+    const int Ng = 1;
+    const int Nx_g = finest_gpu.Nx;
+    const int Ny_g = finest_gpu.Ny;
+    const int Nz_g = finest_gpu.Nz;
+    const int stride_gpu = Nx_g + 2 * Ng;
+    const int plane_stride_gpu = stride_gpu * (Ny_g + 2 * Ng);
+    const bool is_2d_gpu = finest_gpu.is2D();
+
+    double b_inf_local = 0.0;
+    if (is_2d_gpu) {
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: f_dev[0:total_size]) reduction(max: b_inf_local)
+        for (int j = Ng; j < Ny_g + Ng; ++j) {
+            for (int i = Ng; i < Nx_g + Ng; ++i) {
+                int idx = j * stride_gpu + i;
+                b_inf_local = std::max(b_inf_local, std::abs(f_dev[idx]));
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: f_dev[0:total_size]) reduction(max: b_inf_local)
+        for (int k = Ng; k < Nz_g + Ng; ++k) {
+            for (int j = Ng; j < Ny_g + Ng; ++j) {
+                for (int i = Ng; i < Nx_g + Ng; ++i) {
+                    int idx = k * plane_stride_gpu + j * stride_gpu + i;
+                    b_inf_local = std::max(b_inf_local, std::abs(f_dev[idx]));
+                }
+            }
+        }
+    }
+    b_inf_ = b_inf_local;  // Store for diagnostics
+
+    // Initial residual ||r0||_∞ - store in member for diagnostics
+    r0_ = compute_max_residual(0);
+    residual_ = r0_;
+
+    int cycles_used = 0;
+    for (int cycle = 0; cycle < max_cycles; ++cycle) {
         vcycle(0, nu1, nu2);
+        cycles_used = cycle + 1;
+
+        // Check convergence every check_interval cycles (reduces overhead)
+        if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
+            residual_ = compute_max_residual(0);
+
+            // Robust convergence check: any criterion triggers exit
+            bool converged = false;
+            if (cfg.tol_abs > 0.0 && residual_ <= cfg.tol_abs) {
+                converged = true;  // Absolute tolerance met
+            }
+            if (cfg.tol_rhs > 0.0 && residual_ <= cfg.tol_rhs * (b_inf_ + 1e-30)) {
+                converged = true;  // RHS-relative tolerance met
+            }
+            if (cfg.tol_rel > 0.0 && residual_ <= cfg.tol_rel * (r0_ + 1e-30)) {
+                converged = true;  // Initial-residual relative tolerance met
+            }
+            // Legacy: also check cfg.tol for backward compatibility
+            if (cfg.tol > 0.0 && residual_ <= cfg.tol) {
+                converged = true;
+            }
+
+            if (converged) {
+                break;
+            }
+        }
     }
 
-    // Final residual (always compute at end for diagnostics)
-    residual_ = compute_max_residual(0);
-    
     // Subtract mean for singular Poisson problems (no Dirichlet BCs)
     // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
     // and we must fix the nullspace by subtracting the mean
@@ -1609,7 +1727,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         p_present[idx] = u_dev[idx];
     }
 
-    return num_cycles;  // Number of V-cycles executed
+    return cycles_used;  // Actual number of V-cycles executed
 }
 
 void MultigridPoissonSolver::initialize_gpu_buffers() {
