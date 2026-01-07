@@ -233,14 +233,15 @@ std::vector<TestSpec> stability_tests() {
 std::vector<TestSpec> turbulence_model_tests() {
     std::vector<TestSpec> tests;
 
-    // Test all turbulence models
+    // Test all turbulence models (excluding NN models which need weight files)
     std::vector<std::pair<TurbulenceModelType, std::string>> models = {
         {TurbulenceModelType::Baseline, "baseline"},
         {TurbulenceModelType::GEP, "gep"},
         {TurbulenceModelType::KOmega, "komega"},
         {TurbulenceModelType::SSTKOmega, "sst_komega"},
         {TurbulenceModelType::EARSM_WJ, "earsm_wj"},
-        {TurbulenceModelType::EARSM_GS, "earsm_gs"}
+        {TurbulenceModelType::EARSM_GS, "earsm_gs"},
+        {TurbulenceModelType::EARSM_Pope, "earsm_pope"}
     };
 
     for (const auto& [model, name] : models) {
