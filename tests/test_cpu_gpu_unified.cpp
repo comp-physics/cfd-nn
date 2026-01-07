@@ -585,8 +585,9 @@ int main(int argc, char** argv) {
     }
 
     if (!dump_prefix.empty() || !compare_prefix.empty()) {
-        std::cout << "Dump/compare modes for cross-build testing.\n";
-        std::cout << "Use standard mode for in-process consistency testing.\n";
+        std::cout << "Note: --dump-prefix/--compare-prefix are handled by test_cpu_gpu_bitwise.\n";
+        std::cout << "This test performs in-process CPU/GPU consistency checks.\n";
+        std::cout << "Run without these flags for the full test suite.\n";
         return 0;
     }
 
