@@ -379,12 +379,12 @@ void run_nullspace_tests() {
 }
 
 //=============================================================================
-// Section 5: 3D CPU/GPU Consistency (from test_poisson_cpu_gpu_3d.cpp)
+// Section 5: 3D GPU Convergence (from test_poisson_cpu_gpu_3d.cpp)
 //=============================================================================
 
 #ifdef USE_GPU_OFFLOAD
-void test_3d_cpu_gpu_consistency() {
-    std::cout << "\n=== 3D CPU/GPU Consistency ===\n";
+void test_3d_gpu_convergence() {
+    std::cout << "\n=== 3D GPU Convergence ===\n";
 
     Mesh mesh;
     mesh.init_uniform(16, 16, 8, 0.0, 2*M_PI, 0.0, 2.0, 0.0, 2*M_PI);
@@ -430,7 +430,7 @@ void test_3d_cpu_gpu_consistency() {
 
 void run_3d_tests() {
 #ifdef USE_GPU_OFFLOAD
-    test_3d_cpu_gpu_consistency();
+    test_3d_gpu_convergence();
 #else
     std::cout << "\n=== 3D Tests (skipped - CPU build) ===\n";
 #endif

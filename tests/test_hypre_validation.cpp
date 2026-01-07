@@ -44,8 +44,6 @@ constexpr double PRESSURE_TOLERANCE = 1e-3;
 // Tolerance for cross-build comparison (CPU vs GPU HYPRE)
 constexpr double CROSS_BUILD_TOLERANCE = 1e-10;
 
-// file_exists() imported from test_utilities.hpp
-
 void write_field_data(const std::string& filename, const ScalarField& field,
                       const Mesh& mesh) {
     std::ofstream file(filename);
@@ -132,8 +130,6 @@ FieldData read_field_data(const std::string& filename) {
 
     return data;
 }
-
-// FieldComparison imported from test_utilities.hpp
 
 //=============================================================================
 // Test 1: HYPRE vs Multigrid consistency (same-build comparison)

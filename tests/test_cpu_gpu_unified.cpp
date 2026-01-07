@@ -164,7 +164,6 @@ void test_mixing_length() {
 
     auto chk = check_gpu_cpu_consistency(cmp);
     record("MixingLength CPU/GPU consistency", chk.passed);
-    if (!chk.passed) assert(false);
 }
 
 //=============================================================================
@@ -227,7 +226,6 @@ void test_gep() {
 
     auto chk = check_gpu_cpu_consistency(cmp);
     record("TurbulenceGEP CPU/GPU consistency", chk.passed);
-    if (!chk.passed) assert(false);
 }
 
 //=============================================================================
@@ -315,7 +313,6 @@ void test_nn_mlp() {
 
     bool pass = cmp.max_abs_diff < 1e-10 || cmp.max_rel_diff < 1e-8;
     record("TurbulenceNNMLP CPU/GPU consistency", pass);
-    if (!pass) assert(false);
 }
 
 //=============================================================================
@@ -371,7 +368,6 @@ void test_solver_taylor_green() {
     }
 
     record("Solver Taylor-Green consistency", max_diff < 1e-12);
-    if (max_diff >= 1e-12) assert(false);
 }
 
 //=============================================================================
@@ -414,7 +410,6 @@ void test_solver_channel() {
     }
 
     record("Solver channel flow consistency", max_diff < 1e-12);
-    if (max_diff >= 1e-12) assert(false);
 }
 
 //=============================================================================
@@ -462,7 +457,6 @@ void test_solver_grid_sweep() {
     }
 
     record("Solver grid sweep consistency", all_pass);
-    if (!all_pass) assert(false);
 }
 
 //=============================================================================
@@ -536,7 +530,6 @@ void test_time_history() {
 
     bool pass = (max_ke_diff < 1e-8) && (max_flux_diff < 1e-8);
     record("Time-history consistency (no drift)", pass);
-    if (!pass) assert(false);
 #else
     // CPU-only: verify sequential sum works
     double sum = 0;
@@ -576,7 +569,6 @@ void test_randomized() {
 
     bool pass = worst_abs < GPU_CPU_ABS_TOL;
     record("Randomized regression (10 trials)", pass);
-    if (!pass) assert(false);
 }
 
 //=============================================================================

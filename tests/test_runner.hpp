@@ -463,6 +463,9 @@ inline void apply_init(RANSSolver& solver, const Mesh& mesh, const InitSpec& ini
             break;
         }
 
+        case InitSpec::PERTURBED:
+            throw std::runtime_error("PERTURBED initialization: use InitSpec::custom() with a custom init function");
+
         case InitSpec::CUSTOM:
             if (init.custom_init) init.custom_init(solver, mesh);
             break;
