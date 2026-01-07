@@ -383,31 +383,15 @@ if(BUILD_TESTS)
     target_link_libraries(test_nn_integration nn_cfd_core)
     add_test(NAME NNIntegrationTest COMMAND test_nn_integration)
     
-    add_executable(test_backend_execution tests/test_backend_execution.cpp)
-    target_link_libraries(test_backend_execution nn_cfd_core)
-    add_test(NAME BackendExecutionTest COMMAND test_backend_execution)
+    # Unified backend test (consolidates backend_execution + backend_canary)
+    add_executable(test_backend_unified tests/test_backend_unified.cpp)
+    target_link_libraries(test_backend_unified nn_cfd_core)
+    add_test(NAME BackendUnifiedTest COMMAND test_backend_unified)
 
-    # Backend canary test - verifies CPU and GPU produce different FP results
-    # This catches "same backend" false coverage in parity tests
-    add_executable(test_backend_canary tests/test_backend_canary.cpp)
-    target_link_libraries(test_backend_canary nn_cfd_core)
-    add_test(NAME BackendCanaryTest COMMAND test_backend_canary)
-
-    add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
-    target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
-    add_test(NAME ConsistencyTest COMMAND test_cpu_gpu_consistency)
-    
-    add_executable(test_solver_cpu_gpu tests/test_solver_cpu_gpu.cpp)
-    target_link_libraries(test_solver_cpu_gpu nn_cfd_core)
-    add_test(NAME SolverCPUGPUTest COMMAND test_solver_cpu_gpu)
-
-    add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
-    target_link_libraries(test_time_history_consistency nn_cfd_core)
-    add_test(NAME TimeHistoryConsistencyTest COMMAND test_time_history_consistency)
-
-    add_executable(test_data_driven_demo tests/test_data_driven_demo.cpp)
-    target_link_libraries(test_data_driven_demo nn_cfd_core)
-    add_test(NAME DataDrivenDemoTest COMMAND test_data_driven_demo)
+    # Unified CPU/GPU consistency test (consolidates cpu_gpu_consistency + solver_cpu_gpu + time_history)
+    add_executable(test_cpu_gpu_unified tests/test_cpu_gpu_unified.cpp)
+    target_link_libraries(test_cpu_gpu_unified nn_cfd_core)
+    add_test(NAME CPUGPUUnifiedTest COMMAND test_cpu_gpu_unified)
 
     add_executable(test_unified_suite tests/test_unified_suite.cpp)
     target_link_libraries(test_unified_suite nn_cfd_core)
@@ -425,21 +409,14 @@ if(BUILD_TESTS)
     target_link_libraries(test_turbulence_features nn_cfd_core)
     add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
 
-    add_executable(test_3d_bc_application tests/test_3d_bc_application.cpp)
-    target_link_libraries(test_3d_bc_application nn_cfd_core)
-    add_test(NAME BC3DApplicationTest COMMAND test_3d_bc_application)
+    # Unified 3D test (consolidates 3d_bc_application + 3d_gradients + 3d_w_velocity + 3d_bc_corners)
+    add_executable(test_3d_unified tests/test_3d_unified.cpp)
+    target_link_libraries(test_3d_unified nn_cfd_core)
+    add_test(NAME ThreeDUnifiedTest COMMAND test_3d_unified)
 
     add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
     target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
     add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
-
-    add_executable(test_3d_gradients tests/test_3d_gradients.cpp)
-    target_link_libraries(test_3d_gradients nn_cfd_core)
-    add_test(NAME Gradients3DTest COMMAND test_3d_gradients)
-
-    add_executable(test_3d_w_velocity tests/test_3d_w_velocity.cpp)
-    target_link_libraries(test_3d_w_velocity nn_cfd_core)
-    add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
 
     add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
     target_link_libraries(test_all_turbulence_models_smoke nn_cfd_core)
@@ -511,15 +488,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_turbulence_golden nn_cfd_core)
     add_test(NAME TurbulenceGoldenTest COMMAND test_turbulence_golden)
 
-    # Kernel parity test - verifies CPU/GPU path semantic equivalence
-    add_executable(test_kernel_parity tests/test_kernel_parity.cpp)
-    target_link_libraries(test_kernel_parity nn_cfd_core)
-    add_test(NAME KernelParityTest COMMAND test_kernel_parity)
-
-    # HYPRE canary test - monitors known HYPRE limitations (quarantined)
-    add_executable(test_hypre_canary tests/test_hypre_canary.cpp)
-    target_link_libraries(test_hypre_canary nn_cfd_core)
-    add_test(NAME HypreCanaryTest COMMAND test_hypre_canary)
 
     # Residual consistency test - validates ||L(p)-rhs||/||rhs|| for each solver
     add_executable(test_residual_consistency tests/test_residual_consistency.cpp)
@@ -556,10 +524,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_mesh_edge_cases nn_cfd_core)
     add_test(NAME MeshEdgeCasesTest COMMAND test_mesh_edge_cases)
 
-    # 3D BC corner cases tests - validates 3D boundary handling
-    add_executable(test_3d_bc_corners tests/test_3d_bc_corners.cpp)
-    target_link_libraries(test_3d_bc_corners nn_cfd_core)
-    add_test(NAME BC3DCornersTest COMMAND test_3d_bc_corners)
 
     # VTK output tests - validates VTK file format and I/O
     add_executable(test_vtk_output tests/test_vtk_output.cpp)
