@@ -434,10 +434,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 
-    add_executable(test_fft2d_debug tests/test_fft2d_debug.cpp)
-    target_link_libraries(test_fft2d_debug nn_cfd_core)
-    add_test(NAME FFT2DDebugTest COMMAND test_fft2d_debug)
-
     add_executable(test_fft2d_integration tests/test_fft2d_integration.cpp)
     target_link_libraries(test_fft2d_integration nn_cfd_core)
     add_test(NAME FFT2DIntegrationTest COMMAND test_fft2d_integration)
