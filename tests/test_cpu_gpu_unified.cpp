@@ -199,8 +199,8 @@ void test_gep() {
 
         TurbulenceDeviceView dv{};
         dv.u_face = u_p; dv.v_face = v_p;
-        dv.u_stride = mesh.Nx + 2*mesh.Nghost + 1;
-        dv.v_stride = mesh.Nx + 2*mesh.Nghost;
+        dv.u_stride = vel.u_stride();
+        dv.v_stride = vel.v_stride();
         dv.nu_t = nut1_p; dv.cell_stride = mesh.total_Nx();
         dv.dudx = dudx_p; dv.dudy = dudy_p; dv.dvdx = dvdx_p; dv.dvdy = dvdy_p;
         dv.wall_distance = wd_p;

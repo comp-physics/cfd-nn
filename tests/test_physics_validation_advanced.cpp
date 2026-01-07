@@ -71,7 +71,7 @@ double interpolate_u_at_y(const VectorField& vel, const Mesh& mesh, int i, doubl
 // ============================================================================
 // Test 1: Poiseuille Flow (Parabolic Profile)
 // ============================================================================
-void test_couette_flow() {
+void test_poiseuille_flow() {
     std::cout << "\n========================================\n";
     std::cout << "Test 1: Poiseuille Flow (Parabolic Profile)\n";
     std::cout << "========================================\n";
@@ -198,7 +198,7 @@ void test_spatial_convergence() {
 // ============================================================================
 // Test 3: Decaying Vortex (Alternative to Kovasznay)
 // ============================================================================
-void test_kovasznay_flow() {
+void test_vortex_decay() {
     std::cout << "\n========================================\n";
     std::cout << "Test 3: Decaying Vortex (Advection Test)\n";
     std::cout << "========================================\n";
@@ -670,9 +670,9 @@ int main() {
         }
     };
 
-    run_test("Couette Flow", test_couette_flow);
+    run_test("Poiseuille Flow", test_poiseuille_flow);
     run_test("Spatial Convergence", test_spatial_convergence);
-    run_test("Kovasznay Flow", test_kovasznay_flow);
+    run_test("Vortex Decay", test_vortex_decay);
     run_test("MMS Navier-Stokes", test_mms_navier_stokes);
     run_test("Energy Dissipation", test_energy_dissipation_rate);
     run_test("Stokes First Problem", test_stokes_first_problem);
