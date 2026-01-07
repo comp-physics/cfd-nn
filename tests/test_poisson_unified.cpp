@@ -19,14 +19,11 @@
 #include "poisson_solver_multigrid.hpp"
 #include "test_framework.hpp"
 #include "test_fixtures.hpp"
-#include "test_utilities.hpp"
+#include "test_harness.hpp"
 #include "solver.hpp"
 #include "config.hpp"
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
-#endif
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
 #endif
 #include <iostream>
 #include <iomanip>
@@ -37,26 +34,7 @@
 
 using namespace nncfd;
 using namespace nncfd::test;
-
-//=============================================================================
-// Test Result Tracking
-//=============================================================================
-
-struct TestResult {
-    std::string name;
-    bool passed;
-    std::string message;
-};
-
-static std::vector<TestResult> results;
-
-static void record(const std::string& name, bool passed, const std::string& msg = "") {
-    results.push_back({name, passed, msg});
-    std::cout << "  " << std::left << std::setw(50) << name;
-    std::cout << (passed ? "[PASS]" : "[FAIL]");
-    if (!msg.empty()) std::cout << " " << msg;
-    std::cout << "\n";
-}
+using nncfd::test::harness::record;
 
 //=============================================================================
 // Section 1: Basic Unit Tests (from test_poisson.cpp)
@@ -167,7 +145,6 @@ void test_periodic_solve() {
 }
 
 void run_unit_tests() {
-    std::cout << "\n=== Unit Tests ===\n";
     test_laplacian();
     test_basic_solve();
     test_periodic_solve();
@@ -206,8 +183,6 @@ double compute_l2_error_func(const ScalarField& p, const Mesh& mesh,
 }
 
 void test_mg_convergence_2d() {
-    std::cout << "\n=== Multigrid 2D Convergence ===\n";
-
     std::vector<int> sizes = {16, 32, 64};
     std::vector<double> errors;
 
@@ -260,8 +235,6 @@ void run_convergence_tests() {
 //=============================================================================
 
 void test_solver_selection() {
-    std::cout << "\n=== Solver Selection ===\n";
-
     // Test 2D channel auto-selection
     {
         Mesh mesh;
@@ -331,8 +304,6 @@ void run_selection_tests() {
 //=============================================================================
 
 void test_nullspace_periodic() {
-    std::cout << "\n=== Nullspace Handling ===\n";
-
     // Fully periodic - has nullspace (constant functions)
     Mesh mesh;
     int N = 32;
@@ -384,8 +355,6 @@ void run_nullspace_tests() {
 
 #ifdef USE_GPU_OFFLOAD
 void test_3d_gpu_convergence() {
-    std::cout << "\n=== 3D GPU Convergence ===\n";
-
     Mesh mesh;
     mesh.init_uniform(16, 16, 8, 0.0, 2*M_PI, 0.0, 2.0, 0.0, 2*M_PI);
 
@@ -432,7 +401,7 @@ void run_3d_tests() {
 #ifdef USE_GPU_OFFLOAD
     test_3d_gpu_convergence();
 #else
-    std::cout << "\n=== 3D Tests (skipped - CPU build) ===\n";
+    record("3D GPU tests", true, true);  // Skip on CPU build
 #endif
 }
 
@@ -441,8 +410,6 @@ void run_3d_tests() {
 //=============================================================================
 
 void test_stretched_grid() {
-    std::cout << "\n=== Stretched Grid ===\n";
-
     // Test anisotropic grid with compressed domain (thin in y)
     // Use uniform grid cells, but fewer in y for higher AR
     Mesh mesh;
@@ -507,8 +474,6 @@ void run_stretched_tests() {
 //=============================================================================
 
 void test_cross_solver_consistency() {
-    std::cout << "\n=== Cross-Solver Consistency ===\n";
-
     // Compare SOR vs MG on same problem
     Mesh mesh;
     int N = 32;
@@ -576,8 +541,6 @@ void run_cross_solver_tests() {
 //=============================================================================
 
 void test_dirichlet_bc() {
-    std::cout << "\n=== Dirichlet/Mixed BCs ===\n";
-
     // Pure Dirichlet 2D
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, M_PI, 0.0, M_PI);
@@ -622,49 +585,28 @@ void run_dirichlet_tests() {
 //=============================================================================
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  UNIFIED POISSON SOLVER TEST SUITE\n";
+    using namespace nncfd::test::harness;
+
     std::cout << "  Consolidates 10 test files into one parameterized suite\n";
-    std::cout << "================================================================\n";
-
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU\n";
-#else
-    std::cout << "Build: CPU\n";
-#endif
-
 #ifdef USE_FFT_POISSON
-    std::cout << "FFT Poisson: ENABLED\n";
+    std::cout << "  FFT Poisson: ENABLED\n";
 #else
-    std::cout << "FFT Poisson: DISABLED\n";
+    std::cout << "  FFT Poisson: DISABLED\n";
 #endif
-
 #ifdef USE_HYPRE
-    std::cout << "HYPRE: ENABLED\n";
+    std::cout << "  HYPRE: ENABLED\n";
 #else
-    std::cout << "HYPRE: DISABLED\n";
+    std::cout << "  HYPRE: DISABLED\n";
 #endif
 
-    // Run all test sections
-    run_unit_tests();
-    run_convergence_tests();
-    run_selection_tests();
-    run_nullspace_tests();
-    run_3d_tests();
-    run_stretched_tests();
-    run_cross_solver_tests();
-    run_dirichlet_tests();
-
-    // Summary
-    int passed = 0, failed = 0;
-    for (const auto& r : results) {
-        if (r.passed) ++passed;
-        else ++failed;
-    }
-
-    std::cout << "\n================================================================\n";
-    std::cout << "SUMMARY: " << passed << " passed, " << failed << " failed\n";
-    std::cout << "================================================================\n";
-
-    return failed > 0 ? 1 : 0;
+    return run_sections("Unified Poisson Solver Test Suite", {
+        {"Unit Tests", run_unit_tests},
+        {"Grid Convergence", run_convergence_tests},
+        {"Solver Selection", run_selection_tests},
+        {"Nullspace Handling", run_nullspace_tests},
+        {"3D Tests", run_3d_tests},
+        {"Stretched Grid", run_stretched_tests},
+        {"Cross-Solver Consistency", run_cross_solver_tests},
+        {"Dirichlet/Mixed BCs", run_dirichlet_tests}
+    });
 }

@@ -20,37 +20,17 @@
 #include "turbulence_baseline.hpp"
 #include "turbulence_gep.hpp"
 #include "turbulence_earsm.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 #include <vector>
 #include <string>
-#include <fstream>
 #include <limits>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 using namespace nncfd;
-
-//=============================================================================
-// Test Framework
-//=============================================================================
-
-static int g_passed = 0, g_failed = 0, g_skipped = 0;
-
-static void record(const char* name, bool pass, bool skip = false) {
-    std::cout << "  " << std::left << std::setw(50) << name;
-    if (skip) { std::cout << "[SKIP]\n"; ++g_skipped; }
-    else if (pass) { std::cout << "[PASS]\n"; ++g_passed; }
-    else { std::cout << "[FAIL]\n"; ++g_failed; }
-}
-
-static bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
-}
+using nncfd::test::harness::record;
+using nncfd::test::file_exists;
 
 static std::string resolve_nn_path(const std::string& subdir) {
     std::string path = "data/models/" + subdir;
@@ -192,8 +172,6 @@ static SmokeResult run_smoke_test(TurbulenceModelType type, int num_steps = 100)
 }
 
 static void test_smoke_all_models() {
-    std::cout << "\n--- Smoke Tests (all models, 100 steps) ---\n\n";
-
     std::vector<TurbulenceModelType> models = {
         TurbulenceModelType::None, TurbulenceModelType::Baseline,
         TurbulenceModelType::GEP, TurbulenceModelType::SSTKOmega,
@@ -214,8 +192,6 @@ static void test_smoke_all_models() {
 //=============================================================================
 
 static void test_transport_realizability() {
-    std::cout << "\n--- Transport Realizability (500 steps) ---\n\n";
-
     std::vector<TurbulenceModelType> transport_models = {
         TurbulenceModelType::SSTKOmega, TurbulenceModelType::KOmega,
         TurbulenceModelType::EARSM_WJ, TurbulenceModelType::EARSM_GS,
@@ -314,8 +290,6 @@ static bool test_earsm_closures_trace_free() {
 }
 
 static void test_earsm_trace_free() {
-    std::cout << "\n--- EARSM Trace-Free Constraint ---\n\n";
-
     record("Tensor basis trace-free", test_tensor_basis_trace_free());
     record("Anisotropy construction trace-free", test_anisotropy_construction_trace_free());
     record("EARSM closures trace-free", test_earsm_closures_trace_free());
@@ -390,8 +364,6 @@ static bool test_guard_detects_nan() {
 }
 
 static void test_guard_functionality() {
-    std::cout << "\n--- Guard Functionality ---\n\n";
-
     record("Guard allows normal operation", test_guard_allows_normal_operation());
     record("Guard detects injected NaN", test_guard_detects_nan());
 }
@@ -465,8 +437,6 @@ static bool check_golden(const VelStats& actual, double exp_mean, double exp_max
 }
 
 static void test_golden_regression() {
-    std::cout << "\n--- Golden Regression Tests ---\n\n";
-
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 2.0 * M_PI, 0.0, 2.0);
     const int nsteps = 50;
@@ -519,7 +489,6 @@ static bool test_feature_computer_batch() {
 }
 
 static void test_feature_computation() {
-    std::cout << "\n--- Feature Computation ---\n\n";
     record("Feature computer batch", test_feature_computer_batch());
 }
 
@@ -528,26 +497,14 @@ static void test_feature_computation() {
 //=============================================================================
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Unified Turbulence Model Tests\n";
-    std::cout << "================================================================\n";
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
+    using namespace nncfd::test::harness;
 
-    test_smoke_all_models();
-    test_transport_realizability();
-    test_earsm_trace_free();
-    test_guard_functionality();
-    test_golden_regression();
-    test_feature_computation();
-
-    std::cout << "\n================================================================\n";
-    std::cout << "Summary: " << g_passed << " passed, " << g_failed << " failed, "
-              << g_skipped << " skipped\n";
-    std::cout << "================================================================\n";
-
-    return g_failed > 0 ? 1 : 0;
+    return run_sections("Unified Turbulence Model Tests", {
+        {"Smoke Tests (all models, 100 steps)", test_smoke_all_models},
+        {"Transport Realizability (500 steps)", test_transport_realizability},
+        {"EARSM Trace-Free Constraint", test_earsm_trace_free},
+        {"Guard Functionality", test_guard_functionality},
+        {"Golden Regression Tests", test_golden_regression},
+        {"Feature Computation", test_feature_computation}
+    });
 }

@@ -15,6 +15,7 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "poisson_solver.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -25,15 +26,7 @@
 #endif
 
 using namespace nncfd;
-
-static int passed = 0, failed = 0, skipped = 0;
-
-static void record(const char* name, bool pass, bool skip = false) {
-    std::cout << "  " << std::left << std::setw(50) << name;
-    if (skip) { std::cout << "[SKIP]\n"; ++skipped; }
-    else if (pass) { std::cout << "[PASS]\n"; ++passed; }
-    else { std::cout << "[FAIL]\n"; ++failed; }
-}
+using nncfd::test::harness::record;
 
 //=============================================================================
 // Helpers
@@ -623,11 +616,7 @@ void test_2d_indexing() {
 // Main
 //=============================================================================
 
-int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Unified FFT Poisson Solver Tests\n";
-    std::cout << "================================================================\n\n";
-
+static void print_build_info() {
 #ifdef USE_GPU_OFFLOAD
     std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
 #ifdef USE_FFT_POISSON
@@ -640,25 +629,25 @@ int main() {
     std::cout << "FFT:   not available (GPU required)\n";
 #endif
     std::cout << "\n";
+}
 
-    // Run all tests
-    test_fft1d_selection();
-    test_fft_vs_mg_periodic();
-    test_fft1d_vs_mg_channel();
-    test_fft1d_vs_mg_duct();
-    test_fft2d_vs_mg_channel();
-    test_fft1d_correctness();
-    test_fft1d_grid_convergence();
-    test_2d_indexing();
+int main() {
+    namespace harness = nncfd::test::harness;
+    return harness::run("Unified FFT Poisson Solver Tests", [] {
+        print_build_info();
 
-    std::cout << "\n================================================================\n";
-    std::cout << "Summary: " << passed << " passed, " << failed << " failed, "
-              << skipped << " skipped\n";
-    std::cout << "================================================================\n";
+        test_fft1d_selection();
+        test_fft_vs_mg_periodic();
+        test_fft1d_vs_mg_channel();
+        test_fft1d_vs_mg_duct();
+        test_fft2d_vs_mg_channel();
+        test_fft1d_correctness();
+        test_fft1d_grid_convergence();
+        test_2d_indexing();
 
-    if (skipped > 0 && passed == 0 && failed == 0) {
-        std::cout << "\nNote: All tests skipped (FFT requires GPU build with cuFFT)\n";
-    }
-
-    return failed > 0 ? 1 : 0;
+        const auto& c = harness::counters();
+        if (c.skipped > 0 && c.passed == 0 && c.failed == 0) {
+            std::cout << "\nNote: All tests skipped (FFT requires GPU build with cuFFT)\n";
+        }
+    });
 }

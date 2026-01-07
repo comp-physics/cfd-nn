@@ -11,6 +11,10 @@
 #include <random>
 #include <vector>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 namespace test {
 
@@ -111,6 +115,36 @@ constexpr double BITWISE_TOLERANCE = 1e-10;
 
 /// Minimum expected FP difference (to verify different backends executed)
 constexpr double MIN_EXPECTED_DIFF = 1e-14;
+
+//=============================================================================
+// Floating-Point Comparison Utilities (rel+abs tolerance)
+//=============================================================================
+
+/// Check if two values are close using combined relative and absolute tolerance.
+/// Returns true if |a - b| <= atol + rtol * max(|a|, |b|)
+/// This is the standard approach used in numpy.isclose() and similar.
+inline bool check_close(double a, double b, double rtol = 1e-5, double atol = 1e-8) {
+    double diff = std::abs(a - b);
+    double scale = std::max(std::abs(a), std::abs(b));
+    return diff <= atol + rtol * scale;
+}
+
+/// Check if value is close to zero (absolute tolerance only)
+inline bool check_near_zero(double val, double atol = 1e-10) {
+    return std::abs(val) <= atol;
+}
+
+/// Check if value is within relative tolerance of expected
+inline bool check_relative(double actual, double expected, double rtol = 1e-5) {
+    if (std::abs(expected) < 1e-15) return std::abs(actual) < 1e-15;
+    return std::abs(actual - expected) / std::abs(expected) <= rtol;
+}
+
+/// Macro for cleaner test assertions with rel+abs tolerance
+#define CHECK_CLOSE(a, b) nncfd::test::check_close((a), (b))
+#define CHECK_CLOSE_TOL(a, b, rtol, atol) nncfd::test::check_close((a), (b), (rtol), (atol))
+#define CHECK_NEAR_ZERO(val) nncfd::test::check_near_zero((val))
+#define CHECK_RELATIVE(actual, expected, rtol) nncfd::test::check_relative((actual), (expected), (rtol))
 
 //=============================================================================
 // Utility Functions
@@ -245,6 +279,126 @@ inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const 
     return std::sqrt(l2_error / count);
 }
 
+//=============================================================================
+// Unified L2 Error Computation
+//=============================================================================
+
+/// Unified L2 error computation against an exact function.
+/// Works with ScalarField, supports 2D/3D meshes, optional mean subtraction.
+///
+/// @param field     Numerical solution field
+/// @param mesh      Computational mesh
+/// @param exact_fn  Callable: exact_fn(x, y) for 2D, exact_fn(x, y, z) for 3D
+/// @param subtract_mean  If true, compare (field - mean(field)) vs (exact - mean(exact))
+/// @param relative  If true, return error / ||exact||, else return absolute L2 norm
+///
+/// Example:
+///   auto exact = [](double x, double y) { return std::sin(x) * std::cos(y); };
+///   double err = compute_l2_error(p, mesh, exact, true, true);
+///
+template<typename FieldT, typename MeshT, typename ExactFn>
+inline double compute_l2_error(const FieldT& field, const MeshT& mesh, ExactFn&& exact_fn,
+                                bool subtract_mean = true, bool relative = true) {
+    double field_mean = 0.0, exact_mean = 0.0;
+    double error_sq = 0.0, norm_sq = 0.0;
+    int count = 0;
+
+    // Determine if 3D based on mesh
+    const bool is_3d = (mesh.Nz > 1);
+
+    // First pass: compute means if needed
+    if (subtract_mean) {
+        if (is_3d) {
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        field_mean += field(i, j, k);
+                        exact_mean += exact_fn(mesh.x(i), mesh.y(j), mesh.z(k));
+                        ++count;
+                    }
+                }
+            }
+        } else {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    field_mean += field(i, j);
+                    exact_mean += exact_fn(mesh.x(i), mesh.y(j));
+                    ++count;
+                }
+            }
+        }
+        if (count > 0) {
+            field_mean /= count;
+            exact_mean /= count;
+        }
+        count = 0;  // Reset for second pass
+    }
+
+    // Second pass: compute error
+    if (is_3d) {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double f_val = field(i, j, k) - field_mean;
+                    double e_val = exact_fn(mesh.x(i), mesh.y(j), mesh.z(k)) - exact_mean;
+                    double diff = f_val - e_val;
+                    error_sq += diff * diff;
+                    norm_sq += e_val * e_val;
+                    ++count;
+                }
+            }
+        }
+    } else {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double f_val = field(i, j) - field_mean;
+                double e_val = exact_fn(mesh.x(i), mesh.y(j)) - exact_mean;
+                double diff = f_val - e_val;
+                error_sq += diff * diff;
+                norm_sq += e_val * e_val;
+                ++count;
+            }
+        }
+    }
+
+    if (count == 0) return 0.0;
+
+    double l2_abs = std::sqrt(error_sq / count);
+    if (relative && norm_sq > 1e-14) {
+        return l2_abs / std::sqrt(norm_sq / count);
+    }
+    return l2_abs;
+}
+
+/// Compute L2 error for velocity u-component against exact function
+/// Uses cell-centered interpolation of staggered u-velocity
+template<typename VelFieldT, typename MeshT, typename ExactFn>
+inline double compute_l2_error_velocity_u(const VelFieldT& vel, const MeshT& mesh,
+                                           ExactFn&& u_exact, bool relative = true) {
+    double error_sq = 0.0, norm_sq = 0.0;
+    int count = 0;
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Interpolate u to cell center
+            double u_num = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            double u_ex = u_exact(mesh.x(i), mesh.y(j));
+            double diff = u_num - u_ex;
+            error_sq += diff * diff;
+            norm_sq += u_ex * u_ex;
+            ++count;
+        }
+    }
+
+    if (count == 0) return 0.0;
+
+    double l2_abs = std::sqrt(error_sq / count);
+    if (relative && norm_sq > 1e-14) {
+        return l2_abs / std::sqrt(norm_sq / count);
+    }
+    return l2_abs;
+}
+
 } // namespace test
 } // namespace nncfd
 
@@ -263,12 +417,103 @@ inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const 
     for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
     for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
 
+/// Dimension-agnostic iteration over interior cells (2D or 3D)
+/// In 2D, k iterates once (k_begin to k_end is a single iteration).
+/// This allows the same loop body to work for both 2D and 3D meshes.
+///
+/// Usage:
+///   FOR_INTERIOR(mesh, i, j, k) {
+///       // Body executes for all interior cells
+///       // In 2D: k is always 0 (or mesh.Nghost for ghost-offset meshes)
+///       // In 3D: k iterates over z-slices
+///   }
+///
+#define FOR_INTERIOR(mesh, i, j, k) \
+    for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
+    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
+    for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
+
+/// Iterate over interior cells with optional stride for cache efficiency
+#define FOR_INTERIOR_STRIDED(mesh, i, j, k, i_stride) \
+    for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
+    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
+    for (int i = (mesh).i_begin(); i < (mesh).i_end(); i += (i_stride))
+
 //=============================================================================
 // GPU/CPU Test Utilities
 //=============================================================================
 
 namespace nncfd {
 namespace test {
+
+//=============================================================================
+// GPU Availability and Verification (unified interface)
+//=============================================================================
+
+namespace gpu {
+
+/// Check if any GPU device is available
+inline bool available() {
+#ifdef USE_GPU_OFFLOAD
+    return omp_get_num_devices() > 0;
+#else
+    return false;
+#endif
+}
+
+/// Get number of available GPU devices
+inline int device_count() {
+#ifdef USE_GPU_OFFLOAD
+    return omp_get_num_devices();
+#else
+    return 0;
+#endif
+}
+
+/// Verify that code actually executes on GPU (not just compiled for it)
+/// Returns true if target region executes on device
+inline bool verify_execution() {
+#ifdef USE_GPU_OFFLOAD
+    if (omp_get_num_devices() == 0) return false;
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    { on_device = !omp_is_initial_device(); }
+    return on_device != 0;
+#else
+    return false;
+#endif
+}
+
+/// Check if this is a GPU build (compile-time check)
+inline constexpr bool is_gpu_build() {
+#ifdef USE_GPU_OFFLOAD
+    return true;
+#else
+    return false;
+#endif
+}
+
+/// Get build type string for display
+inline const char* build_type_string() {
+#ifdef USE_GPU_OFFLOAD
+    return "GPU (USE_GPU_OFFLOAD=ON)";
+#else
+    return "CPU (USE_GPU_OFFLOAD=OFF)";
+#endif
+}
+
+/// Print GPU configuration info
+inline void print_config() {
+    std::cout << "Build: " << build_type_string() << "\n";
+#ifdef USE_GPU_OFFLOAD
+    std::cout << "Devices: " << device_count() << "\n";
+    if (available()) {
+        std::cout << "GPU execution: " << (verify_execution() ? "YES" : "NO") << "\n";
+    }
+#endif
+}
+
+} // namespace gpu
 
 /// Test case configuration for turbulence model tests
 struct TurbulenceTestCase {

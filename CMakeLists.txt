@@ -358,154 +358,75 @@ target_link_libraries(taylor_green_3d nn_cfd_core)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
     enable_testing()
-    
-    add_executable(test_mesh tests/test_mesh.cpp)
-    target_link_libraries(test_mesh nn_cfd_core)
-    add_test(NAME MeshTest COMMAND test_mesh)
-    
-    add_executable(test_poisson_unified tests/test_poisson_unified.cpp)
-    target_link_libraries(test_poisson_unified nn_cfd_core)
-    add_test(NAME PoissonUnifiedTest COMMAND test_poisson_unified)
 
-    add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
-    target_link_libraries(test_2d_3d_comparison nn_cfd_core)
-    add_test(NAME Comparison2D3DTest COMMAND test_2d_3d_comparison)
+    # Function to add a test with standard configuration
+    # Usage: add_nncfd_test(test_name [TEST_NAME_SUFFIX])
+    function(add_nncfd_test test_name)
+        set(options "")
+        set(oneValueArgs TEST_NAME_SUFFIX)
+        set(multiValueArgs "")
+        cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    add_executable(test_features tests/test_features.cpp)
-    target_link_libraries(test_features nn_cfd_core)
-    add_test(NAME FeaturesTest COMMAND test_features)
-    
-    add_executable(test_nn_core tests/test_nn_core.cpp)
-    target_link_libraries(test_nn_core nn_cfd_core)
-    add_test(NAME NNCoreTest COMMAND test_nn_core)
+        add_executable(${test_name} tests/${test_name}.cpp)
+        target_link_libraries(${test_name} nn_cfd_core)
 
-    add_executable(test_nn_integration tests/test_nn_integration.cpp)
-    target_link_libraries(test_nn_integration nn_cfd_core)
-    add_test(NAME NNIntegrationTest COMMAND test_nn_integration)
-    
-    # Unified backend test (consolidates backend_execution + backend_canary)
-    add_executable(test_backend_unified tests/test_backend_unified.cpp)
-    target_link_libraries(test_backend_unified nn_cfd_core)
-    add_test(NAME BackendUnifiedTest COMMAND test_backend_unified)
+        # Generate test name: convert test_foo_bar to FooBarTest
+        if(ARG_TEST_NAME_SUFFIX)
+            set(test_suffix "${ARG_TEST_NAME_SUFFIX}")
+        else()
+            string(REPLACE "test_" "" base_name ${test_name})
+            string(REPLACE "_" ";" name_parts ${base_name})
+            set(test_suffix "")
+            foreach(part ${name_parts})
+                string(SUBSTRING ${part} 0 1 first_letter)
+                string(TOUPPER ${first_letter} first_letter)
+                string(SUBSTRING ${part} 1 -1 rest)
+                string(APPEND test_suffix "${first_letter}${rest}")
+            endforeach()
+            string(APPEND test_suffix "Test")
+        endif()
 
-    # Unified CPU/GPU consistency test (consolidates cpu_gpu_consistency + solver_cpu_gpu + time_history)
-    add_executable(test_cpu_gpu_unified tests/test_cpu_gpu_unified.cpp)
-    target_link_libraries(test_cpu_gpu_unified nn_cfd_core)
-    add_test(NAME CPUGPUUnifiedTest COMMAND test_cpu_gpu_unified)
+        add_test(NAME ${test_suffix} COMMAND ${test_name})
+    endfunction()
 
-    add_executable(test_unified_suite tests/test_unified_suite.cpp)
-    target_link_libraries(test_unified_suite nn_cfd_core)
-    add_test(NAME UnifiedSuiteTest COMMAND test_unified_suite)
+    # Core tests
+    add_nncfd_test(test_mesh)
+    add_nncfd_test(test_poisson_unified)
+    add_nncfd_test(test_2d_3d_comparison TEST_NAME_SUFFIX Comparison2D3DTest)
+    add_nncfd_test(test_features)
+    add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest)
+    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
+    add_nncfd_test(test_backend_unified)
+    add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest)
+    add_nncfd_test(test_unified_suite)
+    add_nncfd_test(test_perturbed_channel)
+    add_nncfd_test(test_turbulence_unified)
+    add_nncfd_test(test_3d_unified TEST_NAME_SUFFIX ThreeDUnifiedTest)
+    add_nncfd_test(test_cpu_gpu_bitwise TEST_NAME_SUFFIX CPUGPUBitwiseTest)
+    add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest)
+    add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest)
 
-    add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
-    target_link_libraries(test_perturbed_channel nn_cfd_core)
-    add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
-
-    # Unified turbulence test (consolidates 6 files: turbulence_features, turbulence_guard,
-    # all_turbulence_models_smoke, transport_realizability, earsm_trace_free, turbulence_golden)
-    add_executable(test_turbulence_unified tests/test_turbulence_unified.cpp)
-    target_link_libraries(test_turbulence_unified nn_cfd_core)
-    add_test(NAME TurbulenceUnifiedTest COMMAND test_turbulence_unified)
-
-    # Unified 3D test (consolidates 3d_bc_application + 3d_gradients + 3d_w_velocity + 3d_bc_corners)
-    add_executable(test_3d_unified tests/test_3d_unified.cpp)
-    target_link_libraries(test_3d_unified nn_cfd_core)
-    add_test(NAME ThreeDUnifiedTest COMMAND test_3d_unified)
-
-    add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
-    target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
-    add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
-
-
-    add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
-    target_link_libraries(test_gpu_utilization nn_cfd_core)
-    add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
-
-    # Unified FFT test (consolidates fft1d_validation + fft2d_integration + fft_cpu_reference)
-    add_executable(test_fft_unified tests/test_fft_unified.cpp)
-    target_link_libraries(test_fft_unified nn_cfd_core)
-    add_test(NAME FFTUnifiedTest COMMAND test_fft_unified)
-
+    # HYPRE-dependent tests
     if(USE_HYPRE)
-        add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
-        target_link_libraries(test_hypre_all_bcs nn_cfd_core)
-        add_test(NAME HypreAllBCsTest COMMAND test_hypre_all_bcs)
-
-        # HYPRE validation test - compares HYPRE vs Multigrid
-        add_executable(test_hypre_validation tests/test_hypre_validation.cpp)
-        target_link_libraries(test_hypre_validation nn_cfd_core)
-        add_test(NAME HypreValidationTest COMMAND test_hypre_validation)
-
-        # HYPRE backend verification test - ensures GPU/CPU backend matches expectations
-        add_executable(test_hypre_backend tests/test_hypre_backend.cpp)
-        target_link_libraries(test_hypre_backend nn_cfd_core)
-        add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
+        add_nncfd_test(test_hypre_all_bcs)
+        add_nncfd_test(test_hypre_validation)
+        add_nncfd_test(test_hypre_backend)
     endif()
 
-
-    add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
-    target_link_libraries(test_endurance_stability nn_cfd_core)
-    add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
-
-    add_executable(test_repeatability tests/test_repeatability.cpp)
-    target_link_libraries(test_repeatability nn_cfd_core)
-    add_test(NAME RepeatabilityTest COMMAND test_repeatability)
-
-    add_executable(test_perf_sentinel tests/test_perf_sentinel.cpp)
-    target_link_libraries(test_perf_sentinel nn_cfd_core)
-    add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
-
-    add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
-    target_link_libraries(test_projection_invariants nn_cfd_core)
-    add_test(NAME ProjectionInvariantsTest COMMAND test_projection_invariants)
-
-    # MPI guard policy test - validates multi-rank detection logic
-    add_executable(test_mpi_guard tests/test_mpi_guard.cpp)
-    target_link_libraries(test_mpi_guard nn_cfd_core)
-    add_test(NAME MpiGuardTest COMMAND test_mpi_guard)
-
-
-
-    # Residual consistency test - validates ||L(p)-rhs||/||rhs|| for each solver
-    add_executable(test_residual_consistency tests/test_residual_consistency.cpp)
-    target_link_libraries(test_residual_consistency nn_cfd_core)
-    add_test(NAME ResidualConsistencyTest COMMAND test_residual_consistency)
-
-    # Detailed kernel parity test - CPU/GPU parity for non-Poisson kernels
-    add_executable(test_kernel_parity_detailed tests/test_kernel_parity_detailed.cpp)
-    target_link_libraries(test_kernel_parity_detailed nn_cfd_core)
-    add_test(NAME KernelParityDetailedTest COMMAND test_kernel_parity_detailed)
-
-    # Configuration module tests - validates config parsing and validation
-    add_executable(test_config tests/test_config.cpp)
-    target_link_libraries(test_config nn_cfd_core)
-    add_test(NAME ConfigTest COMMAND test_config)
-
-    # Error recovery tests - validates solver failure modes and NaN handling
-    add_executable(test_error_recovery tests/test_error_recovery.cpp)
-    target_link_libraries(test_error_recovery nn_cfd_core)
-    add_test(NAME ErrorRecoveryTest COMMAND test_error_recovery)
-
-    # Adaptive time-stepping tests - validates CFL and diffusive stability
-    add_executable(test_adaptive_dt tests/test_adaptive_dt.cpp)
-    target_link_libraries(test_adaptive_dt nn_cfd_core)
-    add_test(NAME AdaptiveDtTest COMMAND test_adaptive_dt)
-
-    # Mesh edge cases tests - validates extreme mesh configurations
-    add_executable(test_mesh_edge_cases tests/test_mesh_edge_cases.cpp)
-    target_link_libraries(test_mesh_edge_cases nn_cfd_core)
-    add_test(NAME MeshEdgeCasesTest COMMAND test_mesh_edge_cases)
-
-
-    # VTK output tests - validates VTK file format and I/O
-    add_executable(test_vtk_output tests/test_vtk_output.cpp)
-    target_link_libraries(test_vtk_output nn_cfd_core)
-    add_test(NAME VTKOutputTest COMMAND test_vtk_output)
-
-    # Advanced physics validation tests - 9 analytical/benchmark tests
-    add_executable(test_physics_validation_advanced tests/test_physics_validation_advanced.cpp)
-    target_link_libraries(test_physics_validation_advanced nn_cfd_core)
-    add_test(NAME PhysicsValidationAdvancedTest COMMAND test_physics_validation_advanced)
+    # Stability and validation tests
+    add_nncfd_test(test_endurance_stability)
+    add_nncfd_test(test_repeatability)
+    add_nncfd_test(test_perf_sentinel)
+    add_nncfd_test(test_projection_invariants)
+    add_nncfd_test(test_mpi_guard)
+    add_nncfd_test(test_residual_consistency)
+    add_nncfd_test(test_kernel_parity_detailed)
+    add_nncfd_test(test_config)
+    add_nncfd_test(test_error_recovery)
+    add_nncfd_test(test_adaptive_dt)
+    add_nncfd_test(test_mesh_edge_cases)
+    add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest)
+    add_nncfd_test(test_physics_validation_advanced)
 endif()
 
 # Installation

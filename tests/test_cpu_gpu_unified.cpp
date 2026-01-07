@@ -13,7 +13,7 @@
 #include "turbulence_baseline.hpp"
 #include "turbulence_gep.hpp"
 #include "turbulence_nn_mlp.hpp"
-#include "test_utilities.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -23,10 +23,6 @@
 #include <sstream>
 #include <map>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 using namespace nncfd;
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
@@ -34,39 +30,8 @@ using nncfd::test::create_test_velocity_field;
 using nncfd::test::check_gpu_cpu_consistency;
 using nncfd::test::GPU_CPU_ABS_TOL;
 using nncfd::test::GPU_CPU_REL_TOL;
-
-static int passed = 0, failed = 0, skipped = 0;
-
-static void record(const char* name, bool pass, bool skip = false) {
-    std::cout << "  " << std::left << std::setw(50) << name;
-    if (skip) { std::cout << "[SKIP]\n"; ++skipped; }
-    else if (pass) { std::cout << "[PASS]\n"; ++passed; }
-    else { std::cout << "[FAIL]\n"; ++failed; }
-}
-
-//=============================================================================
-// Helpers
-//=============================================================================
-
-[[maybe_unused]] static bool gpu_available() {
-#ifdef USE_GPU_OFFLOAD
-    return omp_get_num_devices() > 0;
-#else
-    return false;
-#endif
-}
-
-[[maybe_unused]] static bool verify_gpu_execution() {
-#ifdef USE_GPU_OFFLOAD
-    if (omp_get_num_devices() == 0) return false;
-    int on_device = 0;
-    #pragma omp target map(tofrom: on_device)
-    { on_device = !omp_is_initial_device(); }
-    return on_device != 0;
-#else
-    return false;
-#endif
-}
+using nncfd::test::harness::record;
+namespace gpu = nncfd::test::gpu;
 
 struct SolverMetrics {
     double max_u = 0, max_v = 0, u_l2 = 0, v_l2 = 0, p_l2 = 0;
@@ -122,7 +87,7 @@ void test_mixing_length() {
     m2.set_nu(0.001); m2.set_delta(0.5);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_available()) {
+    if (gpu::available()) {
         const int total = mesh.total_cells();
         const int u_sz = vel.u_total_size(), v_sz = vel.v_total_size();
         double *u_p = vel.u_data().data(), *v_p = vel.v_data().data();
@@ -183,7 +148,7 @@ void test_gep() {
     g2.set_nu(0.001); g2.set_delta(0.5);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_available()) {
+    if (gpu::available()) {
         const int total = mesh.total_cells();
         const int u_sz = vel.u_total_size(), v_sz = vel.v_total_size();
         double *u_p = vel.u_data().data(), *v_p = vel.v_data().data();
@@ -253,7 +218,7 @@ void test_nn_mlp() {
     cpu_model.update(mesh, vel, k, omega, nu_t_cpu);
 
 #ifdef USE_GPU_OFFLOAD
-    if (gpu_available()) {
+    if (gpu::available()) {
         TurbulenceNNMLP gpu_model;
         gpu_model.set_nu(0.001);
         gpu_model.load(path, path);
@@ -487,11 +452,11 @@ struct TimeSnapshot {
 
 void test_time_history() {
 #ifdef USE_GPU_OFFLOAD
-    if (!gpu_available()) {
+    if (!gpu::available()) {
         record("Time-history consistency (no drift)", true, true);
         return;
     }
-    if (!verify_gpu_execution()) {
+    if (!gpu::verify_execution()) {
         record("Time-history consistency (no drift)", false);
         return;
     }
@@ -591,35 +556,16 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    std::cout << "================================================================\n";
-    std::cout << "  Unified CPU/GPU Consistency Tests\n";
-    std::cout << "================================================================\n\n";
+    using namespace nncfd::test::harness;
 
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-    std::cout << "Devices: " << omp_get_num_devices() << "\n";
-    if (gpu_available()) {
-        std::cout << "GPU execution: " << (verify_gpu_execution() ? "YES" : "NO") << "\n";
-    }
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
-    std::cout << "\n";
-
-    // Run all tests
-    test_mixing_length();
-    test_gep();
-    test_nn_mlp();
-    test_solver_taylor_green();
-    test_solver_channel();
-    test_solver_grid_sweep();
-    test_time_history();
-    test_randomized();
-
-    std::cout << "\n================================================================\n";
-    std::cout << "Summary: " << passed << " passed, " << failed << " failed, "
-              << skipped << " skipped\n";
-    std::cout << "================================================================\n";
-
-    return failed > 0 ? 1 : 0;
+    return run("Unified CPU/GPU Consistency Tests", []() {
+        test_mixing_length();
+        test_gep();
+        test_nn_mlp();
+        test_solver_taylor_green();
+        test_solver_channel();
+        test_solver_grid_sweep();
+        test_time_history();
+        test_randomized();
+    });
 }

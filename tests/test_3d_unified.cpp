@@ -13,21 +13,14 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "poisson_solver.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 #include <cassert>
 
 using namespace nncfd;
-
-static int passed = 0, failed = 0, skipped = 0;
-
-static void record(const char* name, bool pass, bool skip = false) {
-    std::cout << "  " << std::left << std::setw(55) << name;
-    if (skip) { std::cout << "[SKIP]\n"; ++skipped; }
-    else if (pass) { std::cout << "[PASS]\n"; ++passed; }
-    else { std::cout << "[FAIL]\n"; ++failed; }
-}
+using nncfd::test::harness::record;
 
 //=============================================================================
 // BC TESTS
@@ -543,41 +536,34 @@ void test_poisson_3d_dirichlet() {
 //=============================================================================
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Unified 3D Tests\n";
-    std::cout << "================================================================\n\n";
-
-    std::cout << "--- Boundary Condition Tests ---\n";
-    test_no_slip_walls();
-    test_periodic_z();
-    test_mass_conservation();
-
-    std::cout << "\n--- Gradient Tests ---\n";
-    test_linear_dudz();
-    test_sinusoidal_dwdx();
-    test_divergence_free_field();
-
-    std::cout << "\n--- W-Velocity Tests ---\n";
-    test_w_storage();
-    test_w_staggering();
-    test_w_divergence_contribution();
-    test_w_center_interpolation();
-
-    std::cout << "\n--- Corner/Edge Tests ---\n";
-    test_channel_like_bcs();
-    test_duct_like_bcs();
-    test_corner_cells_finite();
-    test_divergence_free_3d();
-    test_3d_solver_stability();
-
-    std::cout << "\n--- 3D Poisson Tests ---\n";
-    test_poisson_3d_all_periodic();
-    test_poisson_3d_dirichlet();
-
-    std::cout << "\n================================================================\n";
-    std::cout << "Summary: " << passed << " passed, " << failed << " failed, "
-              << skipped << " skipped\n";
-    std::cout << "================================================================\n";
-
-    return failed > 0 ? 1 : 0;
+    namespace harness = nncfd::test::harness;
+    return harness::run_sections("Unified 3D Tests", {
+        {"Boundary Condition Tests", [] {
+            test_no_slip_walls();
+            test_periodic_z();
+            test_mass_conservation();
+        }},
+        {"Gradient Tests", [] {
+            test_linear_dudz();
+            test_sinusoidal_dwdx();
+            test_divergence_free_field();
+        }},
+        {"W-Velocity Tests", [] {
+            test_w_storage();
+            test_w_staggering();
+            test_w_divergence_contribution();
+            test_w_center_interpolation();
+        }},
+        {"Corner/Edge Tests", [] {
+            test_channel_like_bcs();
+            test_duct_like_bcs();
+            test_corner_cells_finite();
+            test_divergence_free_3d();
+            test_3d_solver_stability();
+        }},
+        {"3D Poisson Tests", [] {
+            test_poisson_3d_all_periodic();
+            test_poisson_3d_dirichlet();
+        }}
+    });
 }
