@@ -413,42 +413,33 @@ inline void apply_init(RANSSolver& solver, const Mesh& mesh, const InitSpec& ini
         }
 
         case InitSpec::TAYLOR_GREEN:
+            // u at x-faces, v at y-faces (MAC grid)
             for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
                 for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                    double x = (i < mesh.i_end()) ? mesh.x(i) + mesh.dx/2.0 : mesh.x_max;
-                    double y = mesh.y(j);
-                    solver.velocity().u(i, j) = std::sin(x) * std::cos(y);
+                    solver.velocity().u(i, j) = std::sin(mesh.xf[i]) * std::cos(mesh.y(j));
                 }
             }
             for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
                 for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double x = mesh.x(i);
-                    double y = (j < mesh.j_end()) ? mesh.y(j) + mesh.dy/2.0 : mesh.y_max;
-                    solver.velocity().v(i, j) = -std::cos(x) * std::sin(y);
+                    solver.velocity().v(i, j) = -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]);
                 }
             }
             break;
 
         case InitSpec::TAYLOR_GREEN_3D:
-            // u = sin(x)cos(y)cos(z)
+            // u = sin(x)cos(y)cos(z) at x-faces
             for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
                 for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
                     for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                        double x = (i < mesh.i_end()) ? mesh.x(i) + mesh.dx/2.0 : mesh.x_max;
-                        double y = mesh.y(j);
-                        double z = mesh.z(k);
-                        solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
+                        solver.velocity().u(i, j, k) = std::sin(mesh.xf[i]) * std::cos(mesh.y(j)) * std::cos(mesh.z(k));
                     }
                 }
             }
-            // v = -cos(x)sin(y)cos(z)
+            // v = -cos(x)sin(y)cos(z) at y-faces
             for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
                 for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
                     for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                        double x = mesh.x(i);
-                        double y = (j < mesh.j_end()) ? mesh.y(j) + mesh.dy/2.0 : mesh.y_max;
-                        double z = mesh.z(k);
-                        solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
+                        solver.velocity().v(i, j, k) = -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]) * std::cos(mesh.z(k));
                     }
                 }
             }

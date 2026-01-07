@@ -605,7 +605,7 @@ inline SteadyStateResult run_steady_flow(
             norm_sq += u_ex * u_ex;
         }
     }
-    result.l2_error = std::sqrt(error_sq / norm_sq);
+    result.l2_error = (norm_sq > 1e-12) ? std::sqrt(error_sq / norm_sq) : std::sqrt(error_sq);
     result.iterations = iters;
     result.residual = residual;
     result.passed = result.l2_error < tolerance;
@@ -614,18 +614,16 @@ inline SteadyStateResult run_steady_flow(
     return result;
 }
 
-/// Initialize Taylor-Green vortex
+/// Initialize Taylor-Green vortex (MAC grid: u at x-faces, v at y-faces)
 inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double x = (i < mesh.i_end()) ? mesh.x(i) + mesh.dx/2.0 : mesh.x_max;
-            solver.velocity().u(i, j) = std::sin(x) * std::cos(mesh.y(j));
+            solver.velocity().u(i, j) = std::sin(mesh.xf[i]) * std::cos(mesh.y(j));
         }
     }
     for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double y = (j < mesh.j_end()) ? mesh.y(j) + mesh.dy/2.0 : mesh.y_max;
-            solver.velocity().v(i, j) = -std::cos(mesh.x(i)) * std::sin(y);
+            solver.velocity().v(i, j) = -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]);
         }
     }
 }

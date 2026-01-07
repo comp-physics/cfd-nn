@@ -189,6 +189,9 @@ double compute_l2_error_func(const ScalarField& p, const Mesh& mesh,
             ++count;
         }
     }
+
+    if (count == 0) return 0.0;
+
     p_mean /= count;
     exact_mean /= count;
 

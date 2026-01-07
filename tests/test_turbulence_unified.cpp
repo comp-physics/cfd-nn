@@ -288,7 +288,6 @@ static bool test_earsm_closures_trace_free() {
     }
 
     ScalarField k(mesh, 0.1), omega(mesh, 10.0), nu_t(mesh);
-    TensorField tau_ij(mesh);
 
     std::vector<EARSMType> types = {
         EARSMType::WallinJohansson2000, EARSMType::GatskiSpeziale1993, EARSMType::Pope1975
@@ -296,6 +295,7 @@ static bool test_earsm_closures_trace_free() {
 
     const double tol = 1e-10;
     for (auto type : types) {
+        TensorField tau_ij(mesh);  // Fresh field for each model iteration
         SSTWithEARSM model(type);
         model.set_nu(0.001);
         model.set_delta(1.0);
