@@ -554,13 +554,9 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
         log_info "Cross-build tests require GPU to compare CPU vs GPU outputs"
     else
         run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
-        # Poisson CPU/GPU 3D test consolidated into test_poisson_unified
-        run_cross_build_test "CPU/GPU Consistency" "test_cpu_gpu_consistency" 180 "consistency"
-        run_cross_build_test "Solver CPU/GPU" "test_solver_cpu_gpu" 180 "solver"
-        run_cross_build_test "Time History Consistency" "test_time_history_consistency" 180 "timehistory"
 
-        # Note: Cross-build canary test removed - functionality consolidated into test_backend_unified
-        # The unified test includes an internal canary that verifies CPU/GPU FP differences
+        # Note: test_cpu_gpu_consistency, test_solver_cpu_gpu, test_time_history_consistency
+        # were consolidated into test_cpu_gpu_unified (runs via test_unified_suite)
     fi
 
     # Non-comparison GPU tests
