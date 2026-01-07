@@ -84,6 +84,11 @@ struct MeshSpec {
         return {n, n, n, L, L, L, 0.0, 0.0, 0.0, UNIFORM, 2.0};
     }
 
+    // 3D Poiseuille channel (domain 4x2x1 with y in [0, 2], center at y=1)
+    static MeshSpec poiseuille_3d(int nx = 32, int ny = 32, int nz = 8) {
+        return {nx, ny, nz, 4.0, 2.0, 1.0, 0.0, 0.0, 0.0, UNIFORM, 2.0};
+    }
+
     bool is_3d() const { return nz > 1; }
 };
 
@@ -177,7 +182,7 @@ struct BCSpec {
 // Initialization Specification
 //=============================================================================
 struct InitSpec {
-    enum Type { ZERO, UNIFORM, POISEUILLE, TAYLOR_GREEN, TAYLOR_GREEN_3D, Z_INVARIANT, PERTURBED, CUSTOM };
+    enum Type { ZERO, UNIFORM, POISEUILLE, POISEUILLE_3D, TAYLOR_GREEN, TAYLOR_GREEN_3D, Z_INVARIANT, PERTURBED, CUSTOM };
     Type type = ZERO;
     double u0 = 0.0, v0 = 0.0, w0 = 0.0;
     double dp_dx = 0.0;
@@ -192,6 +197,9 @@ struct InitSpec {
     }
     static InitSpec poiseuille(double dp, double sc = 0.9) {
         InitSpec i; i.type = POISEUILLE; i.dp_dx = dp; i.scale = sc; return i;
+    }
+    static InitSpec poiseuille_3d(double dp, double sc = 0.9) {
+        InitSpec i; i.type = POISEUILLE_3D; i.dp_dx = dp; i.scale = sc; return i;
     }
     static InitSpec taylor_green() {
         InitSpec i; i.type = TAYLOR_GREEN; return i;
@@ -239,7 +247,8 @@ struct CheckSpec {
     enum Type {
         NONE,              // Just verify it runs without crashing
         CONVERGES,         // Verify residual drops
-        L2_ERROR,          // Compare to analytical solution
+        L2_ERROR,          // Compare to analytical solution (2D)
+        L2_ERROR_3D,       // Compare to analytical solution (3D)
         DIVERGENCE_FREE,   // Check |div(u)| < tol
         ENERGY_DECAY,      // Verify KE decreases monotonically
         BOUNDED,           // Verify max velocity stays bounded
@@ -248,14 +257,18 @@ struct CheckSpec {
         FINITE,            // Check all fields are finite (no NaN/Inf)
         REALIZABILITY,     // Check nu_t >= 0, k >= 0, omega > 0
         Z_INVARIANT,       // Check 3D flow stays z-invariant
+        W_ZERO,            // Check w stays at machine zero (for 2D-in-3D)
         CUSTOM             // User-provided check function
     };
     Type type = NONE;
     double tolerance = 0.05;
 
-    // For L2_ERROR: analytical solution
+    // For L2_ERROR: analytical solution (2D)
     std::function<double(double, double)> u_exact;
     std::function<double(double, double)> v_exact;
+
+    // For L2_ERROR_3D: analytical solution (3D, function of y only for channel)
+    std::function<double(double)> u_exact_3d;  // u(y)
 
     // For CUSTOM: user-provided check
     std::function<bool(const RANSSolver&, const Mesh&, std::string&)> custom_check;
@@ -294,6 +307,13 @@ struct CheckSpec {
     }
     static CheckSpec z_invariant(double tol = 1e-4) {
         CheckSpec c; c.type = Z_INVARIANT; c.tolerance = tol; return c;
+    }
+    static CheckSpec w_zero(double tol = 1e-8) {
+        CheckSpec c; c.type = W_ZERO; c.tolerance = tol; return c;
+    }
+    static CheckSpec l2_error_3d(double tol, std::function<double(double)> u_ex) {
+        CheckSpec c; c.type = L2_ERROR_3D; c.tolerance = tol; c.u_exact_3d = u_ex;
+        return c;
     }
     static CheckSpec custom(std::function<bool(const RANSSolver&, const Mesh&, std::string&)> fn) {
         CheckSpec c; c.type = CUSTOM; c.custom_check = fn; return c;
@@ -369,6 +389,24 @@ inline void apply_init(RANSSolver& solver, const Mesh& mesh, const InitSpec& ini
                 double u_ex = -dp_dx / (2.0 * nu) * (H * H - y * y);
                 for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                     solver.velocity().u(i, j) = init.scale * u_ex;
+                }
+            }
+            break;
+        }
+
+        case InitSpec::POISEUILLE_3D: {
+            // 3D Poiseuille: y ranges from 0 to Ly, center at Ly/2
+            double dp_dx = init.dp_dx;
+            double y_center = 0.5 * (mesh.y_min + mesh.y_max);
+            double half_height = 0.5 * (mesh.y_max - mesh.y_min);
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    double y = mesh.y(j);
+                    double y_centered = y - y_center;
+                    double u_ex = -dp_dx / (2.0 * nu) * (half_height * half_height - y_centered * y_centered);
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        solver.velocity().u(i, j, k) = init.scale * u_ex;
+                    }
                 }
             }
             break;
@@ -550,6 +588,62 @@ inline double compute_z_variation(const VectorField& vel, const Mesh& mesh) {
         }
     }
     return max_var;
+}
+
+// 3D L2 error vs analytical solution u(y) for Poiseuille-like flows
+inline std::pair<double, double> compute_l2_error_3d(const VectorField& vel, const Mesh& mesh,
+                                                     const std::function<double(double)>& u_exact) {
+    if (!u_exact || mesh.is2D()) return {0.0, 0.0};
+
+    double max_error = 0.0;
+    double l2_error_sq = 0.0;
+    int n_points = 0;
+
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j);
+            double u_analytical = u_exact(y);
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                double u_computed = vel.u(i, j, k);
+                double error = std::abs(u_computed - u_analytical);
+                max_error = std::max(max_error, error);
+                l2_error_sq += error * error;
+                n_points++;
+            }
+        }
+    }
+
+    double l2_error = (n_points > 0) ? std::sqrt(l2_error_sq / n_points) : 0.0;
+    return {max_error, l2_error};
+}
+
+// Check if w is essentially zero (for 2D flows extended to 3D)
+inline std::pair<double, double> compute_w_relative(const VectorField& vel, const Mesh& mesh) {
+    if (mesh.is2D()) return {0.0, 0.0};
+
+    double max_w = 0.0;
+    double max_u = 0.0;
+
+    // Max |u|
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                max_u = std::max(max_u, std::abs(vel.u(i, j, k)));
+            }
+        }
+    }
+
+    // Max |w|
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                max_w = std::max(max_w, std::abs(vel.w(i, j, k)));
+            }
+        }
+    }
+
+    double w_relative = max_w / std::max(max_u, 1e-10);
+    return {max_w, w_relative};
 }
 
 inline TestResult run_test(const TestSpec& spec) {
@@ -744,6 +838,22 @@ inline TestResult run_test(const TestSpec& spec) {
                 result.error = z_var;
                 result.passed = (z_var < spec.check.tolerance);
                 result.message = "z_variation=" + std::to_string(z_var);
+                break;
+            }
+
+            case CheckSpec::L2_ERROR_3D: {
+                auto [max_err, l2_err] = compute_l2_error_3d(solver.velocity(), mesh, spec.check.u_exact_3d);
+                result.error = max_err;
+                result.passed = (max_err < spec.check.tolerance);
+                result.message = "max_err=" + std::to_string(max_err) + ", L2=" + std::to_string(l2_err);
+                break;
+            }
+
+            case CheckSpec::W_ZERO: {
+                auto [max_w, w_rel] = compute_w_relative(solver.velocity(), mesh);
+                result.error = w_rel;
+                result.passed = (w_rel < spec.check.tolerance);
+                result.message = "|w|/|u|=" + std::to_string(w_rel);
                 break;
             }
 

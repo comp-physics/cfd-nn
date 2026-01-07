@@ -451,11 +451,7 @@ if(BUILD_TESTS)
     add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
 
     # test_3d_quick_validation.cpp removed - covered by test_unified_suite.cpp
-
-    # Fast 3D Poiseuille tests - analytical validation (~10s)
-    add_executable(test_3d_poiseuille_fast tests/test_3d_poiseuille_fast.cpp)
-    target_link_libraries(test_3d_poiseuille_fast nn_cfd_core)
-    add_test(NAME Fast3DPoiseuilleTest COMMAND test_3d_poiseuille_fast)
+    # test_3d_poiseuille_fast.cpp removed - covered by test_unified_suite.cpp
 
     # 3D boundary condition tests (~5s)
     add_executable(test_3d_bc_application tests/test_3d_bc_application.cpp)

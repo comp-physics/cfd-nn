@@ -374,6 +374,83 @@ std::vector<TestSpec> resolution_convergence_tests() {
 std::vector<TestSpec> validation_3d_tests() {
     std::vector<TestSpec> tests;
 
+    // Constants for 3D Poiseuille
+    const double NU = 0.01;
+    const double DP_DX = -0.001;
+    const double H = 1.0;  // Half-height (domain 0 to 2, center at 1)
+
+    // Analytical Poiseuille solution (y from 0 to 2, centered at y=1)
+    auto u_poiseuille_3d = [=](double y) {
+        double y_centered = y - H;  // Shift so y=0 at center
+        return -DP_DX / (2.0 * NU) * (H * H - y_centered * y_centered);
+    };
+
+    // U_max for relative error calculation
+    const double U_max = -DP_DX / (2.0 * NU) * H * H;
+
+    // Test 1: Fast Poiseuille convergence (init at 0.95x analytical)
+    {
+        ConfigSpec cfg;
+        cfg.nu = NU;
+        cfg.adaptive_dt = true;
+        cfg.max_iter = 100;
+        cfg.tol = 1e-6;
+        cfg.turb_model = TurbulenceModelType::None;
+
+        tests.push_back(make_test(
+            "poiseuille_3d_fast",
+            "3d",
+            MeshSpec::poiseuille_3d(32, 32, 8),
+            cfg,
+            BCSpec::channel(),
+            InitSpec::poiseuille_3d(DP_DX, 0.95),
+            RunSpec::channel(DP_DX),
+            CheckSpec::l2_error_3d(0.10 * U_max, u_poiseuille_3d)  // 10% relative to U_max
+        ));
+    }
+
+    // Test 2: Larger grid Poiseuille (48x48x8, init 0.90x, stricter tolerance)
+    {
+        ConfigSpec cfg;
+        cfg.nu = NU;
+        cfg.adaptive_dt = true;
+        cfg.max_iter = 150;
+        cfg.tol = 1e-6;
+        cfg.turb_model = TurbulenceModelType::None;
+
+        tests.push_back(make_test(
+            "poiseuille_3d_48x48",
+            "3d",
+            MeshSpec::poiseuille_3d(48, 48, 8),
+            cfg,
+            BCSpec::channel(),
+            InitSpec::poiseuille_3d(DP_DX, 0.90),
+            RunSpec::channel(DP_DX),
+            CheckSpec::l2_error_3d(0.15 * U_max, u_poiseuille_3d)  // 15% relative
+        ));
+    }
+
+    // Test 3: W-velocity stays zero for channel flow
+    {
+        ConfigSpec cfg;
+        cfg.nu = NU;
+        cfg.adaptive_dt = true;
+        cfg.max_iter = 50;
+        cfg.tol = 1e-6;
+        cfg.turb_model = TurbulenceModelType::None;
+
+        tests.push_back(make_test(
+            "w_zero_channel_3d",
+            "3d",
+            MeshSpec::poiseuille_3d(32, 32, 8),
+            cfg,
+            BCSpec::channel(),
+            InitSpec::poiseuille_3d(DP_DX, 0.95),
+            RunSpec::steps(50),
+            CheckSpec::w_zero(1e-8)
+        ));
+    }
+
     // 3D Taylor-Green vortex energy decay
     tests.push_back(make_test(
         "taylor_green_3d_32",
