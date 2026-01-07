@@ -8,16 +8,17 @@
 /// - Command-line argument parsing
 
 #include "config.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <fstream>
 #include <cmath>
-#include <cassert>
 #include <cstdlib>
 #include <string>
 #include <vector>
 #include <utility>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 namespace {
 // Helper to create temporary config files
@@ -41,8 +42,6 @@ void remove_temp_file(const std::string& filename) {
 // ============================================================================
 
 void test_parse_basic_key_value() {
-    std::cout << "Testing basic key=value parsing... ";
-
     std::string cfg = R"(
 Nx = 128
 Ny = 64
@@ -53,18 +52,16 @@ verbose = true
 
     auto params = parse_config_file(filename);
 
-    assert(params["Nx"] == "128");
-    assert(params["Ny"] == "64");
-    assert(params["nu"] == "0.005");
-    assert(params["verbose"] == "true");
+    bool pass = (params["Nx"] == "128");
+    pass = pass && (params["Ny"] == "64");
+    pass = pass && (params["nu"] == "0.005");
+    pass = pass && (params["verbose"] == "true");
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Basic key=value parsing", pass);
 }
 
 void test_parse_whitespace_handling() {
-    std::cout << "Testing whitespace handling... ";
-
     std::string cfg = R"(
   Nx   =   128
 Ny=64
@@ -74,17 +71,15 @@ Ny=64
 
     auto params = parse_config_file(filename);
 
-    assert(params["Nx"] == "128");
-    assert(params["Ny"] == "64");
-    assert(params["nu"] == "0.005");
+    bool pass = (params["Nx"] == "128");
+    pass = pass && (params["Ny"] == "64");
+    pass = pass && (params["nu"] == "0.005");
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Whitespace handling", pass);
 }
 
 void test_parse_comments() {
-    std::cout << "Testing comment handling... ";
-
     std::string cfg = R"(
 # This is a comment
 Nx = 32
@@ -95,31 +90,27 @@ Ny = 64  # Inline comments are NOT supported (value includes the #)
 
     auto params = parse_config_file(filename);
 
-    assert(params["Nx"] == "32");
+    bool pass = (params["Nx"] == "32");
     // Note: inline comments become part of value (current behavior)
-    assert(params.find("Ny") != params.end());
+    pass = pass && (params.find("Ny") != params.end());
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Comment handling", pass);
 }
 
 void test_parse_empty_file() {
-    std::cout << "Testing empty file parsing... ";
-
     std::string cfg = "";
     std::string filename = create_temp_config(cfg);
 
     auto params = parse_config_file(filename);
 
-    assert(params.empty());
+    bool pass = params.empty();
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Empty file parsing", pass);
 }
 
 void test_parse_missing_equals() {
-    std::cout << "Testing lines without equals sign... ";
-
     std::string cfg = R"(
 Nx = 32
 invalid line without equals
@@ -130,26 +121,23 @@ Ny = 64
     auto params = parse_config_file(filename);
 
     // Lines without = are silently skipped
-    assert(params["Nx"] == "32");
-    assert(params["Ny"] == "64");
-    assert(params.size() == 2);
+    bool pass = (params["Nx"] == "32");
+    pass = pass && (params["Ny"] == "64");
+    pass = pass && (params.size() == 2);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Lines without equals sign", pass);
 }
 
 void test_parse_nonexistent_file() {
-    std::cout << "Testing nonexistent file error... ";
-
     bool threw = false;
     try {
         parse_config_file("/nonexistent/path/config.cfg");
-    } catch (const std::runtime_error& e) {
+    } catch (const std::runtime_error&) {
         threw = true;
     }
 
-    assert(threw);
-    std::cout << "PASSED\n";
+    record("Nonexistent file error", threw);
 }
 
 // ============================================================================
@@ -157,8 +145,6 @@ void test_parse_nonexistent_file() {
 // ============================================================================
 
 void test_load_integers() {
-    std::cout << "Testing integer loading... ";
-
     std::string cfg = R"(
 Nx = 128
 Ny = 256
@@ -170,18 +156,16 @@ max_iter = 5000
     Config config;
     config.load(filename);
 
-    assert(config.Nx == 128);
-    assert(config.Ny == 256);
-    assert(config.Nz == 32);
-    assert(config.max_iter == 5000);
+    bool pass = (config.Nx == 128);
+    pass = pass && (config.Ny == 256);
+    pass = pass && (config.Nz == 32);
+    pass = pass && (config.max_iter == 5000);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Integer loading", pass);
 }
 
 void test_load_doubles() {
-    std::cout << "Testing double loading... ";
-
     std::string cfg = R"(
 nu = 1.5e-5
 dt = 0.001
@@ -193,18 +177,16 @@ poisson_tol = 1e-8
     Config config;
     config.load(filename);
 
-    assert(std::abs(config.nu - 1.5e-5) < 1e-10);
-    assert(std::abs(config.dt - 0.001) < 1e-10);
-    assert(std::abs(config.CFL_max - 0.8) < 1e-10);
-    assert(std::abs(config.poisson_tol - 1e-8) < 1e-12);
+    bool pass = (std::abs(config.nu - 1.5e-5) < 1e-10);
+    pass = pass && (std::abs(config.dt - 0.001) < 1e-10);
+    pass = pass && (std::abs(config.CFL_max - 0.8) < 1e-10);
+    pass = pass && (std::abs(config.poisson_tol - 1e-8) < 1e-12);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Double loading", pass);
 }
 
 void test_load_booleans() {
-    std::cout << "Testing boolean loading... ";
-
     // Test "true" string
     std::string cfg1 = "verbose = true\nadaptive_dt = 1\nstretch_y = false\n";
     std::string filename1 = create_temp_config(cfg1);
@@ -212,17 +194,15 @@ void test_load_booleans() {
     Config config1;
     config1.load(filename1);
 
-    assert(config1.verbose == true);
-    assert(config1.adaptive_dt == true);
-    assert(config1.stretch_y == false);
+    bool pass = (config1.verbose == true);
+    pass = pass && (config1.adaptive_dt == true);
+    pass = pass && (config1.stretch_y == false);
 
     remove_temp_file(filename1);
-    std::cout << "PASSED\n";
+    record("Boolean loading", pass);
 }
 
 void test_load_enum_turb_model() {
-    std::cout << "Testing turbulence model enum loading... ";
-
     // Test various turbulence model strings
     std::vector<std::pair<std::string, TurbulenceModelType>> test_cases = {
         {"none", TurbulenceModelType::None},
@@ -240,6 +220,7 @@ void test_load_enum_turb_model() {
         {"pope", TurbulenceModelType::EARSM_Pope},
     };
 
+    bool pass = true;
     for (const auto& [str, expected] : test_cases) {
         std::string cfg = "turb_model = " + str + "\n";
         // For transport models, ensure sufficient resolution and Re
@@ -250,19 +231,16 @@ void test_load_enum_turb_model() {
         config.load(filename);
 
         if (config.turb_model != expected) {
-            std::cout << "FAILED: turb_model='" << str << "' did not parse correctly\n";
-            std::exit(1);
+            pass = false;
         }
 
         remove_temp_file(filename);
     }
 
-    std::cout << "PASSED\n";
+    record("Turbulence model enum loading", pass);
 }
 
 void test_load_enum_poisson_solver() {
-    std::cout << "Testing Poisson solver enum loading... ";
-
     std::vector<std::pair<std::string, PoissonSolverType>> test_cases = {
         {"auto", PoissonSolverType::Auto},
         {"mg", PoissonSolverType::MG},
@@ -271,6 +249,7 @@ void test_load_enum_poisson_solver() {
         {"fft2d", PoissonSolverType::FFT2D},
     };
 
+    bool pass = true;
     for (const auto& [str, expected] : test_cases) {
         std::string cfg = "poisson_solver = " + str + "\n";
         std::string filename = create_temp_config(cfg);
@@ -279,54 +258,49 @@ void test_load_enum_poisson_solver() {
         config.load(filename);
 
         if (config.poisson_solver != expected) {
-            std::cout << "FAILED: poisson_solver='" << str << "' did not parse correctly\n";
-            std::exit(1);
+            pass = false;
         }
 
         remove_temp_file(filename);
     }
 
-    std::cout << "PASSED\n";
+    record("Poisson solver enum loading", pass);
 }
 
 void test_load_enum_convective_scheme() {
-    std::cout << "Testing convective scheme enum loading... ";
-
     std::string cfg1 = "convective_scheme = central\n";
     std::string filename1 = create_temp_config(cfg1);
     Config config1;
     config1.load(filename1);
-    assert(config1.convective_scheme == ConvectiveScheme::Central);
+    bool pass = (config1.convective_scheme == ConvectiveScheme::Central);
     remove_temp_file(filename1);
 
     std::string cfg2 = "convective_scheme = upwind\n";
     std::string filename2 = create_temp_config(cfg2);
     Config config2;
     config2.load(filename2);
-    assert(config2.convective_scheme == ConvectiveScheme::Upwind);
+    pass = pass && (config2.convective_scheme == ConvectiveScheme::Upwind);
     remove_temp_file(filename2);
 
-    std::cout << "PASSED\n";
+    record("Convective scheme enum loading", pass);
 }
 
 void test_load_enum_simulation_mode() {
-    std::cout << "Testing simulation mode enum loading... ";
-
     std::string cfg1 = "simulation_mode = steady\n";
     std::string filename1 = create_temp_config(cfg1);
     Config config1;
     config1.load(filename1);
-    assert(config1.simulation_mode == SimulationMode::Steady);
+    bool pass = (config1.simulation_mode == SimulationMode::Steady);
     remove_temp_file(filename1);
 
     std::string cfg2 = "simulation_mode = unsteady\n";
     std::string filename2 = create_temp_config(cfg2);
     Config config2;
     config2.load(filename2);
-    assert(config2.simulation_mode == SimulationMode::Unsteady);
+    pass = pass && (config2.simulation_mode == SimulationMode::Unsteady);
     remove_temp_file(filename2);
 
-    std::cout << "PASSED\n";
+    record("Simulation mode enum loading", pass);
 }
 
 // ============================================================================
@@ -334,8 +308,6 @@ void test_load_enum_simulation_mode() {
 // ============================================================================
 
 void test_re_nu_coupling() {
-    std::cout << "Testing Re+nu → dp_dx coupling... ";
-
     // Specify Re and nu, code should compute dp_dx
     std::string cfg = R"(
 Re = 1000
@@ -354,15 +326,13 @@ y_max = 1.0
     // dp_dx = -3 * 1000 * 0.001² / 1³ = -0.003
     double expected_dp_dx = -3.0 * 1000.0 * 0.001 * 0.001 / 1.0;
 
-    assert(std::abs(config.dp_dx - expected_dp_dx) < 1e-10);
+    bool pass = (std::abs(config.dp_dx - expected_dp_dx) < 1e-10);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Re+nu to dp_dx coupling", pass);
 }
 
 void test_re_dpdx_coupling() {
-    std::cout << "Testing Re+dp_dx → nu coupling... ";
-
     std::string cfg = R"(
 Re = 500
 dp_dx = -1.0
@@ -380,15 +350,13 @@ y_max = 1.0
     // nu = sqrt(1.0 * 1.0 / (3 * 500)) = sqrt(1/1500) ≈ 0.0258
     double expected_nu = std::sqrt(1.0 / (3.0 * 500.0));
 
-    assert(std::abs(config.nu - expected_nu) < 1e-10);
+    bool pass = (std::abs(config.nu - expected_nu) < 1e-10);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Re+dp_dx to nu coupling", pass);
 }
 
 void test_nu_dpdx_coupling() {
-    std::cout << "Testing nu+dp_dx → Re coupling... ";
-
     std::string cfg = R"(
 nu = 0.01
 dp_dx = -0.5
@@ -406,10 +374,10 @@ y_max = 1.0
     // Re = 0.5 * 1.0 / (3 * 0.0001) = 0.5 / 0.0003 ≈ 1666.67
     double expected_Re = 0.5 / (3.0 * 0.01 * 0.01);
 
-    assert(std::abs(config.Re - expected_Re) < 1e-6);
+    bool pass = (std::abs(config.Re - expected_Re) < 1e-6);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("nu+dp_dx to Re coupling", pass);
 }
 
 // ============================================================================
@@ -417,8 +385,6 @@ y_max = 1.0
 // ============================================================================
 
 void test_valid_config_basic() {
-    std::cout << "Testing valid basic configuration... ";
-
     std::string cfg = R"(
 Nx = 64
 Ny = 64
@@ -432,16 +398,14 @@ CFL_max = 0.5
     config.verbose = false;
     config.load(filename);  // Should not throw or exit
 
-    assert(config.Nx == 64);
-    assert(config.Ny == 64);
+    bool pass = (config.Nx == 64);
+    pass = pass && (config.Ny == 64);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Valid basic configuration", pass);
 }
 
 void test_valid_config_3d() {
-    std::cout << "Testing valid 3D configuration... ";
-
     std::string cfg = R"(
 Nx = 32
 Ny = 64
@@ -454,16 +418,14 @@ poisson_solver = mg
     config.verbose = false;
     config.load(filename);
 
-    assert(config.Nz == 16);
-    assert(config.poisson_solver == PoissonSolverType::MG);
+    bool pass = (config.Nz == 16);
+    pass = pass && (config.poisson_solver == PoissonSolverType::MG);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Valid 3D configuration", pass);
 }
 
 void test_valid_config_stretched_mg() {
-    std::cout << "Testing stretched mesh with multigrid... ";
-
     // Stretched mesh is valid with MG solver
     std::string cfg = R"(
 Nx = 32
@@ -478,23 +440,21 @@ poisson_solver = mg
     config.verbose = false;
     config.load(filename);
 
-    assert(config.stretch_y == true);
-    assert(std::abs(config.stretch_beta - 2.5) < 1e-10);
+    bool pass = (config.stretch_y == true);
+    pass = pass && (std::abs(config.stretch_beta - 2.5) < 1e-10);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Stretched mesh with multigrid", pass);
 }
 
 void test_output_dir_normalization() {
-    std::cout << "Testing output directory normalization... ";
-
     // Without trailing slash
     std::string cfg1 = "output_dir = results\n";
     std::string filename1 = create_temp_config(cfg1);
     Config config1;
     config1.verbose = false;
     config1.load(filename1);
-    assert(config1.output_dir == "results/");
+    bool pass = (config1.output_dir == "results/");
     remove_temp_file(filename1);
 
     // With trailing slash
@@ -503,15 +463,13 @@ void test_output_dir_normalization() {
     Config config2;
     config2.verbose = false;
     config2.load(filename2);
-    assert(config2.output_dir == "results/");
+    pass = pass && (config2.output_dir == "results/");
     remove_temp_file(filename2);
 
-    std::cout << "PASSED\n";
+    record("Output directory normalization", pass);
 }
 
 void test_default_values() {
-    std::cout << "Testing default values... ";
-
     // Empty config should use all defaults
     std::string cfg = "";
     std::string filename = create_temp_config(cfg);
@@ -521,30 +479,28 @@ void test_default_values() {
     config.load(filename);
 
     // Check some defaults
-    assert(config.Nx == 64);
-    assert(config.Ny == 64);
-    assert(config.Nz == 1);
-    assert(std::abs(config.CFL_max - 0.5) < 1e-10);
-    assert(config.adaptive_dt == true);
-    assert(config.turb_model == TurbulenceModelType::None);
-    assert(config.poisson_solver == PoissonSolverType::Auto);
-    assert(config.convective_scheme == ConvectiveScheme::Central);
-    assert(config.simulation_mode == SimulationMode::Steady);
+    bool pass = (config.Nx == 64);
+    pass = pass && (config.Ny == 64);
+    pass = pass && (config.Nz == 1);
+    pass = pass && (std::abs(config.CFL_max - 0.5) < 1e-10);
+    pass = pass && (config.adaptive_dt == true);
+    pass = pass && (config.turb_model == TurbulenceModelType::None);
+    pass = pass && (config.poisson_solver == PoissonSolverType::Auto);
+    pass = pass && (config.convective_scheme == ConvectiveScheme::Central);
+    pass = pass && (config.simulation_mode == SimulationMode::Steady);
 
     remove_temp_file(filename);
-    std::cout << "PASSED\n";
+    record("Default values", pass);
 }
 
 void test_legacy_flags() {
-    std::cout << "Testing legacy flags... ";
-
     // use_hypre should map to poisson_solver = HYPRE
     std::string cfg1 = "use_hypre = true\n";
     std::string filename1 = create_temp_config(cfg1);
     Config config1;
     config1.verbose = false;
     config1.load(filename1);
-    assert(config1.poisson_solver == PoissonSolverType::HYPRE);
+    bool pass = (config1.poisson_solver == PoissonSolverType::HYPRE);
     remove_temp_file(filename1);
 
     // use_fft should map to poisson_solver = FFT
@@ -554,10 +510,10 @@ void test_legacy_flags() {
     Config config2;
     config2.verbose = false;
     config2.load(filename2);
-    assert(config2.poisson_solver == PoissonSolverType::FFT);
+    pass = pass && (config2.poisson_solver == PoissonSolverType::FFT);
     remove_temp_file(filename2);
 
-    std::cout << "PASSED\n";
+    record("Legacy flags", pass);
 }
 
 // ============================================================================
@@ -565,38 +521,35 @@ void test_legacy_flags() {
 // ============================================================================
 
 int main() {
-    std::cout << "=== Configuration Module Tests ===\n\n";
+    return nncfd::test::harness::run("Configuration Module Tests", [] {
+        // Parsing tests
+        test_parse_basic_key_value();
+        test_parse_whitespace_handling();
+        test_parse_comments();
+        test_parse_empty_file();
+        test_parse_missing_equals();
+        test_parse_nonexistent_file();
 
-    // Parsing tests
-    test_parse_basic_key_value();
-    test_parse_whitespace_handling();
-    test_parse_comments();
-    test_parse_empty_file();
-    test_parse_missing_equals();
-    test_parse_nonexistent_file();
+        // Type conversion tests
+        test_load_integers();
+        test_load_doubles();
+        test_load_booleans();
+        test_load_enum_turb_model();
+        test_load_enum_poisson_solver();
+        test_load_enum_convective_scheme();
+        test_load_enum_simulation_mode();
 
-    // Type conversion tests
-    test_load_integers();
-    test_load_doubles();
-    test_load_booleans();
-    test_load_enum_turb_model();
-    test_load_enum_poisson_solver();
-    test_load_enum_convective_scheme();
-    test_load_enum_simulation_mode();
+        // Reynolds number coupling tests
+        test_re_nu_coupling();
+        test_re_dpdx_coupling();
+        test_nu_dpdx_coupling();
 
-    // Reynolds number coupling tests
-    test_re_nu_coupling();
-    test_re_dpdx_coupling();
-    test_nu_dpdx_coupling();
-
-    // Validation tests (valid configs)
-    test_valid_config_basic();
-    test_valid_config_3d();
-    test_valid_config_stretched_mg();
-    test_output_dir_normalization();
-    test_default_values();
-    test_legacy_flags();
-
-    std::cout << "\nAll tests PASSED!\n";
-    return 0;
+        // Validation tests (valid configs)
+        test_valid_config_basic();
+        test_valid_config_3d();
+        test_valid_config_stretched_mg();
+        test_output_dir_normalization();
+        test_default_values();
+        test_legacy_flags();
+    });
 }
