@@ -8,6 +8,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -15,6 +16,7 @@
 #include <vector>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // Test parameters
 constexpr int NX = 32;
@@ -202,11 +204,8 @@ void init_poiseuille_3d(RANSSolver& solver, const Mesh& mesh, double dp_dx, doub
 //=============================================================================
 // TEST 1: Degenerate case - 3D with Nz=1 should exactly match 2D
 //=============================================================================
-bool test_degenerate_nz1() {
-    std::cout << "Test 1: Degenerate case (Nz=1 vs 2D)...\n";
-
+void test_degenerate_nz1() {
     // ---- Run 2D solver ----
-    std::cout << "  Running 2D solver... ";
     Mesh mesh_2d;
     mesh_2d.init_uniform(NX, NY, 0.0, LX, 0.0, LY);
 
@@ -228,10 +227,8 @@ bool test_degenerate_nz1() {
 #endif
 
     auto [res_2d, iter_2d] = solver_2d.solve_steady();
-    std::cout << "done (iters=" << iter_2d << ", res=" << std::scientific << res_2d << ")\n";
 
     // ---- Run 3D solver with Nz=1 ----
-    std::cout << "  Running 3D solver (Nz=1)... ";
     Mesh mesh_3d;
     mesh_3d.init_uniform(NX, NY, 1, 0.0, LX, 0.0, LY, 0.0, LZ);
 
@@ -256,10 +253,8 @@ bool test_degenerate_nz1() {
 #endif
 
     auto [res_3d, iter_3d] = solver_3d.solve_steady();
-    std::cout << "done (iters=" << iter_3d << ", res=" << std::scientific << res_3d << ")\n";
 
     // ---- Compare results ----
-    std::cout << "  Comparing results...\n";
 
     auto u_2d = extract_2d_u(solver_2d, mesh_2d);
     auto v_2d = extract_2d_v(solver_2d, mesh_2d);
@@ -269,57 +264,24 @@ bool test_degenerate_nz1() {
     auto v_3d = extract_3d_v_slice(solver_3d, mesh_3d, k_slice);
 
     double u_l2_err = compute_l2_error(u_2d, u_3d);
-    double u_linf_err = compute_linf_error(u_2d, u_3d);
     double v_l2_err = compute_l2_error(v_2d, v_3d);
-    double v_linf_err = compute_linf_error(v_2d, v_3d);
 
-    double div_2d = compute_max_div_2d(solver_2d, mesh_2d);
     // For Nz=1, use slice version at k=0 to match 2D behavior
     double div_3d = mesh_3d.is2D() ? compute_max_div_3d_slice(solver_3d, mesh_3d, 0)
                                    : compute_max_div_3d(solver_3d, mesh_3d);
 
-    std::cout << std::fixed << std::setprecision(6);
-    std::cout << "    u L2 error:   " << std::scientific << u_l2_err << "\n";
-    std::cout << "    u Linf error: " << std::scientific << u_linf_err << "\n";
-    std::cout << "    v L2 error:   " << std::scientific << v_l2_err << "\n";
-    std::cout << "    v Linf error: " << std::scientific << v_linf_err << "\n";
-    std::cout << "    2D max div:   " << std::scientific << div_2d << "\n";
-    std::cout << "    3D max div:   " << std::scientific << div_3d << "\n";
-    std::cout << "    Iter diff:    " << std::abs(iter_2d - iter_3d) << " ("
-              << std::fixed << std::setprecision(1)
-              << 100.0 * std::abs(iter_2d - iter_3d) / std::max(iter_2d, iter_3d) << "%)\n";
-
     // Check pass criteria
-    bool passed = true;
-    if (u_l2_err > 1e-8) {
-        std::cout << "  FAILED: u L2 error too large (> 1e-8)\n";
-        passed = false;
-    }
-    if (v_l2_err > 1e-8) {
-        std::cout << "  FAILED: v L2 error too large (> 1e-8)\n";
-        passed = false;
-    }
-    if (div_3d > 1e-8) {
-        std::cout << "  FAILED: 3D divergence too large (> 1e-8)\n";
-        passed = false;
-    }
-
-    if (passed) {
-        std::cout << "  PASSED\n";
-    }
-    return passed;
+    bool passed = (u_l2_err <= 1e-8) && (v_l2_err <= 1e-8) && (div_3d <= 1e-8);
+    record("Degenerate case (Nz=1 vs 2D)", passed);
 }
 
 //=============================================================================
 // TEST 2: Z-invariant flow - 3D with Nz=4 should match 2D at every z-plane
 //=============================================================================
-bool test_z_invariant_poiseuille() {
-    std::cout << "\nTest 2: Z-invariant Poiseuille (Nz=4 vs 2D)...\n";
-
+void test_z_invariant_poiseuille() {
     constexpr int NZ = 4;  // Use moderate z resolution to test 3D properly
 
     // ---- Run 2D solver ----
-    std::cout << "  Running 2D solver... ";
     Mesh mesh_2d;
     mesh_2d.init_uniform(NX, NY, 0.0, LX, 0.0, LY);
 
@@ -340,11 +302,9 @@ bool test_z_invariant_poiseuille() {
     solver_2d.sync_to_gpu();  // Upload initial conditions to GPU
 #endif
 
-    auto [res_2d, iter_2d] = solver_2d.solve_steady();
-    std::cout << "done (iters=" << iter_2d << ", res=" << std::scientific << res_2d << ")\n";
+    [[maybe_unused]] auto [res_2d, iter_2d] = solver_2d.solve_steady();
 
     // ---- Run 3D solver with Nz=4 ----
-    std::cout << "  Running 3D solver (Nz=" << NZ << ")... ";
     Mesh mesh_3d;
     mesh_3d.init_uniform(NX, NY, NZ, 0.0, LX, 0.0, LY, 0.0, LZ);
 
@@ -376,11 +336,9 @@ bool test_z_invariant_poiseuille() {
     solver_3d.sync_to_gpu();
 #endif
 
-    auto [res_3d, iter_3d] = solver_3d.solve_steady();
-    std::cout << "done (iters=" << iter_3d << ", res=" << std::scientific << res_3d << ")\n";
+    [[maybe_unused]] auto [res_3d, iter_3d] = solver_3d.solve_steady();
 
     // ---- Compare each z-plane to 2D ----
-    std::cout << "  Comparing z-planes to 2D reference...\n";
 
     auto u_2d = extract_2d_u(solver_2d, mesh_2d);
     auto v_2d = extract_2d_v(solver_2d, mesh_2d);
@@ -397,20 +355,11 @@ bool test_z_invariant_poiseuille() {
 
         max_u_err = std::max(max_u_err, u_err);
         max_v_err = std::max(max_v_err, v_err);
-
-        std::cout << "    z-plane " << (k - mesh_3d.k_begin()) << ": u_err="
-                  << std::scientific << u_err << ", v_err=" << v_err << "\n";
     }
 
     double div_3d = compute_max_div_3d(solver_3d, mesh_3d);
 
-    std::cout << "    Max u error across all planes: " << std::scientific << max_u_err << "\n";
-    std::cout << "    Max v error across all planes: " << std::scientific << max_v_err << "\n";
-    std::cout << "    3D max divergence: " << std::scientific << div_3d << "\n";
-
     // Check z-invariance: all z-planes should be identical
-    std::cout << "  Checking z-invariance (all planes should be identical)...\n";
-
     auto u_plane0 = extract_3d_u_slice(solver_3d, mesh_3d, mesh_3d.k_begin());
     double max_z_variation = 0.0;
 
@@ -419,45 +368,17 @@ bool test_z_invariant_poiseuille() {
         double z_err = compute_linf_error(u_plane0, u_plane_k);
         max_z_variation = std::max(max_z_variation, z_err);
     }
-    std::cout << "    Max z-variation: " << std::scientific << max_z_variation << "\n";
 
     // Check pass criteria
-    // Tolerances are realistic for time-stepping CFD to steady state:
-    // - u error < 1e-3 (within 2% of max velocity ~ 0.05)
-    // - v error < 1e-3 (small transverse velocity)
-    // - divergence < 1e-4 (reasonably incompressible)
-    // - z-variation < 5e-4 (z-invariance preserved within iteration tolerance)
-    // Note: 3D CPU solver converges slower than 2D/GPU due to sequential Red-Black GS
-    bool passed = true;
-    if (max_u_err > 1e-3) {
-        std::cout << "  FAILED: u error too large (> 1e-3)\n";
-        passed = false;
-    }
-    if (max_v_err > 1e-3) {
-        std::cout << "  FAILED: v error too large (> 1e-3)\n";
-        passed = false;
-    }
-    if (div_3d > 1e-4) {
-        std::cout << "  FAILED: 3D divergence too large (> 1e-4)\n";
-        passed = false;
-    }
-    if (max_z_variation > 5e-4) {
-        std::cout << "  FAILED: z-variation too large (> 5e-4)\n";
-        passed = false;
-    }
-
-    if (passed) {
-        std::cout << "  PASSED\n";
-    }
-    return passed;
+    bool passed = (max_u_err <= 1e-3) && (max_v_err <= 1e-3) &&
+                  (div_3d <= 1e-4) && (max_z_variation <= 5e-4);
+    record("Z-invariant Poiseuille (Nz=4 vs 2D)", passed);
 }
 
 //=============================================================================
 // TEST 3: Verify w stays zero for z-invariant flow
 //=============================================================================
-bool test_w_stays_zero() {
-    std::cout << "\nTest 3: Verify w velocity stays zero for z-invariant flow...\n";
-
+void test_w_stays_zero() {
     constexpr int NZ = 4;
 
     Mesh mesh;
@@ -491,9 +412,7 @@ bool test_w_stays_zero() {
     solver.sync_to_gpu();
 #endif
 
-    std::cout << "  Running 3D solver (Nz=" << NZ << ")... ";
-    auto [res, iter] = solver.solve_steady();
-    std::cout << "done (iters=" << iter << ", res=" << std::scientific << res << ")\n";
+    [[maybe_unused]] auto [res, iter] = solver.solve_steady();
 
     // Check max |w| and max |u|
     double max_w = 0.0;
@@ -517,43 +436,20 @@ bool test_w_stays_zero() {
         }
     }
 
-    std::cout << "  Max |u|: " << std::scientific << max_u << "\n";
-    std::cout << "  Max |w|: " << std::scientific << max_w << "\n";
-
     // Tolerance is based on solver convergence (residual ~1e-5) and max|u| (~0.05)
     // w/max_u ratio should be < 1e-3 (w stays small relative to main flow)
     double w_relative = max_w / std::max(max_u, 1e-10);
-    std::cout << "  |w|/|u| ratio: " << std::scientific << w_relative << "\n";
 
-    bool passed = (w_relative < 1e-3);
-    if (passed) {
-        std::cout << "  PASSED\n";
-    } else {
-        std::cout << "  FAILED: w should be ~0 for z-invariant flow (|w|/|u| > 1e-3)\n";
-    }
-    return passed;
+    record("Verify w stays zero for z-invariant flow", w_relative < 1e-3);
 }
 
 //=============================================================================
 // MAIN
 //=============================================================================
 int main() {
-    std::cout << "=== 2D vs 3D Solver Comparison Tests ===\n\n";
-
-    int passed = 0;
-    int total = 0;
-
-    total++; if (test_degenerate_nz1()) passed++;
-    total++; if (test_z_invariant_poiseuille()) passed++;
-    total++; if (test_w_stays_zero()) passed++;
-
-    std::cout << "\n=== Results: " << passed << "/" << total << " tests passed ===\n";
-
-    if (passed == total) {
-        std::cout << "[SUCCESS] 3D solver matches 2D reference!\n";
-        return 0;
-    } else {
-        std::cout << "[FAILURE] 3D solver does not match 2D\n";
-        return 1;
-    }
+    return nncfd::test::harness::run("2D vs 3D Solver Comparison Tests", [] {
+        test_degenerate_nz1();
+        test_z_invariant_poiseuille();
+        test_w_stays_zero();
+    });
 }

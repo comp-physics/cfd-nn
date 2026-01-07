@@ -10,19 +10,18 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "poisson_solver.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <cmath>
-#include <cassert>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // ============================================================================
 // High Aspect Ratio Tests
 // ============================================================================
 
 void test_high_aspect_ratio_100_to_1() {
-    std::cout << "Testing 100:1 aspect ratio grid (200x2)... ";
-
     Mesh mesh;
     // 200 cells in x, 2 cells in y → aspect ratio 100:1
     mesh.init_uniform(200, 2, 0.0, 10.0, 0.0, 0.1);
@@ -46,18 +45,14 @@ void test_high_aspect_ratio_100_to_1() {
             }
         }
     }
-    assert(correct);
 
     // Verify mesh dimensions
-    assert(std::abs(mesh.dx - 0.05) < 1e-10);
-    assert(std::abs(mesh.dy - 0.05) < 1e-10);
+    bool dims_ok = (std::abs(mesh.dx - 0.05) < 1e-10) && (std::abs(mesh.dy - 0.05) < 1e-10);
 
-    std::cout << "PASSED\n";
+    record("High aspect ratio 100:1 (200x2)", correct && dims_ok);
 }
 
 void test_high_aspect_ratio_1_to_100() {
-    std::cout << "Testing 1:100 aspect ratio grid (2x200)... ";
-
     Mesh mesh;
     // 2 cells in x, 200 cells in y → aspect ratio 1:100
     mesh.init_uniform(2, 200, 0.0, 0.1, 0.0, 10.0);
@@ -80,14 +75,11 @@ void test_high_aspect_ratio_1_to_100() {
             }
         }
     }
-    assert(correct);
 
-    std::cout << "PASSED\n";
+    record("High aspect ratio 1:100 (2x200)", correct);
 }
 
 void test_poisson_high_aspect_ratio() {
-    std::cout << "Testing Poisson solver on high aspect ratio grid... ";
-
     Mesh mesh;
     // 64x8 grid - aspect ratio 8:1
     mesh.init_uniform(64, 8, 0.0, 8.0, 0.0, 1.0);
@@ -105,10 +97,10 @@ void test_poisson_high_aspect_ratio() {
     cfg.max_iter = 10000;
     cfg.omega = 1.5;
 
-    int iters = solver.solve(rhs, p, cfg);
+    solver.solve(rhs, p, cfg);
 
     // Should converge
-    assert(solver.residual() < 1e-4);
+    bool converged = solver.residual() < 1e-4;
 
     // Solution should be finite
     bool all_finite = true;
@@ -119,9 +111,8 @@ void test_poisson_high_aspect_ratio() {
             }
         }
     }
-    assert(all_finite);
 
-    std::cout << "PASSED (iters=" << iters << ")\n";
+    record("Poisson on high aspect ratio grid", converged && all_finite);
 }
 
 // ============================================================================
@@ -129,8 +120,6 @@ void test_poisson_high_aspect_ratio() {
 // ============================================================================
 
 void test_small_grid_4x4() {
-    std::cout << "Testing minimum viable grid (4x4)... ";
-
     Mesh mesh;
     mesh.init_uniform(4, 4, 0.0, 1.0, 0.0, 1.0);
 
@@ -168,14 +157,11 @@ void test_small_grid_4x4() {
             }
         }
     }
-    assert(all_finite);
 
-    std::cout << "PASSED\n";
+    record("Minimum viable grid (4x4)", all_finite);
 }
 
 void test_small_grid_8x8() {
-    std::cout << "Testing small grid (8x8)... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -201,16 +187,12 @@ void test_small_grid_8x8() {
     cfg.max_iter = 5000;
     cfg.omega = 1.5;
 
-    int iters = solver.solve(rhs, p, cfg);
+    solver.solve(rhs, p, cfg);
 
-    assert(solver.residual() < 1e-4);
-
-    std::cout << "PASSED (iters=" << iters << ")\n";
+    record("Small grid (8x8)", solver.residual() < 1e-4);
 }
 
 void test_small_grid_poisson_convergence() {
-    std::cout << "Testing Poisson convergence on 4x4 grid... ";
-
     Mesh mesh;
     mesh.init_uniform(4, 4, 0.0, 1.0, 0.0, 1.0);
 
@@ -227,12 +209,10 @@ void test_small_grid_poisson_convergence() {
     cfg.max_iter = 1000;
     cfg.omega = 1.2;
 
-    int iters = solver.solve(rhs, p, cfg);
+    solver.solve(rhs, p, cfg);
 
     // Even on tiny grid, should converge
-    assert(solver.residual() < 1e-3);
-
-    std::cout << "PASSED (iters=" << iters << ", res=" << solver.residual() << ")\n";
+    record("Poisson convergence on 4x4 grid", solver.residual() < 1e-3);
 }
 
 // ============================================================================
@@ -240,8 +220,6 @@ void test_small_grid_poisson_convergence() {
 // ============================================================================
 
 void test_stretched_mesh_moderate() {
-    std::cout << "Testing moderately stretched mesh (beta=2.0)... ";
-
     Mesh mesh;
     mesh.init_stretched_y(32, 64, 0.0, 2.0, -1.0, 1.0, Mesh::tanh_stretching(2.0));
 
@@ -250,7 +228,7 @@ void test_stretched_mesh_moderate() {
     double dy_center = mesh.y(mesh.Ny / 2 + 1) - mesh.y(mesh.Ny / 2);
 
     // Wall cells should be smaller than center cells
-    assert(dy_wall < dy_center);
+    bool stretched = dy_wall < dy_center;
 
     // Run a simple Poisson solve
     ScalarField rhs(mesh, 1.0);
@@ -266,16 +244,12 @@ void test_stretched_mesh_moderate() {
     cfg.max_iter = 5000;
     cfg.omega = 1.5;
 
-    int iters = solver.solve(rhs, p, cfg);
+    solver.solve(rhs, p, cfg);
 
-    assert(solver.residual() < 1e-4);
-
-    std::cout << "PASSED (dy_wall=" << dy_wall << ", dy_center=" << dy_center << ")\n";
+    record("Moderately stretched mesh (beta=2.0)", stretched && solver.residual() < 1e-4);
 }
 
 void test_stretched_mesh_aggressive() {
-    std::cout << "Testing aggressively stretched mesh (beta=5.0)... ";
-
     Mesh mesh;
     mesh.init_stretched_y(32, 64, 0.0, 2.0, -1.0, 1.0, Mesh::tanh_stretching(5.0));
 
@@ -285,7 +259,7 @@ void test_stretched_mesh_aggressive() {
 
     // Should have significant ratio
     double ratio = dy_center / dy_wall;
-    assert(ratio > 2.0);
+    bool good_ratio = ratio > 2.0;
 
     // Still should produce valid mesh
     bool valid = true;
@@ -295,9 +269,8 @@ void test_stretched_mesh_aggressive() {
             valid = false;
         }
     }
-    assert(valid);
 
-    std::cout << "PASSED (stretch ratio=" << ratio << ")\n";
+    record("Aggressively stretched mesh (beta=5.0)", good_ratio && valid);
 }
 
 // ============================================================================
@@ -305,13 +278,10 @@ void test_stretched_mesh_aggressive() {
 // ============================================================================
 
 void test_minimal_3d_nz2() {
-    std::cout << "Testing minimal 3D grid (Nz=2)... ";
-
     Mesh mesh;
     mesh.init_uniform(16, 32, 2, 0.0, 1.0, -0.5, 0.5, 0.0, 0.1);
 
-    assert(mesh.Nz == 2);
-    assert(!mesh.is2D());
+    bool pass = (mesh.Nz == 2) && (!mesh.is2D());
 
     Config config;
     config.nu = 0.01;
@@ -338,25 +308,21 @@ void test_minimal_3d_nz2() {
         solver.step();
     }
 
-    std::cout << "PASSED\n";
+    record("Minimal 3D grid (Nz=2)", pass);
 }
 
 void test_2d_vs_3d_code_path() {
-    std::cout << "Testing 2D vs 3D code path selection... ";
-
     // 2D mesh (Nz=1)
     Mesh mesh2d;
     mesh2d.init_uniform(16, 32, 0.0, 1.0, -0.5, 0.5);
-    assert(mesh2d.is2D());
-    assert(mesh2d.Nz == 1);
+    bool is2d_ok = mesh2d.is2D() && (mesh2d.Nz == 1);
 
     // 3D mesh (Nz>1)
     Mesh mesh3d;
     mesh3d.init_uniform(16, 32, 8, 0.0, 1.0, -0.5, 0.5, 0.0, 0.5);
-    assert(!mesh3d.is2D());
-    assert(mesh3d.Nz == 8);
+    bool is3d_ok = !mesh3d.is2D() && (mesh3d.Nz == 8);
 
-    std::cout << "PASSED\n";
+    record("2D vs 3D code path selection", is2d_ok && is3d_ok);
 }
 
 // ============================================================================
@@ -364,8 +330,6 @@ void test_2d_vs_3d_code_path() {
 // ============================================================================
 
 void test_moderate_grid_stability() {
-    std::cout << "Testing moderate grid stability (64x64)... ";
-
     Mesh mesh;
     mesh.init_uniform(64, 64, 0.0, 2.0, -1.0, 1.0);
 
@@ -397,7 +361,7 @@ void test_moderate_grid_stability() {
     }
 
     // Should remain stable (residual bounded)
-    assert(max_residual < 10.0);
+    bool stable = max_residual < 10.0;
 
     // Check for NaN/Inf
     const VectorField& vel = solver.velocity();
@@ -409,14 +373,11 @@ void test_moderate_grid_stability() {
             }
         }
     }
-    assert(all_finite);
 
-    std::cout << "PASSED\n";
+    record("Moderate grid stability (64x64)", stable && all_finite);
 }
 
 void test_non_square_domain() {
-    std::cout << "Testing non-square domain (Lx=10, Ly=1)... ";
-
     Mesh mesh;
     mesh.init_uniform(100, 20, 0.0, 10.0, 0.0, 1.0);
 
@@ -438,11 +399,12 @@ void test_non_square_domain() {
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 
+    bool pass = true;
     for (int i = 0; i < 20; ++i) {
         solver.step();
     }
 
-    std::cout << "PASSED\n";
+    record("Non-square domain (Lx=10, Ly=1)", pass);
 }
 
 // ============================================================================
@@ -450,30 +412,27 @@ void test_non_square_domain() {
 // ============================================================================
 
 int main() {
-    std::cout << "=== Mesh Edge Cases Tests ===\n\n";
+    return nncfd::test::harness::run("Mesh Edge Cases Tests", [] {
+        // High aspect ratio tests
+        test_high_aspect_ratio_100_to_1();
+        test_high_aspect_ratio_1_to_100();
+        test_poisson_high_aspect_ratio();
 
-    // High aspect ratio tests
-    test_high_aspect_ratio_100_to_1();
-    test_high_aspect_ratio_1_to_100();
-    test_poisson_high_aspect_ratio();
+        // Small grid tests
+        test_small_grid_4x4();
+        test_small_grid_8x8();
+        test_small_grid_poisson_convergence();
 
-    // Small grid tests
-    test_small_grid_4x4();
-    test_small_grid_8x8();
-    test_small_grid_poisson_convergence();
+        // Mesh stretching tests
+        test_stretched_mesh_moderate();
+        test_stretched_mesh_aggressive();
 
-    // Mesh stretching tests
-    test_stretched_mesh_moderate();
-    test_stretched_mesh_aggressive();
+        // Mixed 2D/3D tests
+        test_minimal_3d_nz2();
+        test_2d_vs_3d_code_path();
 
-    // Mixed 2D/3D tests
-    test_minimal_3d_nz2();
-    test_2d_vs_3d_code_path();
-
-    // Stress tests
-    test_moderate_grid_stability();
-    test_non_square_domain();
-
-    std::cout << "\nAll tests PASSED!\n";
-    return 0;
+        // Stress tests
+        test_moderate_grid_stability();
+        test_non_square_domain();
+    });
 }

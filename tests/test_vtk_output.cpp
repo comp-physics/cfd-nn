@@ -9,6 +9,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -18,6 +19,7 @@
 #include <string>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 namespace {
 // Helper to check if file exists and abort if not
@@ -48,8 +50,6 @@ std::string read_file(const std::string& filename) {
 // ============================================================================
 
 void test_vtk_file_created() {
-    std::cout << "Testing VTK file creation... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -75,15 +75,14 @@ void test_vtk_file_created() {
 
     solver.write_vtk(filename);
 
-    require_file_exists(filename);
+    std::ifstream f(filename);
+    bool exists = f.good();
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK file creation", exists);
 }
 
 void test_vtk_header_format() {
-    std::cout << "Testing VTK header format... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -109,27 +108,19 @@ void test_vtk_header_format() {
 
     std::string content = read_file(filename);
 
-    // Check VTK header
-    if (content.find("# vtk DataFile Version") == std::string::npos) {
-        throw std::runtime_error("VTK header missing version string");
-    }
-    if (content.find("ASCII") == std::string::npos &&
-        content.find("BINARY") == std::string::npos) {
-        throw std::runtime_error("VTK file missing ASCII/BINARY format");
-    }
-    if (content.find("STRUCTURED_GRID") == std::string::npos &&
-        content.find("RECTILINEAR_GRID") == std::string::npos &&
-        content.find("STRUCTURED_POINTS") == std::string::npos) {
-        throw std::runtime_error("VTK file missing grid type");
-    }
+    bool pass = true;
+    pass = pass && (content.find("# vtk DataFile Version") != std::string::npos);
+    pass = pass && (content.find("ASCII") != std::string::npos ||
+                    content.find("BINARY") != std::string::npos);
+    pass = pass && (content.find("STRUCTURED_GRID") != std::string::npos ||
+                    content.find("RECTILINEAR_GRID") != std::string::npos ||
+                    content.find("STRUCTURED_POINTS") != std::string::npos);
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK header format", pass);
 }
 
 void test_vtk_dimensions_match() {
-    std::cout << "Testing VTK dimensions match mesh... ";
-
     int Nx = 16, Ny = 32;
     Mesh mesh;
     mesh.init_uniform(Nx, Ny, 0.0, 1.0, 0.0, 2.0);
@@ -156,30 +147,20 @@ void test_vtk_dimensions_match() {
 
     std::string content = read_file(filename);
 
-    // Look for DIMENSIONS line
-    // Format: DIMENSIONS Nx Ny Nz
+    bool pass = true;
     std::string dims_keyword = "DIMENSIONS";
     auto pos = content.find(dims_keyword);
 
     if (pos != std::string::npos) {
-        // Parse dimensions
         std::istringstream iss(content.substr(pos));
         std::string keyword;
         int dim_x, dim_y, dim_z;
         iss >> keyword >> dim_x >> dim_y >> dim_z;
-
-        // Dimensions should be Nx+1, Ny+1, Nz+1 for cell-centered data
-        // or Nx, Ny, 1 depending on format
-        if (dim_x < Nx) {
-            throw std::runtime_error("VTK x-dimension too small: " + std::to_string(dim_x) + " < " + std::to_string(Nx));
-        }
-        if (dim_y < Ny) {
-            throw std::runtime_error("VTK y-dimension too small: " + std::to_string(dim_y) + " < " + std::to_string(Ny));
-        }
+        pass = (dim_x >= Nx) && (dim_y >= Ny);
     }
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK dimensions match mesh", pass);
 }
 
 // ============================================================================
@@ -187,8 +168,6 @@ void test_vtk_dimensions_match() {
 // ============================================================================
 
 void test_vtk_velocity_data() {
-    std::cout << "Testing VTK contains velocity data... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -214,23 +193,15 @@ void test_vtk_velocity_data() {
 
     std::string content = read_file(filename);
 
-    // Check for velocity field marker
-    // Could be "VECTORS velocity" or "velocity" or similar
     bool has_velocity = (content.find("velocity") != std::string::npos) ||
                         (content.find("VECTORS") != std::string::npos) ||
                         (content.find("u_velocity") != std::string::npos);
 
-    if (!has_velocity) {
-        throw std::runtime_error("VTK file missing velocity data");
-    }
-
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK contains velocity data", has_velocity);
 }
 
 void test_vtk_pressure_data() {
-    std::cout << "Testing VTK contains pressure data... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -259,17 +230,12 @@ void test_vtk_pressure_data() {
 
     std::string content = read_file(filename);
 
-    // Check for pressure field
     bool has_pressure = (content.find("pressure") != std::string::npos) ||
                         (content.find("SCALARS p") != std::string::npos) ||
                         (content.find("p ") != std::string::npos);
 
-    if (!has_pressure) {
-        throw std::runtime_error("VTK file missing pressure data");
-    }
-
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK contains pressure data", has_pressure);
 }
 
 // ============================================================================
@@ -277,8 +243,6 @@ void test_vtk_pressure_data() {
 // ============================================================================
 
 void test_vtk_after_gpu_compute() {
-    std::cout << "Testing VTK output after GPU compute... ";
-
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 1.0, -0.5, 0.5);
 
@@ -309,25 +273,16 @@ void test_vtk_after_gpu_compute() {
     std::string filename = "/tmp/test_vtk_gpu.vtk";
     solver.write_vtk(filename);
 
-    // Verify file was created and has content
-    require_file_exists(filename);
-
     std::string content = read_file(filename);
-    if (content.length() <= 100) {
-        throw std::runtime_error("VTK file too small: " + std::to_string(content.length()) + " bytes");
-    }
 
-    // Verify no NaN in output
-    if (content.find("nan") != std::string::npos ||
-        content.find("NaN") != std::string::npos) {
-        throw std::runtime_error("VTK file contains NaN values");
-    }
-    if (content.find("inf") != std::string::npos) {
-        throw std::runtime_error("VTK file contains Inf values");
-    }
+    bool pass = true;
+    pass = pass && (content.length() > 100);
+    pass = pass && (content.find("nan") == std::string::npos);
+    pass = pass && (content.find("NaN") == std::string::npos);
+    pass = pass && (content.find("inf") == std::string::npos);
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK output after GPU compute", pass);
 }
 
 // ============================================================================
@@ -335,8 +290,6 @@ void test_vtk_after_gpu_compute() {
 // ============================================================================
 
 void test_vtk_sequential_outputs() {
-    std::cout << "Testing sequential VTK outputs... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -359,6 +312,8 @@ void test_vtk_sequential_outputs() {
     solver.initialize_uniform(0.5, 0.0);
 
     std::vector<std::string> files;
+    bool pass = true;
+
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 5; ++j) {
             solver.step();
@@ -371,7 +326,8 @@ void test_vtk_sequential_outputs() {
 
     // All files should exist
     for (const auto& f : files) {
-        require_file_exists(f);
+        std::ifstream fin(f);
+        if (!fin.good()) pass = false;
     }
 
     // Clean up
@@ -379,7 +335,7 @@ void test_vtk_sequential_outputs() {
         remove_file(f);
     }
 
-    std::cout << "PASSED\n";
+    record("Sequential VTK outputs", pass);
 }
 
 // ============================================================================
@@ -387,8 +343,6 @@ void test_vtk_sequential_outputs() {
 // ============================================================================
 
 void test_vtk_3d_output() {
-    std::cout << "Testing 3D VTK output... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
 
@@ -418,17 +372,11 @@ void test_vtk_3d_output() {
     std::string filename = "/tmp/test_vtk_3d.vtk";
     solver.write_vtk(filename);
 
-    require_file_exists(filename);
-
     std::string content = read_file(filename);
-
-    // Should have 3D dimensions
-    if (content.find("DIMENSIONS") == std::string::npos) {
-        throw std::runtime_error("3D VTK file missing DIMENSIONS");
-    }
+    bool pass = (content.find("DIMENSIONS") != std::string::npos);
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("3D VTK output", pass);
 }
 
 // ============================================================================
@@ -436,8 +384,6 @@ void test_vtk_3d_output() {
 // ============================================================================
 
 void test_vtk_turbulence_fields() {
-    std::cout << "Testing VTK with turbulence fields... ";
-
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
 
@@ -469,13 +415,11 @@ void test_vtk_turbulence_fields() {
     std::string filename = "/tmp/test_vtk_turb.vtk";
     solver.write_vtk(filename);
 
-    std::string content = read_file(filename);
-
-    // Verify file was created successfully
-    require_file_exists(filename);
+    std::ifstream fin(filename);
+    bool pass = fin.good();
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK with turbulence fields", pass);
 }
 
 // ============================================================================
@@ -483,8 +427,6 @@ void test_vtk_turbulence_fields() {
 // ============================================================================
 
 void test_vtk_small_grid() {
-    std::cout << "Testing VTK on small grid (4x4)... ";
-
     Mesh mesh;
     mesh.init_uniform(4, 4, 0.0, 1.0, 0.0, 1.0);
 
@@ -508,15 +450,14 @@ void test_vtk_small_grid() {
     std::string filename = "/tmp/test_vtk_small.vtk";
     solver.write_vtk(filename);
 
-    require_file_exists(filename);
+    std::ifstream fin(filename);
+    bool pass = fin.good();
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK on small grid (4x4)", pass);
 }
 
 void test_vtk_overwrite() {
-    std::cout << "Testing VTK file overwrite... ";
-
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
@@ -552,16 +493,11 @@ void test_vtk_overwrite() {
     solver.write_vtk(filename);
     std::string content2 = read_file(filename);
 
-    // Both should be valid VTK files
-    if (content1.find("vtk") == std::string::npos) {
-        throw std::runtime_error("First VTK file missing vtk marker");
-    }
-    if (content2.find("vtk") == std::string::npos) {
-        throw std::runtime_error("Second VTK file missing vtk marker");
-    }
+    bool pass = (content1.find("vtk") != std::string::npos) &&
+                (content2.find("vtk") != std::string::npos);
 
     remove_file(filename);
-    std::cout << "PASSED\n";
+    record("VTK file overwrite", pass);
 }
 
 // ============================================================================
@@ -569,33 +505,30 @@ void test_vtk_overwrite() {
 // ============================================================================
 
 int main() {
-    std::cout << "=== VTK Output Tests ===\n\n";
+    return nncfd::test::harness::run("VTK Output Tests", [] {
+        // File format tests
+        test_vtk_file_created();
+        test_vtk_header_format();
+        test_vtk_dimensions_match();
 
-    // File format tests
-    test_vtk_file_created();
-    test_vtk_header_format();
-    test_vtk_dimensions_match();
+        // Field value tests
+        test_vtk_velocity_data();
+        test_vtk_pressure_data();
 
-    // Field value tests
-    test_vtk_velocity_data();
-    test_vtk_pressure_data();
+        // GPU sync tests
+        test_vtk_after_gpu_compute();
 
-    // GPU sync tests
-    test_vtk_after_gpu_compute();
+        // Multiple output tests
+        test_vtk_sequential_outputs();
 
-    // Multiple output tests
-    test_vtk_sequential_outputs();
+        // 3D tests
+        test_vtk_3d_output();
 
-    // 3D tests
-    test_vtk_3d_output();
+        // Turbulence tests
+        test_vtk_turbulence_fields();
 
-    // Turbulence tests
-    test_vtk_turbulence_fields();
-
-    // Edge cases
-    test_vtk_small_grid();
-    test_vtk_overwrite();
-
-    std::cout << "\nAll tests PASSED!\n";
-    return 0;
+        // Edge cases
+        test_vtk_small_grid();
+        test_vtk_overwrite();
+    });
 }

@@ -10,19 +10,18 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <cmath>
-#include <cassert>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // ============================================================================
 // CFL Condition Tests
 // ============================================================================
 
 void test_cfl_uniform_velocity() {
-    std::cout << "Testing CFL with uniform velocity field... ";
-
     Mesh mesh;
     double dx = 0.1;
     int Nx = 32, Ny = 32;
@@ -58,30 +57,19 @@ void test_cfl_uniform_velocity() {
     // Expected: dt_cfl = CFL_max * dx / u_max = 0.5 * 0.1 / 1.0 = 0.05
     double dt_cfl_expected = config.CFL_max * dx / u_init;
 
-    // Should be CFL-limited (diffusive limit is much larger)
-    // dt_diff = 0.25 * dx² / nu = 0.25 * 0.01 / 1e-6 = 2500 (huge)
-
     // Allow 10% tolerance for interpolation effects
     double relative_error = std::abs(dt_computed - dt_cfl_expected) / dt_cfl_expected;
 
-    if (relative_error > 0.1) {
-        std::cout << "FAILED: dt_computed=" << dt_computed
-                  << ", expected~" << dt_cfl_expected
-                  << ", rel_err=" << relative_error << "\n";
-        std::exit(1);
-    }
-
-    std::cout << "PASSED (dt=" << dt_computed << ", expected~" << dt_cfl_expected << ")\n";
+    record("CFL uniform velocity", relative_error <= 0.1);
 }
 
 void test_cfl_different_cfl_max() {
-    std::cout << "Testing CFL with different CFL_max values... ";
-
     Mesh mesh;
     double dx = 0.1;
     mesh.init_uniform(32, 32, 0.0, 3.2, 0.0, 3.2);
 
     std::vector<double> cfl_values = {0.3, 0.5, 0.8, 1.0};
+    bool pass = true;
 
     for (double cfl : cfl_values) {
         Config config;
@@ -112,13 +100,11 @@ void test_cfl_different_cfl_max() {
 
         double relative_error = std::abs(dt_computed - dt_expected) / dt_expected;
         if (relative_error > 0.15) {
-            std::cout << "FAILED for CFL_max=" << cfl
-                      << ": dt=" << dt_computed << ", expected~" << dt_expected << "\n";
-            std::exit(1);
+            pass = false;
         }
     }
 
-    std::cout << "PASSED\n";
+    record("CFL different CFL_max values", pass);
 }
 
 // ============================================================================
@@ -126,8 +112,6 @@ void test_cfl_different_cfl_max() {
 // ============================================================================
 
 void test_diffusive_limit() {
-    std::cout << "Testing diffusive stability limit... ";
-
     Mesh mesh;
     double dx = 0.1;
     mesh.init_uniform(32, 32, 0.0, 3.2, 0.0, 3.2);
@@ -161,22 +145,12 @@ void test_diffusive_limit() {
     // Expected: dt_diff = 0.25 * dx² / nu = 0.25 * 0.01 / 0.1 = 0.025
     double dt_diff_expected = 0.25 * dx * dx / config.nu;
 
-    // dt_cfl = 0.5 * 0.1 / 0.001 = 50 (huge, so diffusion dominates)
-
     double relative_error = std::abs(dt_computed - dt_diff_expected) / dt_diff_expected;
 
-    if (relative_error > 0.1) {
-        std::cout << "FAILED: dt_computed=" << dt_computed
-                  << ", expected~" << dt_diff_expected << "\n";
-        std::exit(1);
-    }
-
-    std::cout << "PASSED (dt=" << dt_computed << ", expected~" << dt_diff_expected << ")\n";
+    record("Diffusive stability limit", relative_error <= 0.1);
 }
 
 void test_turbulent_viscosity_effect() {
-    std::cout << "Testing turbulent viscosity effect on dt... ";
-
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 2.0, -1.0, 1.0);
 
@@ -203,9 +177,6 @@ void test_turbulent_viscosity_effect() {
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 
-    // Get dt before turbulence develops
-    double dt_initial = solver.compute_adaptive_dt();
-
     // Run some steps to develop nu_t
     for (int i = 0; i < 50; ++i) {
         solver.step();
@@ -213,14 +184,8 @@ void test_turbulent_viscosity_effect() {
 
     double dt_after = solver.compute_adaptive_dt();
 
-    // With turbulence, nu_eff = nu + nu_t > nu
-    // So diffusive limit dt_diff = 0.25 * dx² / nu_eff should decrease
-    // (but CFL might dominate, so just check dt is finite and positive)
-
-    assert(dt_after > 0.0);
-    assert(std::isfinite(dt_after));
-
-    std::cout << "PASSED (dt_initial=" << dt_initial << ", dt_after=" << dt_after << ")\n";
+    // dt should be finite and positive
+    record("Turbulent viscosity effect", dt_after > 0.0 && std::isfinite(dt_after));
 }
 
 // ============================================================================
@@ -228,8 +193,6 @@ void test_turbulent_viscosity_effect() {
 // ============================================================================
 
 void test_minimum_selection_cfl_wins() {
-    std::cout << "Testing minimum selection (CFL wins)... ";
-
     Mesh mesh;
     double dx = 0.1;
     mesh.init_uniform(32, 32, 0.0, 3.2, 0.0, 3.2);
@@ -262,25 +225,16 @@ void test_minimum_selection_cfl_wins() {
 
     // dt_cfl = 0.5 * 0.1 / 10 = 0.005
     // dt_diff = 0.25 * 0.01 / 1e-4 = 25
-    // min(0.005, 25) = 0.005
-
     double dt_cfl = config.CFL_max * dx / 10.0;
     double dt_diff = 0.25 * dx * dx / config.nu;
 
-    assert(dt_cfl < dt_diff);  // CFL should win
-
+    bool cfl_wins = dt_cfl < dt_diff;
     double relative_error = std::abs(dt_computed - dt_cfl) / dt_cfl;
-    if (relative_error > 0.15) {
-        std::cout << "FAILED: dt=" << dt_computed << ", expected~" << dt_cfl << "\n";
-        std::exit(1);
-    }
 
-    std::cout << "PASSED\n";
+    record("Minimum selection (CFL wins)", cfl_wins && relative_error <= 0.15);
 }
 
 void test_minimum_selection_diffusion_wins() {
-    std::cout << "Testing minimum selection (diffusion wins)... ";
-
     Mesh mesh;
     double dx = 0.1;
     mesh.init_uniform(32, 32, 0.0, 3.2, 0.0, 3.2);
@@ -313,20 +267,13 @@ void test_minimum_selection_diffusion_wins() {
 
     // dt_cfl = 0.5 * 0.1 / 0.01 = 5
     // dt_diff = 0.25 * 0.01 / 0.5 = 0.005
-    // min(5, 0.005) = 0.005
-
     double dt_cfl = config.CFL_max * dx / 0.01;
     double dt_diff = 0.25 * dx * dx / config.nu;
 
-    assert(dt_diff < dt_cfl);  // Diffusion should win
-
+    bool diff_wins = dt_diff < dt_cfl;
     double relative_error = std::abs(dt_computed - dt_diff) / dt_diff;
-    if (relative_error > 0.15) {
-        std::cout << "FAILED: dt=" << dt_computed << ", expected~" << dt_diff << "\n";
-        std::exit(1);
-    }
 
-    std::cout << "PASSED\n";
+    record("Minimum selection (diffusion wins)", diff_wins && relative_error <= 0.15);
 }
 
 // ============================================================================
@@ -334,8 +281,6 @@ void test_minimum_selection_diffusion_wins() {
 // ============================================================================
 
 void test_3d_adaptive_dt() {
-    std::cout << "Testing 3D adaptive dt calculation... ";
-
     Mesh mesh;
     double dx = 0.2, dy = 0.1, dz = 0.15;
     int Nx = 16, Ny = 32, Nz = 20;
@@ -372,24 +317,15 @@ void test_3d_adaptive_dt() {
     double dt_computed = solver.compute_adaptive_dt();
 
     // dx_min = min(0.2, 0.1, 0.15) = 0.1 (dy)
-    // dt_cfl = 0.5 * 0.1 / 1.0 = 0.05
     double dx_min = std::min({dx, dy, dz});
     double dt_cfl_expected = config.CFL_max * dx_min / 1.0;
 
     double relative_error = std::abs(dt_computed - dt_cfl_expected) / dt_cfl_expected;
 
-    if (relative_error > 0.15) {
-        std::cout << "FAILED: dt=" << dt_computed
-                  << ", expected~" << dt_cfl_expected << "\n";
-        std::exit(1);
-    }
-
-    std::cout << "PASSED (dt=" << dt_computed << ", dx_min=" << dx_min << ")\n";
+    record("3D adaptive dt calculation", relative_error <= 0.15);
 }
 
 void test_2d_3d_consistency() {
-    std::cout << "Testing 2D/3D consistency (same xy, Nz=1 vs Nz>1)... ";
-
     // 2D case
     Mesh mesh2d;
     mesh2d.init_uniform(32, 32, 0.0, 3.2, 0.0, 3.2);
@@ -441,12 +377,7 @@ void test_2d_3d_consistency() {
     // Both should give similar dt (same dx=dy, dz=dx)
     double relative_diff = std::abs(dt_2d - dt_3d) / dt_2d;
 
-    if (relative_diff > 0.2) {
-        std::cout << "FAILED: dt_2d=" << dt_2d << ", dt_3d=" << dt_3d << "\n";
-        std::exit(1);
-    }
-
-    std::cout << "PASSED (dt_2d=" << dt_2d << ", dt_3d=" << dt_3d << ")\n";
+    record("2D/3D consistency", relative_diff <= 0.2);
 }
 
 // ============================================================================
@@ -454,8 +385,6 @@ void test_2d_3d_consistency() {
 // ============================================================================
 
 void test_very_small_velocity() {
-    std::cout << "Testing with very small velocity (no division by zero)... ";
-
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 3.2, 0.0, 3.2);
 
@@ -485,23 +414,15 @@ void test_very_small_velocity() {
 
     double dt_computed = solver.compute_adaptive_dt();
 
-    // Should not be NaN or Inf
-    assert(std::isfinite(dt_computed));
-    assert(dt_computed > 0.0);
-
     // Diffusion limit should dominate
     double dx = 0.1;
     double dt_diff = 0.25 * dx * dx / config.nu;
 
-    // dt should be bounded by diffusion limit
-    assert(dt_computed <= dt_diff * 1.1);
-
-    std::cout << "PASSED (dt=" << dt_computed << ")\n";
+    bool pass = std::isfinite(dt_computed) && dt_computed > 0.0 && dt_computed <= dt_diff * 1.1;
+    record("Very small velocity (no div by zero)", pass);
 }
 
 void test_anisotropic_grid() {
-    std::cout << "Testing anisotropic grid (dx != dy)... ";
-
     Mesh mesh;
     // dx = 0.2, dy = 0.05 (4:1 aspect ratio)
     mesh.init_uniform(16, 64, 0.0, 3.2, 0.0, 3.2);
@@ -540,14 +461,7 @@ void test_anisotropic_grid() {
 
     double relative_error = std::abs(dt_computed - dt_cfl_expected) / dt_cfl_expected;
 
-    if (relative_error > 0.15) {
-        std::cout << "FAILED: dt=" << dt_computed
-                  << ", expected~" << dt_cfl_expected
-                  << " (dx_min=" << dx_min << ")\n";
-        std::exit(1);
-    }
-
-    std::cout << "PASSED (dt=" << dt_computed << ", dx_min=" << dx_min << ")\n";
+    record("Anisotropic grid", relative_error <= 0.15);
 }
 
 // ============================================================================
@@ -555,28 +469,25 @@ void test_anisotropic_grid() {
 // ============================================================================
 
 int main() {
-    std::cout << "=== Adaptive Time-Stepping Tests ===\n\n";
+    return nncfd::test::harness::run("Adaptive Time-Stepping Tests", [] {
+        // CFL tests
+        test_cfl_uniform_velocity();
+        test_cfl_different_cfl_max();
 
-    // CFL tests
-    test_cfl_uniform_velocity();
-    test_cfl_different_cfl_max();
+        // Diffusive stability tests
+        test_diffusive_limit();
+        test_turbulent_viscosity_effect();
 
-    // Diffusive stability tests
-    test_diffusive_limit();
-    test_turbulent_viscosity_effect();
+        // Minimum selection tests
+        test_minimum_selection_cfl_wins();
+        test_minimum_selection_diffusion_wins();
 
-    // Minimum selection tests
-    test_minimum_selection_cfl_wins();
-    test_minimum_selection_diffusion_wins();
+        // 2D/3D tests
+        test_3d_adaptive_dt();
+        test_2d_3d_consistency();
 
-    // 2D/3D tests
-    test_3d_adaptive_dt();
-    test_2d_3d_consistency();
-
-    // Edge cases
-    test_very_small_velocity();
-    test_anisotropic_grid();
-
-    std::cout << "\nAll tests PASSED!\n";
-    return 0;
+        // Edge cases
+        test_very_small_velocity();
+        test_anisotropic_grid();
+    });
 }
