@@ -33,19 +33,8 @@ mkdir -p cpu_gpu_comparison
     echo "[FAIL] Bitwise CPU reference generation failed!"
     exit 1
 }
-# test_poisson_cpu_gpu_3d consolidated into test_poisson_unified
-./test_cpu_gpu_consistency --dump-prefix cpu_gpu_comparison/consistency || {
-    echo "[FAIL] Consistency CPU reference generation failed!"
-    exit 1
-}
-./test_solver_cpu_gpu --dump-prefix cpu_gpu_comparison/solver || {
-    echo "[FAIL] Solver CPU reference generation failed!"
-    exit 1
-}
-./test_time_history_consistency --dump-prefix cpu_gpu_comparison/timehistory || {
-    echo "[FAIL] Time-history CPU reference generation failed!"
-    exit 1
-}
+# Note: test_cpu_gpu_consistency, test_solver_cpu_gpu, test_time_history_consistency
+# were consolidated into test_cpu_gpu_unified (runs within single-build, not cross-build)
 
 echo ""
 echo "--- Step 2: Run GPU and compare against CPU reference ---"
@@ -71,19 +60,7 @@ fi
     echo "[FAIL] Bitwise GPU vs CPU comparison failed!"
     exit 1
 }
-# test_poisson_cpu_gpu_3d consolidated into test_poisson_unified
-./test_cpu_gpu_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/consistency" || {
-    echo "[FAIL] Consistency GPU vs CPU comparison failed!"
-    exit 1
-}
-./test_solver_cpu_gpu --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/solver" || {
-    echo "[FAIL] Solver GPU vs CPU comparison failed!"
-    exit 1
-}
-./test_time_history_consistency --compare-prefix "$WORKDIR/build_ci_cpu_ref/cpu_gpu_comparison/timehistory" || {
-    echo "[FAIL] Time-history GPU vs CPU comparison failed!"
-    exit 1
-}
+# Note: Additional consistency tests consolidated into test_cpu_gpu_unified (single-build)
 
 echo ""
 echo "[PASS] CPU-only vs GPU-offload comparison completed successfully"

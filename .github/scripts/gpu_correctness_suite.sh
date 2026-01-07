@@ -110,7 +110,7 @@ echo "==================================================================="
 echo "  6. CPU/GPU Consistency Validation (Critical)"
 echo "==================================================================="
 echo ""
-./test_cpu_gpu_consistency
+./test_cpu_gpu_unified
 
 echo ""
 echo "==================================================================="
@@ -125,8 +125,7 @@ echo "==================================================================="
 echo "  8. Physics Validation (Comprehensive)"
 echo "==================================================================="
 echo ""
-./test_physics_validation
-./test_tg_validation
+./test_physics_validation_advanced
 
 echo ""
 echo "==================================================================="

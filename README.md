@@ -638,7 +638,7 @@ The solver is validated against both **analytical solutions** and **fundamental 
 
 ### Physics Conservation Tests
 
-The comprehensive test suite (`tests/test_physics_validation.cpp`) verifies the solver obeys fundamental conservation laws and produces physically correct results:
+The comprehensive test suite (`tests/test_physics_validation_advanced.cpp`) verifies the solver obeys fundamental conservation laws and produces physically correct results:
 
 **1. Poiseuille Flow (Analytical Comparison):**
 - Tests viscous diffusion and pressure gradient balance

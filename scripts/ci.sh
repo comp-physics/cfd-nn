@@ -645,9 +645,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
     run_test "Solver" "$BUILD_DIR/test_solver" 900
     run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
-    run_test "Physics Validation" "$BUILD_DIR/test_physics_validation" 600
     run_test "Physics Validation Advanced" "$BUILD_DIR/test_physics_validation_advanced" 600
-    run_test "Taylor-Green" "$BUILD_DIR/test_tg_validation" 120
     run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
 fi
 
