@@ -16,18 +16,23 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include <sstream>
+#include <climits>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #endif
 
 using namespace nncfd;
+using nncfd::test::FieldComparison;
+using nncfd::test::file_exists;
 
 // Tolerance for HYPRE vs Multigrid comparison
 // Velocities should match closely since both solve the same NS equations
@@ -38,15 +43,6 @@ constexpr double PRESSURE_TOLERANCE = 1e-3;
 
 // Tolerance for cross-build comparison (CPU vs GPU HYPRE)
 constexpr double CROSS_BUILD_TOLERANCE = 1e-10;
-
-//=============================================================================
-// File I/O helpers (similar to test_cpu_gpu_bitwise.cpp)
-//=============================================================================
-
-bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
-}
 
 void write_field_data(const std::string& filename, const ScalarField& field,
                       const Mesh& mesh) {
@@ -134,45 +130,6 @@ FieldData read_field_data(const std::string& filename) {
 
     return data;
 }
-
-//=============================================================================
-// Comparison helpers
-//=============================================================================
-
-struct ComparisonResult {
-    double max_abs_diff = 0.0;
-    double max_rel_diff = 0.0;
-    double rms_diff = 0.0;
-    int count = 0;
-
-    void update(double ref_val, double test_val) {
-        double abs_diff = std::abs(ref_val - test_val);
-        double rel_diff = abs_diff / (std::abs(ref_val) + 1e-15);
-
-        rms_diff += abs_diff * abs_diff;
-        count++;
-
-        if (abs_diff > max_abs_diff) {
-            max_abs_diff = abs_diff;
-            max_rel_diff = rel_diff;
-        }
-    }
-
-    void finalize() {
-        if (count > 0) {
-            rms_diff = std::sqrt(rms_diff / count);
-        }
-    }
-
-    void print(const std::string& name) const {
-        std::cout << "  " << name << ": max_abs=" << std::scientific
-                  << max_abs_diff << ", rms=" << rms_diff << "\n";
-    }
-
-    bool within_tolerance(double tol) const {
-        return max_abs_diff < tol;
-    }
-};
 
 //=============================================================================
 // Test 1: HYPRE vs Multigrid consistency (same-build comparison)
@@ -333,7 +290,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     double u_mg_max = 0, u_hypre_max = 0;
 
     // Compare pressure fields
-    ComparisonResult p_result;
+    FieldComparison p_result;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -350,7 +307,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     p_result.finalize();
 
     // Compare velocity fields
-    ComparisonResult u_result;
+    FieldComparison u_result;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
@@ -489,7 +446,7 @@ bool test_hypre_vs_multigrid_3d_duct() {
     double p_hypre_min = 1e30, p_hypre_max = -1e30;
 
     // Compare pressure fields
-    ComparisonResult p_result;
+    FieldComparison p_result;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -642,7 +599,7 @@ int run_compare_mode(const std::string& prefix) {
     std::cout << "Loading reference and comparing...\n\n";
 
     auto ref = read_field_data(prefix + "_hypre_p.dat");
-    ComparisonResult result;
+    FieldComparison result;
 
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {

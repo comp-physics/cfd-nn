@@ -11,7 +11,7 @@
 ///
 /// NOTE: This does NOT compute the true residual ||L(p) - rhs|| because the
 /// intermediate RHS (div(u*)/dt) is internal to RANSSolver. For true residual
-/// validation, use test_poisson_manufactured.cpp which uses known analytic RHS.
+/// validation, use test_poisson_unified.cpp which uses known analytic RHS.
 
 #include "mesh.hpp"
 #include "fields.hpp"

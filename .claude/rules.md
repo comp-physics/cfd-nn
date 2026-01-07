@@ -19,7 +19,7 @@ If terminal execution is unavailable or blocked by approvals, ask for approval o
 
 The project has a gold-standard validation suite that rigorously verifies the Navier-Stokes solver:
 
-#### Core Tests (tests/test_physics_validation.cpp) - ~2 min on GPU:
+#### Core Tests (tests/test_physics_validation_advanced.cpp) - ~2 min on GPU:
 
 1. Poiseuille Flow (Analytical)
    - Tests: Viscous terms, pressure gradient, parabolic profile
@@ -50,7 +50,7 @@ The project has a gold-standard validation suite that rigorously verifies the Na
    - Tests: No NaN/Inf, realizability (ν_t >= 0)
    - Validates: Numerical stability
 
-#### Advanced Validation (tests/test_tg_validation.cpp) - ~30 sec:
+#### Taylor-Green Validation (in tests/test_physics_validation_advanced.cpp):
 
 Taylor-Green Vortex Test
 - Initial: u=sin(x)cos(y), v=-cos(x)sin(y) (divergence-free)

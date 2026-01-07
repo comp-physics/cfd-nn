@@ -363,17 +363,9 @@ if(BUILD_TESTS)
     target_link_libraries(test_mesh nn_cfd_core)
     add_test(NAME MeshTest COMMAND test_mesh)
     
-    add_executable(test_poisson tests/test_poisson.cpp)
-    target_link_libraries(test_poisson nn_cfd_core)
-    add_test(NAME PoissonTest COMMAND test_poisson)
-
-    add_executable(test_poisson_solvers tests/test_poisson_solvers.cpp)
-    target_link_libraries(test_poisson_solvers nn_cfd_core)
-    add_test(NAME PoissonSolversTest COMMAND test_poisson_solvers)
-
-    add_executable(test_solver tests/test_solver.cpp)
-    target_link_libraries(test_solver nn_cfd_core)
-    add_test(NAME SolverTest COMMAND test_solver)
+    add_executable(test_poisson_unified tests/test_poisson_unified.cpp)
+    target_link_libraries(test_poisson_unified nn_cfd_core)
+    add_test(NAME PoissonUnifiedTest COMMAND test_poisson_unified)
 
     add_executable(test_2d_3d_comparison tests/test_2d_3d_comparison.cpp)
     target_link_libraries(test_2d_3d_comparison nn_cfd_core)
@@ -386,146 +378,54 @@ if(BUILD_TESTS)
     add_executable(test_nn_core tests/test_nn_core.cpp)
     target_link_libraries(test_nn_core nn_cfd_core)
     add_test(NAME NNCoreTest COMMAND test_nn_core)
-    
-    add_executable(test_turbulence tests/test_turbulence.cpp)
-    target_link_libraries(test_turbulence nn_cfd_core)
-    add_test(NAME TurbulenceTest COMMAND test_turbulence)
-    # Turbulence models now use unified persistent mapping - GPU enabled
-    
-    add_executable(test_stability tests/test_stability.cpp)
-    target_link_libraries(test_stability nn_cfd_core)
-    add_test(NAME StabilityTest COMMAND test_stability)
-    
+
     add_executable(test_nn_integration tests/test_nn_integration.cpp)
     target_link_libraries(test_nn_integration nn_cfd_core)
     add_test(NAME NNIntegrationTest COMMAND test_nn_integration)
     
-    add_executable(test_backend_execution tests/test_backend_execution.cpp)
-    target_link_libraries(test_backend_execution nn_cfd_core)
-    add_test(NAME BackendExecutionTest COMMAND test_backend_execution)
+    # Unified backend test (consolidates backend_execution + backend_canary)
+    add_executable(test_backend_unified tests/test_backend_unified.cpp)
+    target_link_libraries(test_backend_unified nn_cfd_core)
+    add_test(NAME BackendUnifiedTest COMMAND test_backend_unified)
 
-    # Backend canary test - verifies CPU and GPU produce different FP results
-    # This catches "same backend" false coverage in parity tests
-    add_executable(test_backend_canary tests/test_backend_canary.cpp)
-    target_link_libraries(test_backend_canary nn_cfd_core)
-    add_test(NAME BackendCanaryTest COMMAND test_backend_canary)
+    # Unified CPU/GPU consistency test (consolidates cpu_gpu_consistency + solver_cpu_gpu + time_history)
+    add_executable(test_cpu_gpu_unified tests/test_cpu_gpu_unified.cpp)
+    target_link_libraries(test_cpu_gpu_unified nn_cfd_core)
+    add_test(NAME CPUGPUUnifiedTest COMMAND test_cpu_gpu_unified)
 
-    add_executable(test_cpu_gpu_consistency tests/test_cpu_gpu_consistency.cpp)
-    target_link_libraries(test_cpu_gpu_consistency nn_cfd_core)
-    add_test(NAME ConsistencyTest COMMAND test_cpu_gpu_consistency)
-    
-    add_executable(test_solver_cpu_gpu tests/test_solver_cpu_gpu.cpp)
-    target_link_libraries(test_solver_cpu_gpu nn_cfd_core)
-    add_test(NAME SolverCPUGPUTest COMMAND test_solver_cpu_gpu)
-    
-    add_executable(test_divergence_all_bcs tests/test_divergence_all_bcs.cpp)
-    target_link_libraries(test_divergence_all_bcs nn_cfd_core)
-    add_test(NAME DivergenceAllBCsTest COMMAND test_divergence_all_bcs)
-    
-    add_executable(test_time_history_consistency tests/test_time_history_consistency.cpp)
-    target_link_libraries(test_time_history_consistency nn_cfd_core)
-    add_test(NAME TimeHistoryConsistencyTest COMMAND test_time_history_consistency)
-    
-    add_executable(test_physics_validation tests/test_physics_validation.cpp)
-    target_link_libraries(test_physics_validation nn_cfd_core)
-    add_test(NAME PhysicsValidationTest COMMAND test_physics_validation)
-    
-    # Taylor-Green vortex validation - verifies viscous decay and time integration
-    add_executable(test_tg_validation tests/test_taylor_green.cpp)
-    target_link_libraries(test_tg_validation nn_cfd_core)
-    add_test(NAME TaylorGreenValidationTest COMMAND test_tg_validation)
-    
-    # Perturbed channel validation - comprehensive turbulence model testing (1000 steps on GPU)
+    add_executable(test_unified_suite tests/test_unified_suite.cpp)
+    target_link_libraries(test_unified_suite nn_cfd_core)
+    add_test(NAME UnifiedSuiteTest COMMAND test_unified_suite)
+
     add_executable(test_perturbed_channel tests/test_perturbed_channel.cpp)
     target_link_libraries(test_perturbed_channel nn_cfd_core)
     add_test(NAME PerturbedChannelTest COMMAND test_perturbed_channel)
-    
-    # NaN/Inf guard test - verifies abort-on-NaN behavior
-    add_executable(test_turbulence_guard tests/test_turbulence_guard.cpp)
-    target_link_libraries(test_turbulence_guard nn_cfd_core)
-    add_test(NAME NanInfGuardTest COMMAND test_turbulence_guard)
-    
-    # Turbulence feature tests - analytic validation of features, invariants, and model response
-    add_executable(test_turbulence_features tests/test_turbulence_features.cpp)
-    target_link_libraries(test_turbulence_features nn_cfd_core)
-    add_test(NAME TurbulenceFeaturesTest COMMAND test_turbulence_features)
 
-    # 3D Poisson CPU vs GPU comparison - verifies GPU implementation matches CPU exactly
-    add_executable(test_poisson_cpu_gpu_3d tests/test_poisson_cpu_gpu_3d.cpp)
-    target_link_libraries(test_poisson_cpu_gpu_3d nn_cfd_core)
-    add_test(NAME PoissonCPUGPU3DTest COMMAND test_poisson_cpu_gpu_3d)
+    # Unified turbulence test (consolidates 6 files: turbulence_features, turbulence_guard,
+    # all_turbulence_models_smoke, transport_realizability, earsm_trace_free, turbulence_golden)
+    add_executable(test_turbulence_unified tests/test_turbulence_unified.cpp)
+    target_link_libraries(test_turbulence_unified nn_cfd_core)
+    add_test(NAME TurbulenceUnifiedTest COMMAND test_turbulence_unified)
 
-    # Fast 3D validation tests - quick smoke tests (~5s)
-    add_executable(test_3d_quick_validation tests/test_3d_quick_validation.cpp)
-    target_link_libraries(test_3d_quick_validation nn_cfd_core)
-    add_test(NAME Quick3DValidationTest COMMAND test_3d_quick_validation)
+    # Unified 3D test (consolidates 3d_bc_application + 3d_gradients + 3d_w_velocity + 3d_bc_corners)
+    add_executable(test_3d_unified tests/test_3d_unified.cpp)
+    target_link_libraries(test_3d_unified nn_cfd_core)
+    add_test(NAME ThreeDUnifiedTest COMMAND test_3d_unified)
 
-    # Fast 3D Poiseuille tests - analytical validation (~10s)
-    add_executable(test_3d_poiseuille_fast tests/test_3d_poiseuille_fast.cpp)
-    target_link_libraries(test_3d_poiseuille_fast nn_cfd_core)
-    add_test(NAME Fast3DPoiseuilleTest COMMAND test_3d_poiseuille_fast)
-
-    # 3D boundary condition tests (~5s)
-    add_executable(test_3d_bc_application tests/test_3d_bc_application.cpp)
-    target_link_libraries(test_3d_bc_application nn_cfd_core)
-    add_test(NAME BC3DApplicationTest COMMAND test_3d_bc_application)
-
-    # CPU/GPU bitwise comparison - enforces code sharing paradigm (~15s)
     add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
     target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
     add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
 
-    # 3D gradient tests - verifies gradient computation (~5s)
-    add_executable(test_3d_gradients tests/test_3d_gradients.cpp)
-    target_link_libraries(test_3d_gradients nn_cfd_core)
-    add_test(NAME Gradients3DTest COMMAND test_3d_gradients)
 
-    # 3D w-velocity tests - tests the 3D-specific component (~5s)
-    add_executable(test_3d_w_velocity tests/test_3d_w_velocity.cpp)
-    target_link_libraries(test_3d_w_velocity nn_cfd_core)
-    add_test(NAME WVelocity3DTest COMMAND test_3d_w_velocity)
-
-    # 3D Taylor-Green vortex - verifies 3D viscous decay and time integration
-    add_executable(test_taylor_green_3d tests/test_taylor_green_3d.cpp)
-    target_link_libraries(test_taylor_green_3d nn_cfd_core)
-    add_test(NAME TaylorGreen3DTest COMMAND test_taylor_green_3d)
-
-    # All turbulence models smoke test - verifies all 10 models run without crashing
-    add_executable(test_all_turbulence_models_smoke tests/test_all_turbulence_models_smoke.cpp)
-    target_link_libraries(test_all_turbulence_models_smoke nn_cfd_core)
-    add_test(NAME AllTurbulenceModelsSmokeTest COMMAND test_all_turbulence_models_smoke)
-
-    # Transport equation realizability - verifies k>0, omega>0 over long runs
-    add_executable(test_transport_realizability tests/test_transport_realizability.cpp)
-    target_link_libraries(test_transport_realizability nn_cfd_core)
-    add_test(NAME TransportRealizabilityTest COMMAND test_transport_realizability)
-
-    # EARSM trace-free constraint - verifies b_xx + b_yy = 0
-    add_executable(test_earsm_trace_free tests/test_earsm_trace_free.cpp)
-    target_link_libraries(test_earsm_trace_free nn_cfd_core)
-    add_test(NAME EARSMTraceFreeTest COMMAND test_earsm_trace_free)
-
-    # GPU utilization test - validates compute runs on GPU for GPU builds
     add_executable(test_gpu_utilization tests/test_gpu_utilization.cpp)
     target_link_libraries(test_gpu_utilization nn_cfd_core)
     add_test(NAME GPUUtilizationTest COMMAND test_gpu_utilization)
 
-    # FFT manufactured solution test - proves FFT correctness with O(h²) convergence
-    add_executable(test_poisson_fft_manufactured tests/test_poisson_fft_manufactured.cpp)
-    target_link_libraries(test_poisson_fft_manufactured nn_cfd_core)
-    add_test(NAME PoissonFFTManufacturedTest COMMAND test_poisson_fft_manufactured)
+    # Unified FFT test (consolidates fft1d_validation + fft2d_integration + fft_cpu_reference)
+    add_executable(test_fft_unified tests/test_fft_unified.cpp)
+    target_link_libraries(test_fft_unified nn_cfd_core)
+    add_test(NAME FFTUnifiedTest COMMAND test_fft_unified)
 
-    # FFT2D debug test - compares GPU FFT2D vs CPU reference
-    add_executable(test_fft2d_debug tests/test_fft2d_debug.cpp)
-    target_link_libraries(test_fft2d_debug nn_cfd_core)
-    add_test(NAME FFT2DDebugTest COMMAND test_fft2d_debug)
-
-    # FFT2D integration test - compares FFT2D vs MG in solver context
-    add_executable(test_fft2d_integration tests/test_fft2d_integration.cpp)
-    target_link_libraries(test_fft2d_integration nn_cfd_core)
-    add_test(NAME FFT2DIntegrationTest COMMAND test_fft2d_integration)
-
-    # HYPRE all BC configurations test
     if(USE_HYPRE)
         add_executable(test_hypre_all_bcs tests/test_hypre_all_bcs.cpp)
         target_link_libraries(test_hypre_all_bcs nn_cfd_core)
@@ -542,57 +442,19 @@ if(BUILD_TESTS)
         add_test(NAME HypreBackendTest COMMAND test_hypre_backend)
     endif()
 
-    # Poisson solver selection state machine test - prevents selection logic drift
-    add_executable(test_poisson_selection tests/test_poisson_selection.cpp)
-    target_link_libraries(test_poisson_selection nn_cfd_core)
-    add_test(NAME PoissonSelectionTest COMMAND test_poisson_selection)
 
-    # FFT1D dedicated validation test - forces FFT1D selection + correctness check
-    add_executable(test_fft1d_validation tests/test_fft1d_validation.cpp)
-    target_link_libraries(test_fft1d_validation nn_cfd_core)
-    add_test(NAME FFT1DValidationTest COMMAND test_fft1d_validation)
-
-    # Endurance stability test - catches NaN-after-N-steps class bugs
     add_executable(test_endurance_stability tests/test_endurance_stability.cpp)
     target_link_libraries(test_endurance_stability nn_cfd_core)
     add_test(NAME EnduranceStabilityTest COMMAND test_endurance_stability)
 
-    # Manufactured solution Poisson correctness test - catches "solver runs but wrong"
-    add_executable(test_poisson_manufactured tests/test_poisson_manufactured.cpp)
-    target_link_libraries(test_poisson_manufactured nn_cfd_core)
-    add_test(NAME PoissonManufacturedTest COMMAND test_poisson_manufactured)
-
-    # Dirichlet/mixed-BC Poisson test - validates BC handling
-    add_executable(test_poisson_dirichlet_mixed tests/test_poisson_dirichlet_mixed.cpp)
-    target_link_libraries(test_poisson_dirichlet_mixed nn_cfd_core)
-    add_test(NAME PoissonDirichletMixedTest COMMAND test_poisson_dirichlet_mixed)
-
-    # Repeatability envelope test - catches race conditions and nondeterminism
     add_executable(test_repeatability tests/test_repeatability.cpp)
     target_link_libraries(test_repeatability nn_cfd_core)
     add_test(NAME RepeatabilityTest COMMAND test_repeatability)
 
-    # Performance regression sentinel - catches catastrophic slowdowns
     add_executable(test_perf_sentinel tests/test_perf_sentinel.cpp)
     target_link_libraries(test_perf_sentinel nn_cfd_core)
     add_test(NAME PerfSentinelTest COMMAND test_perf_sentinel)
 
-    # Stretched/anisotropic grid test - validates MG/HYPRE on high aspect ratio cells
-    add_executable(test_poisson_stretched_grid tests/test_poisson_stretched_grid.cpp)
-    target_link_libraries(test_poisson_stretched_grid nn_cfd_core)
-    add_test(NAME PoissonStretchedGridTest COMMAND test_poisson_stretched_grid)
-
-    # Nullspace/gauge handling test - validates singular Poisson (pure Neumann/periodic)
-    add_executable(test_poisson_nullspace tests/test_poisson_nullspace.cpp)
-    target_link_libraries(test_poisson_nullspace nn_cfd_core)
-    add_test(NAME PoissonNullspaceTest COMMAND test_poisson_nullspace)
-
-    # Cross-solver consistency test - validates all solvers produce equivalent results
-    add_executable(test_poisson_cross_solver tests/test_poisson_cross_solver.cpp)
-    target_link_libraries(test_poisson_cross_solver nn_cfd_core)
-    add_test(NAME PoissonCrossSolverTest COMMAND test_poisson_cross_solver)
-
-    # Projection method invariants test - validates time-stepper coupling
     add_executable(test_projection_invariants tests/test_projection_invariants.cpp)
     target_link_libraries(test_projection_invariants nn_cfd_core)
     add_test(NAME ProjectionInvariantsTest COMMAND test_projection_invariants)
@@ -602,30 +464,12 @@ if(BUILD_TESTS)
     target_link_libraries(test_mpi_guard nn_cfd_core)
     add_test(NAME MpiGuardTest COMMAND test_mpi_guard)
 
-    # Turbulence golden snapshot test - catches model regressions
-    add_executable(test_turbulence_golden tests/test_turbulence_golden.cpp)
-    target_link_libraries(test_turbulence_golden nn_cfd_core)
-    add_test(NAME TurbulenceGoldenTest COMMAND test_turbulence_golden)
 
-    # Kernel parity test - verifies CPU/GPU path semantic equivalence
-    add_executable(test_kernel_parity tests/test_kernel_parity.cpp)
-    target_link_libraries(test_kernel_parity nn_cfd_core)
-    add_test(NAME KernelParityTest COMMAND test_kernel_parity)
-
-    # HYPRE canary test - monitors known HYPRE limitations (quarantined)
-    add_executable(test_hypre_canary tests/test_hypre_canary.cpp)
-    target_link_libraries(test_hypre_canary nn_cfd_core)
-    add_test(NAME HypreCanaryTest COMMAND test_hypre_canary)
 
     # Residual consistency test - validates ||L(p)-rhs||/||rhs|| for each solver
     add_executable(test_residual_consistency tests/test_residual_consistency.cpp)
     target_link_libraries(test_residual_consistency nn_cfd_core)
     add_test(NAME ResidualConsistencyTest COMMAND test_residual_consistency)
-
-    # FFT vs CPU reference test - validates FFT/FFT1D against MG on same node
-    add_executable(test_fft_cpu_reference tests/test_fft_cpu_reference.cpp)
-    target_link_libraries(test_fft_cpu_reference nn_cfd_core)
-    add_test(NAME FFTCpuReferenceTest COMMAND test_fft_cpu_reference)
 
     # Detailed kernel parity test - CPU/GPU parity for non-Poisson kernels
     add_executable(test_kernel_parity_detailed tests/test_kernel_parity_detailed.cpp)
@@ -652,10 +496,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_mesh_edge_cases nn_cfd_core)
     add_test(NAME MeshEdgeCasesTest COMMAND test_mesh_edge_cases)
 
-    # 3D BC corner cases tests - validates 3D boundary handling
-    add_executable(test_3d_bc_corners tests/test_3d_bc_corners.cpp)
-    target_link_libraries(test_3d_bc_corners nn_cfd_core)
-    add_test(NAME BC3DCornersTest COMMAND test_3d_bc_corners)
 
     # VTK output tests - validates VTK file format and I/O
     add_executable(test_vtk_output tests/test_vtk_output.cpp)

@@ -240,7 +240,7 @@ GPU_BUILD_ENSURED=0
 # Known flaky tests on GPU (pre-existing issues, not related to 3D work)
 # These will be skipped when USE_GPU=ON until root causes are addressed.
 # Note: test_solver and test_physics_validation were slow (not flaky) - fixed by increasing timeouts
-# Note: test_turbulence_guard was flaky - fixed by calling check_for_nan_inf directly instead of step()
+# Note: turbulence guard (now in test_turbulence_unified) uses check_for_nan_inf directly instead of step()
 GPU_FLAKY_TESTS=""
 
 is_gpu_flaky() {
@@ -439,75 +439,8 @@ run_cross_build_test() {
     rm -f "$output_file"
 }
 
-# Run the backend canary test - specialized cross-build test
-# This test MUST produce different FP results on CPU vs GPU
-# Uses non-associative reduction to guarantee difference between backends
-run_cross_build_canary_test() {
-    local test_name="Backend Canary (Cross-Build)"
-    local cpu_build_dir="${PROJECT_DIR}/build_cpu"
-    local gpu_build_dir="${PROJECT_DIR}/build_gpu"
-    local cpu_binary="${cpu_build_dir}/test_backend_canary"
-    local gpu_binary="${gpu_build_dir}/test_backend_canary"
-    local ref_dir="${PROJECT_DIR}/build_gpu/canary_reference"
-    local ref_file="${ref_dir}/canary_sum.dat"
-
-    echo ""
-    log_info "Running $test_name..."
-
-    # Verify binaries exist
-    if [ ! -f "$cpu_binary" ]; then
-        log_failure "$test_name (CPU binary missing: $cpu_binary)"
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU binary missing)"
-        return 0
-    fi
-
-    if [ ! -f "$gpu_binary" ]; then
-        log_failure "$test_name (GPU binary missing: $gpu_binary)"
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (GPU binary missing)"
-        return 0
-    fi
-
-    mkdir -p "$ref_dir"
-    local output_file
-    output_file="$(mktemp)"
-    trap 'rm -f "$output_file"' RETURN
-
-    # Step 1: Generate CPU reference
-    log_info "  Step 1: Generating CPU canary reference..."
-    local cpu_exit_code=0
-    timeout 60 "$cpu_binary" --dump "$ref_file" > "$output_file" 2>&1 || cpu_exit_code=$?
-
-    if [ $cpu_exit_code -ne 0 ]; then
-        log_failure "$test_name (CPU reference generation failed)"
-        tail -20 "$output_file" | sed 's/^/    /'
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU ref failed)"
-        return 0
-    fi
-
-    # Show CPU backend identity
-    grep "EXEC_BACKEND" "$output_file" | head -1 | sed 's/^/    /'
-
-    # Step 2: Run GPU comparison
-    log_info "  Step 2: Running GPU canary and comparing..."
-    local gpu_exit_code=0
-    OMP_TARGET_OFFLOAD=MANDATORY timeout 60 "$gpu_binary" --compare "$ref_file" > "$output_file" 2>&1 || gpu_exit_code=$?
-
-    if [ $gpu_exit_code -eq 0 ]; then
-        log_success "$test_name"
-        PASSED=$((PASSED + 1))
-        # Show key results
-        grep -E '(EXEC_BACKEND|sum:|diff:|PASS|confirms)' "$output_file" | head -8 | sed 's/^/    /'
-    else
-        log_failure "$test_name"
-        echo "  Output (last 30 lines):"
-        tail -30 "$output_file" | sed 's/^/    /'
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
-    fi
-}
+# Note: run_cross_build_canary_test removed - functionality consolidated into test_backend_unified
+# The unified test includes an internal canary that verifies CPU/GPU FP differences
 
 # Check if build is needed (library doesn't exist or directory is fresh from cache)
 mkdir -p "$BUILD_DIR"
@@ -584,6 +517,9 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = 
     run_test "Features" "$BUILD_DIR/test_features" 30
     run_test "NN Core" "$BUILD_DIR/test_nn_core" 30
 
+    # Data-driven test framework demo (24 tests x 2 runs = ~90s)
+    run_test "Data-Driven Demo" "$BUILD_DIR/test_data_driven_demo" 180
+
     # Configuration and I/O tests (very fast)
     run_test "Config" "$BUILD_DIR/test_config" 30
 fi
@@ -593,13 +529,10 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Medium Tests (~2-5 minutes)"
 
     run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 300
-    run_test "Poisson" "$BUILD_DIR/test_poisson" 120
-    run_test "Poisson Solvers 2D/3D" "$BUILD_DIR/test_poisson_solvers" 300
+    run_test "Poisson Unified" "$BUILD_DIR/test_poisson_unified" 180
     run_test "Stability" "$BUILD_DIR/test_stability" 120
-    run_test "Turbulence" "$BUILD_DIR/test_turbulence" 120
-    run_test "Turbulence Features" "$BUILD_DIR/test_turbulence_features" 120
-    run_test "Turbulence Guard" "$BUILD_DIR/test_turbulence_guard" 60
-    run_test "All Turbulence Models Smoke" "$BUILD_DIR/test_all_turbulence_models_smoke" 300
+    # Unified turbulence test (consolidates 6 turbulence test files)
+    run_test "Turbulence Unified" "$BUILD_DIR/test_turbulence_unified" 300
 
     # New tests: error handling, adaptive dt, mesh edge cases, 3D BCs, VTK output
     run_test "Error Recovery" "$BUILD_DIR/test_error_recovery" 120
@@ -621,25 +554,15 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
         log_info "Cross-build tests require GPU to compare CPU vs GPU outputs"
     else
         run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
-        run_cross_build_test "Poisson CPU/GPU 3D" "test_poisson_cpu_gpu_3d" 180 "poisson3d"
-        run_cross_build_test "CPU/GPU Consistency" "test_cpu_gpu_consistency" 180 "consistency"
-        run_cross_build_test "Solver CPU/GPU" "test_solver_cpu_gpu" 180 "solver"
-        run_cross_build_test "Time History Consistency" "test_time_history_consistency" 180 "timehistory"
 
-        # Cross-build canary test - ultimate proof that different backends executed
-        # If this fails with "identical results", the CPU reference was generated by GPU
-        run_cross_build_canary_test
+        # Note: test_cpu_gpu_consistency, test_solver_cpu_gpu, test_time_history_consistency
+        # were consolidated into test_cpu_gpu_unified (runs via test_unified_suite)
     fi
 
     # Non-comparison GPU tests
-    run_test "Backend Execution" "$BUILD_DIR/test_backend_execution" 60
-
-    # Backend canary test - verifies CPU and GPU produce different FP results
-    # This is the ultimate proof that different backends executed
-    # Uses non-associative reduction which MUST differ between sequential and parallel
-    if [[ "$USE_GPU" == "ON" ]]; then
-        run_test "Backend Canary" "$BUILD_DIR/test_backend_canary" 60 "OMP_TARGET_OFFLOAD=MANDATORY"
-    fi
+    # Backend unified test - consolidates backend_execution and backend_canary
+    # Includes canary test that verifies CPU and GPU produce different FP results
+    run_test "Backend Unified" "$BUILD_DIR/test_backend_unified" 60
 
     # GPU utilization test - ensures compute runs on GPU, not CPU
     # Only meaningful for GPU builds (skips gracefully on CPU builds)
@@ -722,9 +645,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
     run_test "Solver" "$BUILD_DIR/test_solver" 900
     run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
-    run_test "Physics Validation" "$BUILD_DIR/test_physics_validation" 600
     run_test "Physics Validation Advanced" "$BUILD_DIR/test_physics_validation_advanced" 600
-    run_test "Taylor-Green" "$BUILD_DIR/test_tg_validation" 120
     run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
 fi
 
