@@ -88,6 +88,7 @@ bool test_backend_available() {
 //=============================================================================
 
 void test_basic_computation(bool gpu_available) {
+    (void)gpu_available;  // Used only in GPU builds
     const int N = 10000;
     std::vector<double> a(N, 2.0), b(N, 3.0), c(N, 0.0);
 
@@ -121,6 +122,7 @@ void test_basic_computation(bool gpu_available) {
 //=============================================================================
 
 void test_canary(bool gpu_available) {
+    (void)gpu_available;  // Used only in GPU builds
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_available) {
         record("Canary (CPU/GPU FP difference)", true, true);
@@ -160,6 +162,7 @@ void test_canary(bool gpu_available) {
 //=============================================================================
 
 void test_mlp_execution(bool gpu_available) {
+    (void)gpu_available;  // Used only in GPU builds
     MLP mlp({5, 16, 1}, Activation::Tanh);
     for (auto& layer : mlp.layers()) {
         DenseLayer& l = const_cast<DenseLayer&>(layer);
@@ -202,6 +205,7 @@ void test_mlp_execution(bool gpu_available) {
 //=============================================================================
 
 void test_turbulence_nn(bool gpu_available) {
+    (void)gpu_available;  // Used only in GPU builds
     Mesh mesh;
     mesh.init_uniform(8, 16, 0.0, 1.0, 0.0, 1.0);
     VectorField vel(mesh, 0.5, 0.0);
