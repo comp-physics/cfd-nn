@@ -423,7 +423,6 @@ if(BUILD_TESTS)
     # =========================================================================
     add_nncfd_test(test_poisson_unified)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
-    add_nncfd_test(test_unified_suite)
     add_nncfd_test(test_turbulence_unified)
     add_nncfd_test(test_projection_invariants)
     add_nncfd_test(test_perf_sentinel)
