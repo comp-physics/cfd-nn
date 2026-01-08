@@ -171,11 +171,11 @@ void MultigridPoissonSolver::apply_bc(int level) {
     [[maybe_unused]] const size_t total_size = level_sizes_[level];
 #ifdef USE_GPU_OFFLOAD
     #define BC_TARGET_FOR_X \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for map(present, alloc: u_ptr[0:total_size])")
     #define BC_TARGET_FOR_Y \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for map(present, alloc: u_ptr[0:total_size])")
     #define BC_TARGET_FOR_Z \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for map(present, alloc: u_ptr[0:total_size])")
 #else
     #define BC_TARGET_FOR_X
     #define BC_TARGET_FOR_Y
@@ -406,7 +406,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
             // 2D GPU path for residual
             // x-direction boundaries
             #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size])
+                map(present, alloc: r_ptr[0:total_size])
             for (int j = 0; j < Ny + 2; ++j) {
                 int idx = j * stride;
                 // Left boundary (i=0)
@@ -425,7 +425,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 
             // y-direction boundaries
             #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size])
+                map(present, alloc: r_ptr[0:total_size])
             for (int i = 0; i < Nx + 2; ++i) {
                 // Bottom boundary (j=0)
                 if (bc_y_lo == 2) { // Periodic
@@ -449,7 +449,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
             const int n_total_g = Nx_g * Ny_g * Nz_g;
 
             #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size]) \
+                map(present, alloc: r_ptr[0:total_size]) \
                 firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, bc_y_lo, bc_y_hi, bc_z_lo, bc_z_hi)
             for (int idx_g = 0; idx_g < n_total_g; ++idx_g) {
                 int i = idx_g % Nx_g;
@@ -695,11 +695,11 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     // Note: Cannot use nowait here - Chebyshev iterations have data dependencies
     // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define CHEBY_TARGET_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define CHEBY_TARGET_COPY \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for map(present, alloc: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
 #else
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     #define CHEBY_TARGET_2D
@@ -795,15 +795,15 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
     // Note: Cannot use nowait here - Jacobi iterations have data dependencies
     #define JACOBI_TARGET_U_TO_TMP_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(2) map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define JACOBI_TARGET_U_TO_TMP_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(3) map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define JACOBI_TARGET_COPY \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for map(present, alloc: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
 #else
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     // CPU: no pragmas needed
@@ -937,7 +937,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
             // Red sweep (i + j even)
 #ifdef USE_GPU_OFFLOAD
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+                map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size])
 #endif
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
@@ -955,7 +955,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
             // Black sweep (i + j odd)
 #ifdef USE_GPU_OFFLOAD
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+                map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size])
 #endif
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
@@ -976,7 +976,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
             // Red sweep (i + j + k even)
 #ifdef USE_GPU_OFFLOAD
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+                map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size])
 #endif
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
@@ -997,7 +997,7 @@ void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
             // Black sweep (i + j + k odd)
 #ifdef USE_GPU_OFFLOAD
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
+                map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size])
 #endif
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
@@ -1048,7 +1048,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+            map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
 #endif
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i < Nx + Ng; ++i) {
@@ -1062,7 +1062,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
         // 3D path
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+            map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
 #endif
         for (int k = Ng; k < Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
@@ -1108,7 +1108,7 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
+            map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
             reduction(max: max_res) reduction(+: sum_sq)
 #endif
         for (int j = Ng; j < Ny + Ng; ++j) {
@@ -1128,7 +1128,7 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
         // 3D path
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
+            map(present, alloc: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
             reduction(max: max_res) reduction(+: sum_sq)
 #endif
         for (int k = Ng; k < Nz + Ng; ++k) {
@@ -1181,7 +1181,7 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
         // 2D: 9-point stencil
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+            map(present, alloc: r_fine[0:size_f], f_coarse[0:size_c])
 #endif
         for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
             for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
@@ -1201,7 +1201,7 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
         // 3D: 27-point stencil
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+            map(present, alloc: r_fine[0:size_f], f_coarse[0:size_c])
 #endif
         for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
             for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
@@ -1274,7 +1274,7 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
         // Each fine cell reads from up to 4 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+            map(present, alloc: u_coarse[0:size_c], u_fine[0:size_f])
 #endif
         for (int j_f = Ng; j_f < Ny_f + Ng; ++j_f) {
             for (int i_f = Ng; i_f < Nx_f + Ng; ++i_f) {
@@ -1307,7 +1307,7 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
         // Each fine cell reads from up to 8 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+            map(present, alloc: u_coarse[0:size_c], u_fine[0:size_f])
 #endif
         for (int k_f = Ng; k_f < Nz_f + Ng; ++k_f) {
             for (int j_f = Ng; j_f < Ny_f + Ng; ++j_f) {
@@ -1419,7 +1419,7 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     double* u_coarse = u_ptrs_[level + 1];
 
     #pragma omp target teams distribute parallel for \
-        map(present: u_coarse[0:size_c])
+        map(present, alloc: u_coarse[0:size_c])
     for (int idx = 0; idx < (int)size_c; ++idx) {
         u_coarse[idx] = 0.0;
     }
@@ -1469,7 +1469,7 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
         // 2D case
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+            map(present, alloc: r_ptr[0:total_size])
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1488,7 +1488,7 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
         // 3D case
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+            map(present, alloc: r_ptr[0:total_size])
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1534,7 +1534,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
         // 2D case - compute sum
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
+            map(present, alloc: u_ptr[0:total_size])
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1547,7 +1547,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
         // 2D case - subtract mean
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
+            map(present, alloc: u_ptr[0:total_size])
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1558,7 +1558,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
         // 3D case - compute sum
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
+            map(present, alloc: u_ptr[0:total_size])
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1572,7 +1572,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
         // 3D case - subtract mean
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
+            map(present, alloc: u_ptr[0:total_size])
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1813,7 +1813,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     
     // Device-resident solve using Model 1 (host pointer + present mapping)
     // Parameters are host pointers that caller has already mapped via `target enter data`.
-    // We use map(present: ...) to access the device copies without additional transfers.
+    // We use map(present, alloc: ...) to access the device copies without additional transfers.
     
     auto& finest = *levels_[0];
     const int Nx = finest.Nx;
@@ -1831,7 +1831,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     // Copy RHS and initial guess from caller's present-mapped arrays to multigrid level-0 buffers
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
-        map(present: rhs_present[0:total_size], p_present[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
+        map(present, alloc: rhs_present[0:total_size], p_present[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
     for (size_t idx = 0; idx < total_size; ++idx) {
         f_dev[idx] = rhs_present[idx];
         u_dev[idx] = p_present[idx];
@@ -1866,7 +1866,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     double b_sum_sq = 0.0;
     if (is_2d_gpu) {
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
+            map(present, alloc: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
         for (int j = Ng; j < Ny_g + Ng; ++j) {
             for (int i = Ng; i < Nx_g + Ng; ++i) {
                 int idx = j * stride_gpu + i;
@@ -1877,7 +1877,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         }
     } else {
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
+            map(present, alloc: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
         for (int k = Ng; k < Nz_g + Ng; ++k) {
             for (int j = Ng; j < Ny_g + Ng; ++j) {
                 for (int i = Ng; i < Nx_g + Ng; ++i) {
@@ -1960,7 +1960,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
     // This is device-to-device copy via present mappings (no host staging)
     #pragma omp target teams distribute parallel for \
-        map(present: p_present[0:total_size], u_dev[0:total_size])
+        map(present, alloc: p_present[0:total_size], u_dev[0:total_size])
     for (size_t idx = 0; idx < total_size; ++idx) {
         p_present[idx] = u_dev[idx];
     }
@@ -2012,7 +2012,7 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         double* r_ptr = r_ptrs_[lvl];
         double* tmp_ptr = tmp_ptrs_[lvl];
         #pragma omp target teams distribute parallel for \
-            map(present: r_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+            map(present, alloc: r_ptr[0:total_size]) is_device_ptr(tmp_ptr)
         for (size_t idx = 0; idx < total_size; ++idx) {
             r_ptr[idx] = 0.0;
             tmp_ptr[idx] = 0.0;

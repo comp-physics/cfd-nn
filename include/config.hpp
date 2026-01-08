@@ -131,6 +131,7 @@ struct Config {
     int poisson_check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap)
     bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
     double poisson_linf_safety = 10.0; ///< L∞ safety cap multiplier (prevent L2 from hiding bad cells)
+    int poisson_fixed_cycles = 0;    ///< Fixed V-cycle count (0 = use convergence-based termination)
 
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

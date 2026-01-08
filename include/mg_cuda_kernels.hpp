@@ -71,6 +71,9 @@ public:
     /// Destroy graph resources
     void destroy();
 
+    /// Debug: print captured pointers
+    void debug_print_pointers() const;
+
 private:
     cudaGraph_t graph_ = nullptr;
     cudaGraphExec_t graph_exec_ = nullptr;
@@ -121,6 +124,9 @@ public:
 
     /// Execute smoother for a given level
     void smooth(int level);
+
+    /// Debug: print captured pointers for a level
+    void debug_graph_pointers(int level) const;
 
     /// Check if CUDA Graphs are enabled and valid
     bool graphs_enabled() const { return !smoother_graphs_.empty(); }
