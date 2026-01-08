@@ -438,10 +438,10 @@ void CudaSmootherGraph::capture_graph(cudaStream_t stream) {
         launch_copy_kernel(stream);
     }
 
-    // Final BC application (only needed for non-periodic)
-    if (!all_periodic) {
-        launch_bc_kernel(stream);
-    }
+    // Final BC application - ALWAYS needed for MG operations outside the smoother
+    // Even with fused periodic kernel, compute_residual/restrict/prolongate read ghost cells
+    // via standard neighbor indexing (idx-1, idx+stride, etc.)
+    launch_bc_kernel(stream);
 
     // End capture and create executable graph
     CUDA_CHECK(cudaStreamEndCapture(stream, &graph_));
@@ -487,6 +487,12 @@ void CudaSmootherGraph::execute(cudaStream_t stream) {
     }
 }
 
+void CudaSmootherGraph::debug_print_pointers() const {
+    std::cerr << "[Graph] Captured pointers: u=" << config_.u
+              << " f=" << config_.f << " tmp=" << config_.tmp
+              << " size=" << config_.total_size << "\n";
+}
+
 // ============================================================================
 // CudaMGContext Implementation
 // ============================================================================
@@ -527,6 +533,12 @@ void CudaMGContext::initialize_smoother_graphs(
 void CudaMGContext::smooth(int level) {
     if (level >= 0 && level < static_cast<int>(smoother_graphs_.size())) {
         smoother_graphs_[level].execute(stream_);
+    }
+}
+
+void CudaMGContext::debug_graph_pointers(int level) const {
+    if (level >= 0 && level < static_cast<int>(smoother_graphs_.size())) {
+        smoother_graphs_[level].debug_print_pointers();
     }
 }
 
