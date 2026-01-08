@@ -437,7 +437,7 @@ void test_stretched_grid() {
     PoissonConfig cfg;
     cfg.tol = 1e-6;
     cfg.max_iter = 500;
-    int iters = mg.solve(rhs, p, cfg);
+    [[maybe_unused]] int iters = mg.solve(rhs, p, cfg);
 
     // Compute error
     double max_err = 0.0;
