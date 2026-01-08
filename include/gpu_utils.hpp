@@ -241,6 +241,27 @@ private:
 /// These are defined in src/gpu_init.cpp to enforce compile-time separation
 void verify_device_available();
 bool is_pointer_present(void* ptr);
+
+/// Get device pointer for an OpenMP-mapped host pointer
+/// Uses omp_get_mapped_ptr (OpenMP 5.1) to convert host -> device pointer
+/// Returns nullptr if pointer is not mapped
+template<typename T>
+inline T* get_device_ptr(T* host_ptr) {
+    int device = omp_get_default_device();
+    void* dev_ptr = omp_get_mapped_ptr(host_ptr, device);
+    return static_cast<T*>(dev_ptr);
+}
+
+/// Synchronize all GPU work (wait for all pending kernels to complete)
+/// Use this before reading results back to host (e.g., before reductions)
+/// When using nowait on target regions, this provides an explicit sync point
+inline void sync() {
+    // OpenMP taskwait synchronizes all deferred target tasks
+    #pragma omp taskwait
+}
+#else
+/// CPU: sync is a no-op
+inline void sync() {}
 #endif
 
 } // namespace gpu
@@ -257,6 +278,12 @@ bool is_pointer_present(void* ptr);
 // Parallel for with device pointers (data already on GPU)
 #define GPU_PARALLEL_FOR_DEVICE(var, start, end) \
     _Pragma("omp target teams distribute parallel for") \
+    for (int var = start; var < end; ++var)
+
+// Async parallel for - kernel launches asynchronously, no host sync
+// Use gpu::sync() before reading results back to host
+#define GPU_PARALLEL_FOR_ASYNC(var, start, end) \
+    _Pragma("omp target teams distribute parallel for nowait") \
     for (int var = start; var < end; ++var)
 
 // Collapsed 2D parallel for

@@ -6,6 +6,11 @@
 #include <vector>
 #include <memory>
 
+#ifdef USE_GPU_OFFLOAD
+// Forward declaration for CUDA Graph context
+namespace nncfd { namespace mg_cuda { class CudaMGContext; } }
+#endif
+
 namespace nncfd {
 
 /// Smoother type for multigrid
@@ -132,6 +137,13 @@ private:
     double r0_l2_ = 0.0;         // Initial residual ||r0||_2 from last solve
     double dirichlet_val_ = 0.0;
     MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
+
+#ifdef USE_GPU_OFFLOAD
+    // CUDA Graph support for reduced kernel launch overhead
+    std::unique_ptr<mg_cuda::CudaMGContext> cuda_ctx_;
+    bool use_cuda_graphs_ = false;  // Set via environment variable MG_USE_CUDA_GRAPHS=1
+    void initialize_cuda_graphs();
+#endif
 
     // Core multigrid operations
     void create_hierarchy();

@@ -248,7 +248,10 @@ add_library(nn_cfd_core ${LIB_SOURCES})
 
 # Add GPU-only sources and link OpenMP when GPU offload is enabled
 if(USE_GPU_OFFLOAD)
-    target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
+    target_sources(nn_cfd_core PRIVATE
+        src/gpu_init.cpp
+        src/mg_cuda_kernels.cpp
+    )
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library

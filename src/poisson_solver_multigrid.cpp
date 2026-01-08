@@ -4,19 +4,38 @@
 /// This file implements a V-cycle geometric multigrid solver achieving O(N)
 /// complexity for the pressure correction equation in the fractional-step method.
 /// Key features:
-/// - V-cycle algorithm with SOR smoothing
+/// - V-cycle algorithm with Chebyshev or Jacobi smoothing
 /// - Automatic mesh hierarchy construction (restriction to coarsest level)
-/// - Full weighting restriction and bilinear prolongation
+/// - Full weighting restriction and bilinear/trilinear prolongation
 /// - GPU-accelerated smoothing and residual computation
+/// - Fused residual + norm computation for efficient convergence checking
+/// - L2 norm convergence with L∞ safety cap for robustness
 /// - 10-100x faster than pure SOR iteration for large grids
 ///
 /// The solver constructs a hierarchy of grids by recursive coarsening and solves
 /// the system using recursive V-cycles that combine smoothing on each level with
 /// coarse-grid correction.
+///
+/// GPU Synchronization Note:
+/// -------------------------
+/// The MG kernels have data dependencies (each operation reads results from the
+/// previous one). Using OpenMP `nowait` on target regions causes race conditions
+/// because nvhpc may execute deferred tasks on different CUDA streams. Therefore,
+/// all GPU kernels use synchronous execution (implicit barrier at end of each
+/// target region).
+///
+/// Nsys profiling shows ~37% of GPU API time is spent in cudaStreamSynchronize.
+/// Future optimization options to reduce this overhead:
+/// 1. CUDA Graphs: Capture V-cycle kernel sequence, replay with single launch
+/// 2. OpenMP depend clauses: Express dependencies explicitly (complex)
+/// 3. Custom CUDA streams: Ensure all kernels use same stream (non-portable)
 
 #include "poisson_solver_multigrid.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
+#ifdef USE_GPU_OFFLOAD
+#include "mg_cuda_kernels.hpp"
+#endif
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -33,6 +52,16 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
     // Initialize GPU buffers (maps to device) OR set up raw pointers for CPU
     // This enables unified loops to use cached pointers on both CPU and GPU
     initialize_gpu_buffers();
+
+#ifdef USE_GPU_OFFLOAD
+    // Check if CUDA Graphs are requested via environment variable
+    const char* env = std::getenv("MG_USE_CUDA_GRAPHS");
+    if (env != nullptr && (std::string(env) == "1" || std::string(env) == "true")) {
+        use_cuda_graphs_ = true;
+        cuda_ctx_ = std::make_unique<mg_cuda::CudaMGContext>();
+        std::cout << "[MG] CUDA Graphs enabled for smoother (set MG_USE_CUDA_GRAPHS=0 to disable)\n";
+    }
+#endif
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
@@ -46,6 +75,13 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     bc_y_lo_ = y_lo;
     bc_y_hi_ = y_hi;
     // Keep z BCs at default (periodic) for 2D compatibility
+
+#ifdef USE_GPU_OFFLOAD
+    // Re-initialize CUDA Graphs with new BCs
+    if (use_cuda_graphs_) {
+        initialize_cuda_graphs();
+    }
+#endif
 }
 
 void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
@@ -57,6 +93,13 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     bc_y_hi_ = y_hi;
     bc_z_lo_ = z_lo;
     bc_z_hi_ = z_hi;
+
+#ifdef USE_GPU_OFFLOAD
+    // Re-initialize CUDA Graphs with new BCs
+    if (use_cuda_graphs_) {
+        initialize_cuda_graphs();
+    }
+#endif
 }
 
 void MultigridPoissonSolver::create_hierarchy() {
@@ -603,6 +646,21 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     // where θ_k = π*(2k+1)/(2*degree), d = (λ_max+λ_min)/2, c = (λ_max-λ_min)/2
     NVTX_SCOPE_POISSON("mg:smooth_chebyshev");
 
+#ifdef USE_GPU_OFFLOAD
+    // Use CUDA Graph if available (captures entire smoother sequence)
+    // Note: CUDA Graphs are 3D-only because 2D uses different array indexing
+    //       (OpenMP 2D: idx = j*stride + i; CUDA 3D: idx = k*plane + j*stride + i)
+    if (use_cuda_graphs_ && cuda_ctx_ && cuda_ctx_->graphs_enabled()) {
+        auto& grid = *levels_[level];
+        if (!grid.is2D()) {
+            cuda_ctx_->smooth(level);
+            cuda_ctx_->synchronize();  // Must sync before OpenMP can access data
+            return;
+        }
+        // 2D: fall through to OpenMP path
+    }
+#endif
+
     auto& grid = *levels_[level];
     const double dx2 = grid.dx * grid.dx;
     const double dy2 = grid.dy * grid.dy;
@@ -634,6 +692,8 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const double* f_ptr = f_ptrs_[level];
 #ifdef USE_GPU_OFFLOAD
     double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
+    // Note: Cannot use nowait here - Chebyshev iterations have data dependencies
+    // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define CHEBY_TARGET_3D \
@@ -733,6 +793,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
 #ifdef USE_GPU_OFFLOAD
     double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
     // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
+    // Note: Cannot use nowait here - Jacobi iterations have data dependencies
     #define JACOBI_TARGET_U_TO_TMP_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_2D \
@@ -1943,10 +2004,69 @@ void MultigridPoissonSolver::sync_level_to_gpu(int level) {
 void MultigridPoissonSolver::sync_level_from_gpu(int level) {
     assert(gpu_ready_ && "GPU must be initialized");
     const size_t total_size = level_sizes_[level];
-    
+
     #pragma omp target update from(u_ptrs_[level][0:total_size])
     #pragma omp target update from(f_ptrs_[level][0:total_size])
     #pragma omp target update from(r_ptrs_[level][0:total_size])
+}
+
+void MultigridPoissonSolver::initialize_cuda_graphs() {
+    // Initialize CUDA Graph-based smoothers for each level
+    // This captures the Chebyshev smoother kernel sequence for efficient replay
+    if (!use_cuda_graphs_ || !cuda_ctx_) return;
+
+    // Build level configurations
+    std::vector<mg_cuda::LevelConfig> configs;
+    for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
+        auto& grid = *levels_[lvl];
+        mg_cuda::LevelConfig cfg;
+        cfg.Nx = grid.Nx;
+        cfg.Ny = grid.Ny;
+        cfg.Nz = grid.Nz;
+        cfg.Ng = 1;
+        cfg.dx2 = grid.dx * grid.dx;
+        cfg.dy2 = grid.dy * grid.dy;
+        cfg.dz2 = grid.dz * grid.dz;
+        cfg.coeff = grid.is2D() ? (2.0/cfg.dx2 + 2.0/cfg.dy2)
+                                : (2.0/cfg.dx2 + 2.0/cfg.dy2 + 2.0/cfg.dz2);
+        cfg.total_size = level_sizes_[lvl];
+        // Convert host pointers to device pointers for CUDA kernels
+        // u, f, r are mapped via OpenMP target data - need conversion
+        cfg.u = gpu::get_device_ptr(u_ptrs_[lvl]);
+        cfg.f = gpu::get_device_ptr(f_ptrs_[lvl]);
+        cfg.r = gpu::get_device_ptr(r_ptrs_[lvl]);
+        // tmp_ptrs_ are allocated via omp_target_alloc - already device pointers
+        cfg.tmp = tmp_ptrs_[lvl];
+        configs.push_back(cfg);
+    }
+
+    // Convert BCs to CUDA enum
+    auto to_cuda_bc = [](PoissonBC bc) -> mg_cuda::BC {
+        switch (bc) {
+            case PoissonBC::Dirichlet: return mg_cuda::BC::Dirichlet;
+            case PoissonBC::Neumann: return mg_cuda::BC::Neumann;
+            case PoissonBC::Periodic: return mg_cuda::BC::Periodic;
+            default: return mg_cuda::BC::Neumann;
+        }
+    };
+
+    // Verify device pointers are valid
+    for (size_t lvl = 0; lvl < configs.size(); ++lvl) {
+        if (!configs[lvl].u || !configs[lvl].f || !configs[lvl].r || !configs[lvl].tmp) {
+            std::cerr << "[MG] ERROR: Null device pointer at level " << lvl
+                      << " - CUDA Graphs disabled\n";
+            use_cuda_graphs_ = false;
+            return;
+        }
+    }
+
+    cuda_ctx_->initialize_smoother_graphs(
+        configs, 4,  // degree = 4 for Chebyshev
+        to_cuda_bc(bc_x_lo_), to_cuda_bc(bc_x_hi_),
+        to_cuda_bc(bc_y_lo_), to_cuda_bc(bc_y_hi_),
+        to_cuda_bc(bc_z_lo_), to_cuda_bc(bc_z_hi_));
+
+    std::cout << "[MG] CUDA Graphs initialized for " << levels_.size() << " levels\n";
 }
 #else
 // CPU: Set raw pointers for unified code paths (no GPU mapping)
