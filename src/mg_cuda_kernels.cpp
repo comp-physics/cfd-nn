@@ -29,7 +29,7 @@ namespace mg_cuda {
 // CUDA Kernels
 // ============================================================================
 
-/// 3D Chebyshev smoother kernel
+/// 3D Chebyshev smoother kernel (requires ghost cells to be set)
 /// Each thread computes one interior point
 __global__ void chebyshev_3d_kernel(
     double* __restrict__ u,
@@ -57,6 +57,62 @@ __global__ void chebyshev_3d_kernel(
         double u_yp = u[idx + stride];
         double u_zm = u[idx - plane_stride];
         double u_zp = u[idx + plane_stride];
+
+        // Jacobi update: u_new = (neighbors/h^2 - f) / diag
+        double u_jacobi = ((u_xp + u_xm) * inv_dx2 +
+                           (u_yp + u_ym) * inv_dy2 +
+                           (u_zp + u_zm) * inv_dz2 - f[idx]) * inv_coeff;
+
+        // Chebyshev weighted update
+        tmp[idx] = (1.0 - omega) * u_c + omega * u_jacobi;
+    }
+}
+
+/// 3D Chebyshev smoother with FUSED periodic BCs (no separate BC kernel needed)
+/// Uses wrap indexing for periodic boundaries - eliminates BC kernel overhead
+__global__ void chebyshev_3d_periodic_kernel(
+    double* __restrict__ u,
+    const double* __restrict__ f,
+    double* __restrict__ tmp,
+    int Nx, int Ny, int Nz, int Ng,
+    double inv_dx2, double inv_dy2, double inv_dz2,
+    double inv_coeff, double omega)
+{
+    // Global thread indices (interior points: 1..Nx, 1..Ny, 1..Nz with Ng=1)
+    int i = blockIdx.x * blockDim.x + threadIdx.x + Ng;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + Ng;
+    int k = blockIdx.z * blockDim.z + threadIdx.z + Ng;
+
+    if (i < Nx + Ng && j < Ny + Ng && k < Nz + Ng) {
+        const int stride = Nx + 2 * Ng;
+        const int plane_stride = stride * (Ny + 2 * Ng);
+        const int idx = k * plane_stride + j * stride + i;
+
+        // Wrap indices for periodic BCs (avoids separate BC kernel)
+        // i ranges from Ng to Nx+Ng-1 (i.e., 1 to Nx for Ng=1)
+        int i_m = (i == Ng) ? (Nx + Ng - 1) : (i - 1);       // Wrap left
+        int i_p = (i == Nx + Ng - 1) ? Ng : (i + 1);         // Wrap right
+        int j_m = (j == Ng) ? (Ny + Ng - 1) : (j - 1);       // Wrap bottom
+        int j_p = (j == Ny + Ng - 1) ? Ng : (j + 1);         // Wrap top
+        int k_m = (k == Ng) ? (Nz + Ng - 1) : (k - 1);       // Wrap back
+        int k_p = (k == Nz + Ng - 1) ? Ng : (k + 1);         // Wrap front
+
+        // Compute neighbor indices with wrap
+        int idx_xm = k * plane_stride + j * stride + i_m;
+        int idx_xp = k * plane_stride + j * stride + i_p;
+        int idx_ym = k * plane_stride + j_m * stride + i;
+        int idx_yp = k * plane_stride + j_p * stride + i;
+        int idx_zm = k_m * plane_stride + j * stride + i;
+        int idx_zp = k_p * plane_stride + j * stride + i;
+
+        // Read neighbors with periodic wrap
+        double u_c = u[idx];
+        double u_xm = u[idx_xm];
+        double u_xp = u[idx_xp];
+        double u_ym = u[idx_ym];
+        double u_yp = u[idx_yp];
+        double u_zm = u[idx_zm];
+        double u_zp = u[idx_zp];
 
         // Jacobi update: u_new = (neighbors/h^2 - f) / diag
         double u_jacobi = ((u_xp + u_xm) * inv_dx2 +
@@ -252,6 +308,29 @@ void launch_chebyshev_3d(
         inv_dx2, inv_dy2, inv_dz2, inv_coeff, omega);
 }
 
+/// Launch Chebyshev kernel with fused periodic BCs (no separate BC kernel needed)
+void launch_chebyshev_3d_periodic(
+    cudaStream_t stream,
+    double* u, const double* f, double* tmp,
+    int Nx, int Ny, int Nz, int Ng,
+    double dx2, double dy2, double dz2, double coeff,
+    double omega)
+{
+    double inv_dx2 = 1.0 / dx2;
+    double inv_dy2 = 1.0 / dy2;
+    double inv_dz2 = (Nz == 1) ? 0.0 : 1.0 / dz2;
+    double inv_coeff = 1.0 / coeff;
+
+    dim3 block(8, 8, 8);
+    dim3 grid((Nx + block.x - 1) / block.x,
+              (Ny + block.y - 1) / block.y,
+              (Nz + block.z - 1) / block.z);
+
+    chebyshev_3d_periodic_kernel<<<grid, block, 0, stream>>>(
+        u, f, tmp, Nx, Ny, Nz, Ng,
+        inv_dx2, inv_dy2, inv_dz2, inv_coeff, omega);
+}
+
 void launch_bc_3d(
     cudaStream_t stream,
     double* u,
@@ -332,6 +411,11 @@ void CudaSmootherGraph::capture_graph(cudaStream_t stream) {
     const double d = (lambda_max + lambda_min) / 2.0;
     const double c = (lambda_max - lambda_min) / 2.0;
 
+    // Check if all BCs are periodic - can use fused kernel (no BC pass needed)
+    const bool all_periodic = (bc_x_lo_ == BC::Periodic && bc_x_hi_ == BC::Periodic &&
+                                bc_y_lo_ == BC::Periodic && bc_y_hi_ == BC::Periodic &&
+                                bc_z_lo_ == BC::Periodic && bc_z_hi_ == BC::Periodic);
+
     // Begin stream capture
     CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
 
@@ -341,18 +425,23 @@ void CudaSmootherGraph::capture_graph(cudaStream_t stream) {
         double theta = M_PI * (2.0 * k + 1.0) / (2.0 * degree_);
         double omega = 1.0 / (d - c * std::cos(theta));
 
-        // 1. Apply BC
-        launch_bc_kernel(stream);
+        if (all_periodic) {
+            // Fused kernel: Chebyshev + periodic BC wrap (no separate BC pass)
+            launch_chebyshev_periodic(stream, omega);
+        } else {
+            // Standard path: BC kernel + Chebyshev kernel
+            launch_bc_kernel(stream);
+            launch_chebyshev_iteration(stream, k, omega);
+        }
 
-        // 2. Chebyshev iteration: u -> tmp
-        launch_chebyshev_iteration(stream, k, omega);
-
-        // 3. Copy: tmp -> u
+        // Copy: tmp -> u
         launch_copy_kernel(stream);
     }
 
-    // Final BC application
-    launch_bc_kernel(stream);
+    // Final BC application (only needed for non-periodic)
+    if (!all_periodic) {
+        launch_bc_kernel(stream);
+    }
 
     // End capture and create executable graph
     CUDA_CHECK(cudaStreamEndCapture(stream, &graph_));
@@ -361,6 +450,15 @@ void CudaSmootherGraph::capture_graph(cudaStream_t stream) {
 
 void CudaSmootherGraph::launch_chebyshev_iteration(cudaStream_t stream, int k, double omega) {
     launch_chebyshev_3d(
+        stream,
+        config_.u, config_.f, config_.tmp,
+        config_.Nx, config_.Ny, config_.Nz, config_.Ng,
+        config_.dx2, config_.dy2, config_.dz2, config_.coeff,
+        omega);
+}
+
+void CudaSmootherGraph::launch_chebyshev_periodic(cudaStream_t stream, double omega) {
+    launch_chebyshev_3d_periodic(
         stream,
         config_.u, config_.f, config_.tmp,
         config_.Nx, config_.Ny, config_.Nz, config_.Ng,

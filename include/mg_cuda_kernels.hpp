@@ -86,6 +86,9 @@ private:
     /// Launch a single Chebyshev iteration (for graph capture)
     void launch_chebyshev_iteration(cudaStream_t stream, int k, double omega);
 
+    /// Launch Chebyshev iteration with fused periodic BCs (for graph capture)
+    void launch_chebyshev_periodic(cudaStream_t stream, double omega);
+
     /// Launch BC kernel (for graph capture)
     void launch_bc_kernel(cudaStream_t stream);
 

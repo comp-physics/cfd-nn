@@ -30,6 +30,11 @@ struct PoissonConfig {
     int check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap, check every cycle)
     bool use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less sensitive to hot cells)
     double linf_safety_factor = 10.0; ///< L∞ safety cap: even with L2 convergence, require ||r||_∞/||b||_∞ ≤ tol_rhs * factor
+
+    // Fixed-cycle mode: run exactly N V-cycles without convergence checks (fastest for projection)
+    // When > 0, skips all residual computation and D→H transfers during solve.
+    // Typical values: 4-8 cycles for projection (often sufficient for incompressible flow).
+    int fixed_cycles = 0;    ///< Fixed V-cycle count (0 = use convergence-based termination)
 };
 
 /// Poisson solver for pressure equation

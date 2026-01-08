@@ -1617,7 +1617,63 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
     apply_bc(0);
 
-    // MG V-cycles with robust tolerance-based early termination
+    // ========================================================================
+    // Fixed-cycle mode: run exactly N V-cycles without convergence checks
+    // This is the fastest mode for projection - no D→H transfers mid-solve
+    // ========================================================================
+    if (cfg.fixed_cycles > 0) {
+        const int num_cycles = cfg.fixed_cycles;
+        const int nu1 = (num_cycles > 3) ? 2 : 1;  // Pre-smoothing sweeps
+        const int nu2 = (num_cycles > 3) ? 2 : 1;  // Post-smoothing sweeps
+
+        for (int cycle = 0; cycle < num_cycles; ++cycle) {
+            vcycle(0, nu1, nu2);
+        }
+
+        // Set residual to 0 to indicate we didn't compute it
+        residual_ = 0.0;
+        residual_l2_ = 0.0;
+        r0_ = 0.0;
+        r0_l2_ = 0.0;
+        b_inf_ = 0.0;
+        b_l2_ = 0.0;
+
+        // Handle nullspace for singular problems
+        bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                              bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
+                              bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
+        if (!has_dirichlet) {
+            subtract_mean(0);
+            apply_bc(0);
+        }
+
+#ifdef USE_GPU_OFFLOAD
+        sync_level_from_gpu(0);
+#endif
+
+        // Copy result back to output field
+        if (mesh_->is2D()) {
+            for (int j = 0; j < finest.Ny + 2*Ng; ++j) {
+                for (int i = 0; i < finest.Nx + 2*Ng; ++i) {
+                    p(i, j) = finest.u(i, j);
+                }
+            }
+        } else {
+            for (int k = 0; k < finest.Nz + 2*Ng; ++k) {
+                for (int j = 0; j < finest.Ny + 2*Ng; ++j) {
+                    for (int i = 0; i < finest.Nx + 2*Ng; ++i) {
+                        p(i, j, k) = finest.u(i, j, k);
+                    }
+                }
+            }
+        }
+
+        return num_cycles;
+    }
+
+    // ========================================================================
+    // Convergence-based mode: MG V-cycles with tolerance checking
+    // ========================================================================
     // Convergence criteria (any one triggers exit):
     //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
     //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
