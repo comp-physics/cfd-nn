@@ -1550,6 +1550,24 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     return max_res;
 }
 
+bool MultigridPoissonSolver::has_nullspace() const {
+    // The Poisson operator with Neumann/Periodic BCs has a nullspace (constants).
+    // Dirichlet BC on ANY face pins the solution, eliminating the nullspace.
+    //
+    // This determines whether subtract_mean() is needed after solving.
+    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
+                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
+    return !has_dirichlet;
+}
+
+void MultigridPoissonSolver::fix_nullspace(int level) {
+    if (has_nullspace()) {
+        subtract_mean(level);
+        apply_bc(level);  // Re-apply BCs after mean subtraction (ghost cells now inconsistent)
+    }
+}
+
 void MultigridPoissonSolver::subtract_mean(int level) {
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
@@ -1673,14 +1691,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         b_inf_ = 0.0;
         b_l2_ = 0.0;
 
-        // Handle nullspace for singular problems
-        bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                              bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
-                              bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
-        if (!has_dirichlet) {
-            subtract_mean(0);
-            apply_bc(0);
-        }
+        // Handle nullspace for singular problems (pure Neumann/Periodic)
+        fix_nullspace(0);
 
 #ifdef USE_GPU_OFFLOAD
         sync_level_from_gpu(0);
@@ -1800,17 +1812,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     }
 
     // Subtract mean for singular Poisson problems (no Dirichlet BCs)
-    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
-    // and we must fix the nullspace by subtracting the mean
-    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
-                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
-
-    if (!has_dirichlet) {
-        subtract_mean(0);
-        // Re-apply BCs after mean subtraction since ghost cells are now inconsistent
-        apply_bc(0);
-    }
+    // Handle nullspace for singular problems (pure Neumann/Periodic)
+    fix_nullspace(0);
 
 #ifdef USE_GPU_OFFLOAD
     // Download from GPU once after all V-cycles
@@ -1915,14 +1918,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         b_inf_ = 0.0;
         b_l2_ = 0.0;
 
-        // Handle nullspace for singular problems (all-periodic)
-        bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                              bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
-                              bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
-        if (!has_dirichlet) {
-            subtract_mean(0);
-            apply_bc(0);
-        }
+        // Handle nullspace for singular problems (pure Neumann/Periodic)
+        fix_nullspace(0);
 
         // Copy result from multigrid buffer back to caller's present-mapped array (D-to-D)
         #pragma omp target teams distribute parallel for \
@@ -2043,17 +2040,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     }
 
     // Subtract mean for singular Poisson problems (no Dirichlet BCs)
-    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
-    // and we must fix the nullspace by subtracting the mean
-    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
-                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
-
-    if (!has_dirichlet) {
-        subtract_mean(0);
-        // Re-apply BCs after mean subtraction since ghost cells are now inconsistent
-        apply_bc(0);
-    }
+    // Handle nullspace for singular problems (pure Neumann/Periodic)
+    fix_nullspace(0);
 
     // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
     // This is device-to-device copy via present mappings (no host staging)
@@ -2259,6 +2247,9 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2) {
         double coeff = grid.is2D() ? (2.0/dx2 + 2.0/dy2) : (2.0/dx2 + 2.0/dy2 + 2.0/dz2);
         new_fp.level_sizes.push_back(level_sizes_[lvl]);
         new_fp.level_coeffs.push_back(coeff);
+        new_fp.level_dx.push_back(dx2);
+        new_fp.level_dy.push_back(dy2);
+        new_fp.level_dz.push_back(dz2);
     }
 
     // Check if existing graph is still valid
@@ -2336,11 +2327,20 @@ void MultigridPoissonSolver::vcycle_graphed() {
     cudaStream_t omp_stream = reinterpret_cast<cudaStream_t>(
         ompx_get_cuda_stream(omp_get_default_device(), /*sync=*/0));
 
-#ifndef NDEBUG
-    // Debug assertion: verify stream is valid and consistent
-    // A null stream would cause graph to launch on default stream (potential race)
-    assert(omp_stream != nullptr && "OpenMP CUDA stream is null - graph may race with OpenMP kernels");
-#endif
+    // Runtime stream validation with graceful fallback
+    // A null stream would launch on CUDA default stream, causing potential race conditions
+    // with OpenMP target regions. Instead of crashing in production, fall back to the
+    // non-graphed path which is slower but correct.
+    if (omp_stream == nullptr) {
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "[MG] WARNING: OpenMP CUDA stream is null - falling back to non-graphed V-cycle\n"
+                      << "    This may indicate a runtime issue. Performance will be degraded.\n";
+            warned = true;
+        }
+        vcycle(0, vcycle_graph_nu1_, vcycle_graph_nu2_);
+        return;
+    }
 
     // Single graph launch for entire V-cycle
     vcycle_graph_->execute(omp_stream);

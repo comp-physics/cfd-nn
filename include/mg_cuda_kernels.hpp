@@ -227,10 +227,17 @@ struct VCycleLevelConfig {
 
 /// Fingerprint for V-cycle graph validity checking
 /// If any of these parameters change, the graph must be recaptured
+///
+/// Note: Currently assumes constant-coefficient Laplacian (no variable coefficients).
+/// If variable coefficients are added, fingerprint must include pointer identity
+/// or hash of coefficient fields.
 struct VCycleGraphFingerprint {
     size_t num_levels = 0;
     std::vector<size_t> level_sizes;  // Total size per level
     std::vector<double> level_coeffs; // Diagonal coefficients per level
+    std::vector<double> level_dx;     // Grid spacing per level (for anisotropic grids)
+    std::vector<double> level_dy;
+    std::vector<double> level_dz;
     int degree = 0;
     int nu1 = 0;
     int nu2 = 0;
@@ -238,11 +245,16 @@ struct VCycleGraphFingerprint {
     BC bc_y_lo = BC::Neumann, bc_y_hi = BC::Neumann;
     BC bc_z_lo = BC::Neumann, bc_z_hi = BC::Neumann;
     int coarse_iters = 8;  // Iterations at coarsest level
+    // Note: Chebyshev spectral bounds (lambda_min, lambda_max) are currently
+    // hardcoded constants. If they become configurable, add them here.
 
     bool operator==(const VCycleGraphFingerprint& other) const {
         return num_levels == other.num_levels &&
                level_sizes == other.level_sizes &&
                level_coeffs == other.level_coeffs &&
+               level_dx == other.level_dx &&
+               level_dy == other.level_dy &&
+               level_dz == other.level_dz &&
                degree == other.degree &&
                nu1 == other.nu1 && nu2 == other.nu2 &&
                bc_x_lo == other.bc_x_lo && bc_x_hi == other.bc_x_hi &&

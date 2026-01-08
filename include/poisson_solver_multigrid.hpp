@@ -178,7 +178,28 @@ private:
     void compute_residual_and_norms(int level, double& r_inf, double& r_l2);
 
     void subtract_mean(int level);
-    
+
+    /// Check if the problem has a nullspace (solution unique only up to a constant)
+    ///
+    /// The Poisson equation has a non-trivial nullspace (constants) when:
+    /// - No Dirichlet BC is present (pure Neumann, pure Periodic, or mixed Neumann/Periodic)
+    ///
+    /// When `has_nullspace()` returns true, the solution is unique only up to an additive
+    /// constant. To obtain a unique solution, call `subtract_mean()` after solving to
+    /// project out the nullspace component.
+    ///
+    /// Edge cases:
+    /// - Mixed BC (e.g., x: Dirichlet, y: Periodic): has_nullspace() = false
+    ///   The Dirichlet BC pins the solution, no nullspace exists.
+    /// - Pure Neumann: Compatible RHS required (sum(f) ≈ 0 from Gauss's theorem).
+    ///   If RHS is incompatible, solver may converge slowly or stagnate.
+    /// - Pure Periodic: Compatible RHS required. Common in incompressible flow.
+    bool has_nullspace() const;
+
+    /// Project out nullspace and ensure BCs are consistent
+    /// Call this after solving when has_nullspace() returns true
+    void fix_nullspace(int level);
+
     // GPU buffer management (always present for ABI stability)
     bool gpu_ready_ = false;
     std::vector<double*> u_ptrs_;  // Device pointers for u at each level

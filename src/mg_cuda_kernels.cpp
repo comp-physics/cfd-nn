@@ -789,9 +789,15 @@ void CudaVCycleGraph::initialize(
     fingerprint_.num_levels = levels.size();
     fingerprint_.level_sizes.clear();
     fingerprint_.level_coeffs.clear();
+    fingerprint_.level_dx.clear();
+    fingerprint_.level_dy.clear();
+    fingerprint_.level_dz.clear();
     for (const auto& lvl : levels) {
         fingerprint_.level_sizes.push_back(lvl.total_size);
         fingerprint_.level_coeffs.push_back(lvl.coeff);
+        fingerprint_.level_dx.push_back(lvl.dx2);  // Store dx^2 (what kernels use)
+        fingerprint_.level_dy.push_back(lvl.dy2);
+        fingerprint_.level_dz.push_back(lvl.dz2);
     }
     fingerprint_.degree = degree;
     fingerprint_.nu1 = nu1;
