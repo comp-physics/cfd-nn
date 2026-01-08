@@ -19,6 +19,8 @@
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 //=============================================================================
 // BC TESTS
@@ -36,11 +38,7 @@ void test_no_slip_walls() {
     RANSSolver solver(mesh, cfg);
     solver.set_body_force(0.001, 0.0, 0.0);
 
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
@@ -76,11 +74,7 @@ void test_periodic_z() {
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         double z = mesh.z(k);
@@ -338,11 +332,7 @@ void test_channel_like_bcs() {
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 
@@ -367,11 +357,7 @@ void test_duct_like_bcs() {
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 
@@ -397,9 +383,7 @@ void test_corner_cells_finite() {
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::AllNoSlip));
     solver.set_body_force(-0.01, 0.0);
     solver.initialize_uniform(0.1, 0.0);
 
@@ -425,9 +409,7 @@ void test_divergence_free_3d() {
     cfg.poisson_max_iter = 50;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.initialize_uniform(1.0, 0.5);
 
     for (int i = 0; i < 5; ++i) solver.step();
@@ -458,11 +440,7 @@ void test_3d_solver_stability() {
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 

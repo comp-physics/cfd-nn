@@ -28,6 +28,8 @@ using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
 using nncfd::test::create_test_velocity_field;
 using nncfd::test::check_gpu_cpu_consistency;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 using nncfd::test::GPU_CPU_ABS_TOL;
 using nncfd::test::GPU_CPU_REL_TOL;
 using nncfd::test::harness::record;
@@ -315,7 +317,7 @@ void test_solver_taylor_green() {
     }
 
     RANSSolver s1(mesh, cfg), s2(mesh, cfg);
-    VelocityBC bc; bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
     s1.set_velocity_bc(bc); s2.set_velocity_bc(bc);
     s1.initialize(vel_init); s2.initialize(vel_init);
 
@@ -353,9 +355,7 @@ void test_solver_channel() {
     mesh.init_uniform(cfg.Nx, cfg.Ny, cfg.x_min, cfg.x_max, cfg.y_min, cfg.y_max);
 
     RANSSolver s1(mesh, cfg), s2(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
+    auto bc = create_velocity_bc(BCPattern::Channel2D);
     s1.set_velocity_bc(bc); s2.set_velocity_bc(bc);
     s1.set_body_force(-cfg.dp_dx, 0); s2.set_body_force(-cfg.dp_dx, 0);
     s1.initialize_uniform(0.1, 0); s2.initialize_uniform(0.1, 0);
@@ -400,7 +400,7 @@ void test_solver_grid_sweep() {
         mesh.init_uniform(cfg.Nx, cfg.Ny, cfg.x_min, cfg.x_max, cfg.y_min, cfg.y_max);
 
         RANSSolver s1(mesh, cfg), s2(mesh, cfg);
-        VelocityBC bc; bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = VelocityBC::Periodic;
+        auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
         s1.set_velocity_bc(bc); s2.set_velocity_bc(bc);
         s1.initialize_uniform(0.5, 0.3); s2.initialize_uniform(0.5, 0.3);
 

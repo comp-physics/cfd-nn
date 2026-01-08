@@ -27,6 +27,8 @@
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 //=============================================================================
 // Helpers
@@ -126,12 +128,7 @@ void test_fft1d_selection() {
     cfg.poisson_solver = PoissonSolverType::FFT1D;
 
     RANSSolver solver(mesh, cfg);
-
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
 
     bool pass = (solver.poisson_solver_type() == PoissonSolverType::FFT1D);
     record("FFT1D solver selection", pass);
@@ -162,8 +159,7 @@ void test_fft_vs_mg_periodic() {
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = bc.y_lo = bc.y_hi = bc.z_lo = bc.z_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
     solver_mg.set_velocity_bc(bc);
 
     // Initialize with sinusoidal velocity
@@ -257,10 +253,7 @@ void test_fft1d_vs_mg_channel() {
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::Channel3D);
     solver_mg.set_velocity_bc(bc);
 
     VectorField vel(mesh);
@@ -334,10 +327,7 @@ void test_fft1d_vs_mg_duct() {
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
+    auto bc = create_velocity_bc(BCPattern::Duct);
     solver_mg.set_velocity_bc(bc);
 
     VectorField vel(mesh);
@@ -411,9 +401,7 @@ void test_fft2d_vs_mg_channel() {
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
+    auto bc = create_velocity_bc(BCPattern::Channel2D);
     solver_mg.set_velocity_bc(bc);
 
     VectorField vel(mesh);
@@ -498,11 +486,7 @@ void test_fft1d_correctness() {
     cfg.poisson_solver = PoissonSolverType::FFT1D;
 
     RANSSolver solver(mesh, cfg);
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
 
     if (solver.poisson_solver_type() != PoissonSolverType::FFT1D) {
         record("FFT1D correctness (finite pressure)", true, true);
@@ -548,11 +532,7 @@ void test_fft1d_grid_convergence() {
         cfg.poisson_solver = PoissonSolverType::FFT1D;
 
         RANSSolver solver(mesh, cfg);
-        VelocityBC bc;
-        bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-        bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
 
         if (solver.poisson_solver_type() != PoissonSolverType::FFT1D) {
             continue;

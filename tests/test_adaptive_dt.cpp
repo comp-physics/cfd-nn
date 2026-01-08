@@ -16,6 +16,8 @@
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // ============================================================================
 // CFL Condition Tests
@@ -36,13 +38,7 @@ void test_cfl_uniform_velocity() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with uniform velocity u=1.0
     double u_init = 1.0;
@@ -81,13 +77,7 @@ void test_cfl_different_cfl_max() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         solver.initialize_uniform(1.0, 0.0);
 
@@ -125,13 +115,7 @@ void test_diffusive_limit() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Very small velocity so CFL limit is large
     solver.initialize_uniform(0.001, 0.0);
@@ -163,13 +147,7 @@ void test_turbulent_viscosity_effect() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     auto turb_model = create_turbulence_model(TurbulenceModelType::SSTKOmega, "", "");
     solver.set_turbulence_model(std::move(turb_model));
@@ -206,13 +184,7 @@ void test_minimum_selection_cfl_wins() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // High velocity → small dt_cfl
     solver.initialize_uniform(10.0, 0.0);
@@ -248,13 +220,7 @@ void test_minimum_selection_diffusion_wins() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Small velocity → large dt_cfl
     solver.initialize_uniform(0.01, 0.0);
@@ -298,15 +264,7 @@ void test_3d_adaptive_dt() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
     solver.initialize_uniform(1.0, 0.0);  // u=1, v=0
 
@@ -339,12 +297,7 @@ void test_2d_3d_consistency() {
     config.verbose = false;
 
     RANSSolver solver2d(mesh2d, config);
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver2d.set_velocity_bc(bc);
+    solver2d.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver2d.initialize_uniform(1.0, 0.0);
 
 #ifdef USE_GPU_OFFLOAD
@@ -358,14 +311,7 @@ void test_2d_3d_consistency() {
     mesh3d.init_uniform(32, 32, 8, 0.0, 3.2, 0.0, 3.2, 0.0, 0.8);
 
     RANSSolver solver3d(mesh3d, config);
-    VelocityBC bc3d;
-    bc3d.x_lo = VelocityBC::Periodic;
-    bc3d.x_hi = VelocityBC::Periodic;
-    bc3d.y_lo = VelocityBC::Periodic;
-    bc3d.y_hi = VelocityBC::Periodic;
-    bc3d.z_lo = VelocityBC::Periodic;
-    bc3d.z_hi = VelocityBC::Periodic;
-    solver3d.set_velocity_bc(bc3d);
+    solver3d.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver3d.initialize_uniform(1.0, 0.0);
 
 #ifdef USE_GPU_OFFLOAD
@@ -397,13 +343,7 @@ void test_very_small_velocity() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Very small but non-zero velocity
     solver.initialize_uniform(1e-12, 0.0);
@@ -439,13 +379,7 @@ void test_anisotropic_grid() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     solver.initialize_uniform(1.0, 0.0);
 
