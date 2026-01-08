@@ -1,5 +1,6 @@
 #include "gpu_kernels.hpp"
 #include "profiling.hpp"
+#include "numerics.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -99,8 +100,8 @@ void compute_mlp_scalar_features_gpu(
     NVTX_SCOPE_TURB("kernel:mlp_features");
 
 #ifdef USE_GPU_OFFLOAD
-    const double C_mu = 0.09;
-    
+    using numerics::C_MU;
+
     // CRITICAL: map(present:...) indicates these arrays are already mapped by solver/turbulence model
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_cells], dudy[0:total_cells], \
@@ -115,27 +116,27 @@ void compute_mlp_scalar_features_gpu(
             const int j = jj + Ng;
             const int idx_cell = j * cell_stride + i;
             const int idx_out = jj * Nx + ii;  // Interior cell index for output
-            
+
             // Get gradients
             double dudx_v = dudx[idx_cell];
             double dudy_v = dudy[idx_cell];
             double dvdx_v = dvdx[idx_cell];
             double dvdy_v = dvdy[idx_cell];
-            
+
             // Strain and rotation magnitudes
             double Sxx = dudx_v;
             double Syy = dvdy_v;
             double Sxy = 0.5 * (dudy_v + dvdx_v);
             double Oxy = 0.5 * (dudy_v - dvdx_v);
-            
+
             // Frobenius norm (matches CPU VelocityGradient::S_mag())
             double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
             double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-            
+
             // Get k, omega
             double k_val = k[idx_cell];
             double omega_val = omega[idx_cell];
-            double eps = C_mu * k_val * omega_val;
+            double eps = C_MU * k_val * omega_val;
             
             // Velocity magnitude (from staggered grid)
             double u_avg = 0.5 * (u_face[j * u_stride + i] + u_face[j * u_stride + (i+1)]);
@@ -234,8 +235,9 @@ void compute_tbnn_features_gpu(
     NVTX_SCOPE_TURB("kernel:tbnn_features");
 
 #ifdef USE_GPU_OFFLOAD
-    const double C_mu = 0.09;
-    
+    using numerics::C_MU;
+    using numerics::K_FLOOR;
+
     // CRITICAL: map(present:...) indicates these arrays are already mapped by solver/turbulence model
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_cells], dudy[0:total_cells], \
@@ -249,33 +251,33 @@ void compute_tbnn_features_gpu(
             const int j = jj + Ng;
             const int idx_cell = j * cell_stride + i;
             const int idx_out = jj * Nx + ii;  // Interior cell index for output
-            
+
             // Get gradients
             double dudx_v = dudx[idx_cell];
             double dudy_v = dudy[idx_cell];
             double dvdx_v = dvdx[idx_cell];
             double dvdy_v = dvdy[idx_cell];
-        
+
         // Strain rate tensor components: S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
         double Sxx = dudx_v;
         double Syy = dvdy_v;
         double Sxy = 0.5 * (dudy_v + dvdx_v);
-        
+
         // Rotation tensor: Omega_ij = 0.5 * (du_i/dx_j - du_j/dx_i)
         double Oxy = 0.5 * (dudy_v - dvdx_v);
-        
+
         // Magnitudes (Frobenius norm - matches CPU VelocityGradient)
         double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
         double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-        
+
         // Get k, omega, epsilon
         double k_val = k[idx_cell];
         double omega_val = omega[idx_cell];
-        double eps = C_mu * k_val * omega_val;
-        
+        double eps = C_MU * k_val * omega_val;
+
         // Safe values
-        double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
-        double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+        double k_safe = std::max(k_val, K_FLOOR);
+        double eps_safe = std::max(eps, 1e-20);
         
         // Time scale for normalization
         double tau = k_safe / eps_safe;
@@ -532,11 +534,13 @@ void tbnn_full_pipeline_gpu(
     NVTX_SCOPE_NN("kernel:tbnn_full_pipeline");
 
 #ifdef USE_GPU_OFFLOAD
+    using numerics::C_MU;
+    using numerics::K_FLOOR;
+
     const int n_cells = Nx * Ny;
     const int stride = Nx + 2;
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
-    const double C_mu = 0.09;
     const int NUM_BASIS = 4;
     const int FEATURE_DIM = 5;
     const bool compute_tau = (tau_xx != nullptr);
@@ -607,10 +611,10 @@ void tbnn_full_pipeline_gpu(
         
         double k_val = k[cell_idx];
         double omega_val = omega[cell_idx];
-        double eps = C_mu * k_val * omega_val;
-        
-        double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
-        double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+        double eps = C_MU * k_val * omega_val;
+
+        double k_safe = std::max(k_val, K_FLOOR);
+        double eps_safe = std::max(eps, 1e-20);
         double tau = k_safe / eps_safe;
         
         double S_norm = S_mag * tau;

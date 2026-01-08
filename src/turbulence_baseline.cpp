@@ -17,6 +17,7 @@
 #include "turbulence_earsm.hpp"
 #include "gpu_kernels.hpp"
 #include "features.hpp"
+#include "numerics.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -424,20 +425,22 @@ void AlgebraicKOmegaModel::update(
     
     // In log-law region: k ~ u_tau^2 / sqrt(C_mu)
     // omega ~ u_tau / (kappa * y)
-    
-    const double kappa = 0.41;
-    
+
+    using numerics::KAPPA;
+    using numerics::A_PLUS;
+    using numerics::Y_WALL_FLOOR;
+
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double y_wall = mesh.wall_distance(i, j);
             double y_plus = y_wall * u_tau / nu_;
-            
+
             // Estimate k (with damping near wall)
-            double f_mu = 1.0 - std::exp(-y_plus / 26.0);
+            double f_mu = 1.0 - std::exp(-y_plus / A_PLUS);
             double k_est = (u_tau * u_tau / std::sqrt(C_mu_)) * f_mu * f_mu;
-            
+
             // Estimate omega
-            double omega_est = u_tau / (kappa * std::max(y_wall, 1e-10) * f_mu + 1e-10);
+            double omega_est = u_tau / (KAPPA * std::max(y_wall, Y_WALL_FLOOR) * f_mu + Y_WALL_FLOOR);
             
             // Blend with viscous sublayer estimate
             if (y_plus < 5.0) {

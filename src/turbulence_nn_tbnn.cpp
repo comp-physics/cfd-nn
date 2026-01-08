@@ -1,6 +1,7 @@
 #include "turbulence_nn_tbnn.hpp"
 #include "gpu_kernels.hpp"
 #include "timing.hpp"
+#include "numerics.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -270,10 +271,10 @@ void TurbulenceNNTBNN::ensure_initialized(const Mesh& mesh) {
     }
 }
 
-void TurbulenceNNTBNN::estimate_k(const Mesh& mesh, const VectorField& velocity, 
+void TurbulenceNNTBNN::estimate_k(const Mesh& mesh, const VectorField& velocity,
                                   ScalarField& k) {
-    const double C_mu = 0.09;
-    
+    using numerics::C_MU;
+
     double u_tau = 0.0;
     {
         int j = mesh.j_begin();
@@ -301,7 +302,7 @@ void TurbulenceNNTBNN::estimate_k(const Mesh& mesh, const VectorField& velocity,
             
             double f_mu = 1.0 - std::exp(-std::min(y_plus / 26.0, 20.0));
             
-            double k_est = (u_tau * u_tau / std::sqrt(C_mu)) * f_mu * f_mu;
+            double k_est = (u_tau * u_tau / std::sqrt(C_MU)) * f_mu * f_mu;
             k(i, j) = std::max(k_min_, std::min(k_est, 10.0 * u_tau * u_tau));
         }
     }
@@ -327,7 +328,7 @@ void TurbulenceNNTBNN::update_full_gpu(
     const double dy = mesh.dy;
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     const double delta_val = delta_;
     const double nu_val = nu_;
     const double k_min_val = k_min_;
@@ -677,7 +678,7 @@ void TurbulenceNNTBNN::update(
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double y_wall = mesh.wall_distance(i, j);
-                omega_local(i, j) = std::sqrt(k_local(i, j)) / (0.41 * std::max(y_wall, 1e-10));
+                omega_local(i, j) = std::sqrt(k_local(i, j)) / (numerics::KAPPA * std::max(y_wall, numerics::Y_WALL_FLOOR));
             }
         }
     }

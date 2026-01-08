@@ -14,6 +14,7 @@
 
 #include "features.hpp"
 #include "gpu_kernels.hpp"
+#include "numerics.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -139,10 +140,10 @@ Features compute_features_tbnn(
     // Get k and epsilon
     double k_val = k(i, j);
     double omega_val = omega(i, j);
-    double eps = 0.09 * k_val * omega_val;  // epsilon = C_mu * k * omega
-    
+    double eps = numerics::C_MU * k_val * omega_val;  // epsilon = C_mu * k * omega
+
     // Avoid division by zero
-    double k_safe = std::max(k_val, 1e-10);
+    double k_safe = std::max(k_val, numerics::K_FLOOR);
     double eps_safe = std::max(eps, 1e-20);
     
     // Time scale for normalization
@@ -380,8 +381,8 @@ void FeatureComputer::compute_tbnn_features(
             
             double k_val = k(i, j);
             double omega_val = omega(i, j);
-            double eps = 0.09 * k_val * omega_val;
-            
+            double eps = numerics::C_MU * k_val * omega_val;
+
             TensorBasis::compute(grad, k_val, eps, basis[idx]);
             
             ++idx;

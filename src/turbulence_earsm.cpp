@@ -218,7 +218,7 @@ void EARSMClosure::compute_nu_t(
     feature_computer_->set_reference(nu_, delta_, 1.0);
     feature_computer_->compute_tbnn_features(velocity, k, omega, features_, basis_);
     
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     
     using namespace numerics;
 
@@ -505,7 +505,7 @@ void PopeQuadraticEARSM::compute_G(
     // This is a simple quadratic extension that captures some
     // anisotropy effects while remaining computationally cheap.
     
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     
     // PHYSICAL CHECK: Clamp eta to reasonable range
     // eta > 100 indicates pathological timescales (e.g., k/omega at floors)
@@ -998,7 +998,7 @@ void compute_earsm_wj_full_gpu(
     const double A2 = constants.A2();
     const double A3 = constants.A3();
     const double A4 = constants.A4();
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
@@ -1044,7 +1044,7 @@ void compute_earsm_gs_full_gpu(
     const double C1 = constants.C1;
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
-    const double C_mu_eps = 0.09;
+    const double C_mu_eps = numerics::C_MU;
     const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
@@ -1086,7 +1086,7 @@ void compute_earsm_pope_full_gpu(
     int Nx, int Ny, int Ng, int stride,
     double nu, double C1, double C2)
 {
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD

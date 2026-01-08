@@ -17,6 +17,7 @@
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
 #include "mpi_check.hpp"
+#include "numerics.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -1513,7 +1514,7 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
         // Ensure k_init is physically meaningful (above low-turb threshold)
         k_init = std::max(k_init, 1e-7);
         
-        double omega_init = k_init / (0.09 * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
+        double omega_init = k_init / (numerics::C_MU * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
         omega_init = std::max(omega_init, 1e-6);  // Ensure omega is also meaningful
         
         k_.fill(k_init);
@@ -1560,7 +1561,7 @@ void RANSSolver::initialize_uniform(double u0, double v0) {
         // Ensure k_init is physically meaningful (above low-turb threshold)
         k_init = std::max(k_init, 1e-7);
         
-        double omega_init = k_init / (0.09 * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
+        double omega_init = k_init / (numerics::C_MU * config_.nu * 100.0);  // ν_t/ν ≈ 100 initially
         omega_init = std::max(omega_init, 1e-6);  // Ensure omega is also meaningful
         
         k_.fill(k_init);

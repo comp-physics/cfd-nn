@@ -73,6 +73,24 @@ inline double clamp_with_flag(double val, double lo, double hi, bool& clamped) {
 }
 
 // =============================================================================
+// Turbulence model constants
+// =============================================================================
+
+/// Standard k-ε/k-ω model constant C_μ
+/// Relates turbulent viscosity to k and ε: ν_t = C_μ * k² / ε
+/// or equivalently for k-ω: ν_t = k / ω (with C_μ embedded in ω definition)
+/// Also used to convert between ε and ω: ε = C_μ * k * ω
+constexpr double C_MU = 0.09;
+
+/// von Karman constant for wall-bounded turbulent flows
+/// Appears in log-law: u+ = (1/κ) * ln(y+) + B
+constexpr double KAPPA = 0.41;
+
+/// van Driest damping constant
+/// Used in damping function: f = 1 - exp(-y+/A+)
+constexpr double A_PLUS = 26.0;
+
+// =============================================================================
 // Common floor/ceiling constants for turbulence quantities
 // =============================================================================
 
