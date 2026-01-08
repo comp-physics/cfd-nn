@@ -14,6 +14,7 @@
 
 #include "turbulence_transport.hpp"
 #include "gpu_kernels.hpp"
+#include "numerics.hpp"
 #include "timing.hpp"
 #include <cmath>
 #include <algorithm>
@@ -204,19 +205,18 @@ void BoussinesqClosure::compute_nu_t(
     (void)velocity;
     (void)tau_ij;  // Boussinesq doesn't compute explicit stresses
     
+    using namespace numerics;
+
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double k_loc = std::max(1e-10, k(i, j));
-            double omega_loc = std::max(1e-10, omega(i, j));
-            
+            double k_loc = std::max(K_FLOOR, k(i, j));
+            double omega_loc = std::max(OMEGA_FLOOR, omega(i, j));
+
             // ν_t = k / ω (for k-ω models)
             // Equivalent to ν_t = C_μ k² / ε where ε = C_μ k ω
-            double nu_t_loc = k_loc / omega_loc;
-            
-            // Clipping
-            nu_t_loc = std::max(0.0, nu_t_loc);
-            nu_t_loc = std::min(nu_t_loc, 1000.0 * nu_);
-            
+            // Use bounded_ratio to prevent overflow from small omega
+            double nu_t_loc = bounded_ratio(k_loc, omega_loc, OMEGA_FLOOR, 1000.0 * nu_);
+
             nu_t(i, j) = nu_t_loc;
         }
     }
@@ -274,29 +274,30 @@ void SSTClosure::compute_nu_t(
     // the SST closure computation is relatively cheap compared to transport equation solves.
     
     // CPU path
+    using namespace numerics;
+
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double k_loc = std::max(constants_.k_min, k(i, j));
             double omega_loc = std::max(constants_.omega_min, omega(i, j));
             double y_wall = mesh.wall_distance(i, j);
-            
+
             // Strain rate magnitude
             double Sxx = dudx_(i, j);
             double Syy = dvdy_(i, j);
             double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
             double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            
+
             // F2 blending function
             double F2 = compute_F2(k_loc, omega_loc, y_wall);
-            
+
             // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
             double denom = std::max(a1 * omega_loc, S_mag * F2);
-            double nu_t_loc = a1 * k_loc / denom;
-            
+            double nu_t_loc = safe_divide(a1 * k_loc, denom, K_FLOOR);
+
             // Clipping
-            nu_t_loc = std::max(0.0, nu_t_loc);
-            nu_t_loc = std::min(nu_t_loc, 1000.0 * nu_);
-            
+            nu_t_loc = std::clamp(nu_t_loc, 0.0, 1000.0 * nu_);
+
             nu_t(i, j) = nu_t_loc;
         }
     }
@@ -1175,11 +1176,12 @@ void SSTKOmegaTransport::update(
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
         // Fallback: simple k/omega on CPU
+        using namespace numerics;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double k_loc = std::max(constants_.k_min, k(i, j));
                 double omega_loc = std::max(constants_.omega_min, omega(i, j));
-                nu_t(i, j) = k_loc / omega_loc;
+                nu_t(i, j) = bounded_ratio(k_loc, omega_loc, OMEGA_FLOOR, NU_T_RATIO_MAX * nu_);
             }
         }
     }
@@ -1397,11 +1399,12 @@ void KOmegaTransport::update(
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
         // Fallback: CPU Boussinesq closure
+        using namespace numerics;
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double k_loc = std::max(constants_.k_min, k(i, j));
                 double omega_loc = std::max(constants_.omega_min, omega(i, j));
-                nu_t(i, j) = k_loc / omega_loc;
+                nu_t(i, j) = bounded_ratio(k_loc, omega_loc, OMEGA_FLOOR, NU_T_RATIO_MAX * nu_);
             }
         }
     }
