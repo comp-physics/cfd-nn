@@ -347,22 +347,27 @@ TestResult test_single_model(TurbulenceModelType model_type) {
     Mesh mesh;
     mesh.init_uniform(64, 128, 0.0, 4.0, -1.0, 1.0);
 
-    // Determine if this is NN-MLP model type BEFORE creating config
+    // Determine model characteristics
     bool is_nn_mlp = (model_type == TurbulenceModelType::NNMLP);
+    bool is_earsm = (model_type == TurbulenceModelType::EARSM_WJ ||
+                    model_type == TurbulenceModelType::EARSM_GS ||
+                    model_type == TurbulenceModelType::EARSM_Pope);
 
     Config config;
     config.nu = 0.01;
     config.max_iter = 1000;
     config.turb_model = model_type;
     config.verbose = false;
+    config.turb_guard_enabled = false;  // Handle exceptions ourselves
 
     config.poisson_tol = 1e-8;
     config.poisson_max_iter = 1000;
     config.poisson_abs_tol_floor = 1e-6;
 
-    if (is_nn_mlp) {
+    if (is_nn_mlp || is_earsm) {
+        // NN and EARSM models need adaptive time stepping for stability
         config.adaptive_dt = true;
-        config.CFL_max = 0.2;
+        config.CFL_max = is_earsm ? 0.3 : 0.2;
         config.dt = 1e-5;
     } else {
         config.dt = 5e-4;
@@ -399,8 +404,14 @@ TestResult test_single_model(TurbulenceModelType model_type) {
 
     auto stats0 = compute_diagnostics(solver, mesh, has_transport);
 
-    for (int step = 0; step < 100; ++step) {
-        solver.step();
+    // Run with exception handling for numerical instability
+    try {
+        for (int step = 0; step < 100; ++step) {
+            solver.step();
+        }
+    } catch (const std::runtime_error&) {
+        // Numerical instability detected - test fails
+        return {false, false};
     }
 
     auto stats1 = compute_diagnostics(solver, mesh, has_transport);
@@ -436,8 +447,11 @@ bool test_earsm_model(TurbulenceModelType model_type) {
     Config config;
     config.nu = 0.001;
     config.dt = 1e-4;
+    config.adaptive_dt = true;      // Enable adaptive dt for stability
+    config.CFL_max = 0.3;           // Conservative CFL for EARSM
     config.turb_model = model_type;
     config.verbose = false;
+    config.turb_guard_enabled = false;  // Disable guard to catch instability ourselves
     config.poisson_tol = 1e-8;
     config.poisson_max_iter = 1000;
     config.poisson_abs_tol_floor = 1e-6;
@@ -458,8 +472,14 @@ bool test_earsm_model(TurbulenceModelType model_type) {
     solver.set_body_force(-dp_dx, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 
-    for (int step = 0; step < 50; ++step) {
-        solver.step();
+    // Run with exception handling for numerical instability
+    try {
+        for (int step = 0; step < 50; ++step) {
+            solver.step();
+        }
+    } catch (const std::runtime_error&) {
+        // Numerical instability detected - test fails
+        return false;
     }
 
     const ScalarField& k = solver.k();
