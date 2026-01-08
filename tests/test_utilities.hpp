@@ -586,5 +586,99 @@ inline ToleranceCheck check_cross_build_consistency(const FieldComparison& cmp) 
     return ToleranceCheck(cmp.max_abs_diff, cmp.max_rel_diff, CROSS_BUILD_ABS_TOL, CROSS_BUILD_REL_TOL);
 }
 
+//=============================================================================
+// Boundary Condition Pattern Helpers
+//=============================================================================
+
+/// Common velocity BC patterns for test setup
+/// Reduces duplication in test files where BC setup is repeated 25+ times
+enum class BCPattern {
+    Channel2D,      ///< Periodic x, NoSlip y (classic 2D channel)
+    Channel3D,      ///< Periodic x/z, NoSlip y (3D channel)
+    FullyPeriodic,  ///< All directions periodic (e.g., Taylor-Green)
+    AllNoSlip,      ///< All walls (e.g., lid-driven cavity)
+    Duct,           ///< Periodic x, NoSlip y/z (rectangular duct)
+    Pipe            ///< Periodic x, NoSlip y/z (same as Duct for now)
+};
+
+/// Get a descriptive name for a BC pattern
+inline const char* bc_pattern_name(BCPattern pattern) {
+    switch (pattern) {
+        case BCPattern::Channel2D:     return "Channel2D";
+        case BCPattern::Channel3D:     return "Channel3D";
+        case BCPattern::FullyPeriodic: return "FullyPeriodic";
+        case BCPattern::AllNoSlip:     return "AllNoSlip";
+        case BCPattern::Duct:          return "Duct";
+        case BCPattern::Pipe:          return "Pipe";
+    }
+    return "Unknown";
+}
+
+} // namespace test
+} // namespace nncfd
+
+// Include solver.hpp for VelocityBC - forward declare to avoid circular includes
+// Tests that use create_velocity_bc should include solver.hpp themselves
+#include "solver.hpp"
+
+namespace nncfd {
+namespace test {
+
+/// Create a VelocityBC struct for a common pattern
+/// Usage: solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+inline VelocityBC create_velocity_bc(BCPattern pattern) {
+    VelocityBC bc;
+
+    switch (pattern) {
+        case BCPattern::Channel2D:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::Periodic;
+            bc.z_hi = VelocityBC::Periodic;
+            break;
+
+        case BCPattern::Channel3D:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::Periodic;
+            bc.z_hi = VelocityBC::Periodic;
+            break;
+
+        case BCPattern::FullyPeriodic:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::Periodic;
+            bc.y_hi = VelocityBC::Periodic;
+            bc.z_lo = VelocityBC::Periodic;
+            bc.z_hi = VelocityBC::Periodic;
+            break;
+
+        case BCPattern::AllNoSlip:
+            bc.x_lo = VelocityBC::NoSlip;
+            bc.x_hi = VelocityBC::NoSlip;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::NoSlip;
+            bc.z_hi = VelocityBC::NoSlip;
+            break;
+
+        case BCPattern::Duct:
+        case BCPattern::Pipe:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::NoSlip;
+            bc.z_hi = VelocityBC::NoSlip;
+            break;
+    }
+
+    return bc;
+}
+
 } // namespace test
 } // namespace nncfd

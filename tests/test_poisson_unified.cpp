@@ -19,6 +19,7 @@
 #include "poisson_solver_multigrid.hpp"
 #include "test_framework.hpp"
 #include "test_fixtures.hpp"
+#include "test_utilities.hpp"
 #include "test_harness.hpp"
 #include "solver.hpp"
 #include "config.hpp"
@@ -151,83 +152,83 @@ void run_unit_tests() {
 }
 
 //=============================================================================
-// Section 2: Grid Convergence Tests (from test_poisson_solvers.cpp)
+// Section 2: Grid Convergence Tests (table-driven)
 //=============================================================================
 
-double compute_l2_error_func(const ScalarField& p, const Mesh& mesh,
-                              std::function<double(double,double)> exact) {
-    double p_mean = 0.0, exact_mean = 0.0;
-    int count = 0;
+/// Test case for grid convergence verification
+struct ConvergenceTestCase {
+    const char* name;
+    std::vector<int> grid_sizes;
+    double Lx, Ly;
+    PoissonBC bc_x, bc_y;
+    double expected_rate;
+    double rate_tolerance;
+};
 
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            p_mean += p(i, j);
-            exact_mean += exact(mesh.x(i), mesh.y(j));
-            ++count;
-        }
-    }
-
-    if (count == 0) return 0.0;
-
-    p_mean /= count;
-    exact_mean /= count;
-
-    double l2 = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double diff = (p(i,j) - p_mean) - (exact(mesh.x(i), mesh.y(j)) - exact_mean);
-            l2 += diff * diff;
-        }
-    }
-    return std::sqrt(l2 / count);
-}
-
-void test_mg_convergence_2d() {
-    std::vector<int> sizes = {16, 32, 64};
+/// Run a convergence test for a specific manufactured solution
+template<typename Solution>
+void run_convergence_case(const ConvergenceTestCase& tc) {
     std::vector<double> errors;
+    std::vector<double> h_values;
 
-    for (int N : sizes) {
+    for (int N : tc.grid_sizes) {
         Mesh mesh;
-        double L = 2.0 * M_PI;
-        mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+        mesh.init_uniform(N, N, 0.0, tc.Lx, 0.0, tc.Ly);
+        Solution sol(tc.Lx, tc.Ly);
 
-        auto exact = [](double x, double y) { return std::sin(x) * std::sin(y); };
-        auto rhs_fn = [](double x, double y) { return -2.0 * std::sin(x) * std::sin(y); };
-
+        // Set up RHS from manufactured solution
         ScalarField rhs(mesh);
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                rhs(i, j) = rhs_fn(mesh.x(i), mesh.y(j));
+                rhs(i, j) = sol.rhs(mesh.x(i), mesh.y(j));
             }
         }
 
+        // Solve with multigrid
         ScalarField p(mesh, 0.0);
         MultigridPoissonSolver mg(mesh);
-        mg.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                  PoissonBC::Periodic, PoissonBC::Periodic);
+        mg.set_bc(tc.bc_x, tc.bc_x, tc.bc_y, tc.bc_y);
 
         PoissonConfig cfg;
         cfg.tol = 1e-10;
         cfg.max_iter = 100;
         mg.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_func(p, mesh, exact);
+        // Compute L2 error with mean subtraction (Neumann compatibility)
+        double err = compute_l2_error_2d(p, mesh, sol);
         errors.push_back(err);
+        h_values.push_back(tc.Lx / N);
 
-        record("MG 2D N=" + std::to_string(N), true,
+        record(std::string(tc.name) + " N=" + std::to_string(N), true,
                "L2=" + std::to_string(err));
     }
 
-    // Check 2nd order convergence
+    // Compute and check convergence rate
     if (errors.size() >= 2) {
-        double rate = std::log(errors[0] / errors[1]) / std::log(2.0);
-        record("MG 2D convergence rate", rate > 1.5,
-               "rate=" + std::to_string(rate) + " (expect ~2)");
+        double rate = std::log(errors[0] / errors[1]) / std::log(h_values[0] / h_values[1]);
+        bool rate_ok = rate > tc.expected_rate - tc.rate_tolerance;
+        record(std::string(tc.name) + " rate", rate_ok,
+               "rate=" + std::to_string(rate) + " (expect >" +
+               std::to_string(tc.expected_rate - tc.rate_tolerance) + ")");
     }
 }
 
 void run_convergence_tests() {
-    test_mg_convergence_2d();
+    // Table of convergence test cases
+    const std::vector<ConvergenceTestCase> cases = {
+        {"MG Periodic", {16, 32, 64}, 2*M_PI, 2*M_PI,
+         PoissonBC::Periodic, PoissonBC::Periodic, 2.0, 0.3},
+        {"MG Channel", {16, 32, 64}, 4.0, 2.0,
+         PoissonBC::Periodic, PoissonBC::Neumann, 2.0, 0.3},
+    };
+
+    for (const auto& tc : cases) {
+        if (tc.bc_y == PoissonBC::Periodic) {
+            run_convergence_case<PeriodicSolution2D>(tc);
+        } else {
+            run_convergence_case<ChannelSolution2D>(tc);
+        }
+    }
 }
 
 //=============================================================================
@@ -248,13 +249,7 @@ void test_solver_selection() {
         config.poisson_solver = PoissonSolverType::Auto;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         PoissonSolverType selected = solver.poisson_solver_type();
 
@@ -282,13 +277,7 @@ void test_solver_selection() {
         config.poisson_solver = PoissonSolverType::MG;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         bool ok = (solver.poisson_solver_type() == PoissonSolverType::MG);
         record("Explicit MG request honored", ok);

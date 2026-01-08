@@ -638,11 +638,13 @@ void SSTKOmegaTransport::apply_wall_bc_omega(
     const double beta1 = constants_.beta1;
     
     // Bottom wall: ω_wall = 10 × 6ν / (β₁ y₁²)
+    // Clamp to omega_max to prevent overflow on fine grids where y1 → 0
     for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
         int j_first = mesh.j_begin();
-        double y1 = mesh.wall_distance(i, j_first);
+        double y1 = std::max(mesh.wall_distance(i, j_first), 1e-10);
         double omega_wall = 10.0 * 6.0 * nu_ / (beta1 * y1 * y1);
-        
+        omega_wall = std::min(omega_wall, constants_.omega_max);
+
         for (int g = 0; g < Ng; ++g) {
             int j_ghost = g;
             omega(i, j_ghost) = 2.0 * omega_wall - omega(i, j_first);
@@ -650,11 +652,13 @@ void SSTKOmegaTransport::apply_wall_bc_omega(
     }
     
     // Top wall
+    // Clamp to omega_max to prevent overflow on fine grids where y1 → 0
     for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
         int j_last = mesh.j_end() - 1;
-        double y1 = mesh.wall_distance(i, j_last);
+        double y1 = std::max(mesh.wall_distance(i, j_last), 1e-10);
         double omega_wall = 10.0 * 6.0 * nu_ / (beta1 * y1 * y1);
-        
+        omega_wall = std::min(omega_wall, constants_.omega_max);
+
         for (int g = 0; g < Ng; ++g) {
             int j_ghost = mesh.Ny + Ng + g;
             omega(i, j_ghost) = 2.0 * omega_wall - omega(i, j_last);
