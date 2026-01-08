@@ -24,6 +24,7 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <cmath>
 #include <iomanip>
@@ -31,6 +32,7 @@
 #include <string>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // Configuration for an endurance test
 struct EnduranceConfig {
@@ -137,8 +139,6 @@ double kinetic_energy(const VectorField& vel, const Mesh& mesh) {
 
 // Run a single endurance test
 bool run_endurance_test(const EnduranceConfig& cfg) {
-    std::cout << "  " << cfg.name << " (" << cfg.nsteps << " steps)... " << std::flush;
-
     // Create mesh
     Mesh mesh;
     if (cfg.Nz == 1) {
@@ -172,11 +172,6 @@ bool run_endurance_test(const EnduranceConfig& cfg) {
     bc.z_lo = cfg.z_lo;
     bc.z_hi = cfg.z_hi;
     solver.set_velocity_bc(bc);
-
-    // Report actual solver selected
-    const char* solver_names[] = {"Auto", "FFT", "FFT1D", "HYPRE", "MG"};
-    PoissonSolverType actual = solver.poisson_solver_type();
-    std::cout << "[" << solver_names[static_cast<int>(actual)] << "] " << std::flush;
 
     // Initialize with slightly perturbed flow
     VectorField vel(mesh);
@@ -213,199 +208,94 @@ bool run_endurance_test(const EnduranceConfig& cfg) {
             const VectorField& v = solver.velocity();
 
             // Check for NaN/Inf
-            if (has_nan_or_inf(p, mesh)) {
-                std::cout << "[FAIL] NaN in pressure at step " << step << "\n";
-                return false;
-            }
-            if (has_nan_or_inf_velocity(v, mesh)) {
-                std::cout << "[FAIL] NaN in velocity at step " << step << "\n";
-                return false;
-            }
+            if (has_nan_or_inf(p, mesh)) return false;
+            if (has_nan_or_inf_velocity(v, mesh)) return false;
 
             // Check for unbounded growth
             double p_max = max_abs(p, mesh);
-            if (p_max > 1e10) {
-                std::cout << "[FAIL] Pressure unbounded at step " << step
-                          << " (|p|=" << p_max << ")\n";
-                return false;
-            }
+            if (p_max > 1e10) return false;
 
             double ke = kinetic_energy(v, mesh);
             if (step == 1) initial_ke = ke;
 
             // Allow 100x growth as a very loose bound
-            if (ke > 100.0 * initial_ke && initial_ke > 1e-10) {
-                std::cout << "[FAIL] Kinetic energy unbounded at step " << step
-                          << " (KE=" << ke << ", initial=" << initial_ke << ")\n";
-                return false;
-            }
+            if (ke > 100.0 * initial_ke && initial_ke > 1e-10) return false;
         }
     }
-
-    // Final verification
-    const ScalarField& p = solver.pressure();
-    const VectorField& v = solver.velocity();
-    double final_ke = kinetic_energy(v, mesh);
-    double final_p_max = max_abs(p, mesh);
-
-    std::cout << "[PASS] KE=" << std::scientific << std::setprecision(2)
-              << final_ke << " |p|=" << final_p_max << "\n";
 
     return true;
 }
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Poisson Solver Endurance Stability Test\n";
-    std::cout << "================================================================\n\n";
+    return nncfd::test::harness::run("Endurance Stability Tests", [] {
+        const int NSTEPS = 500;  // Endurance run length
+        const double DT = 0.001; // Small timestep for stability
 
-    // Build info
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
-#ifdef USE_HYPRE
-    std::cout << "HYPRE: enabled\n";
-#else
-    std::cout << "HYPRE: disabled\n";
-#endif
-    std::cout << "\n";
+        // 2D Tests
+        record("2D channel baseline (500 steps)", run_endurance_test({
+            "2D_channel_baseline", 64, 64, 1,
+            2.0 * M_PI, 2.0, 1.0,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            PoissonSolverType::Auto, NSTEPS, DT
+        }));
 
-    const int NSTEPS = 500;  // Endurance run length
-    const double DT = 0.001; // Small timestep for stability
+        record("2D fully periodic (500 steps)", run_endurance_test({
+            "2D_fully_periodic", 64, 64, 1,
+            2.0 * M_PI, 2.0 * M_PI, 1.0,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            PoissonSolverType::Auto, NSTEPS, DT
+        }));
 
-    std::vector<EnduranceConfig> tests;
+        record("2D y-periodic MG (500 steps)", run_endurance_test({
+            "2D_y_periodic_MG", 64, 64, 1,
+            2.0 * M_PI, 2.0 * M_PI, 1.0,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            PoissonSolverType::MG, NSTEPS, DT
+        }));
 
-    // ========================================================================
-    // 2D Tests
-    // ========================================================================
+        // 3D Tests (smaller grids for speed)
+        record("3D channel FFT (500 steps)", run_endurance_test({
+            "3D_channel_FFT", 32, 32, 32,
+            2.0 * M_PI, 2.0, 2.0 * M_PI,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            PoissonSolverType::Auto, NSTEPS, DT
+        }));
 
-    // Test 1: 2D channel (baseline, should always work)
-    tests.push_back({
-        "2D_channel_baseline",
-        64, 64, 1,
-        2.0 * M_PI, 2.0, 1.0,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        PoissonSolverType::Auto,
-        NSTEPS, DT
-    });
+        record("3D duct FFT1D (500 steps)", run_endurance_test({
+            "3D_duct_FFT1D", 32, 32, 32,
+            2.0 * M_PI, 2.0, 2.0,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            PoissonSolverType::Auto, NSTEPS, DT
+        }));
 
-    // Test 2: 2D fully periodic (historically problematic on GPU with HYPRE)
-    tests.push_back({
-        "2D_fully_periodic",
-        64, 64, 1,
-        2.0 * M_PI, 2.0 * M_PI, 1.0,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        PoissonSolverType::Auto,  // Should auto-fallback to MG on GPU
-        NSTEPS, DT
-    });
-
-    // Test 3: 2D y-periodic with explicit MG (verify MG handles the fallback case)
-    tests.push_back({
-        "2D_y_periodic_MG",
-        64, 64, 1,
-        2.0 * M_PI, 2.0 * M_PI, 1.0,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        PoissonSolverType::MG,  // Explicitly test MG for fallback case
-        NSTEPS, DT
-    });
-
-    // ========================================================================
-    // 3D Tests (smaller grids for speed)
-    // ========================================================================
-
-    // Test 4: 3D channel (production path - FFT on GPU)
-    tests.push_back({
-        "3D_channel_FFT",
-        32, 32, 32,
-        2.0 * M_PI, 2.0, 2.0 * M_PI,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        PoissonSolverType::Auto,  // FFT on GPU, HYPRE/MG on CPU
-        NSTEPS, DT
-    });
-
-    // Test 5: 3D duct (FFT1D path on GPU)
-    tests.push_back({
-        "3D_duct_FFT1D",
-        32, 32, 32,
-        2.0 * M_PI, 2.0, 2.0,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        PoissonSolverType::Auto,  // FFT1D on GPU
-        NSTEPS, DT
-    });
-
-    // Test 6: 3D cavity with MG (all walls)
-    tests.push_back({
-        "3D_cavity_MG",
-        32, 32, 32,
-        2.0, 2.0, 2.0,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        PoissonSolverType::MG,
-        NSTEPS, DT
-    });
+        record("3D cavity MG (500 steps)", run_endurance_test({
+            "3D_cavity_MG", 32, 32, 32,
+            2.0, 2.0, 2.0,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            PoissonSolverType::MG, NSTEPS, DT
+        }));
 
 #ifdef USE_HYPRE
-    // Test 7: 3D with HYPRE (if available)
-    tests.push_back({
-        "3D_channel_HYPRE",
-        32, 32, 32,
-        2.0 * M_PI, 2.0, 2.0 * M_PI,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        VelocityBC::NoSlip, VelocityBC::NoSlip,
-        VelocityBC::Periodic, VelocityBC::Periodic,
-        PoissonSolverType::HYPRE,
-        NSTEPS, DT
-    });
+        record("3D channel HYPRE (500 steps)", run_endurance_test({
+            "3D_channel_HYPRE", 32, 32, 32,
+            2.0 * M_PI, 2.0, 2.0 * M_PI,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            VelocityBC::NoSlip, VelocityBC::NoSlip,
+            VelocityBC::Periodic, VelocityBC::Periodic,
+            PoissonSolverType::HYPRE, NSTEPS, DT
+        }));
 #endif
-
-    // ========================================================================
-    // Run tests
-    // ========================================================================
-
-    std::cout << "--- Running " << tests.size() << " endurance tests ("
-              << NSTEPS << " steps each) ---\n\n";
-
-    int passed = 0;
-    int failed = 0;
-
-    for (const auto& cfg : tests) {
-        if (run_endurance_test(cfg)) {
-            ++passed;
-        } else {
-            ++failed;
-        }
-    }
-
-    // ========================================================================
-    // Summary
-    // ========================================================================
-
-    std::cout << "\n================================================================\n";
-    std::cout << "Endurance Stability Test Summary\n";
-    std::cout << "================================================================\n";
-    std::cout << "  Passed: " << passed << "/" << tests.size() << "\n";
-    std::cout << "  Failed: " << failed << "/" << tests.size() << "\n";
-
-    if (failed == 0) {
-        std::cout << "\n[PASS] All endurance stability tests passed (" << NSTEPS << " steps each)\n";
-        std::cout << "       No NaN-after-N-steps regressions detected\n";
-        return 0;
-    } else {
-        std::cout << "\n[FAIL] " << failed << " endurance test(s) failed\n";
-        std::cout << "       This indicates latent numerical instability!\n";
-        return 1;
-    }
+    });
 }

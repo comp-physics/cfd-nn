@@ -11,20 +11,20 @@
 #include "solver.hpp"
 #include "poisson_solver.hpp"
 #include "turbulence_model.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <cmath>
 #include <stdexcept>
 #include <limits>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // ============================================================================
 // Poisson Solver Error Handling Tests
 // ============================================================================
 
-void test_poisson_limited_iterations() {
-    std::cout << "Testing Poisson solver with limited iterations... ";
-
+bool test_poisson_limited_iterations() {
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 1.0, 0.0, 1.0);
 
@@ -54,31 +54,23 @@ void test_poisson_limited_iterations() {
     int iters = solver.solve(rhs, p, cfg);
 
     // Should return after limited iterations (MG solver may report slightly more due to V-cycle counting)
-    if (iters > cfg.max_iter + 1) {
-        throw std::runtime_error("Too many iterations: " + std::to_string(iters) + " > " + std::to_string(cfg.max_iter + 1));
-    }
+    if (iters > cfg.max_iter + 1) return false;
 
     // Residual should be high (not converged)
     double residual = solver.residual();
-    if (residual <= 1e-6) {
-        throw std::runtime_error("Residual unexpectedly low: " + std::to_string(residual));
-    }
+    if (residual <= 1e-6) return false;
 
     // But solution should still be finite (no NaN)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            if (!std::isfinite(p(i, j))) {
-                throw std::runtime_error("NaN/Inf detected in pressure field");
-            }
+            if (!std::isfinite(p(i, j))) return false;
         }
     }
 
-    std::cout << "PASSED (iters=" << iters << ", res=" << residual << ")\n";
+    return true;
 }
 
-void test_poisson_singular_neumann() {
-    std::cout << "Testing Poisson with pure Neumann BCs (singular)... ";
-
+bool test_poisson_singular_neumann() {
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 1.0, 0.0, 1.0);
 
@@ -98,12 +90,10 @@ void test_poisson_singular_neumann() {
     cfg.max_iter = 1000;
     cfg.omega = 1.5;
 
-    int iters = solver.solve(rhs, p, cfg);
+    solver.solve(rhs, p, cfg);
 
     // Should converge (mean subtraction handles singular system)
-    if (solver.residual() >= 1e-4) {
-        throw std::runtime_error("Poisson solver did not converge: residual=" + std::to_string(solver.residual()));
-    }
+    if (solver.residual() >= 1e-4) return false;
 
     // Solution should be nearly constant (since RHS=0)
     double p_mean = 0.0;
@@ -126,16 +116,12 @@ void test_poisson_singular_neumann() {
     }
     variance /= count;
 
-    if (variance >= 1e-8) {
-        throw std::runtime_error("Solution not constant: variance=" + std::to_string(variance));
-    }
+    if (variance >= 1e-8) return false;
 
-    std::cout << "PASSED (iters=" << iters << ", variance=" << variance << ")\n";
+    return true;
 }
 
-void test_poisson_singular_periodic() {
-    std::cout << "Testing Poisson with pure Periodic BCs (singular)... ";
-
+bool test_poisson_singular_periodic() {
     Mesh mesh;
     int N = 32;
     double L = 2.0 * M_PI;
@@ -163,12 +149,10 @@ void test_poisson_singular_periodic() {
     cfg.max_iter = 5000;
     cfg.omega = 1.7;
 
-    int iters = solver.solve(rhs, p, cfg);
+    solver.solve(rhs, p, cfg);
 
     // Should converge
-    if (solver.residual() >= 1e-4) {
-        throw std::runtime_error("Poisson solver did not converge: residual=" + std::to_string(solver.residual()));
-    }
+    if (solver.residual() >= 1e-4) return false;
 
     // Check against analytical solution (up to constant)
     double p_mean = 0.0, exact_mean = 0.0;
@@ -196,20 +180,16 @@ void test_poisson_singular_periodic() {
         }
     }
 
-    if (max_error >= 0.1) {
-        throw std::runtime_error("Solution error too large: " + std::to_string(max_error));
-    }
+    if (max_error >= 0.1) return false;
 
-    std::cout << "PASSED (iters=" << iters << ", max_err=" << max_error << ")\n";
+    return true;
 }
 
 // ============================================================================
 // NaN Detection Tests
 // ============================================================================
 
-void test_nan_detection_velocity() {
-    std::cout << "Testing NaN detection in velocity field... ";
-
+bool test_nan_detection_velocity() {
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 1.0, -0.5, 0.5);
 
@@ -247,15 +227,10 @@ void test_nan_detection_velocity() {
         }
     }
 
-    if (!detected) {
-        throw std::runtime_error("NaN in velocity was not detected");
-    }
-    std::cout << "PASSED\n";
+    return detected;
 }
 
-void test_inf_detection_pressure() {
-    std::cout << "Testing Inf detection in pressure field... ";
-
+bool test_inf_detection_pressure() {
     Mesh mesh;
     mesh.init_uniform(16, 32, 0.0, 1.0, -0.5, 0.5);
 
@@ -293,19 +268,14 @@ void test_inf_detection_pressure() {
         }
     }
 
-    if (!detected) {
-        throw std::runtime_error("Inf in pressure was not detected");
-    }
-    std::cout << "PASSED\n";
+    return detected;
 }
 
 // ============================================================================
 // Turbulence Realizability Tests
 // ============================================================================
 
-void test_realizability_k_positive() {
-    std::cout << "Testing k remains positive during simulation... ";
-
+bool test_realizability_k_positive() {
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 2.0, -1.0, 1.0);
 
@@ -340,23 +310,17 @@ void test_realizability_k_positive() {
 
     // Check k is positive everywhere
     const ScalarField& k = solver.k();
-    double k_min = 1e10;
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            if (k(i, j) < 0.0) {
-                throw std::runtime_error("Negative k found: " + std::to_string(k(i, j)));
-            }
-            k_min = std::min(k_min, k(i, j));
+            if (k(i, j) < 0.0) return false;
         }
     }
 
-    std::cout << "PASSED (k_min=" << k_min << ")\n";
+    return true;
 }
 
-void test_realizability_omega_positive() {
-    std::cout << "Testing omega remains positive during simulation... ";
-
+bool test_realizability_omega_positive() {
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 2.0, -1.0, 1.0);
 
@@ -391,23 +355,17 @@ void test_realizability_omega_positive() {
 
     // Check omega is positive everywhere
     const ScalarField& omega = solver.omega();
-    double omega_min = 1e10;
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            if (omega(i, j) < 0.0) {
-                throw std::runtime_error("Negative omega found: " + std::to_string(omega(i, j)));
-            }
-            omega_min = std::min(omega_min, omega(i, j));
+            if (omega(i, j) < 0.0) return false;
         }
     }
 
-    std::cout << "PASSED (omega_min=" << omega_min << ")\n";
+    return true;
 }
 
-void test_nu_t_bounded() {
-    std::cout << "Testing nu_t is bounded by nu_t_max... ";
-
+bool test_nu_t_bounded() {
     Mesh mesh;
     mesh.init_uniform(32, 64, 0.0, 2.0, -1.0, 1.0);
 
@@ -443,28 +401,21 @@ void test_nu_t_bounded() {
 
     // Check nu_t is bounded
     const ScalarField& nu_t = solver.nu_t();
-    double nu_t_max_actual = 0.0;
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            if (nu_t(i, j) > config.nu_t_max * 1.01) {  // 1% tolerance
-                throw std::runtime_error("nu_t exceeds bound: " + std::to_string(nu_t(i, j)) +
-                                       " > " + std::to_string(config.nu_t_max));
-            }
-            nu_t_max_actual = std::max(nu_t_max_actual, nu_t(i, j));
+            if (nu_t(i, j) > config.nu_t_max * 1.01) return false;  // 1% tolerance
         }
     }
 
-    std::cout << "PASSED (nu_t_max=" << nu_t_max_actual << ")\n";
+    return true;
 }
 
 // ============================================================================
 // Edge Case Tests
 // ============================================================================
 
-void test_zero_velocity_field() {
-    std::cout << "Testing solver with zero initial velocity... ";
-
+bool test_zero_velocity_field() {
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 1.0, 0.0, 1.0);
 
@@ -503,15 +454,10 @@ void test_zero_velocity_field() {
         }
     }
 
-    if (max_vel >= 1e-10) {
-        throw std::runtime_error("Velocity grew from zero without forcing: " + std::to_string(max_vel));
-    }
-    std::cout << "PASSED (max_vel=" << max_vel << ")\n";
+    return max_vel < 1e-10;
 }
 
-void test_very_small_dt() {
-    std::cout << "Testing solver with very small dt... ";
-
+bool test_very_small_dt() {
     Mesh mesh;
     mesh.init_uniform(16, 16, 0.0, 1.0, 0.0, 1.0);
 
@@ -544,13 +490,11 @@ void test_very_small_dt() {
     const VectorField& vel = solver.velocity();
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            if (!std::isfinite(vel.u(i, j)) || !std::isfinite(vel.v(i, j))) {
-                throw std::runtime_error("NaN/Inf detected in velocity field with small dt");
-            }
+            if (!std::isfinite(vel.u(i, j)) || !std::isfinite(vel.v(i, j))) return false;
         }
     }
 
-    std::cout << "PASSED\n";
+    return true;
 }
 
 // ============================================================================
@@ -558,45 +502,23 @@ void test_very_small_dt() {
 // ============================================================================
 
 int main() {
-    std::cout << "=== Error Recovery Tests ===\n\n";
+    return nncfd::test::harness::run("Error Recovery Tests", [] {
+        // Poisson solver tests
+        record("Poisson limited iterations", test_poisson_limited_iterations());
+        record("Poisson singular Neumann", test_poisson_singular_neumann());
+        record("Poisson singular Periodic", test_poisson_singular_periodic());
 
-    int passed = 0, failed = 0;
+        // NaN detection tests
+        record("NaN detection velocity", test_nan_detection_velocity());
+        record("Inf detection pressure", test_inf_detection_pressure());
 
-    auto run_test = [&](const char* name, void(*func)()) {
-        try {
-            func();
-            ++passed;
-        } catch (const std::exception& e) {
-            std::cout << "[" << name << "] FAILED: " << e.what() << "\n";
-            ++failed;
-        }
-    };
+        // Turbulence realizability tests
+        record("Realizability k positive", test_realizability_k_positive());
+        record("Realizability omega positive", test_realizability_omega_positive());
+        record("nu_t bounded", test_nu_t_bounded());
 
-    // Poisson solver tests
-    run_test("Poisson limited iterations", test_poisson_limited_iterations);
-    run_test("Poisson singular Neumann", test_poisson_singular_neumann);
-    run_test("Poisson singular Periodic", test_poisson_singular_periodic);
-
-    // NaN detection tests
-    run_test("NaN detection velocity", test_nan_detection_velocity);
-    run_test("Inf detection pressure", test_inf_detection_pressure);
-
-    // Turbulence realizability tests
-    run_test("Realizability k positive", test_realizability_k_positive);
-    run_test("Realizability omega positive", test_realizability_omega_positive);
-    run_test("nu_t bounded", test_nu_t_bounded);
-
-    // Edge case tests
-    run_test("Zero velocity field", test_zero_velocity_field);
-    run_test("Very small dt", test_very_small_dt);
-
-    std::cout << "\n=== Results: " << passed << "/" << (passed + failed) << " tests passed ===\n";
-
-    if (failed > 0) {
-        std::cout << "[FAILURE] " << failed << " test(s) failed\n";
-        return 1;
-    }
-
-    std::cout << "All tests PASSED!\n";
-    return 0;
+        // Edge case tests
+        record("Zero velocity field", test_zero_velocity_field());
+        record("Very small dt", test_very_small_dt());
+    });
 }
