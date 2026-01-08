@@ -111,7 +111,60 @@ inline void apply_u_bc_x_staggered(
     }
 }
 
-// Staggered grid BC kernel for u-velocity (at x-faces) in y-direction
+// Unified tangential velocity BC kernel for staggered grid
+// Handles both u-velocity in y-direction and v-velocity in x-direction
+// @param idx_fixed     Index along the fixed direction (i for u_bc_y, j for v_bc_x)
+// @param g             Ghost layer number (0 to Ng-1)
+// @param N_domain      Domain size in the ghost direction (Ny for u_bc_y, Nx for v_bc_x)
+// @param Ng            Number of ghost cells
+// @param stride        Array stride
+// @param row_major     If true: linear_idx = varying * stride + fixed (for u_bc_y)
+//                      If false: linear_idx = fixed * stride + varying (for v_bc_x)
+// @param lo_periodic, lo_noslip  Low boundary condition flags
+// @param hi_periodic, hi_noslip  High boundary condition flags
+// @param ptr           Pointer to velocity array
+inline void apply_tangential_bc_staggered(
+    int idx_fixed, int g,
+    int N_domain, int Ng, int stride,
+    bool row_major,
+    bool lo_periodic, bool lo_noslip,
+    bool hi_periodic, bool hi_noslip,
+    double* ptr)
+{
+    // Compute linear index based on layout
+    // row_major: linear_idx = varying * stride + fixed (for u_bc_y)
+    // col_major: linear_idx = fixed * stride + varying (for v_bc_x)
+    int idx_lo_ghost = Ng - 1 - g;
+    int idx_lo_interior = Ng + g;
+    int idx_lo_periodic = N_domain + Ng - 1 - g;
+    int idx_hi_ghost = N_domain + Ng + g;
+    int idx_hi_interior = N_domain + Ng - 1 - g;
+    int idx_hi_periodic = Ng + g;
+
+    // Low boundary (bottom for y, left for x)
+    if (lo_noslip) {
+        int lin_ghost = row_major ? (idx_lo_ghost * stride + idx_fixed) : (idx_fixed * stride + idx_lo_ghost);
+        int lin_interior = row_major ? (idx_lo_interior * stride + idx_fixed) : (idx_fixed * stride + idx_lo_interior);
+        ptr[lin_ghost] = -ptr[lin_interior];
+    } else if (lo_periodic) {
+        int lin_ghost = row_major ? (idx_lo_ghost * stride + idx_fixed) : (idx_fixed * stride + idx_lo_ghost);
+        int lin_periodic = row_major ? (idx_lo_periodic * stride + idx_fixed) : (idx_fixed * stride + idx_lo_periodic);
+        ptr[lin_ghost] = ptr[lin_periodic];
+    }
+
+    // High boundary (top for y, right for x)
+    if (hi_noslip) {
+        int lin_ghost = row_major ? (idx_hi_ghost * stride + idx_fixed) : (idx_fixed * stride + idx_hi_ghost);
+        int lin_interior = row_major ? (idx_hi_interior * stride + idx_fixed) : (idx_fixed * stride + idx_hi_interior);
+        ptr[lin_ghost] = -ptr[lin_interior];
+    } else if (hi_periodic) {
+        int lin_ghost = row_major ? (idx_hi_ghost * stride + idx_fixed) : (idx_fixed * stride + idx_hi_ghost);
+        int lin_periodic = row_major ? (idx_hi_periodic * stride + idx_fixed) : (idx_fixed * stride + idx_hi_periodic);
+        ptr[lin_ghost] = ptr[lin_periodic];
+    }
+}
+
+// Wrapper for u-velocity BC in y-direction (maintains backward compatibility)
 inline void apply_u_bc_y_staggered(
     int i, int g,
     int Ny, int Ng, int u_stride,
@@ -119,31 +172,12 @@ inline void apply_u_bc_y_staggered(
     bool y_hi_periodic, bool y_hi_noslip,
     double* u_ptr)
 {
-    // Bottom boundary
-    if (y_lo_noslip) {
-        // No-slip: u at wall faces should be zero, enforce via ghost cells
-        int j_ghost = Ng - 1 - g;
-        int j_interior = Ng + g;
-        u_ptr[j_ghost * u_stride + i] = -u_ptr[j_interior * u_stride + i];
-    } else if (y_lo_periodic) {
-        int j_ghost = Ng - 1 - g;
-        int j_periodic = Ny + Ng - 1 - g;
-        u_ptr[j_ghost * u_stride + i] = u_ptr[j_periodic * u_stride + i];
-    }
-    
-    // Top boundary
-    if (y_hi_noslip) {
-        int j_ghost = Ny + Ng + g;
-        int j_interior = Ny + Ng - 1 - g;
-        u_ptr[j_ghost * u_stride + i] = -u_ptr[j_interior * u_stride + i];
-    } else if (y_hi_periodic) {
-        int j_ghost = Ny + Ng + g;
-        int j_periodic = Ng + g;
-        u_ptr[j_ghost * u_stride + i] = u_ptr[j_periodic * u_stride + i];
-    }
+    apply_tangential_bc_staggered(i, g, Ny, Ng, u_stride, true,
+                                   y_lo_periodic, y_lo_noslip,
+                                   y_hi_periodic, y_hi_noslip, u_ptr);
 }
 
-// Staggered grid BC kernel for v-velocity (at y-faces) in x-direction
+// Wrapper for v-velocity BC in x-direction (maintains backward compatibility)
 inline void apply_v_bc_x_staggered(
     int j, int g,
     int Nx, int Ng, int v_stride,
@@ -151,28 +185,9 @@ inline void apply_v_bc_x_staggered(
     bool x_hi_periodic, bool x_hi_noslip,
     double* v_ptr)
 {
-    // Left boundary
-    if (x_lo_noslip) {
-        // No-slip: v at wall faces should be zero
-        int i_ghost = Ng - 1 - g;
-        int i_interior = Ng + g;
-        v_ptr[j * v_stride + i_ghost] = -v_ptr[j * v_stride + i_interior];
-    } else if (x_lo_periodic) {
-        int i_ghost = Ng - 1 - g;
-        int i_periodic = Nx + Ng - 1 - g;
-        v_ptr[j * v_stride + i_ghost] = v_ptr[j * v_stride + i_periodic];
-    }
-    
-    // Right boundary
-    if (x_hi_noslip) {
-        int i_ghost = Nx + Ng + g;
-        int i_interior = Nx + Ng - 1 - g;
-        v_ptr[j * v_stride + i_ghost] = -v_ptr[j * v_stride + i_interior];
-    } else if (x_hi_periodic) {
-        int i_ghost = Nx + Ng + g;
-        int i_periodic = Ng + g;
-        v_ptr[j * v_stride + i_ghost] = v_ptr[j * v_stride + i_periodic];
-    }
+    apply_tangential_bc_staggered(j, g, Nx, Ng, v_stride, false,
+                                   x_lo_periodic, x_lo_noslip,
+                                   x_hi_periodic, x_hi_noslip, v_ptr);
 }
 
 // Staggered grid BC kernel for v-velocity (at y-faces) in y-direction
