@@ -22,15 +22,6 @@ using namespace nncfd;
 using nncfd::test::harness::record;
 
 namespace {
-// Helper to check if file exists and abort if not
-void require_file_exists(const std::string& filename) {
-    std::ifstream f(filename);
-    if (!f.good()) {
-        std::cerr << "FAILED: File does not exist: " << filename << "\n";
-        std::exit(1);
-    }
-}
-
 // Helper to remove file
 void remove_file(const std::string& filename) {
     std::remove(filename.c_str());
