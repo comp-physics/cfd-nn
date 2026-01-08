@@ -14,8 +14,6 @@
 #include "config.hpp"
 #include "poisson_solver.hpp"
 #include "test_harness.hpp"
-#include <iostream>
-#include <iomanip>
 #include <cmath>
 #include <cassert>
 

@@ -10,7 +10,6 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "test_harness.hpp"
-#include <iostream>
 #include <fstream>
 #include <sstream>
 #include <cmath>

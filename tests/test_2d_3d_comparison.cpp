@@ -9,8 +9,6 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "test_harness.hpp"
-#include <iostream>
-#include <iomanip>
 #include <cmath>
 #include <cassert>
 #include <vector>
@@ -226,7 +224,7 @@ void test_degenerate_nz1() {
     solver_2d.sync_to_gpu();  // Upload initial conditions to GPU
 #endif
 
-    auto [res_2d, iter_2d] = solver_2d.solve_steady();
+    [[maybe_unused]] auto [res_2d, iter_2d] = solver_2d.solve_steady();
 
     // ---- Run 3D solver with Nz=1 ----
     Mesh mesh_3d;
@@ -252,7 +250,7 @@ void test_degenerate_nz1() {
     solver_3d.sync_to_gpu();  // Upload initial conditions to GPU
 #endif
 
-    auto [res_3d, iter_3d] = solver_3d.solve_steady();
+    [[maybe_unused]] auto [res_3d, iter_3d] = solver_3d.solve_steady();
 
     // ---- Compare results ----
 
