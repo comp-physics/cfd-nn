@@ -131,7 +131,16 @@ struct Config {
     int poisson_check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap)
     bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
     double poisson_linf_safety = 10.0; ///< L∞ safety cap multiplier (prevent L2 from hiding bad cells)
-    int poisson_fixed_cycles = 0;    ///< Fixed V-cycle count (0 = use convergence-based termination)
+    int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
+
+    // Adaptive fixed-cycle mode: run check_after cycles, check residual, add 2 more if needed
+    bool poisson_adaptive_cycles = false;  ///< Enable adaptive checking within fixed-cycle mode
+    int poisson_check_after = 4;           ///< Check residual after this many cycles
+
+    // MG smoother tuning parameters
+    int poisson_nu1 = 0;             ///< Pre-smoothing sweeps (0 = auto: 2 if fixed_cycles>3, else 1)
+    int poisson_nu2 = 0;             ///< Post-smoothing sweeps (0 = auto)
+    int poisson_chebyshev_degree = 4; ///< Chebyshev polynomial degree (3-4 typical)
 
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

@@ -150,7 +150,8 @@ private:
     int vcycle_graph_nu1_ = 2;           // Pre-smoothing iterations for graphed V-cycle
     int vcycle_graph_nu2_ = 2;           // Post-smoothing iterations for graphed V-cycle
     void initialize_cuda_graphs();
-    void initialize_vcycle_graph(int nu1, int nu2);  // Initialize full V-cycle graph
+    void initialize_vcycle_graph(int nu1, int nu2, int degree);  // Initialize full V-cycle graph
+    int vcycle_graph_degree_ = 4;    // Chebyshev degree for graphed V-cycle
     void vcycle_graphed();  // Execute graphed V-cycle (single graph launch)
 #endif
 
@@ -164,7 +165,7 @@ private:
     void prolongate_correction(int coarse_level);
     void apply_bc(int level);
     void apply_bc_to_residual(int level);  // Apply periodic BCs to residual for restriction
-    void vcycle(int level, int nu1 = 2, int nu2 = 2);
+    void vcycle(int level, int nu1 = 2, int nu2 = 2, int degree = 4);
     
     // Direct solver for coarsest level
     void solve_coarsest(int iterations = 100);

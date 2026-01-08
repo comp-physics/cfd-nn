@@ -3255,6 +3255,11 @@ double RANSSolver::step() {
         pcfg.use_l2_norm = config_.poisson_use_l2_norm;
         pcfg.linf_safety_factor = config_.poisson_linf_safety;
         pcfg.fixed_cycles = config_.poisson_fixed_cycles;
+        pcfg.adaptive_cycles = config_.poisson_adaptive_cycles;
+        pcfg.check_after = config_.poisson_check_after;
+        pcfg.nu1 = config_.poisson_nu1;
+        pcfg.nu2 = config_.poisson_nu2;
+        pcfg.chebyshev_degree = config_.poisson_chebyshev_degree;
 
         // Legacy tolerance for backward compatibility (non-MG solvers use this)
         double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);

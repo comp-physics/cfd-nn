@@ -338,6 +338,10 @@ target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 add_executable(profile_solver app/profile_solver.cpp)
 target_link_libraries(profile_solver nn_cfd_core)
 
+# Comprehensive profiling across BCs, Poisson solvers, turbulence models
+add_executable(profile_comprehensive app/profile_comprehensive.cpp)
+target_link_libraries(profile_comprehensive nn_cfd_core)
+
 # Poisson warm-start profiling (3 V-cycles, 50 steps)
 add_executable(profile_poisson_warmstart app/profile_poisson_warmstart.cpp)
 target_link_libraries(profile_poisson_warmstart nn_cfd_core)
@@ -531,3 +535,7 @@ add_executable(test_mg_physics_match tests/test_mg_physics_match.cpp)
 target_link_libraries(test_mg_physics_match PRIVATE nn_cfd_core)
 add_executable(bench_fft_vs_mg tests/bench_fft_vs_mg.cpp)
 target_link_libraries(bench_fft_vs_mg PRIVATE nn_cfd_core)
+add_executable(bench_mg_tuning tests/bench_mg_tuning.cpp)
+target_link_libraries(bench_mg_tuning PRIVATE nn_cfd_core)
+add_executable(bench_mg_bc_sweep tests/bench_mg_bc_sweep.cpp)
+target_link_libraries(bench_mg_bc_sweep PRIVATE nn_cfd_core)
