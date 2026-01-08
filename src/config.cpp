@@ -8,6 +8,7 @@
 /// - Parameter validation and consistency checking
 
 #include "config.hpp"
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <algorithm>

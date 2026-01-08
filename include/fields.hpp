@@ -5,7 +5,6 @@
 #include <cmath>
 #include <algorithm>
 #include <string>
-#include <fstream>
 
 namespace nncfd {
 
