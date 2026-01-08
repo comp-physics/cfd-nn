@@ -514,3 +514,9 @@ endif()
 # Installation
 install(TARGETS channel duct taylor_green_3d DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
+
+# MG CUDA Graph benchmark
+add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
+target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
+add_executable(bench_256 tests/bench_256.cpp)
+target_link_libraries(bench_256 PRIVATE nn_cfd_core)
