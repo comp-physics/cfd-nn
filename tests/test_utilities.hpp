@@ -680,5 +680,164 @@ inline VelocityBC create_velocity_bc(BCPattern pattern) {
     return bc;
 }
 
+//=============================================================================
+// Mesh Factory Functions
+//=============================================================================
+
+/// Create a uniform 2D mesh for channel flow (periodic x, walls y)
+/// @param Nx  Grid cells in x
+/// @param Ny  Grid cells in y
+/// @param Lx  Domain length in x (default 2π)
+/// @param Ly  Domain height in y (default 2, from -1 to 1)
+inline Mesh create_channel_mesh_2d(int Nx, int Ny, double Lx = 2.0 * M_PI, double Ly = 2.0) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, 0.0, Lx, -Ly/2, Ly/2);
+    return mesh;
+}
+
+/// Create a uniform 3D mesh for channel flow (periodic x/z, walls y)
+/// @param Nx  Grid cells in x
+/// @param Ny  Grid cells in y
+/// @param Nz  Grid cells in z
+/// @param Lx  Domain length in x (default 2π)
+/// @param Ly  Domain height in y (default 2, from -1 to 1)
+/// @param Lz  Domain length in z (default π)
+inline Mesh create_channel_mesh_3d(int Nx, int Ny, int Nz,
+                                    double Lx = 2.0 * M_PI, double Ly = 2.0, double Lz = M_PI) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, Nz, 0.0, Lx, -Ly/2, Ly/2, 0.0, Lz);
+    return mesh;
+}
+
+/// Create a uniform 2D periodic mesh (periodic in both directions)
+/// @param N  Grid cells in each direction
+/// @param L  Domain size in each direction (default 2π)
+inline Mesh create_periodic_mesh_2d(int N, double L = 2.0 * M_PI) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+    return mesh;
+}
+
+/// Create a uniform 3D periodic mesh (periodic in all directions)
+/// @param N  Grid cells in each direction
+/// @param L  Domain size in each direction (default 2π)
+inline Mesh create_periodic_mesh_3d(int N, double L = 2.0 * M_PI) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, N, 0.0, L, 0.0, L, 0.0, L);
+    return mesh;
+}
+
+/// Create a uniform 2D unit square mesh [0,1] x [0,1]
+/// @param N  Grid cells in each direction
+inline Mesh create_unit_square_mesh(int N) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, 1.0, 0.0, 1.0);
+    return mesh;
+}
+
+/// Create a uniform 3D unit cube mesh [0,1]^3
+/// @param N  Grid cells in each direction
+inline Mesh create_unit_cube_mesh(int N) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, N, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    return mesh;
+}
+
+/// Create a 2D mesh with custom dimensions
+/// @param Nx, Ny  Grid cells
+/// @param Lx, Ly  Domain dimensions
+inline Mesh create_uniform_mesh_2d(int Nx, int Ny, double Lx, double Ly) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, 0.0, Lx, 0.0, Ly);
+    return mesh;
+}
+
+/// Create a 3D mesh with custom dimensions
+/// @param Nx, Ny, Nz  Grid cells
+/// @param Lx, Ly, Lz  Domain dimensions
+inline Mesh create_uniform_mesh_3d(int Nx, int Ny, int Nz, double Lx, double Ly, double Lz) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, Nz, 0.0, Lx, 0.0, Ly, 0.0, Lz);
+    return mesh;
+}
+
+//=============================================================================
+// Config Factory Functions
+//=============================================================================
+
+/// Create a laminar flow configuration
+/// @param nu  Kinematic viscosity
+/// @param dt  Time step
+/// @param verbose  Enable verbose output (default false)
+inline Config create_laminar_config(double nu, double dt, bool verbose = false) {
+    Config config;
+    config.nu = nu;
+    config.dt = dt;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = verbose;
+    return config;
+}
+
+/// Create a turbulent flow configuration
+/// @param nu  Kinematic viscosity
+/// @param dt  Time step
+/// @param turb_model  Turbulence model type
+/// @param verbose  Enable verbose output (default false)
+inline Config create_turbulent_config(double nu, double dt,
+                                       TurbulenceModelType turb_model,
+                                       bool verbose = false) {
+    Config config;
+    config.nu = nu;
+    config.dt = dt;
+    config.turb_model = turb_model;
+    config.verbose = verbose;
+    return config;
+}
+
+/// Create a configuration with adaptive time stepping
+/// @param nu  Kinematic viscosity
+/// @param CFL_max  Maximum CFL number for stability
+/// @param verbose  Enable verbose output (default false)
+inline Config create_adaptive_config(double nu, double CFL_max = 0.5, bool verbose = false) {
+    Config config;
+    config.nu = nu;
+    config.dt = 0.001;  // Initial guess, will be overridden by adaptive dt
+    config.CFL_max = CFL_max;
+    config.adaptive_dt = true;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = verbose;
+    return config;
+}
+
+/// Create a minimal test configuration (low verbosity, fast)
+/// @param nu  Kinematic viscosity (default 0.01)
+/// @param dt  Time step (default 0.001)
+inline Config create_test_config(double nu = 0.01, double dt = 0.001) {
+    Config config;
+    config.nu = nu;
+    config.dt = dt;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
+    return config;
+}
+
+//=============================================================================
+// Solver Setup Helper
+//=============================================================================
+
+/// Configure a solver with standard settings for testing
+/// @param solver  RANSSolver reference to configure
+/// @param bc_pattern  Boundary condition pattern
+/// @param u_init  Initial u-velocity (default 0.0)
+/// @param v_init  Initial v-velocity (default 0.0)
+inline void setup_solver_for_test(RANSSolver& solver, BCPattern bc_pattern,
+                                   double u_init = 0.0, double v_init = 0.0) {
+    solver.set_velocity_bc(create_velocity_bc(bc_pattern));
+    solver.initialize_uniform(u_init, v_init);
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+}
+
 } // namespace test
 } // namespace nncfd
