@@ -1,6 +1,7 @@
 /// @file bench_mg_cuda_graphs.cpp
 /// @brief Benchmark MG solver with/without CUDA Graphs on large 3D grids
-/// Uses solve_device() with persistent GPU data for clean profiling
+/// Uses solve_device() with persistent GPU data for clean profiling (GPU build)
+/// Falls back to regular solve() on CPU builds
 ///
 /// JIT Variability Mitigation:
 /// - 2 warmup solves before timing to trigger JIT compilation
@@ -27,14 +28,27 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
     Mesh mesh;
     mesh.init_uniform(N, N, N, 0.0, L, 0.0, L, 0.0, L);
 
-    // Total size with ghost cells
-    const size_t total_size = static_cast<size_t>(N + 2) * (N + 2) * (N + 2);
+    MultigridPoissonSolver mg(mesh);
+    mg.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+              PoissonBC::Periodic, PoissonBC::Periodic,
+              PoissonBC::Periodic, PoissonBC::Periodic);
 
-    // Allocate host arrays (will be mapped to device)
+    PoissonConfig cfg;
+    if (use_fixed_cycles) {
+        cfg.fixed_cycles = vcycles;  // Fixed mode: no convergence checks
+    } else {
+        cfg.tol = 1e-10;  // Convergence mode
+        cfg.max_iter = vcycles;
+        cfg.check_interval = 1;
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: use solve_device() with persistent GPU data
+    const size_t total_size = static_cast<size_t>(N + 2) * (N + 2) * (N + 2);
     std::vector<double> rhs_host(total_size, 0.0);
     std::vector<double> p_host(total_size, 0.0);
 
-    // Initialize RHS with sin pattern (known solution)
+    // Initialize RHS with sin pattern
     const int Ng = 1;
     const int stride = N + 2;
     const int plane_stride = stride * (N + 2);
@@ -50,30 +64,14 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
         }
     }
 
-    // Get raw pointers for OpenMP target mapping
     double* rhs_ptr = rhs_host.data();
     double* p_ptr = p_host.data();
 
     // Map data to device ONCE (persistent for all solves)
     #pragma omp target enter data map(to: rhs_ptr[0:total_size], p_ptr[0:total_size])
 
-    MultigridPoissonSolver mg(mesh);
-    mg.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-              PoissonBC::Periodic, PoissonBC::Periodic,
-              PoissonBC::Periodic, PoissonBC::Periodic);
-
-    PoissonConfig cfg;
-    if (use_fixed_cycles) {
-        cfg.fixed_cycles = vcycles;  // Fixed mode: no convergence checks
-    } else {
-        cfg.tol = 1e-10;  // Convergence mode
-        cfg.max_iter = vcycles;
-        cfg.check_interval = 1;
-    }
-
-    // Warmup (2 solves) - zero initial guess on device
+    // Warmup (2 solves)
     for (int w = 0; w < 2; ++w) {
-        // Zero p on device
         #pragma omp target teams distribute parallel for map(present, alloc: p_ptr[0:total_size])
         for (size_t idx = 0; idx < total_size; ++idx) {
             p_ptr[idx] = 0.0;
@@ -86,22 +84,53 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
     times.reserve(trials);
 
     for (int t = 0; t < trials; ++t) {
-        // Zero p on device
         #pragma omp target teams distribute parallel for map(present, alloc: p_ptr[0:total_size])
         for (size_t idx = 0; idx < total_size; ++idx) {
             p_ptr[idx] = 0.0;
         }
 
         auto start = high_resolution_clock::now();
-        int iters = mg.solve_device(rhs_ptr, p_ptr, cfg);
+        mg.solve_device(rhs_ptr, p_ptr, cfg);
         auto end = high_resolution_clock::now();
-        (void)iters;  // Suppress unused warning
-        double ms = duration_cast<microseconds>(end - start).count() / 1000.0;
-        times.push_back(ms);
+        times.push_back(duration_cast<microseconds>(end - start).count() / 1000.0);
     }
 
-    // Unmap data from device
     #pragma omp target exit data map(delete: rhs_ptr[0:total_size], p_ptr[0:total_size])
+
+#else
+    // CPU path: use regular solve() with ScalarField
+    ScalarField rhs(mesh), p(mesh);
+
+    // Initialize RHS with sin pattern
+    for (int k = 1; k <= N; ++k) {
+        double z = (k - 0.5) * L / N;
+        for (int j = 1; j <= N; ++j) {
+            double y = (j - 0.5) * L / N;
+            for (int i = 1; i <= N; ++i) {
+                double x = (i - 0.5) * L / N;
+                rhs(i, j, k) = -3.0 * std::sin(x) * std::sin(y) * std::sin(z);
+            }
+        }
+    }
+
+    // Warmup
+    for (int w = 0; w < 2; ++w) {
+        p.fill(0.0);
+        mg.solve(rhs, p, cfg);
+    }
+
+    // Benchmark
+    std::vector<double> times;
+    times.reserve(trials);
+
+    for (int t = 0; t < trials; ++t) {
+        p.fill(0.0);
+        auto start = high_resolution_clock::now();
+        mg.solve(rhs, p, cfg);
+        auto end = high_resolution_clock::now();
+        times.push_back(duration_cast<microseconds>(end - start).count() / 1000.0);
+    }
+#endif
 
     // Compute stats
     double sum = 0, min_t = times[0], max_t = times[0];
@@ -124,19 +153,24 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
               << std::endl;
 }
 
-int main(int argc, char** argv) {
-    std::cout << "=== MG Solver Benchmark (solve_device path) ===" << std::endl;
+int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
+#ifdef USE_GPU_OFFLOAD
+    std::cout << "=== MG Solver Benchmark (GPU: solve_device path) ===" << std::endl;
+    std::cout << "Path: solve_device() with persistent GPU data (D-to-D only)" << std::endl;
+#else
+    std::cout << "=== MG Solver Benchmark (CPU: solve path) ===" << std::endl;
+    std::cout << "Path: solve() with ScalarField (CPU only)" << std::endl;
+#endif
 
     // Check if CUDA Graphs are enabled
     const char* env = std::getenv("MG_USE_CUDA_GRAPHS");
     bool cuda_graphs = (env && (std::string(env) == "1"));
-    std::cout << "CUDA Graphs: " << (cuda_graphs ? "ENABLED" : "DISABLED") << std::endl;
+    std::cout << "CUDA Graphs: " << (cuda_graphs ? "ENABLED" : "DISABLED (no effect on CPU)") << std::endl;
 
     // Check for fixed_cycles mode
     const char* fixed_env = std::getenv("MG_FIXED_CYCLES");
     bool use_fixed = (fixed_env && std::string(fixed_env) == "1");
     std::cout << "Mode: " << (use_fixed ? "FIXED_CYCLES (no convergence checks)" : "CONVERGENCE (with tolerance checks)") << std::endl;
-    std::cout << "Path: solve_device() with persistent GPU data (D-to-D only)" << std::endl;
     std::cout << std::endl;
 
     const int trials = 10;
