@@ -1,42 +1,26 @@
 /// Unified Turbulence Model Tests
-/// Consolidates: test_turbulence_features, test_all_turbulence_models_smoke,
-///               test_turbulence_guard, test_transport_realizability,
-///               test_earsm_trace_free, test_turbulence_golden
-///
-/// Test sections:
-/// 1. Smoke tests - all 10 models run without NaN/Inf
-/// 2. Realizability - transport models maintain k>0, omega>0, nu_t>=0
-/// 3. EARSM trace-free - anisotropy tensor satisfies b_xx + b_yy = 0
-/// 4. Guard functionality - NaN/Inf detection works
-/// 5. Golden regression - velocity statistics match reference
-/// 6. Feature computation - batch feature computation works
+/// Tests smoke, realizability, EARSM trace-free, guard functionality, golden regression, features
 
-#include "mesh.hpp"
-#include "fields.hpp"
+#include "test_harness.hpp"
+#include "test_utilities.hpp"
 #include "features.hpp"
-#include "solver.hpp"
-#include "config.hpp"
 #include "turbulence_model.hpp"
 #include "turbulence_baseline.hpp"
 #include "turbulence_gep.hpp"
 #include "turbulence_earsm.hpp"
-#include "test_harness.hpp"
-#include <iostream>
-#include <iomanip>
-#include <cmath>
-#include <vector>
-#include <string>
 #include <limits>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 using nncfd::test::file_exists;
 
 static std::string resolve_nn_path(const std::string& subdir) {
-    std::string path = "data/models/" + subdir;
-    if (file_exists(path + "/layer0_W.txt")) return path;
-    path = "../data/models/" + subdir;
-    if (file_exists(path + "/layer0_W.txt")) return path;
+    for (const auto& prefix : {"data/models/", "../data/models/"}) {
+        std::string path = prefix + subdir;
+        if (file_exists(path + "/layer0_W.txt")) return path;
+    }
     return "";
 }
 
@@ -57,27 +41,20 @@ static std::string model_name(TurbulenceModelType type) {
 }
 
 static bool is_transport_model(TurbulenceModelType type) {
-    return type == TurbulenceModelType::SSTKOmega ||
-           type == TurbulenceModelType::KOmega ||
-           type == TurbulenceModelType::EARSM_WJ ||
-           type == TurbulenceModelType::EARSM_GS ||
+    return type == TurbulenceModelType::SSTKOmega || type == TurbulenceModelType::KOmega ||
+           type == TurbulenceModelType::EARSM_WJ || type == TurbulenceModelType::EARSM_GS ||
            type == TurbulenceModelType::EARSM_Pope;
 }
 
 //=============================================================================
-// Section 1: Smoke Tests (all models, 100 steps)
+// Section 1: Smoke Tests
 //=============================================================================
 
-struct SmokeResult {
-    bool passed = false;
-    bool skipped = false;
-    std::string message;
-};
+struct SmokeResult { bool passed = false, skipped = false; std::string message; };
 
 static SmokeResult run_smoke_test(TurbulenceModelType type, int num_steps = 100) {
     SmokeResult result;
 
-    // Check NN weights availability
     std::string nn_path;
     if (type == TurbulenceModelType::NNMLP) {
         nn_path = resolve_nn_path("mlp_channel_caseholdout");
@@ -97,69 +74,40 @@ static SmokeResult run_smoke_test(TurbulenceModelType type, int num_steps = 100)
         config.turb_model = type;
         config.verbose = false;
         config.turb_guard_enabled = true;
-        if (!nn_path.empty()) {
-            config.nn_weights_path = nn_path;
-            config.nn_scaling_path = nn_path;
-        }
+        if (!nn_path.empty()) { config.nn_weights_path = nn_path; config.nn_scaling_path = nn_path; }
 
         RANSSolver solver(mesh, config);
         solver.set_body_force(0.001, 0.0);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
-
-        if (type != TurbulenceModelType::None) {
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+        if (type != TurbulenceModelType::None)
             solver.set_turbulence_model(create_turbulence_model(type, nn_path, nn_path));
-        }
 
         solver.initialize_uniform(1.0, 0.0);
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            double y = mesh.y(j);
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                solver.velocity().u(i, j) = 0.1 * (1.0 - y * y);
-            }
+        FOR_INTERIOR_2D(mesh, i, j) {
+            solver.velocity().u(i, j) = 0.1 * (1.0 - mesh.y(j) * mesh.y(j));
         }
+        solver.velocity().u(mesh.i_end(), mesh.j_begin()) = 0.0;  // Staggered
         solver.sync_to_gpu();
 
-        for (int step = 0; step < num_steps; ++step) {
-            solver.step();
-        }
+        for (int step = 0; step < num_steps; ++step) solver.step();
         solver.sync_from_gpu();
 
-        // Validate fields
         const auto& vel = solver.velocity();
         const auto& nu_t = solver.nu_t();
 
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                if (!std::isfinite(vel.u(i, j)) || !std::isfinite(vel.v(i, j))) {
-                    result.message = "NaN/Inf in velocity"; return result;
-                }
-                if (!std::isfinite(nu_t(i, j))) {
-                    result.message = "NaN/Inf in nu_t"; return result;
-                }
-                if (nu_t(i, j) < 0.0) {
-                    result.message = "Negative nu_t"; return result;
-                }
-            }
+        FOR_INTERIOR_2D(mesh, i, j) {
+            if (!std::isfinite(vel.u(i, j)) || !std::isfinite(vel.v(i, j)))
+                { result.message = "NaN/Inf in velocity"; return result; }
+            if (!std::isfinite(nu_t(i, j))) { result.message = "NaN/Inf in nu_t"; return result; }
+            if (nu_t(i, j) < 0.0) { result.message = "Negative nu_t"; return result; }
         }
 
         if (is_transport_model(type)) {
             const auto& k = solver.k();
             const auto& omega = solver.omega();
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    if (!std::isfinite(k(i, j)) || k(i, j) < 1e-12) {
-                        result.message = "Invalid k"; return result;
-                    }
-                    if (!std::isfinite(omega(i, j)) || omega(i, j) < 1e-12) {
-                        result.message = "Invalid omega"; return result;
-                    }
-                }
+            FOR_INTERIOR_2D(mesh, i, j) {
+                if (!std::isfinite(k(i, j)) || k(i, j) < 1e-12) { result.message = "Invalid k"; return result; }
+                if (!std::isfinite(omega(i, j)) || omega(i, j) < 1e-12) { result.message = "Invalid omega"; return result; }
             }
         }
 
@@ -179,16 +127,14 @@ static void test_smoke_all_models() {
         TurbulenceModelType::EARSM_GS, TurbulenceModelType::EARSM_Pope,
         TurbulenceModelType::NNMLP, TurbulenceModelType::NNTBNN
     };
-
     for (auto type : models) {
-        std::string name = "Smoke: " + model_name(type);
         auto result = run_smoke_test(type);
-        record(name.c_str(), result.passed, result.skipped);
+        record(("Smoke: " + model_name(type)).c_str(), result.passed, result.skipped);
     }
 }
 
 //=============================================================================
-// Section 2: Transport Realizability (500 steps)
+// Section 2: Transport Realizability
 //=============================================================================
 
 static void test_transport_realizability() {
@@ -197,11 +143,9 @@ static void test_transport_realizability() {
         TurbulenceModelType::EARSM_WJ, TurbulenceModelType::EARSM_GS,
         TurbulenceModelType::EARSM_Pope
     };
-
     for (auto type : transport_models) {
-        std::string name = "Realizability: " + model_name(type);
         auto result = run_smoke_test(type, 500);
-        record(name.c_str(), result.passed, result.skipped);
+        record(("Realizability: " + model_name(type)).c_str(), result.passed, result.skipped);
     }
 }
 
@@ -215,15 +159,11 @@ static bool test_tensor_basis_trace_free() {
         {0.3, 0.7, -0.2, -0.3}, {2.0, 0.0, 0.0, -2.0}
     };
 
-    const double tol = 1e-10;
     for (const auto& grad : test_cases) {
         std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis;
         TensorBasis::compute(grad, 0.1, 0.01, basis);
-
-        for (int n = 0; n < TensorBasis::NUM_BASIS; ++n) {
-            double trace = basis[n][0] + basis[n][2];
-            if (std::abs(trace) > tol) return false;
-        }
+        for (int n = 0; n < TensorBasis::NUM_BASIS; ++n)
+            if (std::abs(basis[n][0] + basis[n][2]) > 1e-10) return false;
     }
     return true;
 }
@@ -237,15 +177,13 @@ static bool test_anisotropy_construction_trace_free() {
         {0.0, 1.0, 0.0, 0.0}, {0.5, 0.5, -0.5, -0.5}, {1.0, 0.5, -0.3, -1.0}
     };
 
-    const double tol = 1e-10;
     for (const auto& grad : grad_cases) {
         std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis;
         TensorBasis::compute(grad, 0.1, 0.01, basis);
-
         for (const auto& G : G_cases) {
             double b_xx, b_xy, b_yy;
             TensorBasis::construct_anisotropy(G, basis, b_xx, b_xy, b_yy);
-            if (std::abs(b_xx + b_yy) > tol) return false;
+            if (std::abs(b_xx + b_yy) > 1e-10) return false;
         }
     }
     return true;
@@ -256,12 +194,8 @@ static bool test_earsm_closures_trace_free() {
     mesh.init_uniform(8, 16, 0.0, 1.0, -1.0, 1.0);
 
     VectorField vel(mesh);
-    for (int j = 0; j < mesh.total_Ny(); ++j) {
-        for (int i = 0; i < mesh.total_Nx(); ++i) {
-            vel.u(i, j) = mesh.y(j);
-            vel.v(i, j) = 0.0;
-        }
-    }
+    for (int j = 0; j < mesh.total_Ny(); ++j)
+        for (int i = 0; i < mesh.total_Nx(); ++i) { vel.u(i, j) = mesh.y(j); vel.v(i, j) = 0.0; }
 
     ScalarField k(mesh, 0.1), omega(mesh, 10.0), nu_t(mesh);
 
@@ -269,21 +203,18 @@ static bool test_earsm_closures_trace_free() {
         EARSMType::WallinJohansson2000, EARSMType::GatskiSpeziale1993, EARSMType::Pope1975
     };
 
-    const double tol = 1e-10;
     for (auto type : types) {
-        TensorField tau_ij(mesh);  // Fresh field for each model iteration
+        TensorField tau_ij(mesh);
         SSTWithEARSM model(type);
         model.set_nu(0.001);
         model.set_delta(1.0);
         model.initialize(mesh, vel);
         model.update(mesh, vel, k, omega, nu_t, &tau_ij);
 
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                if (k(i, j) < 1e-10) continue;
-                double b_trace = tau_ij.trace(i, j) / (2.0 * k(i, j)) - 2.0/3.0;
-                if (std::abs(b_trace) > tol) return false;
-            }
+        FOR_INTERIOR_2D(mesh, i, j) {
+            if (k(i, j) < 1e-10) continue;
+            double b_trace = tau_ij.trace(i, j) / (2.0 * k(i, j)) - 2.0/3.0;
+            if (std::abs(b_trace) > 1e-10) return false;
         }
     }
     return true;
@@ -296,7 +227,7 @@ static void test_earsm_trace_free() {
 }
 
 //=============================================================================
-// Section 4: Guard Functionality (NaN Detection)
+// Section 4: Guard Functionality
 //=============================================================================
 
 static bool test_guard_allows_normal_operation() {
@@ -304,27 +235,18 @@ static bool test_guard_allows_normal_operation() {
     mesh.init_uniform(32, 64, 0.0, 2.0, -1.0, 1.0);
 
     Config config;
-    config.nu = 0.01;
-    config.dt = 5e-4;
+    config.nu = 0.01; config.dt = 5e-4;
     config.turb_model = TurbulenceModelType::SSTKOmega;
-    config.turb_guard_enabled = true;
-    config.verbose = false;
+    config.turb_guard_enabled = true; config.verbose = false;
 
     RANSSolver solver(mesh, config);
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic; bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip; bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
     solver.set_turbulence_model(create_turbulence_model(TurbulenceModelType::SSTKOmega));
     solver.set_body_force(-0.001, 0.0);
     solver.initialize_uniform(0.5, 0.0);
 
-    try {
-        for (int i = 0; i < 100; ++i) solver.step();
-        return true;
-    } catch (...) {
-        return false;
-    }
+    try { for (int i = 0; i < 100; ++i) solver.step(); return true; }
+    catch (...) { return false; }
 }
 
 static bool test_guard_detects_nan() {
@@ -332,31 +254,23 @@ static bool test_guard_detects_nan() {
     mesh.init_uniform(16, 32, 0.0, 1.0, -0.5, 0.5);
 
     Config config;
-    config.nu = 0.01;
-    config.dt = 1e-3;
+    config.nu = 0.01; config.dt = 1e-3;
     config.turb_model = TurbulenceModelType::None;
-    config.turb_guard_enabled = true;
-    config.turb_guard_interval = 1;
+    config.turb_guard_enabled = true; config.turb_guard_interval = 1;
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic; bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip; bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
     solver.initialize_uniform(1.0, 0.0);
 
     for (int i = 0; i < 5; ++i) solver.step();
 
-    // Inject NaN
     solver.velocity().u(mesh.Nx/2, mesh.Ny/2) = std::numeric_limits<double>::quiet_NaN();
-#ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
-#endif
 
     try {
         solver.check_for_nan_inf(5);
-        return false;  // Should have thrown
+        return false;
     } catch (const std::runtime_error& e) {
         std::string msg(e.what());
         return msg.find("NaN") != std::string::npos || msg.find("NUMERICAL") != std::string::npos;
@@ -373,10 +287,8 @@ static void test_guard_functionality() {
 //=============================================================================
 
 namespace golden {
-    constexpr double LAMINAR_U_MEAN = 6.6739e-01;
-    constexpr double LAMINAR_U_MAX  = 9.9942e-01;
-    constexpr double BASELINE_U_MEAN = 6.6631e-01;
-    constexpr double BASELINE_U_MAX  = 9.9876e-01;
+    constexpr double LAMINAR_U_MEAN = 6.6739e-01, LAMINAR_U_MAX = 9.9942e-01;
+    constexpr double BASELINE_U_MEAN = 6.6631e-01, BASELINE_U_MAX = 9.9876e-01;
     constexpr double TOLERANCE = 0.01;
 }
 
@@ -386,13 +298,11 @@ static VelStats compute_vel_stats(const RANSSolver& solver, const Mesh& mesh) {
     VelStats s{0.0, -1e30};
     int count = 0;
     const auto& vel = solver.velocity();
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-            s.u_mean += u;
-            s.u_max = std::max(s.u_max, u);
-            ++count;
-        }
+    FOR_INTERIOR_2D(mesh, i, j) {
+        double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+        s.u_mean += u;
+        s.u_max = std::max(s.u_max, u);
+        ++count;
     }
     if (count > 0) s.u_mean /= count;
     return s;
@@ -400,52 +310,42 @@ static VelStats compute_vel_stats(const RANSSolver& solver, const Mesh& mesh) {
 
 static VelStats run_golden_model(TurbulenceModelType type, const Mesh& mesh, int nsteps) {
     Config config;
-    config.dt = 0.001;
-    config.nu = 0.001;
-    config.turb_model = type;
-    config.verbose = false;
+    config.dt = 0.001; config.nu = 0.001; config.turb_model = type; config.verbose = false;
 
     RANSSolver solver(mesh, config);
     solver.set_turbulence_model(create_turbulence_model(type));
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic; bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip; bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
-
-    auto& vel = solver.velocity();
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double y = mesh.y(j);
-            double y_norm = (y - mesh.y_min) / (mesh.y_max - mesh.y_min);
-            vel.u(i, j) = 4.0 * y_norm * (1.0 - y_norm);
-        }
+    FOR_INTERIOR_2D(mesh, i, j) {
+        double y_norm = (mesh.y(j) - mesh.y_min) / (mesh.y_max - mesh.y_min);
+        solver.velocity().u(i, j) = 4.0 * y_norm * (1.0 - y_norm);
     }
-    solver.initialize(vel);
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y_norm = (mesh.y(j) - mesh.y_min) / (mesh.y_max - mesh.y_min);
+        solver.velocity().u(mesh.i_end(), j) = 4.0 * y_norm * (1.0 - y_norm);
+    }
+    solver.initialize(solver.velocity());
     solver.set_body_force(0.01, 0.0, 0.0);
 
     for (int step = 0; step < nsteps; ++step) solver.step();
     solver.sync_from_gpu();
-
     return compute_vel_stats(solver, mesh);
-}
-
-static bool check_golden(const VelStats& actual, double exp_mean, double exp_max) {
-    double err_mean = std::abs(actual.u_mean - exp_mean) / std::abs(exp_mean);
-    double err_max = std::abs(actual.u_max - exp_max) / std::abs(exp_max);
-    return err_mean < golden::TOLERANCE && err_max < golden::TOLERANCE;
 }
 
 static void test_golden_regression() {
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 2.0 * M_PI, 0.0, 2.0);
-    const int nsteps = 50;
 
-    auto laminar = run_golden_model(TurbulenceModelType::None, mesh, nsteps);
-    auto baseline = run_golden_model(TurbulenceModelType::Baseline, mesh, nsteps);
+    auto laminar = run_golden_model(TurbulenceModelType::None, mesh, 50);
+    auto baseline = run_golden_model(TurbulenceModelType::Baseline, mesh, 50);
 
-    record("Golden: Laminar", check_golden(laminar, golden::LAMINAR_U_MEAN, golden::LAMINAR_U_MAX));
-    record("Golden: Baseline", check_golden(baseline, golden::BASELINE_U_MEAN, golden::BASELINE_U_MAX));
+    auto check = [](const VelStats& s, double exp_mean, double exp_max) {
+        return std::abs(s.u_mean - exp_mean) / std::abs(exp_mean) < golden::TOLERANCE &&
+               std::abs(s.u_max - exp_max) / std::abs(exp_max) < golden::TOLERANCE;
+    };
+
+    record("Golden: Laminar", check(laminar, golden::LAMINAR_U_MEAN, golden::LAMINAR_U_MAX));
+    record("Golden: Baseline", check(baseline, golden::BASELINE_U_MEAN, golden::BASELINE_U_MAX));
 }
 
 //=============================================================================
@@ -457,12 +357,8 @@ static bool test_feature_computer_batch() {
     mesh.init_uniform(16, 16, 0.0, 2.0, -1.0, 1.0);
 
     VectorField vel(mesh);
-    for (int j = 0; j < mesh.total_Ny(); ++j) {
-        for (int i = 0; i < mesh.total_Nx(); ++i) {
-            vel.u(i, j) = 2.0 * mesh.y(j);
-            vel.v(i, j) = 0.0;
-        }
-    }
+    for (int j = 0; j < mesh.total_Ny(); ++j)
+        for (int i = 0; i < mesh.total_Nx(); ++i) { vel.u(i, j) = 2.0 * mesh.y(j); vel.v(i, j) = 0.0; }
 
     ScalarField k(mesh, 0.1), omega(mesh, 1.0);
     FeatureComputer fc(mesh);
@@ -470,22 +366,15 @@ static bool test_feature_computer_batch() {
 
     std::vector<Features> scalar_features;
     fc.compute_scalar_features(vel, k, omega, scalar_features);
-
     if (static_cast<int>(scalar_features.size()) != mesh.Nx * mesh.Ny) return false;
-
-    for (const auto& feat : scalar_features) {
-        for (int n = 0; n < feat.size(); ++n) {
+    for (const auto& feat : scalar_features)
+        for (int n = 0; n < feat.size(); ++n)
             if (!std::isfinite(feat[n])) return false;
-        }
-    }
 
     std::vector<Features> tbnn_features;
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis;
     fc.compute_tbnn_features(vel, k, omega, tbnn_features, basis);
-
-    if (static_cast<int>(tbnn_features.size()) != mesh.Nx * mesh.Ny) return false;
-
-    return true;
+    return static_cast<int>(tbnn_features.size()) == mesh.Nx * mesh.Ny;
 }
 
 static void test_feature_computation() {
@@ -498,7 +387,6 @@ static void test_feature_computation() {
 
 int main() {
     using namespace nncfd::test::harness;
-
     return run_sections("Unified Turbulence Model Tests", {
         {"Smoke Tests (all models, 100 steps)", test_smoke_all_models},
         {"Transport Realizability (500 steps)", test_transport_realizability},

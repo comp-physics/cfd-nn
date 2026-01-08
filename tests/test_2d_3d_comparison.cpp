@@ -1,375 +1,212 @@
 /// 2D vs 3D Solver Comparison Tests
 /// Validates that 3D solver produces correct results by comparing to 2D reference
-///
-/// Test Strategy:
-/// 1. Degenerate case: 3D with Nz=1 should exactly match 2D
-/// 2. Z-invariant case: 3D with Nz=8 and z-invariant flow should match 2D at every z-plane
 
-#include "mesh.hpp"
-#include "fields.hpp"
-#include "solver.hpp"
 #include "test_harness.hpp"
+#include "test_utilities.hpp"
 #include <cmath>
-#include <cassert>
 #include <vector>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // Test parameters
-constexpr int NX = 32;
-constexpr int NY = 32;
-constexpr double LX = 2.0;
-constexpr double LY = 2.0;
-constexpr double LZ = 1.0;
-constexpr double NU = 0.01;
-constexpr double DP_DX = -0.001;
+constexpr int NX = 32, NY = 32;
+constexpr double LX = 2.0, LY = 2.0, LZ = 1.0;
+constexpr double NU = 0.01, DP_DX = -0.001;
 constexpr int MAX_ITER = 500;
 
-// Helper: compute L2 norm of difference between two arrays
-double compute_l2_error(const std::vector<double>& a, const std::vector<double>& b) {
-    assert(a.size() == b.size());
+static double vec_l2_diff(const std::vector<double>& a, const std::vector<double>& b) {
     double sum = 0.0;
-    for (size_t i = 0; i < a.size(); ++i) {
-        double diff = a[i] - b[i];
-        sum += diff * diff;
-    }
+    for (size_t i = 0; i < a.size(); ++i) { double d = a[i] - b[i]; sum += d * d; }
     return std::sqrt(sum / a.size());
 }
 
-// Helper: compute max absolute difference
-double compute_linf_error(const std::vector<double>& a, const std::vector<double>& b) {
-    assert(a.size() == b.size());
-    double max_diff = 0.0;
-    for (size_t i = 0; i < a.size(); ++i) {
-        max_diff = std::max(max_diff, std::abs(a[i] - b[i]));
-    }
-    return max_diff;
+static double vec_linf_diff(const std::vector<double>& a, const std::vector<double>& b) {
+    double m = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) m = std::max(m, std::abs(a[i] - b[i]));
+    return m;
 }
 
-// Helper: extract u velocity from 2D solver at interior points
-std::vector<double> extract_2d_u(const RANSSolver& solver, const Mesh& mesh) {
-    std::vector<double> u_vals;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            u_vals.push_back(solver.velocity().u(i, j));
-        }
-    }
-    return u_vals;
+static std::vector<double> extract_2d_u(const RANSSolver& s, const Mesh& m) {
+    std::vector<double> v;
+    for (int j = m.j_begin(); j < m.j_end(); ++j)
+        for (int i = m.i_begin(); i <= m.i_end(); ++i)
+            v.push_back(s.velocity().u(i, j));
+    return v;
 }
 
-// Helper: extract v velocity from 2D solver at interior points
-std::vector<double> extract_2d_v(const RANSSolver& solver, const Mesh& mesh) {
-    std::vector<double> v_vals;
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            v_vals.push_back(solver.velocity().v(i, j));
-        }
-    }
-    return v_vals;
+static std::vector<double> extract_2d_v(const RANSSolver& s, const Mesh& m) {
+    std::vector<double> v;
+    for (int j = m.j_begin(); j <= m.j_end(); ++j)
+        for (int i = m.i_begin(); i < m.i_end(); ++i)
+            v.push_back(s.velocity().v(i, j));
+    return v;
 }
 
-// Helper: extract u velocity from 3D solver at z=k_mid slice
-std::vector<double> extract_3d_u_slice(const RANSSolver& solver, const Mesh& mesh, int k) {
-    std::vector<double> u_vals;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            u_vals.push_back(solver.velocity().u(i, j, k));
-        }
-    }
-    return u_vals;
+static std::vector<double> extract_3d_u_slice(const RANSSolver& s, const Mesh& m, int k) {
+    std::vector<double> v;
+    for (int j = m.j_begin(); j < m.j_end(); ++j)
+        for (int i = m.i_begin(); i <= m.i_end(); ++i)
+            v.push_back(s.velocity().u(i, j, k));
+    return v;
 }
 
-// Helper: extract v velocity from 3D solver at z=k_mid slice
-std::vector<double> extract_3d_v_slice(const RANSSolver& solver, const Mesh& mesh, int k) {
-    std::vector<double> v_vals;
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            v_vals.push_back(solver.velocity().v(i, j, k));
-        }
-    }
-    return v_vals;
+static std::vector<double> extract_3d_v_slice(const RANSSolver& s, const Mesh& m, int k) {
+    std::vector<double> v;
+    for (int j = m.j_begin(); j <= m.j_end(); ++j)
+        for (int i = m.i_begin(); i < m.i_end(); ++i)
+            v.push_back(s.velocity().v(i, j, k));
+    return v;
 }
 
-// Helper: compute max divergence for 2D solver
-double compute_max_div_2d(const RANSSolver& solver, const Mesh& mesh) {
+static double max_div_3d(const RANSSolver& s, const Mesh& m) {
     double max_div = 0.0;
-    double dx = mesh.dx;
-    double dy = mesh.dy;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double div = (solver.velocity().u(i+1, j) - solver.velocity().u(i, j)) / dx
-                       + (solver.velocity().v(i, j+1) - solver.velocity().v(i, j)) / dy;
-            max_div = std::max(max_div, std::abs(div));
-        }
+    FOR_INTERIOR_3D(m, i, j, k) {
+        double div = (s.velocity().u(i+1, j, k) - s.velocity().u(i, j, k)) / m.dx
+                   + (s.velocity().v(i, j+1, k) - s.velocity().v(i, j, k)) / m.dy
+                   + (s.velocity().w(i, j, k+1) - s.velocity().w(i, j, k)) / m.dz;
+        max_div = std::max(max_div, std::abs(div));
     }
     return max_div;
 }
 
-// Helper: compute max divergence for 3D solver (at specific k-plane for degenerate case)
-double compute_max_div_3d_slice(const RANSSolver& solver, const Mesh& mesh, int k) {
+static double max_div_3d_slice(const RANSSolver& s, const Mesh& m, int k) {
     double max_div = 0.0;
-    double dx = mesh.dx;
-    double dy = mesh.dy;
-    // For 2D-like divergence at specific k, only use du/dx and dv/dy
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double div = (solver.velocity().u(i+1, j, k) - solver.velocity().u(i, j, k)) / dx
-                       + (solver.velocity().v(i, j+1, k) - solver.velocity().v(i, j, k)) / dy;
-            max_div = std::max(max_div, std::abs(div));
-        }
+    FOR_INTERIOR_2D(m, i, j) {
+        double div = (s.velocity().u(i+1, j, k) - s.velocity().u(i, j, k)) / m.dx
+                   + (s.velocity().v(i, j+1, k) - s.velocity().v(i, j, k)) / m.dy;
+        max_div = std::max(max_div, std::abs(div));
     }
     return max_div;
 }
 
-// Helper: compute max divergence for 3D solver (full 3D)
-double compute_max_div_3d(const RANSSolver& solver, const Mesh& mesh) {
-    double max_div = 0.0;
-    double dx = mesh.dx;
-    double dy = mesh.dy;
-    double dz = mesh.dz;
-
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double div = (solver.velocity().u(i+1, j, k) - solver.velocity().u(i, j, k)) / dx
-                           + (solver.velocity().v(i, j+1, k) - solver.velocity().v(i, j, k)) / dy
-                           + (solver.velocity().w(i, j, k+1) - solver.velocity().w(i, j, k)) / dz;
-                max_div = std::max(max_div, std::abs(div));
-            }
-        }
+static void init_poiseuille_2d(RANSSolver& s, const Mesh& m, double dp_dx, double nu) {
+    double H = LY / 2.0, y_mid = LY / 2.0;
+    FOR_INTERIOR_2D(m, i, j) {
+        double y = m.y(j) - y_mid;
+        s.velocity().u(i, j) = 0.9 * (-dp_dx / (2.0 * nu)) * (H * H - y * y);
     }
-    return max_div;
+    for (int j = m.j_begin(); j < m.j_end(); ++j) {
+        double y = m.y(j) - y_mid;
+        s.velocity().u(m.i_end(), j) = 0.9 * (-dp_dx / (2.0 * nu)) * (H * H - y * y);
+    }
+    for (int j = m.j_begin(); j <= m.j_end(); ++j)
+        for (int i = m.i_begin(); i < m.i_end(); ++i)
+            s.velocity().v(i, j) = 0.0;
 }
 
-// Helper: initialize Poiseuille profile for 2D
-void init_poiseuille_2d(RANSSolver& solver, const Mesh& mesh, double dp_dx, double nu) {
-    double H = LY / 2.0;
-    double y_mid = LY / 2.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        double y = mesh.y(j) - y_mid;  // Shift so y=0 at center
-        double u_analytical = -dp_dx / (2.0 * nu) * (H * H - y * y);
-
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            solver.velocity().u(i, j) = 0.9 * u_analytical;
-        }
+static void init_poiseuille_3d(RANSSolver& s, const Mesh& m, double dp_dx, double nu) {
+    double H = LY / 2.0, y_mid = LY / 2.0;
+    FOR_INTERIOR_3D(m, i, j, k) {
+        double y = m.y(j) - y_mid;
+        s.velocity().u(i, j, k) = 0.9 * (-dp_dx / (2.0 * nu)) * (H * H - y * y);
     }
-
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            solver.velocity().v(i, j) = 0.0;
+    // Staggered u at i_end
+    for (int k = m.k_begin(); k < m.k_end(); ++k)
+        for (int j = m.j_begin(); j < m.j_end(); ++j) {
+            double y = m.y(j) - y_mid;
+            s.velocity().u(m.i_end(), j, k) = 0.9 * (-dp_dx / (2.0 * nu)) * (H * H - y * y);
         }
-    }
+    // v = 0
+    for (int k = m.k_begin(); k < m.k_end(); ++k)
+        for (int j = m.j_begin(); j <= m.j_end(); ++j)
+            for (int i = m.i_begin(); i < m.i_end(); ++i)
+                s.velocity().v(i, j, k) = 0.0;
+    // w = 0
+    for (int k = m.k_begin(); k <= m.k_end(); ++k)
+        for (int j = m.j_begin(); j < m.j_end(); ++j)
+            for (int i = m.i_begin(); i < m.i_end(); ++i)
+                s.velocity().w(i, j, k) = 0.0;
 }
 
-// Helper: initialize Poiseuille profile for 3D (z-invariant)
-void init_poiseuille_3d(RANSSolver& solver, const Mesh& mesh, double dp_dx, double nu) {
-    double H = LY / 2.0;
-    double y_mid = LY / 2.0;
-
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            double y = mesh.y(j) - y_mid;
-            double u_analytical = -dp_dx / (2.0 * nu) * (H * H - y * y);
-
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                solver.velocity().u(i, j, k) = 0.9 * u_analytical;
-            }
-        }
-    }
-
-    // v = 0 everywhere
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                solver.velocity().v(i, j, k) = 0.0;
-            }
-        }
-    }
-
-    // w = 0 everywhere
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                solver.velocity().w(i, j, k) = 0.0;
-            }
-        }
-    }
+static Config make_test_config() {
+    Config c;
+    c.nu = NU; c.dp_dx = DP_DX;
+    c.adaptive_dt = true; c.max_iter = MAX_ITER;
+    c.tol = 1e-6; c.turb_model = TurbulenceModelType::None;
+    c.verbose = false;
+    return c;
 }
 
 //=============================================================================
-// TEST 1: Degenerate case - 3D with Nz=1 should exactly match 2D
+// TEST 1: Degenerate case - 3D with Nz=1 should match 2D
 //=============================================================================
 void test_degenerate_nz1() {
-    // ---- Run 2D solver ----
+    // 2D
     Mesh mesh_2d;
     mesh_2d.init_uniform(NX, NY, 0.0, LX, 0.0, LY);
+    Config cfg = make_test_config();
+    RANSSolver solver_2d(mesh_2d, cfg);
+    solver_2d.set_body_force(-cfg.dp_dx, 0.0);
+    init_poiseuille_2d(solver_2d, mesh_2d, cfg.dp_dx, cfg.nu);
+    solver_2d.sync_to_gpu();
+    solver_2d.solve_steady();
 
-    Config config_2d;
-    config_2d.nu = NU;
-    config_2d.dp_dx = DP_DX;
-    config_2d.adaptive_dt = true;
-    config_2d.max_iter = MAX_ITER;
-    config_2d.tol = 1e-6;
-    config_2d.turb_model = TurbulenceModelType::None;
-    config_2d.verbose = false;
-
-    RANSSolver solver_2d(mesh_2d, config_2d);
-    solver_2d.set_body_force(-config_2d.dp_dx, 0.0);
-    init_poiseuille_2d(solver_2d, mesh_2d, config_2d.dp_dx, config_2d.nu);
-
-#ifdef USE_GPU_OFFLOAD
-    solver_2d.sync_to_gpu();  // Upload initial conditions to GPU
-#endif
-
-    [[maybe_unused]] auto [res_2d, iter_2d] = solver_2d.solve_steady();
-
-    // ---- Run 3D solver with Nz=1 ----
+    // 3D with Nz=1
     Mesh mesh_3d;
     mesh_3d.init_uniform(NX, NY, 1, 0.0, LX, 0.0, LY, 0.0, LZ);
-
-    Config config_3d;
-    config_3d.nu = NU;
-    config_3d.dp_dx = DP_DX;
-    config_3d.adaptive_dt = true;
-    config_3d.max_iter = MAX_ITER;
-    config_3d.tol = 1e-6;
-    config_3d.turb_model = TurbulenceModelType::None;
-    config_3d.verbose = false;
-
-    RANSSolver solver_3d(mesh_3d, config_3d);
-    solver_3d.set_body_force(-config_3d.dp_dx, 0.0, 0.0);
-    // For Nz=1 (degenerate case), is2D() returns true so 2D code paths are used
-    // 2D accessors u(i,j) map to k=0 plane for backward compatibility
-    // We must use 2D initialization which writes to k=0 via 2D accessors
-    init_poiseuille_2d(solver_3d, mesh_3d, config_3d.dp_dx, config_3d.nu);
-
-#ifdef USE_GPU_OFFLOAD
-    solver_3d.sync_to_gpu();  // Upload initial conditions to GPU
-#endif
-
-    [[maybe_unused]] auto [res_3d, iter_3d] = solver_3d.solve_steady();
-
-    // ---- Compare results ----
+    RANSSolver solver_3d(mesh_3d, cfg);
+    solver_3d.set_body_force(-cfg.dp_dx, 0.0, 0.0);
+    init_poiseuille_2d(solver_3d, mesh_3d, cfg.dp_dx, cfg.nu);
+    solver_3d.sync_to_gpu();
+    solver_3d.solve_steady();
 
     auto u_2d = extract_2d_u(solver_2d, mesh_2d);
     auto v_2d = extract_2d_v(solver_2d, mesh_2d);
-    // For Nz=1, 2D accessors use k=0 plane (by design for backward compatibility)
-    const int k_slice = 0;
-    auto u_3d = extract_3d_u_slice(solver_3d, mesh_3d, k_slice);
-    auto v_3d = extract_3d_v_slice(solver_3d, mesh_3d, k_slice);
+    auto u_3d = extract_3d_u_slice(solver_3d, mesh_3d, 0);
+    auto v_3d = extract_3d_v_slice(solver_3d, mesh_3d, 0);
 
-    double u_l2_err = compute_l2_error(u_2d, u_3d);
-    double v_l2_err = compute_l2_error(v_2d, v_3d);
+    double div_3d = mesh_3d.is2D() ? max_div_3d_slice(solver_3d, mesh_3d, 0)
+                                   : max_div_3d(solver_3d, mesh_3d);
 
-    // For Nz=1, use slice version at k=0 to match 2D behavior
-    double div_3d = mesh_3d.is2D() ? compute_max_div_3d_slice(solver_3d, mesh_3d, 0)
-                                   : compute_max_div_3d(solver_3d, mesh_3d);
-
-    // Check pass criteria
-    bool passed = (u_l2_err <= 1e-8) && (v_l2_err <= 1e-8) && (div_3d <= 1e-8);
+    bool passed = vec_l2_diff(u_2d, u_3d) <= 1e-8 && vec_l2_diff(v_2d, v_3d) <= 1e-8 && div_3d <= 1e-8;
     record("Degenerate case (Nz=1 vs 2D)", passed);
 }
 
 //=============================================================================
-// TEST 2: Z-invariant flow - 3D with Nz=4 should match 2D at every z-plane
+// TEST 2: Z-invariant flow - 3D with Nz=4 should match 2D
 //=============================================================================
 void test_z_invariant_poiseuille() {
-    constexpr int NZ = 4;  // Use moderate z resolution to test 3D properly
+    constexpr int NZ = 4;
 
-    // ---- Run 2D solver ----
+    // 2D
     Mesh mesh_2d;
     mesh_2d.init_uniform(NX, NY, 0.0, LX, 0.0, LY);
+    Config cfg = make_test_config();
+    RANSSolver solver_2d(mesh_2d, cfg);
+    solver_2d.set_body_force(-cfg.dp_dx, 0.0);
+    init_poiseuille_2d(solver_2d, mesh_2d, cfg.dp_dx, cfg.nu);
+    solver_2d.sync_to_gpu();
+    solver_2d.solve_steady();
 
-    Config config_2d;
-    config_2d.nu = NU;
-    config_2d.dp_dx = DP_DX;
-    config_2d.adaptive_dt = true;
-    config_2d.max_iter = MAX_ITER;
-    config_2d.tol = 1e-6;
-    config_2d.turb_model = TurbulenceModelType::None;
-    config_2d.verbose = false;
-
-    RANSSolver solver_2d(mesh_2d, config_2d);
-    solver_2d.set_body_force(-config_2d.dp_dx, 0.0);
-    init_poiseuille_2d(solver_2d, mesh_2d, config_2d.dp_dx, config_2d.nu);
-
-#ifdef USE_GPU_OFFLOAD
-    solver_2d.sync_to_gpu();  // Upload initial conditions to GPU
-#endif
-
-    [[maybe_unused]] auto [res_2d, iter_2d] = solver_2d.solve_steady();
-
-    // ---- Run 3D solver with Nz=4 ----
+    // 3D with Nz=4
     Mesh mesh_3d;
     mesh_3d.init_uniform(NX, NY, NZ, 0.0, LX, 0.0, LY, 0.0, LZ);
-
-    Config config_3d;
-    config_3d.nu = NU;
-    config_3d.dp_dx = DP_DX;
-    config_3d.adaptive_dt = true;
-    config_3d.max_iter = MAX_ITER;
-    config_3d.tol = 1e-6;
-    config_3d.turb_model = TurbulenceModelType::None;
-    config_3d.verbose = false;
-
-    RANSSolver solver_3d(mesh_3d, config_3d);
-    solver_3d.set_body_force(-config_3d.dp_dx, 0.0, 0.0);
-
-    // Explicitly set velocity BCs for channel flow
-    VelocityBC bc_3d;
-    bc_3d.x_lo = VelocityBC::Periodic;
-    bc_3d.x_hi = VelocityBC::Periodic;
-    bc_3d.y_lo = VelocityBC::NoSlip;
-    bc_3d.y_hi = VelocityBC::NoSlip;
-    bc_3d.z_lo = VelocityBC::Periodic;
-    bc_3d.z_hi = VelocityBC::Periodic;
-    solver_3d.set_velocity_bc(bc_3d);
-
-    init_poiseuille_3d(solver_3d, mesh_3d, config_3d.dp_dx, config_3d.nu);
-
-#ifdef USE_GPU_OFFLOAD
+    RANSSolver solver_3d(mesh_3d, cfg);
+    solver_3d.set_body_force(-cfg.dp_dx, 0.0, 0.0);
+    solver_3d.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
+    init_poiseuille_3d(solver_3d, mesh_3d, cfg.dp_dx, cfg.nu);
     solver_3d.sync_to_gpu();
-#endif
-
-    [[maybe_unused]] auto [res_3d, iter_3d] = solver_3d.solve_steady();
-
-    // ---- Compare each z-plane to 2D ----
+    solver_3d.solve_steady();
 
     auto u_2d = extract_2d_u(solver_2d, mesh_2d);
     auto v_2d = extract_2d_v(solver_2d, mesh_2d);
 
-    double max_u_err = 0.0;
-    double max_v_err = 0.0;
+    double max_u_err = 0.0, max_v_err = 0.0, max_z_var = 0.0;
+    auto u_plane0 = extract_3d_u_slice(solver_3d, mesh_3d, mesh_3d.k_begin());
 
     for (int k = mesh_3d.k_begin(); k < mesh_3d.k_end(); ++k) {
         auto u_3d = extract_3d_u_slice(solver_3d, mesh_3d, k);
         auto v_3d = extract_3d_v_slice(solver_3d, mesh_3d, k);
-
-        double u_err = compute_l2_error(u_2d, u_3d);
-        double v_err = compute_l2_error(v_2d, v_3d);
-
-        max_u_err = std::max(max_u_err, u_err);
-        max_v_err = std::max(max_v_err, v_err);
+        max_u_err = std::max(max_u_err, vec_l2_diff(u_2d, u_3d));
+        max_v_err = std::max(max_v_err, vec_l2_diff(v_2d, v_3d));
+        if (k > mesh_3d.k_begin())
+            max_z_var = std::max(max_z_var, vec_linf_diff(u_plane0, u_3d));
     }
 
-    double div_3d = compute_max_div_3d(solver_3d, mesh_3d);
-
-    // Check z-invariance: all z-planes should be identical
-    auto u_plane0 = extract_3d_u_slice(solver_3d, mesh_3d, mesh_3d.k_begin());
-    double max_z_variation = 0.0;
-
-    for (int k = mesh_3d.k_begin() + 1; k < mesh_3d.k_end(); ++k) {
-        auto u_plane_k = extract_3d_u_slice(solver_3d, mesh_3d, k);
-        double z_err = compute_linf_error(u_plane0, u_plane_k);
-        max_z_variation = std::max(max_z_variation, z_err);
-    }
-
-    // Check pass criteria
-    bool passed = (max_u_err <= 1e-3) && (max_v_err <= 1e-3) &&
-                  (div_3d <= 1e-4) && (max_z_variation <= 5e-4);
+    bool passed = max_u_err <= 1e-3 && max_v_err <= 1e-3 && max_div_3d(solver_3d, mesh_3d) <= 1e-4 && max_z_var <= 5e-4;
     record("Z-invariant Poiseuille (Nz=4 vs 2D)", passed);
 }
 
@@ -381,64 +218,29 @@ void test_w_stays_zero() {
 
     Mesh mesh;
     mesh.init_uniform(NX, NY, NZ, 0.0, LX, 0.0, LY, 0.0, LZ);
-
-    Config config;
-    config.nu = NU;
-    config.dp_dx = DP_DX;
-    config.adaptive_dt = true;
-    config.max_iter = MAX_ITER;
-    config.tol = 1e-6;
-    config.turb_model = TurbulenceModelType::None;
-    config.verbose = false;
-
-    RANSSolver solver(mesh, config);
-    solver.set_body_force(-config.dp_dx, 0.0, 0.0);
-
-    // Explicitly set velocity BCs for channel flow
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
-
-    init_poiseuille_3d(solver, mesh, config.dp_dx, config.nu);
-
-#ifdef USE_GPU_OFFLOAD
+    Config cfg = make_test_config();
+    RANSSolver solver(mesh, cfg);
+    solver.set_body_force(-cfg.dp_dx, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
+    init_poiseuille_3d(solver, mesh, cfg.dp_dx, cfg.nu);
     solver.sync_to_gpu();
-#endif
+    solver.solve_steady();
 
-    [[maybe_unused]] auto [res, iter] = solver.solve_steady();
-
-    // Check max |w| and max |u|
-    double max_w = 0.0;
-    double max_u = 0.0;
-
-    // u is cell-centered in z, so k < k_end()
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+    double max_w = 0.0, max_u = 0.0;
+    FOR_INTERIOR_3D(mesh, i, j, k) {
+        max_u = std::max(max_u, std::abs(solver.velocity().u(i, j, k)));
+    }
+    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
                 max_u = std::max(max_u, std::abs(solver.velocity().u(i, j, k)));
-            }
-        }
-    }
 
-    // w is staggered in z (at z-faces), so k <= k_end()
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
                 max_w = std::max(max_w, std::abs(solver.velocity().w(i, j, k)));
-            }
-        }
-    }
 
-    // Tolerance is based on solver convergence (residual ~1e-5) and max|u| (~0.05)
-    // w/max_u ratio should be < 1e-3 (w stays small relative to main flow)
-    double w_relative = max_w / std::max(max_u, 1e-10);
-
-    record("Verify w stays zero for z-invariant flow", w_relative < 1e-3);
+    record("Verify w stays zero for z-invariant flow", max_w / std::max(max_u, 1e-10) < 1e-3);
 }
 
 //=============================================================================
