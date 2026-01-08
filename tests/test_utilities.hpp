@@ -839,5 +839,208 @@ inline void setup_solver_for_test(RANSSolver& solver, BCPattern bc_pattern,
 #endif
 }
 
+//=============================================================================
+// Unified Test Solver Factory
+//=============================================================================
+
+/// Complete test solver bundle: mesh + config + solver in one struct.
+/// Eliminates 15-20 lines of boilerplate per test function.
+///
+/// Usage:
+///   auto ts = make_test_solver(32, 32, BCPattern::Channel2D);
+///   ts.solver->step();
+///   // Access: ts.mesh, ts.config, ts.solver
+struct TestSolver {
+    Mesh mesh;
+    Config config;
+    std::unique_ptr<RANSSolver> solver;
+
+    /// Get reference to solver (convenience)
+    RANSSolver& operator*() { return *solver; }
+    RANSSolver* operator->() { return solver.get(); }
+};
+
+/// Create a complete 2D test solver setup in one call.
+/// Replaces ~15 lines of mesh/config/solver/BC setup boilerplate.
+///
+/// @param Nx, Ny  Grid dimensions
+/// @param bc  Boundary condition pattern (default Channel2D)
+/// @param nu  Kinematic viscosity (default 0.01)
+/// @param dt  Time step (default 0.001)
+/// @param turb  Turbulence model (default None)
+/// @param u_init, v_init  Initial velocity (default 0, 0)
+///
+/// Example:
+///   auto ts = make_test_solver(64, 64);  // Channel2D, laminar
+///   ts->step();
+///
+inline TestSolver make_test_solver(int Nx, int Ny,
+                                    BCPattern bc = BCPattern::Channel2D,
+                                    double nu = 0.01,
+                                    double dt = 0.001,
+                                    TurbulenceModelType turb = TurbulenceModelType::None,
+                                    double u_init = 0.0,
+                                    double v_init = 0.0) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, 0.0, 2.0 * M_PI, 0.0, 2.0);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = turb;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(u_init, v_init);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+/// Create a 2D test solver with custom domain bounds
+inline TestSolver make_test_solver_domain(int Nx, int Ny,
+                                           double x_min, double x_max,
+                                           double y_min, double y_max,
+                                           BCPattern bc = BCPattern::Channel2D,
+                                           double nu = 0.01,
+                                           double dt = 0.001) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, x_min, x_max, y_min, y_max);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = TurbulenceModelType::None;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(0.0, 0.0);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+/// Create a 3D test solver setup
+inline TestSolver make_test_solver_3d(int Nx, int Ny, int Nz,
+                                       BCPattern bc = BCPattern::Channel3D,
+                                       double nu = 0.01,
+                                       double dt = 0.001,
+                                       TurbulenceModelType turb = TurbulenceModelType::None) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, Nz, 0.0, 2.0 * M_PI, 0.0, 2.0, 0.0, M_PI);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = turb;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(0.0, 0.0);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+/// Create a 3D test solver with custom domain bounds
+inline TestSolver make_test_solver_3d_domain(int Nx, int Ny, int Nz,
+                                              double x_min, double x_max,
+                                              double y_min, double y_max,
+                                              double z_min, double z_max,
+                                              BCPattern bc = BCPattern::Channel3D,
+                                              double nu = 0.01,
+                                              double dt = 0.001) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, Nz, x_min, x_max, y_min, y_max, z_min, z_max);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = TurbulenceModelType::None;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(0.0, 0.0);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+//=============================================================================
+// Field Norm Utilities
+//=============================================================================
+
+/// Compute L2 norm of a scalar field over interior cells
+template<typename FieldT, typename MeshT>
+inline double l2_norm(const FieldT& f, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += f(i, j, k) * f(i, j, k);
+                ++count;
+            }
+        }
+    }
+    return std::sqrt(sum / std::max(1, count));
+}
+
+/// Compute L-infinity (max) norm of a scalar field over interior cells
+template<typename FieldT, typename MeshT>
+inline double linf_norm(const FieldT& f, const MeshT& mesh) {
+    double max_val = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                max_val = std::max(max_val, std::abs(f(i, j, k)));
+            }
+        }
+    }
+    return max_val;
+}
+
+/// Compute L2 difference between two scalar fields
+template<typename FieldT, typename MeshT>
+inline double l2_diff(const FieldT& a, const FieldT& b, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double d = a(i, j, k) - b(i, j, k);
+                sum += d * d;
+                ++count;
+            }
+        }
+    }
+    return std::sqrt(sum / std::max(1, count));
+}
+
+/// Compute mean value of a scalar field over interior cells
+template<typename FieldT, typename MeshT>
+inline double mean_value(const FieldT& f, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += f(i, j, k);
+                ++count;
+            }
+        }
+    }
+    return sum / std::max(1, count);
+}
+
+/// Remove mean from a scalar field (in-place)
+template<typename FieldT, typename MeshT>
+inline void remove_mean(FieldT& f, const MeshT& mesh) {
+    double m = mean_value(f, mesh);
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                f(i, j, k) -= m;
+            }
+        }
+    }
+}
+
 } // namespace test
 } // namespace nncfd

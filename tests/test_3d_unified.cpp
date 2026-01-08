@@ -1,107 +1,73 @@
 /// Unified 3D Tests
 /// Consolidates: test_3d_bc_application.cpp, test_3d_gradients.cpp,
 ///               test_3d_w_velocity.cpp, test_3d_bc_corners.cpp
-///
-/// Tests:
-/// 1. 3D Boundary conditions (no-slip walls, periodic z)
-/// 2. 3D Gradients (all nine components, divergence)
-/// 3. W-velocity (storage, staggering, interpolation)
-/// 4. Corner and edge cases (BC combinations, stability)
 
-#include "mesh.hpp"
-#include "fields.hpp"
-#include "solver.hpp"
-#include "config.hpp"
-#include "poisson_solver.hpp"
 #include "test_harness.hpp"
+#include "test_utilities.hpp"
+#include "poisson_solver.hpp"
 #include <cmath>
-#include <cassert>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
 using nncfd::test::BCPattern;
 using nncfd::test::create_velocity_bc;
+using nncfd::test::make_test_solver_3d_domain;
+using nncfd::test::create_unit_cube_mesh;
 
 //=============================================================================
 // BC TESTS
 //=============================================================================
 
 void test_no_slip_walls() {
-    Mesh mesh;
-    mesh.init_uniform(16, 16, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    auto ts = make_test_solver_3d_domain(16, 16, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    ts->set_body_force(0.001, 0.0, 0.0);
 
-    Config cfg;
-    cfg.nu = 0.01; cfg.dt = 0.001; cfg.adaptive_dt = false;
-    cfg.max_iter = 10; cfg.tol = 1e-6;
-    cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
-
-    RANSSolver solver(mesh, cfg);
-    solver.set_body_force(0.001, 0.0, 0.0);
-
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
-
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i)
-                solver.velocity().u(i, j, k) = 0.1;
+    for (int k = ts.mesh.k_begin(); k < ts.mesh.k_end(); ++k)
+        for (int j = ts.mesh.j_begin(); j < ts.mesh.j_end(); ++j)
+            for (int i = ts.mesh.i_begin(); i <= ts.mesh.i_end(); ++i)
+                ts->velocity().u(i, j, k) = 0.1;
 
 #ifdef USE_GPU_OFFLOAD
-    solver.sync_to_gpu();
+    ts->sync_to_gpu();
 #endif
-    for (int step = 0; step < 5; ++step) solver.step();
-#ifdef USE_GPU_OFFLOAD
-    solver.sync_solution_from_gpu();
-#endif
+    for (int step = 0; step < 5; ++step) ts->step();
+    ts->sync_from_gpu();
 
     double max_wall_v = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            max_wall_v = std::max(max_wall_v, std::abs(solver.velocity().v(i, mesh.j_begin(), k)));
-            max_wall_v = std::max(max_wall_v, std::abs(solver.velocity().v(i, mesh.j_end(), k)));
+    for (int k = ts.mesh.k_begin(); k < ts.mesh.k_end(); ++k)
+        for (int i = ts.mesh.i_begin(); i < ts.mesh.i_end(); ++i) {
+            max_wall_v = std::max(max_wall_v, std::abs(ts->velocity().v(i, ts.mesh.j_begin(), k)));
+            max_wall_v = std::max(max_wall_v, std::abs(ts->velocity().v(i, ts.mesh.j_end(), k)));
         }
-    }
 
     record("No-slip walls enforced on y-boundaries", max_wall_v < 1e-14);
 }
 
 void test_periodic_z() {
-    Mesh mesh;
-    mesh.init_uniform(16, 16, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    auto ts = make_test_solver_3d_domain(16, 16, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
 
-    Config cfg;
-    cfg.nu = 0.01; cfg.dt = 0.001; cfg.adaptive_dt = false;
-    cfg.max_iter = 10; cfg.tol = 1e-6;
-    cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
-
-    RANSSolver solver(mesh, cfg);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
-
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        double z = mesh.z(k);
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            double y = mesh.y(j) - 0.5;
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                solver.velocity().u(i, j, k) = 0.01 * (0.25 - y*y) * (1.0 + 0.1*std::sin(2*M_PI*z));
-            }
+    for (int k = ts.mesh.k_begin(); k < ts.mesh.k_end(); ++k) {
+        double z = ts.mesh.z(k);
+        for (int j = ts.mesh.j_begin(); j < ts.mesh.j_end(); ++j) {
+            double y = ts.mesh.y(j) - 0.5;
+            for (int i = ts.mesh.i_begin(); i <= ts.mesh.i_end(); ++i)
+                ts->velocity().u(i, j, k) = 0.01 * (0.25 - y*y) * (1.0 + 0.1*std::sin(2*M_PI*z));
         }
     }
 
 #ifdef USE_GPU_OFFLOAD
-    solver.sync_to_gpu();
+    ts->sync_to_gpu();
 #endif
-    for (int step = 0; step < 10; ++step) solver.step();
-#ifdef USE_GPU_OFFLOAD
-    solver.sync_solution_from_gpu();
-#endif
+    for (int step = 0; step < 10; ++step) ts->step();
+    ts->sync_from_gpu();
 
     double max_w_diff = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double w_lo = solver.velocity().w(i, j, mesh.k_begin());
-            double w_hi = solver.velocity().w(i, j, mesh.k_end());
+    for (int j = ts.mesh.j_begin(); j < ts.mesh.j_end(); ++j)
+        for (int i = ts.mesh.i_begin(); i < ts.mesh.i_end(); ++i) {
+            double w_lo = ts->velocity().w(i, j, ts.mesh.k_begin());
+            double w_hi = ts->velocity().w(i, j, ts.mesh.k_end());
             max_w_diff = std::max(max_w_diff, std::abs(w_lo - w_hi));
         }
-    }
 
     record("Periodic z-direction consistency", max_w_diff < 1e-12);
 }
@@ -116,37 +82,33 @@ void test_mass_conservation() {
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
     solver.set_body_force(-cfg.dp_dx, 0.0, 0.0);
 
     double H = 1.0, y_mid = 1.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             double y = mesh.y(j) - y_mid;
             double u_ana = -cfg.dp_dx / (2.0 * cfg.nu) * (H*H - y*y);
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i)
                 solver.velocity().u(i, j, k) = 0.9 * u_ana;
         }
-    }
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
 #endif
     [[maybe_unused]] auto [res, iters] = solver.solve_steady();
-#ifdef USE_GPU_OFFLOAD
-    solver.sync_solution_from_gpu();
-#endif
+    solver.sync_from_gpu();
 
     double max_div = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double dudx = (solver.velocity().u(i+1,j,k) - solver.velocity().u(i,j,k)) / mesh.dx;
                 double dvdy = (solver.velocity().v(i,j+1,k) - solver.velocity().v(i,j,k)) / mesh.dy;
                 double dwdz = (solver.velocity().w(i,j,k+1) - solver.velocity().w(i,j,k)) / mesh.dz;
                 max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
             }
-        }
-    }
 
     record("Mass conservation (divergence-free)", max_div < 1e-4);
 }
@@ -156,8 +118,7 @@ void test_mass_conservation() {
 //=============================================================================
 
 void test_linear_dudz() {
-    Mesh mesh;
-    mesh.init_uniform(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    Mesh mesh = create_unit_cube_mesh(8);
     VectorField vel(mesh);
 
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
@@ -168,14 +129,12 @@ void test_linear_dudz() {
     }
 
     double max_err = 0.0;
-    for (int k = mesh.k_begin() + 1; k < mesh.k_end() - 1; ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+    for (int k = mesh.k_begin() + 1; k < mesh.k_end() - 1; ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double dudz = (vel.u(i, j, k+1) - vel.u(i, j, k-1)) / (2.0 * mesh.dz);
                 max_err = std::max(max_err, std::abs(dudz - 1.0));
             }
-        }
-    }
 
     record("Linear u=z field (du/dz = 1)", max_err < 1e-10);
 }
@@ -191,14 +150,12 @@ void test_sinusoidal_dwdx() {
                 vel.w(i, j, k) = std::sin(mesh.x(i));
 
     double max_err = 0.0;
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin() + 1; i < mesh.i_end() - 1; ++i) {
                 double dwdx = (vel.w(i+1,j,k) - vel.w(i-1,j,k)) / (2.0 * mesh.dx);
                 max_err = std::max(max_err, std::abs(dwdx - std::cos(mesh.x(i))));
             }
-        }
-    }
 
     record("Sinusoidal w=sin(x) (dw/dx = cos(x))", max_err < 0.01);
 }
@@ -225,16 +182,14 @@ void test_divergence_free_field() {
                 vel.w(i, j, k) = 0.0;
 
     double max_div = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double dudx = (vel.u(i+1,j,k) - vel.u(i,j,k)) / mesh.dx;
                 double dvdy = (vel.v(i,j+1,k) - vel.v(i,j,k)) / mesh.dy;
                 double dwdz = (vel.w(i,j,k+1) - vel.w(i,j,k)) / mesh.dz;
                 max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
             }
-        }
-    }
 
     record("Divergence accuracy (div-free field)", max_div < 0.01);
 }
@@ -244,8 +199,7 @@ void test_divergence_free_field() {
 //=============================================================================
 
 void test_w_storage() {
-    Mesh mesh;
-    mesh.init_uniform(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    Mesh mesh = create_unit_cube_mesh(8);
     VectorField vel(mesh);
 
     for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k)
@@ -273,8 +227,7 @@ void test_w_staggering() {
 }
 
 void test_w_divergence_contribution() {
-    Mesh mesh;
-    mesh.init_uniform(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    Mesh mesh = create_unit_cube_mesh(8);
     VectorField vel(mesh);
 
     // w = z → dw/dz = 1
@@ -284,21 +237,18 @@ void test_w_divergence_contribution() {
                 vel.w(i, j, k) = mesh.zf[k];
 
     double max_err = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double dwdz = (vel.w(i,j,k+1) - vel.w(i,j,k)) / mesh.dz;
                 max_err = std::max(max_err, std::abs(dwdz - 1.0));
             }
-        }
-    }
 
     record("W contribution to divergence", max_err < 1e-10);
 }
 
 void test_w_center_interpolation() {
-    Mesh mesh;
-    mesh.init_uniform(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    Mesh mesh = create_unit_cube_mesh(8);
     VectorField vel(mesh);
 
     for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k)
@@ -307,14 +257,12 @@ void test_w_center_interpolation() {
                 vel.w(i, j, k) = mesh.zf[k];
 
     double max_err = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double w_ctr = vel.w_center(i, j, k);
                 max_err = std::max(max_err, std::abs(w_ctr - mesh.z(k)));
             }
-        }
-    }
 
     record("W-velocity cell-center interpolation", max_err < 1e-10);
 }
@@ -324,108 +272,74 @@ void test_w_center_interpolation() {
 //=============================================================================
 
 void test_channel_like_bcs() {
-    Mesh mesh;
-    mesh.init_uniform(16, 32, 8, 0.0, 2.0, -1.0, 1.0, 0.0, 1.0);
+    auto ts = make_test_solver_3d_domain(16, 32, 8, 0.0, 2.0, -1.0, 1.0, 0.0, 1.0);
+    ts->set_body_force(-0.001, 0.0);
+    ts->initialize_uniform(0.5, 0.0);
 
-    Config cfg;
-    cfg.nu = 0.01; cfg.dt = 0.001;
-    cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
-
-    RANSSolver solver(mesh, cfg);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
-    solver.set_body_force(-0.001, 0.0);
-    solver.initialize_uniform(0.5, 0.0);
-
-    for (int i = 0; i < 20; ++i) solver.step();
-    solver.sync_from_gpu();
+    for (int i = 0; i < 20; ++i) ts->step();
+    ts->sync_from_gpu();
 
     bool all_finite = true;
-    for (int k = mesh.k_begin(); k < mesh.k_end() && all_finite; ++k)
-        for (int j = mesh.j_begin(); j < mesh.j_end() && all_finite; ++j)
-            for (int i = mesh.i_begin(); i < mesh.i_end() && all_finite; ++i)
-                if (!std::isfinite(solver.velocity().u(i,j,k))) all_finite = false;
+    for (int k = ts.mesh.k_begin(); k < ts.mesh.k_end() && all_finite; ++k)
+        for (int j = ts.mesh.j_begin(); j < ts.mesh.j_end() && all_finite; ++j)
+            for (int i = ts.mesh.i_begin(); i < ts.mesh.i_end() && all_finite; ++i)
+                if (!std::isfinite(ts->velocity().u(i,j,k))) all_finite = false;
 
     record("Channel-like BCs (Periodic x, Wall y, Periodic z)", all_finite);
 }
 
 void test_duct_like_bcs() {
-    Mesh mesh;
-    mesh.init_uniform(16, 16, 16, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+    auto ts = make_test_solver_3d_domain(16, 16, 16, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0, BCPattern::Duct);
+    ts->set_body_force(-0.001, 0.0);
+    ts->initialize_uniform(0.5, 0.0);
 
-    Config cfg;
-    cfg.nu = 0.01; cfg.dt = 0.001;
-    cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
-
-    RANSSolver solver(mesh, cfg);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
-    solver.set_body_force(-0.001, 0.0);
-    solver.initialize_uniform(0.5, 0.0);
-
-    for (int i = 0; i < 20; ++i) solver.step();
-    solver.sync_from_gpu();
+    for (int i = 0; i < 20; ++i) ts->step();
+    ts->sync_from_gpu();
 
     double max_wall = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            max_wall = std::max(max_wall, std::abs(solver.velocity().u(i, mesh.j_begin(), k)));
-            max_wall = std::max(max_wall, std::abs(solver.velocity().u(i, mesh.j_end()-1, k)));
+    for (int k = ts.mesh.k_begin(); k < ts.mesh.k_end(); ++k)
+        for (int i = ts.mesh.i_begin(); i < ts.mesh.i_end(); ++i) {
+            max_wall = std::max(max_wall, std::abs(ts->velocity().u(i, ts.mesh.j_begin(), k)));
+            max_wall = std::max(max_wall, std::abs(ts->velocity().u(i, ts.mesh.j_end()-1, k)));
         }
 
     record("Duct-like BCs (Periodic x, Wall y, Wall z)", max_wall < 1.0);
 }
 
 void test_corner_cells_finite() {
-    Mesh mesh;
-    mesh.init_uniform(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    auto ts = make_test_solver_3d_domain(8, 8, 8, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, BCPattern::AllNoSlip, 0.1, 0.01);
+    ts->set_body_force(-0.01, 0.0);
+    ts->initialize_uniform(0.1, 0.0);
 
-    Config cfg;
-    cfg.nu = 0.1; cfg.dt = 0.01;
-    cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
-
-    RANSSolver solver(mesh, cfg);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::AllNoSlip));
-    solver.set_body_force(-0.01, 0.0);
-    solver.initialize_uniform(0.1, 0.0);
-
-    for (int i = 0; i < 10; ++i) solver.step();
-    solver.sync_from_gpu();
+    for (int i = 0; i < 10; ++i) ts->step();
+    ts->sync_from_gpu();
 
     bool all_finite = true;
-    for (int k = 0; k < mesh.total_Nz() && all_finite; ++k)
-        for (int j = 0; j < mesh.total_Ny() && all_finite; ++j)
-            for (int i = 0; i < mesh.total_Nx() && all_finite; ++i)
-                if (!std::isfinite(solver.velocity().u(i,j,k))) all_finite = false;
+    for (int k = 0; k < ts.mesh.total_Nz() && all_finite; ++k)
+        for (int j = 0; j < ts.mesh.total_Ny() && all_finite; ++j)
+            for (int i = 0; i < ts.mesh.total_Nx() && all_finite; ++i)
+                if (!std::isfinite(ts->velocity().u(i,j,k))) all_finite = false;
 
     record("Corner cells remain finite", all_finite);
 }
 
 void test_divergence_free_3d() {
-    Mesh mesh;
-    mesh.init_uniform(16, 16, 16, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0);
+    auto ts = make_test_solver_3d_domain(16, 16, 16, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0, BCPattern::FullyPeriodic);
+    ts.config.poisson_max_iter = 50;
+    ts->initialize_uniform(1.0, 0.5);
 
-    Config cfg;
-    cfg.nu = 0.01; cfg.dt = 0.001;
-    cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
-    cfg.poisson_max_iter = 50;
-
-    RANSSolver solver(mesh, cfg);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
-    solver.initialize_uniform(1.0, 0.5);
-
-    for (int i = 0; i < 5; ++i) solver.step();
-    solver.sync_from_gpu();
+    for (int i = 0; i < 5; ++i) ts->step();
+    ts->sync_from_gpu();
 
     double max_div = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx = (solver.velocity().u(i+1,j,k) - solver.velocity().u(i,j,k)) / mesh.dx;
-                double dvdy = (solver.velocity().v(i,j+1,k) - solver.velocity().v(i,j,k)) / mesh.dy;
-                double dwdz = (solver.velocity().w(i,j,k+1) - solver.velocity().w(i,j,k)) / mesh.dz;
+    for (int k = ts.mesh.k_begin(); k < ts.mesh.k_end(); ++k)
+        for (int j = ts.mesh.j_begin(); j < ts.mesh.j_end(); ++j)
+            for (int i = ts.mesh.i_begin(); i < ts.mesh.i_end(); ++i) {
+                double dudx = (ts->velocity().u(i+1,j,k) - ts->velocity().u(i,j,k)) / ts.mesh.dx;
+                double dvdy = (ts->velocity().v(i,j+1,k) - ts->velocity().v(i,j,k)) / ts.mesh.dy;
+                double dwdz = (ts->velocity().w(i,j,k+1) - ts->velocity().w(i,j,k)) / ts.mesh.dz;
                 max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
             }
-        }
-    }
 
     record("Divergence-free constraint in 3D", max_div < 1e-4);
 }
@@ -449,14 +363,12 @@ void test_3d_solver_stability() {
 
     bool stable = true;
     double max_vel = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end() && stable; ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end() && stable; ++j) {
+    for (int k = mesh.k_begin(); k < mesh.k_end() && stable; ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end() && stable; ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end() && stable; ++i) {
                 if (!std::isfinite(solver.velocity().u(i,j,k))) stable = false;
                 max_vel = std::max(max_vel, std::abs(solver.velocity().u(i,j,k)));
             }
-        }
-    }
 
     record("3D solver stability over 100 steps", stable && max_vel < 100.0);
 }
@@ -489,9 +401,7 @@ void test_poisson_3d_all_periodic() {
 }
 
 void test_poisson_3d_dirichlet() {
-    Mesh mesh;
-    mesh.init_uniform(16, 16, 16, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
-
+    Mesh mesh = create_unit_cube_mesh(16);
     ScalarField rhs(mesh, 1.0), p(mesh, 0.0);
 
     PoissonSolver solver(mesh);
