@@ -169,6 +169,112 @@ void launch_copy(
     double* dst, const double* src,
     size_t size);
 
+/// Launch array zero kernel: dst = 0
+void launch_zero(
+    cudaStream_t stream,
+    double* dst,
+    size_t size);
+
+// ============================================================================
+// V-cycle Operation Kernels (for full V-cycle graphing)
+// ============================================================================
+
+/// Launch 3D residual computation kernel: r = f - L(u)
+/// Operates on interior points only (ghost cells must be set)
+void launch_residual_3d(
+    cudaStream_t stream,
+    const double* u, const double* f, double* r,
+    int Nx, int Ny, int Nz, int Ng,
+    double inv_dx2, double inv_dy2, double inv_dz2);
+
+/// Launch 3D 27-point full-weighting restriction kernel
+/// Restricts residual from fine to coarse grid
+void launch_restrict_3d(
+    cudaStream_t stream,
+    const double* r_fine, double* f_coarse,
+    int Nx_f, int Ny_f, int Nz_f,
+    int Nx_c, int Ny_c, int Nz_c,
+    int Ng);
+
+/// Launch 3D trilinear prolongation kernel
+/// Interpolates correction from coarse to fine and adds to fine solution
+void launch_prolongate_3d(
+    cudaStream_t stream,
+    const double* u_coarse, double* u_fine,
+    int Nx_f, int Ny_f, int Nz_f,
+    int Nx_c, int Ny_c, int Nz_c,
+    int Ng);
+
+// ============================================================================
+// Full V-cycle Graph (captures entire V-cycle as a single graph)
+// ============================================================================
+
+/// V-cycle level configuration for graph capture
+struct VCycleLevelConfig {
+    int Nx, Ny, Nz;           // Interior grid dimensions
+    int Ng;                   // Number of ghost cells
+    double inv_dx2, inv_dy2, inv_dz2;  // Inverse grid spacing squared
+    double dx2, dy2, dz2;     // Grid spacing squared (for smoother)
+    double coeff;             // Diagonal coefficient for Jacobi
+    size_t total_size;        // Total array size including ghosts
+
+    // Array pointers (device memory)
+    double* u;                // Solution array
+    double* f;                // RHS array
+    double* r;                // Residual array
+    double* tmp;              // Scratch buffer for smoother
+};
+
+/// Full V-cycle CUDA Graph - captures entire V-cycle for single-launch execution
+class CudaVCycleGraph {
+public:
+    CudaVCycleGraph() = default;
+    ~CudaVCycleGraph();
+
+    /// Initialize graph for the given level hierarchy
+    /// @param levels Vector of level configurations (fine to coarse)
+    /// @param degree Chebyshev polynomial degree
+    /// @param nu1 Pre-smoothing iterations
+    /// @param nu2 Post-smoothing iterations
+    /// @param bc_* Boundary conditions for each direction
+    void initialize(
+        const std::vector<VCycleLevelConfig>& levels,
+        int degree, int nu1, int nu2,
+        BC bc_x_lo, BC bc_x_hi,
+        BC bc_y_lo, BC bc_y_hi,
+        BC bc_z_lo, BC bc_z_hi);
+
+    /// Execute the captured V-cycle graph
+    void execute(cudaStream_t stream);
+
+    /// Check if graph is valid
+    bool is_valid() const { return graph_exec_ != nullptr; }
+
+    /// Destroy graph resources
+    void destroy();
+
+private:
+    cudaGraph_t graph_ = nullptr;
+    cudaGraphExec_t graph_exec_ = nullptr;
+    std::vector<VCycleLevelConfig> levels_;
+    int degree_ = 4;
+    int nu1_ = 2;
+    int nu2_ = 2;
+    BC bc_x_lo_, bc_x_hi_;
+    BC bc_y_lo_, bc_y_hi_;
+    BC bc_z_lo_, bc_z_hi_;
+    bool all_periodic_ = false;
+
+    /// Capture the full V-cycle into a graph
+    void capture_vcycle_graph(cudaStream_t stream);
+
+    /// Recursive V-cycle capture (called during graph construction)
+    void capture_vcycle_level(cudaStream_t stream, int level);
+
+    /// Capture smoother sequence for a level
+    void capture_smoother(cudaStream_t stream, int level, int iterations);
+};
+
 } // namespace mg_cuda
 } // namespace nncfd
 

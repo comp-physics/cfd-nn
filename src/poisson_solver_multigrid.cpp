@@ -66,6 +66,13 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
         cuda_ctx_ = std::make_unique<mg_cuda::CudaMGContext>();
         std::cout << "[MG] CUDA Graphs enabled for smoother (set MG_USE_CUDA_GRAPHS=0 to disable)\n";
     }
+
+    // Check if full V-cycle graphing is requested
+    const char* vcycle_env = std::getenv("MG_USE_VCYCLE_GRAPH");
+    if (vcycle_env != nullptr && (std::string(vcycle_env) == "1" || std::string(vcycle_env) == "true")) {
+        use_vcycle_graph_ = true;
+        std::cout << "[MG] Full V-cycle CUDA Graph enabled (set MG_USE_VCYCLE_GRAPH=0 to disable)\n";
+    }
 #endif
 }
 
@@ -151,6 +158,7 @@ void MultigridPoissonSolver::create_hierarchy() {
 }
 
 void MultigridPoissonSolver::apply_bc(int level) {
+    NVTX_SCOPE_BC("mg:apply_bc");
     // UNIFIED CPU/GPU implementation for boundary conditions
     // Uses raw pointers and identical arithmetic for bitwise consistency
     auto& grid = *levels_[level];
@@ -383,6 +391,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
 }
 
 void MultigridPoissonSolver::apply_bc_to_residual(int level) {
+    NVTX_SCOPE_BC("mg:apply_bc_residual");
     // Apply boundary conditions to the residual array for proper restriction
     // The 9-point restriction stencil reads from ghost cells, so they must be set
     auto& grid = *levels_[level];
@@ -1426,28 +1435,31 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     restrict_residual(level);
 
     // Zero coarse grid solution
-    auto& coarse = *levels_[level + 1];
+    {
+        NVTX_SCOPE_MG("mg:zero_coarse");
+        auto& coarse = *levels_[level + 1];
 
 #ifdef USE_GPU_OFFLOAD
-    assert(gpu_ready_ && "GPU must be initialized");
-    const size_t size_c = level_sizes_[level + 1];
-    double* u_coarse = u_ptrs_[level + 1];
+        assert(gpu_ready_ && "GPU must be initialized");
+        const size_t size_c = level_sizes_[level + 1];
+        double* u_coarse = u_ptrs_[level + 1];
 
-    #pragma omp target teams distribute parallel for \
-        map(present, alloc: u_coarse[0:size_c])
-    for (int idx = 0; idx < (int)size_c; ++idx) {
-        u_coarse[idx] = 0.0;
-    }
+        #pragma omp target teams distribute parallel for \
+            map(present, alloc: u_coarse[0:size_c])
+        for (int idx = 0; idx < (int)size_c; ++idx) {
+            u_coarse[idx] = 0.0;
+        }
 #else
-    const int Ng = 1;
-    for (int k = 0; k < coarse.Nz + 2*Ng; ++k) {
-        for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
-            for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
-                coarse.u(i, j, k) = 0.0;
+        const int Ng = 1;
+        for (int k = 0; k < coarse.Nz + 2*Ng; ++k) {
+            for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
+                for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
+                    coarse.u(i, j, k) = 0.0;
+                }
             }
         }
-    }
 #endif
+    }
 
     // Recursive call to coarser level
     vcycle(level + 1, nu1, nu2);
@@ -1854,6 +1866,69 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
     apply_bc(0);
 
+    // ========================================================================
+    // Fixed-cycle mode: run exactly N V-cycles without convergence checks
+    // This is the fastest mode for projection - no D→H transfers mid-solve
+    // ========================================================================
+    if (cfg.fixed_cycles > 0) {
+        const int num_cycles = cfg.fixed_cycles;
+        const int nu1 = (num_cycles > 3) ? 2 : 1;  // Pre-smoothing sweeps
+        const int nu2 = (num_cycles > 3) ? 2 : 1;  // Post-smoothing sweeps
+
+        // Use full V-cycle graph if available (massive reduction in kernel launches)
+        if (use_vcycle_graph_) {
+            // Initialize graph on first use or if nu1/nu2 changed
+            if (!vcycle_graph_ || vcycle_graph_nu1_ != nu1 || vcycle_graph_nu2_ != nu2) {
+                initialize_vcycle_graph(nu1, nu2);
+            }
+            if (vcycle_graph_ && vcycle_graph_->is_valid()) {
+                // Execute graphed V-cycles
+                for (int cycle = 0; cycle < num_cycles; ++cycle) {
+                    vcycle_graphed();
+                }
+            } else {
+                // Fall back to non-graphed
+                for (int cycle = 0; cycle < num_cycles; ++cycle) {
+                    vcycle(0, nu1, nu2);
+                }
+            }
+        } else {
+            // Standard non-graphed V-cycles
+            for (int cycle = 0; cycle < num_cycles; ++cycle) {
+                vcycle(0, nu1, nu2);
+            }
+        }
+
+        // Set residual to 0 to indicate we didn't compute it
+        residual_ = 0.0;
+        residual_l2_ = 0.0;
+        r0_ = 0.0;
+        r0_l2_ = 0.0;
+        b_inf_ = 0.0;
+        b_l2_ = 0.0;
+
+        // Handle nullspace for singular problems (all-periodic)
+        bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                              bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
+                              bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
+        if (!has_dirichlet) {
+            subtract_mean(0);
+            apply_bc(0);
+        }
+
+        // Copy result from multigrid buffer back to caller's present-mapped array (D-to-D)
+        #pragma omp target teams distribute parallel for \
+            map(present, alloc: p_present[0:total_size], u_dev[0:total_size])
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            p_present[idx] = u_dev[idx];
+        }
+
+        return num_cycles;
+    }
+
+    // ========================================================================
+    // Convergence-based mode: MG V-cycles with tolerance checking
+    // ========================================================================
     // MG V-cycles with robust tolerance-based early termination (GPU path)
     // Convergence criteria (any one triggers exit):
     //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
@@ -2138,6 +2213,90 @@ void MultigridPoissonSolver::initialize_cuda_graphs() {
         to_cuda_bc(bc_z_lo_), to_cuda_bc(bc_z_hi_));
 
     std::cout << "[MG] CUDA Graphs initialized for " << levels_.size() << " levels\n";
+}
+
+void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2) {
+    // Initialize full V-cycle CUDA Graph
+    // This captures the entire V-cycle (all levels, all operations) as a single graph
+    if (!use_vcycle_graph_) return;
+
+    vcycle_graph_nu1_ = nu1;
+    vcycle_graph_nu2_ = nu2;
+
+    // Build level configurations for V-cycle graph
+    std::vector<mg_cuda::VCycleLevelConfig> configs;
+    for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
+        auto& grid = *levels_[lvl];
+        mg_cuda::VCycleLevelConfig cfg;
+        cfg.Nx = grid.Nx;
+        cfg.Ny = grid.Ny;
+        cfg.Nz = grid.Nz;
+        cfg.Ng = 1;
+        cfg.dx2 = grid.dx * grid.dx;
+        cfg.dy2 = grid.dy * grid.dy;
+        cfg.dz2 = grid.dz * grid.dz;
+        cfg.inv_dx2 = 1.0 / cfg.dx2;
+        cfg.inv_dy2 = 1.0 / cfg.dy2;
+        cfg.inv_dz2 = (grid.Nz == 1) ? 0.0 : 1.0 / cfg.dz2;  // Zero for 2D
+        cfg.coeff = grid.is2D() ? (2.0/cfg.dx2 + 2.0/cfg.dy2)
+                                : (2.0/cfg.dx2 + 2.0/cfg.dy2 + 2.0/cfg.dz2);
+        cfg.total_size = level_sizes_[lvl];
+        // Convert host pointers to device pointers for CUDA kernels
+        cfg.u = gpu::get_device_ptr(u_ptrs_[lvl]);
+        cfg.f = gpu::get_device_ptr(f_ptrs_[lvl]);
+        cfg.r = gpu::get_device_ptr(r_ptrs_[lvl]);
+        cfg.tmp = tmp_ptrs_[lvl];  // Already device pointer
+        configs.push_back(cfg);
+    }
+
+    // Convert BCs to CUDA enum
+    auto to_cuda_bc = [](PoissonBC bc) -> mg_cuda::BC {
+        switch (bc) {
+            case PoissonBC::Dirichlet: return mg_cuda::BC::Dirichlet;
+            case PoissonBC::Neumann: return mg_cuda::BC::Neumann;
+            case PoissonBC::Periodic: return mg_cuda::BC::Periodic;
+            default: return mg_cuda::BC::Neumann;
+        }
+    };
+
+    // Verify device pointers are valid
+    for (size_t lvl = 0; lvl < configs.size(); ++lvl) {
+        if (!configs[lvl].u || !configs[lvl].f || !configs[lvl].r || !configs[lvl].tmp) {
+            std::cerr << "[MG] ERROR: Null device pointer at level " << lvl
+                      << " - V-cycle Graph disabled\n";
+            use_vcycle_graph_ = false;
+            return;
+        }
+    }
+
+    // Create the V-cycle graph
+    vcycle_graph_ = std::make_unique<mg_cuda::CudaVCycleGraph>();
+    vcycle_graph_->initialize(
+        configs, 4, nu1, nu2,  // degree = 4 for Chebyshev
+        to_cuda_bc(bc_x_lo_), to_cuda_bc(bc_x_hi_),
+        to_cuda_bc(bc_y_lo_), to_cuda_bc(bc_y_hi_),
+        to_cuda_bc(bc_z_lo_), to_cuda_bc(bc_z_hi_));
+
+    std::cout << "[MG] Full V-cycle CUDA Graph initialized for " << levels_.size()
+              << " levels (nu1=" << nu1 << ", nu2=" << nu2 << ")\n";
+}
+
+void MultigridPoissonSolver::vcycle_graphed() {
+    NVTX_SCOPE_POISSON("mg:vcycle_graphed");
+
+    if (!vcycle_graph_ || !vcycle_graph_->is_valid()) {
+        // Fall back to non-graphed V-cycle
+        vcycle(0, vcycle_graph_nu1_, vcycle_graph_nu2_);
+        return;
+    }
+
+    // Get OpenMP's CUDA stream for launching the graph
+    // This avoids cross-stream synchronization overhead
+    cudaStream_t omp_stream = reinterpret_cast<cudaStream_t>(
+        ompx_get_cuda_stream(omp_get_default_device(), /*sync=*/0));
+
+    // Single graph launch for entire V-cycle
+    vcycle_graph_->execute(omp_stream);
 }
 #else
 // CPU: Set raw pointers for unified code paths (no GPU mapping)

@@ -7,8 +7,11 @@
 #include <memory>
 
 #ifdef USE_GPU_OFFLOAD
-// Forward declaration for CUDA Graph context
-namespace nncfd { namespace mg_cuda { class CudaMGContext; } }
+// Forward declarations for CUDA Graph contexts
+namespace nncfd { namespace mg_cuda {
+    class CudaMGContext;
+    class CudaVCycleGraph;
+} }
 #endif
 
 namespace nncfd {
@@ -141,8 +144,14 @@ private:
 #ifdef USE_GPU_OFFLOAD
     // CUDA Graph support for reduced kernel launch overhead
     std::unique_ptr<mg_cuda::CudaMGContext> cuda_ctx_;
-    bool use_cuda_graphs_ = false;  // Set via environment variable MG_USE_CUDA_GRAPHS=1
+    std::unique_ptr<mg_cuda::CudaVCycleGraph> vcycle_graph_;  // Full V-cycle graph
+    bool use_cuda_graphs_ = false;       // Set via MG_USE_CUDA_GRAPHS=1 (smoother only)
+    bool use_vcycle_graph_ = false;      // Set via MG_USE_VCYCLE_GRAPH=1 (full V-cycle)
+    int vcycle_graph_nu1_ = 2;           // Pre-smoothing iterations for graphed V-cycle
+    int vcycle_graph_nu2_ = 2;           // Post-smoothing iterations for graphed V-cycle
     void initialize_cuda_graphs();
+    void initialize_vcycle_graph(int nu1, int nu2);  // Initialize full V-cycle graph
+    void vcycle_graphed();  // Execute graphed V-cycle (single graph launch)
 #endif
 
     // Core multigrid operations

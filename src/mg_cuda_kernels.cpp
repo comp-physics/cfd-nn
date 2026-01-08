@@ -279,6 +279,151 @@ __global__ void copy_kernel(double* __restrict__ dst, const double* __restrict__
     }
 }
 
+/// Simple array zero kernel
+__global__ void zero_kernel(double* __restrict__ dst, size_t size) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        dst[idx] = 0.0;
+    }
+}
+
+/// 3D residual computation kernel: r = f - L(u)
+/// Each thread computes one interior point
+__global__ void residual_3d_kernel(
+    const double* __restrict__ u,
+    const double* __restrict__ f,
+    double* __restrict__ r,
+    int Nx, int Ny, int Nz, int Ng,
+    double inv_dx2, double inv_dy2, double inv_dz2)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x + Ng;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + Ng;
+    int k = blockIdx.z * blockDim.z + threadIdx.z + Ng;
+
+    if (i < Nx + Ng && j < Ny + Ng && k < Nz + Ng) {
+        int stride = Nx + 2 * Ng;
+        int plane_stride = stride * (Ny + 2 * Ng);
+        int idx = k * plane_stride + j * stride + i;
+
+        // Compute Laplacian: L(u) = (u_{i+1} - 2u_i + u_{i-1})/dx^2 + ...
+        double laplacian = (u[idx + 1] - 2.0 * u[idx] + u[idx - 1]) * inv_dx2
+                         + (u[idx + stride] - 2.0 * u[idx] + u[idx - stride]) * inv_dy2
+                         + (u[idx + plane_stride] - 2.0 * u[idx] + u[idx - plane_stride]) * inv_dz2;
+
+        // Residual: r = f - L(u)
+        r[idx] = f[idx] - laplacian;
+    }
+}
+
+/// 3D 27-point full-weighting restriction kernel
+/// Each thread computes one coarse grid point
+__global__ void restrict_3d_kernel(
+    const double* __restrict__ r_fine,
+    double* __restrict__ f_coarse,
+    int Nx_f, int Ny_f, int Nz_f,
+    int Nx_c, int Ny_c, int Nz_c,
+    int Ng)
+{
+    int i_c = blockIdx.x * blockDim.x + threadIdx.x + Ng;
+    int j_c = blockIdx.y * blockDim.y + threadIdx.y + Ng;
+    int k_c = blockIdx.z * blockDim.z + threadIdx.z + Ng;
+
+    if (i_c < Nx_c + Ng && j_c < Ny_c + Ng && k_c < Nz_c + Ng) {
+        int stride_f = Nx_f + 2 * Ng;
+        int stride_c = Nx_c + 2 * Ng;
+        int plane_stride_f = stride_f * (Ny_f + 2 * Ng);
+        int plane_stride_c = stride_c * (Ny_c + 2 * Ng);
+
+        // Map coarse index to fine index
+        int i_f = 2 * (i_c - Ng) + Ng;
+        int j_f = 2 * (j_c - Ng) + Ng;
+        int k_f = 2 * (k_c - Ng) + Ng;
+
+        int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
+        int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
+
+        // 27-point full-weighting stencil
+        double sum = 0.0;
+
+        // Center point (weight = 1/8)
+        sum += 0.125 * r_fine[idx_f];
+
+        // 6 face neighbors (weight = 1/16 each)
+        sum += 0.0625 * (r_fine[idx_f - 1] + r_fine[idx_f + 1]
+                       + r_fine[idx_f - stride_f] + r_fine[idx_f + stride_f]
+                       + r_fine[idx_f - plane_stride_f] + r_fine[idx_f + plane_stride_f]);
+
+        // 12 edge neighbors (weight = 1/32 each)
+        sum += 0.03125 * (r_fine[idx_f - 1 - stride_f] + r_fine[idx_f + 1 - stride_f]
+                        + r_fine[idx_f - 1 + stride_f] + r_fine[idx_f + 1 + stride_f]
+                        + r_fine[idx_f - 1 - plane_stride_f] + r_fine[idx_f + 1 - plane_stride_f]
+                        + r_fine[idx_f - 1 + plane_stride_f] + r_fine[idx_f + 1 + plane_stride_f]
+                        + r_fine[idx_f - stride_f - plane_stride_f] + r_fine[idx_f + stride_f - plane_stride_f]
+                        + r_fine[idx_f - stride_f + plane_stride_f] + r_fine[idx_f + stride_f + plane_stride_f]);
+
+        // 8 corner neighbors (weight = 1/64 each)
+        sum += 0.015625 * (r_fine[idx_f - 1 - stride_f - plane_stride_f] + r_fine[idx_f + 1 - stride_f - plane_stride_f]
+                         + r_fine[idx_f - 1 + stride_f - plane_stride_f] + r_fine[idx_f + 1 + stride_f - plane_stride_f]
+                         + r_fine[idx_f - 1 - stride_f + plane_stride_f] + r_fine[idx_f + 1 - stride_f + plane_stride_f]
+                         + r_fine[idx_f - 1 + stride_f + plane_stride_f] + r_fine[idx_f + 1 + stride_f + plane_stride_f]);
+
+        f_coarse[idx_c] = sum;
+    }
+}
+
+/// 3D trilinear prolongation kernel
+/// Each thread computes one fine grid point (owner-computes pattern)
+__global__ void prolongate_3d_kernel(
+    const double* __restrict__ u_coarse,
+    double* __restrict__ u_fine,
+    int Nx_f, int Ny_f, int Nz_f,
+    int Nx_c, int Ny_c, int Nz_c,
+    int Ng)
+{
+    int i_f = blockIdx.x * blockDim.x + threadIdx.x + Ng;
+    int j_f = blockIdx.y * blockDim.y + threadIdx.y + Ng;
+    int k_f = blockIdx.z * blockDim.z + threadIdx.z + Ng;
+
+    if (i_f < Nx_f + Ng && j_f < Ny_f + Ng && k_f < Nz_f + Ng) {
+        int stride_f = Nx_f + 2 * Ng;
+        int stride_c = Nx_c + 2 * Ng;
+        int plane_stride_f = stride_f * (Ny_f + 2 * Ng);
+        int plane_stride_c = stride_c * (Ny_c + 2 * Ng);
+
+        // Find base coarse cell and position within coarse cell pair
+        int i_c = (i_f - Ng) / 2 + Ng;
+        int j_c = (j_f - Ng) / 2 + Ng;
+        int k_c = (k_f - Ng) / 2 + Ng;
+        int di = (i_f - Ng) & 1;  // 0 = coincident, 1 = midpoint
+        int dj = (j_f - Ng) & 1;
+        int dk = (k_f - Ng) & 1;
+
+        // Interpolation weights
+        double wx1 = 0.5 * di;
+        double wx0 = 1.0 - wx1;
+        double wy1 = 0.5 * dj;
+        double wy0 = 1.0 - wy1;
+        double wz1 = 0.5 * dk;
+        double wz0 = 1.0 - wz1;
+
+        int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
+
+        // Trilinear interpolation from 8 coarse neighbors
+        double correction =
+            wx0 * wy0 * wz0 * u_coarse[idx_c]
+          + wx1 * wy0 * wz0 * u_coarse[idx_c + 1]
+          + wx0 * wy1 * wz0 * u_coarse[idx_c + stride_c]
+          + wx1 * wy1 * wz0 * u_coarse[idx_c + 1 + stride_c]
+          + wx0 * wy0 * wz1 * u_coarse[idx_c + plane_stride_c]
+          + wx1 * wy0 * wz1 * u_coarse[idx_c + 1 + plane_stride_c]
+          + wx0 * wy1 * wz1 * u_coarse[idx_c + stride_c + plane_stride_c]
+          + wx1 * wy1 * wz1 * u_coarse[idx_c + 1 + stride_c + plane_stride_c];
+
+        int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
+        u_fine[idx_f] += correction;
+    }
+}
+
 // ============================================================================
 // Kernel Launch Functions
 // ============================================================================
@@ -359,6 +504,59 @@ void launch_copy(cudaStream_t stream, double* dst, const double* src, size_t siz
     int block_size = 256;
     int grid_size = (size + block_size - 1) / block_size;
     copy_kernel<<<grid_size, block_size, 0, stream>>>(dst, src, size);
+}
+
+void launch_zero(cudaStream_t stream, double* dst, size_t size) {
+    int block_size = 256;
+    int grid_size = (size + block_size - 1) / block_size;
+    zero_kernel<<<grid_size, block_size, 0, stream>>>(dst, size);
+}
+
+void launch_residual_3d(
+    cudaStream_t stream,
+    const double* u, const double* f, double* r,
+    int Nx, int Ny, int Nz, int Ng,
+    double inv_dx2, double inv_dy2, double inv_dz2)
+{
+    dim3 block(8, 8, 8);
+    dim3 grid((Nx + block.x - 1) / block.x,
+              (Ny + block.y - 1) / block.y,
+              (Nz + block.z - 1) / block.z);
+
+    residual_3d_kernel<<<grid, block, 0, stream>>>(
+        u, f, r, Nx, Ny, Nz, Ng, inv_dx2, inv_dy2, inv_dz2);
+}
+
+void launch_restrict_3d(
+    cudaStream_t stream,
+    const double* r_fine, double* f_coarse,
+    int Nx_f, int Ny_f, int Nz_f,
+    int Nx_c, int Ny_c, int Nz_c,
+    int Ng)
+{
+    dim3 block(8, 8, 8);
+    dim3 grid((Nx_c + block.x - 1) / block.x,
+              (Ny_c + block.y - 1) / block.y,
+              (Nz_c + block.z - 1) / block.z);
+
+    restrict_3d_kernel<<<grid, block, 0, stream>>>(
+        r_fine, f_coarse, Nx_f, Ny_f, Nz_f, Nx_c, Ny_c, Nz_c, Ng);
+}
+
+void launch_prolongate_3d(
+    cudaStream_t stream,
+    const double* u_coarse, double* u_fine,
+    int Nx_f, int Ny_f, int Nz_f,
+    int Nx_c, int Ny_c, int Nz_c,
+    int Ng)
+{
+    dim3 block(8, 8, 8);
+    dim3 grid((Nx_f + block.x - 1) / block.x,
+              (Ny_f + block.y - 1) / block.y,
+              (Nz_f + block.z - 1) / block.z);
+
+    prolongate_3d_kernel<<<grid, block, 0, stream>>>(
+        u_coarse, u_fine, Nx_f, Ny_f, Nz_f, Nx_c, Ny_c, Nz_c, Ng);
 }
 
 // ============================================================================
@@ -545,6 +743,162 @@ void CudaMGContext::smooth(int level, cudaStream_t stream) {
 void CudaMGContext::debug_graph_pointers(int level) const {
     if (level >= 0 && level < static_cast<int>(smoother_graphs_.size())) {
         smoother_graphs_[level].debug_print_pointers();
+    }
+}
+
+// ============================================================================
+// CudaVCycleGraph Implementation - Full V-cycle in a single graph
+// ============================================================================
+
+CudaVCycleGraph::~CudaVCycleGraph() {
+    destroy();
+}
+
+void CudaVCycleGraph::destroy() {
+    if (graph_exec_) {
+        cudaGraphExecDestroy(graph_exec_);
+        graph_exec_ = nullptr;
+    }
+    if (graph_) {
+        cudaGraphDestroy(graph_);
+        graph_ = nullptr;
+    }
+}
+
+void CudaVCycleGraph::initialize(
+    const std::vector<VCycleLevelConfig>& levels,
+    int degree, int nu1, int nu2,
+    BC bc_x_lo, BC bc_x_hi,
+    BC bc_y_lo, BC bc_y_hi,
+    BC bc_z_lo, BC bc_z_hi)
+{
+    destroy();  // Clean up any existing graph
+
+    levels_ = levels;
+    degree_ = degree;
+    nu1_ = nu1;
+    nu2_ = nu2;
+    bc_x_lo_ = bc_x_lo;
+    bc_x_hi_ = bc_x_hi;
+    bc_y_lo_ = bc_y_lo;
+    bc_y_hi_ = bc_y_hi;
+    bc_z_lo_ = bc_z_lo;
+    bc_z_hi_ = bc_z_hi;
+
+    // Check if all BCs are periodic - use fused smoother kernel
+    all_periodic_ = (bc_x_lo == BC::Periodic && bc_x_hi == BC::Periodic &&
+                     bc_y_lo == BC::Periodic && bc_y_hi == BC::Periodic &&
+                     bc_z_lo == BC::Periodic && bc_z_hi == BC::Periodic);
+
+    // Create a temporary stream for graph capture
+    cudaStream_t capture_stream;
+    CUDA_CHECK(cudaStreamCreate(&capture_stream));
+
+    capture_vcycle_graph(capture_stream);
+
+    CUDA_CHECK(cudaStreamDestroy(capture_stream));
+}
+
+void CudaVCycleGraph::capture_vcycle_graph(cudaStream_t stream) {
+    // Begin stream capture
+    CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+
+    // Capture the full V-cycle starting from level 0
+    capture_vcycle_level(stream, 0);
+
+    // End capture and create executable graph
+    CUDA_CHECK(cudaStreamEndCapture(stream, &graph_));
+    CUDA_CHECK(cudaGraphInstantiate(&graph_exec_, graph_, nullptr, nullptr, 0));
+}
+
+void CudaVCycleGraph::capture_vcycle_level(cudaStream_t stream, int level) {
+    const auto& cfg = levels_[level];
+    const int num_levels = static_cast<int>(levels_.size());
+
+    if (level == num_levels - 1) {
+        // Coarsest level - just smooth more
+        capture_smoother(stream, level, 8);  // More iterations at coarsest
+        return;
+    }
+
+    // Pre-smoothing
+    capture_smoother(stream, level, nu1_);
+
+    // Compute residual: r = f - L(u)
+    launch_residual_3d(stream, cfg.u, cfg.f, cfg.r,
+                       cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                       cfg.inv_dx2, cfg.inv_dy2, cfg.inv_dz2);
+
+    // Apply BCs to residual for proper restriction
+    launch_bc_3d(stream, cfg.r, cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                 bc_x_lo_, bc_x_hi_, bc_y_lo_, bc_y_hi_, bc_z_lo_, bc_z_hi_, 0.0);
+
+    // Restrict residual to coarse grid
+    const auto& coarse = levels_[level + 1];
+    launch_restrict_3d(stream, cfg.r, coarse.f,
+                       cfg.Nx, cfg.Ny, cfg.Nz,
+                       coarse.Nx, coarse.Ny, coarse.Nz, cfg.Ng);
+
+    // Zero coarse solution
+    launch_zero(stream, coarse.u, coarse.total_size);
+
+    // Recursive call to coarser level
+    capture_vcycle_level(stream, level + 1);
+
+    // Prolongate correction: u_fine += interp(u_coarse)
+    launch_prolongate_3d(stream, coarse.u, cfg.u,
+                         cfg.Nx, cfg.Ny, cfg.Nz,
+                         coarse.Nx, coarse.Ny, coarse.Nz, cfg.Ng);
+
+    // Apply BCs after prolongation
+    launch_bc_3d(stream, cfg.u, cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                 bc_x_lo_, bc_x_hi_, bc_y_lo_, bc_y_hi_, bc_z_lo_, bc_z_hi_, 0.0);
+
+    // Post-smoothing
+    capture_smoother(stream, level, nu2_);
+}
+
+void CudaVCycleGraph::capture_smoother(cudaStream_t stream, int level, int iterations) {
+    const auto& cfg = levels_[level];
+
+    // Chebyshev eigenvalue bounds
+    const double lambda_min = 0.05;
+    const double lambda_max = 1.95;
+    const double d = (lambda_max + lambda_min) / 2.0;
+    const double c = (lambda_max - lambda_min) / 2.0;
+
+    // Capture the Chebyshev smoother sequence
+    for (int k = 0; k < iterations; ++k) {
+        // Chebyshev-optimal weight
+        double theta = M_PI * (2.0 * k + 1.0) / (2.0 * iterations);
+        double omega = 1.0 / (d - c * std::cos(theta));
+
+        if (all_periodic_) {
+            // Fused kernel with periodic wrap
+            launch_chebyshev_3d_periodic(stream, cfg.u, cfg.f, cfg.tmp,
+                                         cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                                         cfg.dx2, cfg.dy2, cfg.dz2, cfg.coeff, omega);
+        } else {
+            // BC + smoother
+            launch_bc_3d(stream, cfg.u, cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                         bc_x_lo_, bc_x_hi_, bc_y_lo_, bc_y_hi_, bc_z_lo_, bc_z_hi_, 0.0);
+            launch_chebyshev_3d(stream, cfg.u, cfg.f, cfg.tmp,
+                                cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                                cfg.dx2, cfg.dy2, cfg.dz2, cfg.coeff, omega);
+        }
+
+        // Copy tmp -> u
+        launch_copy(stream, cfg.u, cfg.tmp, cfg.total_size);
+    }
+
+    // Final BC application
+    launch_bc_3d(stream, cfg.u, cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
+                 bc_x_lo_, bc_x_hi_, bc_y_lo_, bc_y_hi_, bc_z_lo_, bc_z_hi_, 0.0);
+}
+
+void CudaVCycleGraph::execute(cudaStream_t stream) {
+    if (graph_exec_) {
+        CUDA_CHECK(cudaGraphLaunch(graph_exec_, stream));
     }
 }
 
