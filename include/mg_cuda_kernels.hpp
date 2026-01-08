@@ -122,8 +122,12 @@ public:
         BC bc_y_lo, BC bc_y_hi,
         BC bc_z_lo, BC bc_z_hi);
 
-    /// Execute smoother for a given level
+    /// Execute smoother for a given level (uses internal stream)
     void smooth(int level);
+
+    /// Execute smoother for a given level on specified stream
+    /// Use this with OpenMP's stream to avoid cross-stream sync overhead
+    void smooth(int level, cudaStream_t stream);
 
     /// Debug: print captured pointers for a level
     void debug_graph_pointers(int level) const;

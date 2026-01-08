@@ -536,6 +536,12 @@ void CudaMGContext::smooth(int level) {
     }
 }
 
+void CudaMGContext::smooth(int level, cudaStream_t stream) {
+    if (level >= 0 && level < static_cast<int>(smoother_graphs_.size())) {
+        smoother_graphs_[level].execute(stream);
+    }
+}
+
 void CudaMGContext::debug_graph_pointers(int level) const {
     if (level >= 0 && level < static_cast<int>(smoother_graphs_.size())) {
         smoother_graphs_[level].debug_print_pointers();

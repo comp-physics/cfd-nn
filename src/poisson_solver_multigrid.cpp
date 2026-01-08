@@ -33,8 +33,13 @@
 #include "poisson_solver_multigrid.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
+#include <omp.h>
 #ifdef USE_GPU_OFFLOAD
 #include "mg_cuda_kernels.hpp"
+#include <cuda_runtime.h>
+// NVHPC provides ompx_get_cuda_stream() to get the CUDA stream used by OpenMP.
+// This allows launching CUDA Graphs on the same stream, eliminating sync overhead.
+// The function returns void* which we cast to cudaStream_t.
 #endif
 #include <cmath>
 #include <algorithm>
@@ -653,8 +658,18 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     if (use_cuda_graphs_ && cuda_ctx_ && cuda_ctx_->graphs_enabled()) {
         auto& grid = *levels_[level];
         if (!grid.is2D()) {
+#ifdef __NVCOMPILER
+            // Launch graph on OpenMP's CUDA stream to avoid cross-stream sync overhead
+            // ompx_get_cuda_stream(device, nowait=0) returns the stream for synchronous targets
+            cudaStream_t omp_stream = static_cast<cudaStream_t>(
+                ompx_get_cuda_stream(omp_get_default_device(), 0));
+            cuda_ctx_->smooth(level, omp_stream);
+            // No explicit sync needed - subsequent OpenMP target regions use same stream
+#else
+            // Fallback for non-NVHPC compilers: use internal stream + sync
             cuda_ctx_->smooth(level);
-            cuda_ctx_->synchronize();  // Must sync before OpenMP can access data
+            cuda_ctx_->synchronize();
+#endif
             return;
         }
         // 2D: fall through to OpenMP path
