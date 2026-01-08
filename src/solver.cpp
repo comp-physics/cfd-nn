@@ -4785,70 +4785,65 @@ void RANSSolver::initialize_gpu_buffers() {
     gpu::verify_device_available();
     
     // Map all arrays to GPU device and copy initial values
-    // Using map(to:) instead of map(alloc:) to transfer initialized data
+    // Using map(to:) to transfer initialized data, map(alloc:) for device-only buffers
     // Data will persist on GPU for entire solver lifetime
     // Staggered grid: u and v have different sizes
     const size_t u_total_size = velocity_.u_total_size();
     const size_t v_total_size = velocity_.v_total_size();
 
-    #pragma omp target enter data map(to: velocity_u_ptr_[0:u_total_size])
-    #pragma omp target enter data map(to: velocity_v_ptr_[0:v_total_size])
-    #pragma omp target enter data map(to: velocity_star_u_ptr_[0:u_total_size])
-    #pragma omp target enter data map(to: velocity_star_v_ptr_[0:v_total_size])
-    #pragma omp target enter data map(to: velocity_old_u_ptr_[0:u_total_size])
-    #pragma omp target enter data map(to: velocity_old_v_ptr_[0:v_total_size])
-    #pragma omp target enter data map(to: pressure_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: pressure_corr_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: nu_t_ptr_[0:field_total_size_])  // Keep for nu_eff = nu + nu_t
-    #pragma omp target enter data map(to: nu_eff_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: conv_u_ptr_[0:u_total_size])
-    #pragma omp target enter data map(to: conv_v_ptr_[0:v_total_size])
-    #pragma omp target enter data map(to: diff_u_ptr_[0:u_total_size])
-    #pragma omp target enter data map(to: diff_v_ptr_[0:v_total_size])
-    #pragma omp target enter data map(to: rhs_poisson_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: div_velocity_ptr_[0:field_total_size_])
+    // Consolidated GPU buffer mapping - grouping arrays by size and transfer type
+    // Group 1: u-component sized arrays (to: transfer initial data)
+    #pragma omp target enter data \
+        map(to: velocity_u_ptr_[0:u_total_size], \
+                velocity_star_u_ptr_[0:u_total_size], \
+                conv_u_ptr_[0:u_total_size], \
+                diff_u_ptr_[0:u_total_size])
+
+    // Group 2: v-component sized arrays (to: transfer initial data)
+    #pragma omp target enter data \
+        map(to: velocity_v_ptr_[0:v_total_size], \
+                velocity_star_v_ptr_[0:v_total_size], \
+                conv_v_ptr_[0:v_total_size], \
+                diff_v_ptr_[0:v_total_size])
+
+    // Group 3: field-sized arrays with initial data (to: transfer)
+    #pragma omp target enter data \
+        map(to: pressure_ptr_[0:field_total_size_], \
+                pressure_corr_ptr_[0:field_total_size_], \
+                nu_t_ptr_[0:field_total_size_], \
+                nu_eff_ptr_[0:field_total_size_], \
+                rhs_poisson_ptr_[0:field_total_size_], \
+                div_velocity_ptr_[0:field_total_size_], \
+                k_ptr_[0:field_total_size_], \
+                omega_ptr_[0:field_total_size_])
+
+    // Group 4: gradient buffers (to: need zero init to prevent NaN in EARSM)
+    #pragma omp target enter data \
+        map(to: dudx_ptr_[0:field_total_size_], \
+                dudy_ptr_[0:field_total_size_], \
+                dvdx_ptr_[0:field_total_size_], \
+                dvdy_ptr_[0:field_total_size_], \
+                wall_distance_ptr_[0:field_total_size_])
+
+    // Group 5: device-only arrays (alloc: will be computed on GPU)
+    // velocity_old: device-resident for residual computation (host never used)
+    // tau_*: Reynolds stress components computed by EARSM/TBNN
+    #pragma omp target enter data \
+        map(alloc: velocity_old_u_ptr_[0:u_total_size], \
+                   velocity_old_v_ptr_[0:v_total_size], \
+                   tau_xx_ptr_[0:field_total_size_], \
+                   tau_xy_ptr_[0:field_total_size_], \
+                   tau_yy_ptr_[0:field_total_size_])
 
     // 3D w-velocity fields
     if (!mesh_->is2D()) {
         const size_t w_total_size = velocity_.w_total_size();
-        #pragma omp target enter data map(to: velocity_w_ptr_[0:w_total_size])
-        #pragma omp target enter data map(to: velocity_star_w_ptr_[0:w_total_size])
-        #pragma omp target enter data map(to: velocity_old_w_ptr_[0:w_total_size])
-        #pragma omp target enter data map(to: conv_w_ptr_[0:w_total_size])
-        #pragma omp target enter data map(to: diff_w_ptr_[0:w_total_size])
-    }
-    
-    // Transport equation fields (k, omega) - needed for EARSM/SST models
-    // These are initialized by RANSSolver::initialize() before GPU buffers are set up,
-    // so we upload them with map(to:). They'll be updated by transport models on GPU.
-    #pragma omp target enter data map(to: k_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: omega_ptr_[0:field_total_size_])
-    
-    // Reynolds stress tensor components (alloc - will be computed by EARSM/TBNN on GPU)
-    #pragma omp target enter data map(alloc: tau_xx_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: tau_xy_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(alloc: tau_yy_ptr_[0:field_total_size_])
-    
-    // Gradient scratch buffers for turbulence models (to, not alloc - need zero init)
-    // These must be initialized to zero to prevent NaN propagation in EARSM models
-    // on the first timestep before compute_gradients_from_mac_gpu runs
-    #pragma omp target enter data map(to: dudx_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: dudy_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: dvdx_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: dvdy_ptr_[0:field_total_size_])
-    #pragma omp target enter data map(to: wall_distance_ptr_[0:field_total_size_])  // Precomputed, upload once
-    
-    // Allocate device-resident "old velocity" buffers for residual computation
-    // Host storage exists but is never used - device copy is authoritative
-    // This eliminates per-step H→D upload for residual computation
-    // Note: velocity_old_*_ptr_ already set above with other pointer assignments
-    #pragma omp target enter data map(alloc: velocity_old_u_ptr_[0:u_total_size])
-    #pragma omp target enter data map(alloc: velocity_old_v_ptr_[0:v_total_size])
-
-    // 3D old velocity
-    if (!mesh_->is2D()) {
-        const size_t w_total_size = velocity_.w_total_size();
-        #pragma omp target enter data map(alloc: velocity_old_w_ptr_[0:w_total_size])
+        #pragma omp target enter data \
+            map(to: velocity_w_ptr_[0:w_total_size], \
+                    velocity_star_w_ptr_[0:w_total_size], \
+                    conv_w_ptr_[0:w_total_size], \
+                    diff_w_ptr_[0:w_total_size]) \
+            map(alloc: velocity_old_w_ptr_[0:w_total_size])
     }
 
     // Zero-initialize device-only arrays to prevent garbage in first residual computation
