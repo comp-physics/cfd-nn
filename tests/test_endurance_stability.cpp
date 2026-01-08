@@ -25,10 +25,7 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_harness.hpp"
-#include <iostream>
 #include <cmath>
-#include <iomanip>
-#include <vector>
 #include <string>
 
 using namespace nncfd;

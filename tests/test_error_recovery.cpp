@@ -12,7 +12,6 @@
 #include "poisson_solver.hpp"
 #include "turbulence_model.hpp"
 #include "test_harness.hpp"
-#include <iostream>
 #include <cmath>
 #include <stdexcept>
 #include <limits>

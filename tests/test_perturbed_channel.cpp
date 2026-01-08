@@ -12,10 +12,7 @@
 #include "config.hpp"
 #include "turbulence_model.hpp"
 #include "test_harness.hpp"
-#include <iostream>
-#include <iomanip>
 #include <cmath>
-#include <vector>
 #include <string>
 #include <fstream>
 #include <limits>
