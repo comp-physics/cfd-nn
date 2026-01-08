@@ -359,12 +359,19 @@ option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
     enable_testing()
 
-    # Function to add a test with standard configuration
-    # Usage: add_nncfd_test(test_name [TEST_NAME_SUFFIX])
+    # Function to add a test with standard configuration and labels
+    # Usage: add_nncfd_test(test_name [TEST_NAME_SUFFIX name] [LABELS label1 label2 ...])
+    #
+    # Labels for filtering with ctest -L <label> or ctest -LE <label>:
+    #   fast  - Runs in <30s, suitable for quick validation
+    #   slow  - Runs in >60s, excluded from fast CI
+    #   gpu   - Requires GPU hardware (USE_GPU_OFFLOAD builds)
+    #   hypre - Requires HYPRE solver (USE_HYPRE builds)
+    #   fft   - Requires FFT solver (USE_FFT_POISSON builds)
     function(add_nncfd_test test_name)
         set(options "")
         set(oneValueArgs TEST_NAME_SUFFIX)
-        set(multiValueArgs "")
+        set(multiValueArgs LABELS)
         cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
         add_executable(${test_name} tests/${test_name}.cpp)
@@ -387,46 +394,95 @@ if(BUILD_TESTS)
         endif()
 
         add_test(NAME ${test_suffix} COMMAND ${test_name})
+
+        # Apply labels for ctest filtering
+        if(ARG_LABELS)
+            set_tests_properties(${test_suffix} PROPERTIES LABELS "${ARG_LABELS}")
+        endif()
     endfunction()
 
-    # Core tests
-    add_nncfd_test(test_mesh)
-    add_nncfd_test(test_poisson_unified)
-    add_nncfd_test(test_2d_3d_comparison TEST_NAME_SUFFIX Comparison2D3DTest)
-    add_nncfd_test(test_features)
-    add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest)
-    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
-    add_nncfd_test(test_backend_unified)
-    add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest)
-    add_nncfd_test(test_unified_suite)
-    add_nncfd_test(test_perturbed_channel)
-    add_nncfd_test(test_turbulence_unified)
-    add_nncfd_test(test_3d_unified TEST_NAME_SUFFIX ThreeDUnifiedTest)
-    add_nncfd_test(test_cpu_gpu_bitwise TEST_NAME_SUFFIX CPUGPUBitwiseTest)
-    add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest)
-    add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest)
+    # =========================================================================
+    # Fast tests (<30s) - run with: ctest -L fast
+    # =========================================================================
+    add_nncfd_test(test_mesh LABELS fast)
+    add_nncfd_test(test_features LABELS fast)
+    add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest LABELS fast)
+    add_nncfd_test(test_config LABELS fast)
+    add_nncfd_test(test_mpi_guard LABELS fast)
+    add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
+    add_nncfd_test(test_backend_unified LABELS fast)
+    add_nncfd_test(test_residual_consistency LABELS fast)
+    add_nncfd_test(test_mesh_edge_cases LABELS fast)
+    add_nncfd_test(test_error_recovery LABELS fast)
+    add_nncfd_test(test_adaptive_dt LABELS fast)
 
-    # HYPRE-dependent tests
-    if(USE_HYPRE)
-        add_nncfd_test(test_hypre_all_bcs)
-        add_nncfd_test(test_hypre_validation)
-        add_nncfd_test(test_hypre_backend)
+    # =========================================================================
+    # Medium tests (30-120s)
+    # =========================================================================
+    add_nncfd_test(test_poisson_unified)
+    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
+    add_nncfd_test(test_unified_suite)
+    add_nncfd_test(test_turbulence_unified)
+    add_nncfd_test(test_projection_invariants)
+    add_nncfd_test(test_perf_sentinel)
+
+    # =========================================================================
+    # Slow tests (>120s) - exclude with: ctest -LE slow
+    # =========================================================================
+    add_nncfd_test(test_2d_3d_comparison TEST_NAME_SUFFIX Comparison2D3DTest LABELS slow)
+    add_nncfd_test(test_3d_unified TEST_NAME_SUFFIX ThreeDUnifiedTest LABELS slow)
+    add_nncfd_test(test_perturbed_channel LABELS slow)
+    add_nncfd_test(test_endurance_stability LABELS slow)
+    add_nncfd_test(test_repeatability LABELS slow)
+    add_nncfd_test(test_physics_validation_advanced LABELS slow)
+    add_nncfd_test(test_kernel_parity_detailed LABELS slow)
+
+    # =========================================================================
+    # GPU-specific tests - run with: ctest -L gpu
+    # =========================================================================
+    add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS gpu)
+    add_nncfd_test(test_cpu_gpu_bitwise TEST_NAME_SUFFIX CPUGPUBitwiseTest LABELS gpu)
+    add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
+
+    # =========================================================================
+    # FFT tests (require USE_FFT_POISSON) - run with: ctest -L fft
+    # =========================================================================
+    if(USE_GPU_OFFLOAD AND CUDAToolkit_FOUND)
+        add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest LABELS fft)
     endif()
 
-    # Stability and validation tests
-    add_nncfd_test(test_endurance_stability)
-    add_nncfd_test(test_repeatability)
-    add_nncfd_test(test_perf_sentinel)
-    add_nncfd_test(test_projection_invariants)
-    add_nncfd_test(test_mpi_guard)
-    add_nncfd_test(test_residual_consistency)
-    add_nncfd_test(test_kernel_parity_detailed)
-    add_nncfd_test(test_config)
-    add_nncfd_test(test_error_recovery)
-    add_nncfd_test(test_adaptive_dt)
-    add_nncfd_test(test_mesh_edge_cases)
-    add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest)
-    add_nncfd_test(test_physics_validation_advanced)
+    # =========================================================================
+    # HYPRE tests (require USE_HYPRE) - run with: ctest -L hypre
+    # =========================================================================
+    if(USE_HYPRE)
+        add_nncfd_test(test_hypre_all_bcs LABELS hypre)
+        add_nncfd_test(test_hypre_validation LABELS hypre)
+        add_nncfd_test(test_hypre_backend LABELS hypre)
+    endif()
+
+    # =========================================================================
+    # Convenience targets for running tests
+    # =========================================================================
+    # Run all tests: make check
+    add_custom_target(check
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Running all tests"
+    )
+
+    # Run fast tests only: make check-fast
+    add_custom_target(check-fast
+        COMMAND ${CMAKE_CTEST_COMMAND} -L fast --output-on-failure
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Running fast tests only"
+    )
+
+    # Run tests excluding slow: make check-quick
+    add_custom_target(check-quick
+        COMMAND ${CMAKE_CTEST_COMMAND} -LE slow --output-on-failure
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Running tests (excluding slow)"
+    )
 endif()
 
 # Installation
