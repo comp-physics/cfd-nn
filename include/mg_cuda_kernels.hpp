@@ -225,6 +225,36 @@ struct VCycleLevelConfig {
     double* tmp;              // Scratch buffer for smoother
 };
 
+/// Fingerprint for V-cycle graph validity checking
+/// If any of these parameters change, the graph must be recaptured
+struct VCycleGraphFingerprint {
+    size_t num_levels = 0;
+    std::vector<size_t> level_sizes;  // Total size per level
+    std::vector<double> level_coeffs; // Diagonal coefficients per level
+    int degree = 0;
+    int nu1 = 0;
+    int nu2 = 0;
+    BC bc_x_lo = BC::Neumann, bc_x_hi = BC::Neumann;
+    BC bc_y_lo = BC::Neumann, bc_y_hi = BC::Neumann;
+    BC bc_z_lo = BC::Neumann, bc_z_hi = BC::Neumann;
+    int coarse_iters = 8;  // Iterations at coarsest level
+
+    bool operator==(const VCycleGraphFingerprint& other) const {
+        return num_levels == other.num_levels &&
+               level_sizes == other.level_sizes &&
+               level_coeffs == other.level_coeffs &&
+               degree == other.degree &&
+               nu1 == other.nu1 && nu2 == other.nu2 &&
+               bc_x_lo == other.bc_x_lo && bc_x_hi == other.bc_x_hi &&
+               bc_y_lo == other.bc_y_lo && bc_y_hi == other.bc_y_hi &&
+               bc_z_lo == other.bc_z_lo && bc_z_hi == other.bc_z_hi &&
+               coarse_iters == other.coarse_iters;
+    }
+    bool operator!=(const VCycleGraphFingerprint& other) const {
+        return !(*this == other);
+    }
+};
+
 /// Full V-cycle CUDA Graph - captures entire V-cycle for single-launch execution
 class CudaVCycleGraph {
 public:
@@ -250,6 +280,14 @@ public:
     /// Check if graph is valid
     bool is_valid() const { return graph_exec_ != nullptr; }
 
+    /// Check if graph needs recapture due to parameter changes
+    bool needs_recapture(const VCycleGraphFingerprint& fp) const {
+        return !is_valid() || fingerprint_ != fp;
+    }
+
+    /// Get current fingerprint
+    const VCycleGraphFingerprint& fingerprint() const { return fingerprint_; }
+
     /// Destroy graph resources
     void destroy();
 
@@ -257,6 +295,7 @@ private:
     cudaGraph_t graph_ = nullptr;
     cudaGraphExec_t graph_exec_ = nullptr;
     std::vector<VCycleLevelConfig> levels_;
+    VCycleGraphFingerprint fingerprint_;
     int degree_ = 4;
     int nu1_ = 2;
     int nu2_ = 2;

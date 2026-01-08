@@ -1,6 +1,13 @@
 /// @file bench_mg_cuda_graphs.cpp
 /// @brief Benchmark MG solver with/without CUDA Graphs on large 3D grids
 /// Uses solve_device() with persistent GPU data for clean profiling
+///
+/// JIT Variability Mitigation:
+/// - 2 warmup solves before timing to trigger JIT compilation
+/// - CUDA graph capture happens during warmup (first solve)
+/// - For profiling, exclude cuModuleLoadData from timing:
+///   nsys profile --stats=true -t cuda,nvtx ./bench_mg_cuda_graphs
+///   Then filter out "cuModuleLoadData" rows from CUDA API statistics
 
 #include <iostream>
 #include <chrono>

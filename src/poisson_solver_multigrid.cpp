@@ -93,6 +93,10 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     if (use_cuda_graphs_) {
         initialize_cuda_graphs();
     }
+    // Invalidate V-cycle graph so it gets recaptured with new BCs
+    if (vcycle_graph_) {
+        vcycle_graph_->destroy();
+    }
 #endif
 }
 
@@ -110,6 +114,10 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     // Re-initialize CUDA Graphs with new BCs
     if (use_cuda_graphs_) {
         initialize_cuda_graphs();
+    }
+    // Invalidate V-cycle graph so it gets recaptured with new BCs
+    if (vcycle_graph_) {
+        vcycle_graph_->destroy();
     }
 #endif
 }
@@ -2220,6 +2228,45 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2) {
     // This captures the entire V-cycle (all levels, all operations) as a single graph
     if (!use_vcycle_graph_) return;
 
+    // Convert BCs to CUDA enum
+    auto to_cuda_bc = [](PoissonBC bc) -> mg_cuda::BC {
+        switch (bc) {
+            case PoissonBC::Dirichlet: return mg_cuda::BC::Dirichlet;
+            case PoissonBC::Neumann: return mg_cuda::BC::Neumann;
+            case PoissonBC::Periodic: return mg_cuda::BC::Periodic;
+            default: return mg_cuda::BC::Neumann;
+        }
+    };
+
+    // Build fingerprint to check if recapture is needed
+    mg_cuda::VCycleGraphFingerprint new_fp;
+    new_fp.num_levels = levels_.size();
+    new_fp.degree = 4;  // Chebyshev degree
+    new_fp.nu1 = nu1;
+    new_fp.nu2 = nu2;
+    new_fp.bc_x_lo = to_cuda_bc(bc_x_lo_);
+    new_fp.bc_x_hi = to_cuda_bc(bc_x_hi_);
+    new_fp.bc_y_lo = to_cuda_bc(bc_y_lo_);
+    new_fp.bc_y_hi = to_cuda_bc(bc_y_hi_);
+    new_fp.bc_z_lo = to_cuda_bc(bc_z_lo_);
+    new_fp.bc_z_hi = to_cuda_bc(bc_z_hi_);
+    new_fp.coarse_iters = 8;
+    for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
+        auto& grid = *levels_[lvl];
+        double dx2 = grid.dx * grid.dx;
+        double dy2 = grid.dy * grid.dy;
+        double dz2 = grid.dz * grid.dz;
+        double coeff = grid.is2D() ? (2.0/dx2 + 2.0/dy2) : (2.0/dx2 + 2.0/dy2 + 2.0/dz2);
+        new_fp.level_sizes.push_back(level_sizes_[lvl]);
+        new_fp.level_coeffs.push_back(coeff);
+    }
+
+    // Check if existing graph is still valid
+    if (vcycle_graph_ && !vcycle_graph_->needs_recapture(new_fp)) {
+        // Graph is still valid, no recapture needed
+        return;
+    }
+
     vcycle_graph_nu1_ = nu1;
     vcycle_graph_nu2_ = nu2;
 
@@ -2249,16 +2296,6 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2) {
         configs.push_back(cfg);
     }
 
-    // Convert BCs to CUDA enum
-    auto to_cuda_bc = [](PoissonBC bc) -> mg_cuda::BC {
-        switch (bc) {
-            case PoissonBC::Dirichlet: return mg_cuda::BC::Dirichlet;
-            case PoissonBC::Neumann: return mg_cuda::BC::Neumann;
-            case PoissonBC::Periodic: return mg_cuda::BC::Periodic;
-            default: return mg_cuda::BC::Neumann;
-        }
-    };
-
     // Verify device pointers are valid
     for (size_t lvl = 0; lvl < configs.size(); ++lvl) {
         if (!configs[lvl].u || !configs[lvl].f || !configs[lvl].r || !configs[lvl].tmp) {
@@ -2269,15 +2306,19 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2) {
         }
     }
 
-    // Create the V-cycle graph
-    vcycle_graph_ = std::make_unique<mg_cuda::CudaVCycleGraph>();
+    // Create/recapture the V-cycle graph
+    if (!vcycle_graph_) {
+        vcycle_graph_ = std::make_unique<mg_cuda::CudaVCycleGraph>();
+    }
     vcycle_graph_->initialize(
         configs, 4, nu1, nu2,  // degree = 4 for Chebyshev
         to_cuda_bc(bc_x_lo_), to_cuda_bc(bc_x_hi_),
         to_cuda_bc(bc_y_lo_), to_cuda_bc(bc_y_hi_),
         to_cuda_bc(bc_z_lo_), to_cuda_bc(bc_z_hi_));
 
-    std::cout << "[MG] Full V-cycle CUDA Graph initialized for " << levels_.size()
+    std::cout << "[MG] Full V-cycle CUDA Graph "
+              << (vcycle_graph_->is_valid() ? "captured" : "FAILED")
+              << " for " << levels_.size()
               << " levels (nu1=" << nu1 << ", nu2=" << nu2 << ")\n";
 }
 
@@ -2294,6 +2335,12 @@ void MultigridPoissonSolver::vcycle_graphed() {
     // This avoids cross-stream synchronization overhead
     cudaStream_t omp_stream = reinterpret_cast<cudaStream_t>(
         ompx_get_cuda_stream(omp_get_default_device(), /*sync=*/0));
+
+#ifndef NDEBUG
+    // Debug assertion: verify stream is valid and consistent
+    // A null stream would cause graph to launch on default stream (potential race)
+    assert(omp_stream != nullptr && "OpenMP CUDA stream is null - graph may race with OpenMP kernels");
+#endif
 
     // Single graph launch for entire V-cycle
     vcycle_graph_->execute(omp_stream);

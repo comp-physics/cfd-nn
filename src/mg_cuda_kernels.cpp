@@ -785,6 +785,25 @@ void CudaVCycleGraph::initialize(
     bc_z_lo_ = bc_z_lo;
     bc_z_hi_ = bc_z_hi;
 
+    // Store fingerprint for validity checking
+    fingerprint_.num_levels = levels.size();
+    fingerprint_.level_sizes.clear();
+    fingerprint_.level_coeffs.clear();
+    for (const auto& lvl : levels) {
+        fingerprint_.level_sizes.push_back(lvl.total_size);
+        fingerprint_.level_coeffs.push_back(lvl.coeff);
+    }
+    fingerprint_.degree = degree;
+    fingerprint_.nu1 = nu1;
+    fingerprint_.nu2 = nu2;
+    fingerprint_.bc_x_lo = bc_x_lo;
+    fingerprint_.bc_x_hi = bc_x_hi;
+    fingerprint_.bc_y_lo = bc_y_lo;
+    fingerprint_.bc_y_hi = bc_y_hi;
+    fingerprint_.bc_z_lo = bc_z_lo;
+    fingerprint_.bc_z_hi = bc_z_hi;
+    fingerprint_.coarse_iters = 8;  // Hardcoded for now
+
     // Check if all BCs are periodic - use fused smoother kernel
     all_periodic_ = (bc_x_lo == BC::Periodic && bc_x_hi == BC::Periodic &&
                      bc_y_lo == BC::Periodic && bc_y_hi == BC::Periodic &&
