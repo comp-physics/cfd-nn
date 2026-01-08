@@ -4743,31 +4743,34 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     file.close();
 }
 
-#ifdef USE_GPU_OFFLOAD
-void RANSSolver::initialize_gpu_buffers() {
-    // Verify GPU is available (throws if not)
-    gpu::verify_device_available();
-    
-    // Get raw pointers to all field data
-    field_total_size_ = mesh_->total_cells();  // (Nx + 2*Nghost) * (Ny + 2*Nghost) for cell-centered fields
-    
-    // Staggered grid: u and v have different sizes
+// ============================================================================
+// Shared pointer extraction (used by both CPU and GPU paths)
+// ============================================================================
+
+void RANSSolver::extract_field_pointers() {
+    field_total_size_ = mesh_->total_cells();
+
+    // Staggered grid velocity fields
     velocity_u_ptr_ = velocity_.u_data().data();
     velocity_v_ptr_ = velocity_.v_data().data();
     velocity_star_u_ptr_ = velocity_star_.u_data().data();
     velocity_star_v_ptr_ = velocity_star_.v_data().data();
     velocity_old_u_ptr_ = velocity_old_.u_data().data();
     velocity_old_v_ptr_ = velocity_old_.v_data().data();
+
+    // Cell-centered fields
     pressure_ptr_ = pressure_.data().data();
     pressure_corr_ptr_ = pressure_correction_.data().data();
-    nu_t_ptr_ = nu_t_.data().data();  // Keep for nu_eff calculation
+    nu_t_ptr_ = nu_t_.data().data();
     nu_eff_ptr_ = nu_eff_.data().data();
+    rhs_poisson_ptr_ = rhs_poisson_.data().data();
+    div_velocity_ptr_ = div_velocity_.data().data();
+
+    // Work arrays
     conv_u_ptr_ = conv_.u_data().data();
     conv_v_ptr_ = conv_.v_data().data();
     diff_u_ptr_ = diff_.u_data().data();
     diff_v_ptr_ = diff_.v_data().data();
-    rhs_poisson_ptr_ = rhs_poisson_.data().data();
-    div_velocity_ptr_ = div_velocity_.data().data();
 
     // 3D w-velocity fields
     if (!mesh_->is2D()) {
@@ -4777,21 +4780,31 @@ void RANSSolver::initialize_gpu_buffers() {
         conv_w_ptr_ = conv_.w_data().data();
         diff_w_ptr_ = diff_.w_data().data();
     }
-    // NOTE: k and omega are NOT mapped - turbulence models manage their own GPU copies
+
+    // Turbulence transport fields
     k_ptr_ = k_.data().data();
     omega_ptr_ = omega_.data().data();
-    
+
     // Reynolds stress tensor components (for EARSM/TBNN)
     tau_xx_ptr_ = tau_ij_.xx_data().data();
     tau_xy_ptr_ = tau_ij_.xy_data().data();
     tau_yy_ptr_ = tau_ij_.yy_data().data();
-    
+
     // Gradient scratch buffers for turbulence models
     dudx_ptr_ = dudx_.data().data();
     dudy_ptr_ = dudy_.data().data();
     dvdx_ptr_ = dvdx_.data().data();
     dvdy_ptr_ = dvdy_.data().data();
     wall_distance_ptr_ = wall_distance_.data().data();
+}
+
+#ifdef USE_GPU_OFFLOAD
+void RANSSolver::initialize_gpu_buffers() {
+    // Verify GPU is available (throws if not)
+    gpu::verify_device_available();
+
+    // Extract all raw pointers (shared with CPU path)
+    extract_field_pointers();
     
 #ifdef GPU_PROFILE_TRANSFERS
     auto transfer_start = std::chrono::steady_clock::now();
@@ -5183,55 +5196,7 @@ SolverDeviceView RANSSolver::get_solver_view() const {
 // In CPU builds, the loops simply use these raw pointers directly (no pragmas applied).
 // This unification eliminates divergent CPU/GPU arithmetic and reduces code duplication.
 void RANSSolver::initialize_gpu_buffers() {
-    field_total_size_ = mesh_->total_cells();
-
-    // Staggered grid velocity fields
-    velocity_u_ptr_ = velocity_.u_data().data();
-    velocity_v_ptr_ = velocity_.v_data().data();
-    velocity_star_u_ptr_ = velocity_star_.u_data().data();
-    velocity_star_v_ptr_ = velocity_star_.v_data().data();
-    velocity_old_u_ptr_ = velocity_old_.u_data().data();
-    velocity_old_v_ptr_ = velocity_old_.v_data().data();
-
-    // Cell-centered fields
-    pressure_ptr_ = pressure_.data().data();
-    pressure_corr_ptr_ = pressure_correction_.data().data();
-    nu_t_ptr_ = nu_t_.data().data();
-    nu_eff_ptr_ = nu_eff_.data().data();
-    rhs_poisson_ptr_ = rhs_poisson_.data().data();
-    div_velocity_ptr_ = div_velocity_.data().data();
-
-    // Work arrays
-    conv_u_ptr_ = conv_.u_data().data();
-    conv_v_ptr_ = conv_.v_data().data();
-    diff_u_ptr_ = diff_.u_data().data();
-    diff_v_ptr_ = diff_.v_data().data();
-
-    // 3D w-velocity fields
-    if (!mesh_->is2D()) {
-        velocity_w_ptr_ = velocity_.w_data().data();
-        velocity_star_w_ptr_ = velocity_star_.w_data().data();
-        velocity_old_w_ptr_ = velocity_old_.w_data().data();
-        conv_w_ptr_ = conv_.w_data().data();
-        diff_w_ptr_ = diff_.w_data().data();
-    }
-
-    // Turbulence transport fields
-    k_ptr_ = k_.data().data();
-    omega_ptr_ = omega_.data().data();
-
-    // Reynolds stress tensor components
-    tau_xx_ptr_ = tau_ij_.xx_data().data();
-    tau_xy_ptr_ = tau_ij_.xy_data().data();
-    tau_yy_ptr_ = tau_ij_.yy_data().data();
-
-    // Gradient scratch buffers
-    dudx_ptr_ = dudx_.data().data();
-    dudy_ptr_ = dudy_.data().data();
-    dvdx_ptr_ = dvdx_.data().data();
-    dvdy_ptr_ = dvdy_.data().data();
-    wall_distance_ptr_ = wall_distance_.data().data();
-
+    extract_field_pointers();
     gpu_ready_ = false;
 }
 
