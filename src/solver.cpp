@@ -61,7 +61,73 @@ namespace nncfd {
 #pragma omp declare target
 #endif
 
-// Staggered grid BC kernel for u-velocity (at x-faces) in x-direction
+// Unified normal velocity BC kernel for staggered grid
+// Handles both u-velocity in x-direction and v-velocity in y-direction
+// @param idx_fixed     Index along the fixed direction (j for u_bc_x, i for v_bc_y)
+// @param g             Ghost layer number (0 to Ng-1)
+// @param N_domain      Domain size in the normal direction (Nx for u_bc_x, Ny for v_bc_y)
+// @param Ng            Number of ghost cells
+// @param stride        Array stride
+// @param row_major     If true: linear_idx = fixed * stride + varying (for u_bc_x)
+//                      If false: linear_idx = varying * stride + fixed (for v_bc_y)
+// @param lo_periodic, lo_noslip  Low boundary condition flags
+// @param hi_periodic, hi_noslip  High boundary condition flags
+// @param ptr           Pointer to velocity array
+inline void apply_normal_bc_staggered(
+    int idx_fixed, int g,
+    int N_domain, int Ng, int stride,
+    bool row_major,
+    bool lo_periodic, bool lo_noslip,
+    bool hi_periodic, bool hi_noslip,
+    double* ptr)
+{
+    // Helper lambda for computing linear index based on layout
+    auto lin_idx = [=](int idx_varying) {
+        return row_major ? (idx_fixed * stride + idx_varying)
+                         : (idx_varying * stride + idx_fixed);
+    };
+
+    // CRITICAL for staggered grid with periodic BCs:
+    // The far interior face (Ng+N) IS the near interior face (Ng)
+    // They represent the same physical location in a periodic domain
+    if (lo_periodic && hi_periodic && g == 0) {
+        int idx_lo = Ng;
+        int idx_hi = Ng + N_domain;
+        ptr[lin_idx(idx_hi)] = ptr[lin_idx(idx_lo)];
+    }
+
+    // Low boundary: normal velocity at faces
+    if (lo_noslip) {
+        // No-penetration: velocity = 0 at wall face
+        if (g == 0) {
+            ptr[lin_idx(Ng)] = 0.0;
+        }
+        // Set ghost faces to zero for stencil consistency
+        int idx_ghost = Ng - 1 - g;
+        ptr[lin_idx(idx_ghost)] = 0.0;
+    } else if (lo_periodic) {
+        int idx_ghost = Ng - 1 - g;
+        int idx_periodic = Ng + N_domain - 1 - g;
+        ptr[lin_idx(idx_ghost)] = ptr[lin_idx(idx_periodic)];
+    }
+
+    // High boundary
+    if (hi_noslip) {
+        // No-penetration: velocity = 0 at wall face
+        if (g == 0) {
+            ptr[lin_idx(Ng + N_domain)] = 0.0;
+        }
+        // Set ghost faces to zero for stencil consistency
+        int idx_ghost = Ng + N_domain + 1 + g;
+        ptr[lin_idx(idx_ghost)] = 0.0;
+    } else if (hi_periodic) {
+        int idx_ghost = Ng + N_domain + 1 + g;  // Ghost on far side (+1 because Ng+N is now interior)
+        int idx_periodic = Ng + 1 + g;           // Wrap from near interior
+        ptr[lin_idx(idx_ghost)] = ptr[lin_idx(idx_periodic)];
+    }
+}
+
+// Wrapper for u-velocity BC in x-direction (maintains backward compatibility)
 inline void apply_u_bc_x_staggered(
     int j, int g,
     int Nx, int Ng, int u_stride,
@@ -69,46 +135,9 @@ inline void apply_u_bc_x_staggered(
     bool x_hi_periodic, bool x_hi_noslip,
     double* u_ptr)
 {
-    // CRITICAL for staggered grid with periodic BCs:
-    // The rightmost interior face (Ng+Nx) IS the leftmost interior face (Ng)
-    // They represent the same physical location in a periodic domain
-    if (x_lo_periodic && x_hi_periodic && g == 0) {
-        // Enforce periodicity: right edge = left edge
-        int i_left = Ng;
-        int i_right = Ng + Nx;
-        u_ptr[j * u_stride + i_right] = u_ptr[j * u_stride + i_left];
-    }
-    
-    // Left boundary: u is the normal velocity at x-faces
-    if (x_lo_noslip) {
-        // No-penetration: u = 0 at wall face (i = Ng)
-        // This is Dirichlet BC for the normal velocity
-        if (g == 0) {
-            u_ptr[j * u_stride + Ng] = 0.0;
-        }
-        // Set ghost faces to zero for stencil consistency
-        int i_ghost = Ng - 1 - g;
-        u_ptr[j * u_stride + i_ghost] = 0.0;
-    } else if (x_lo_periodic) {
-        int i_ghost = Ng - 1 - g;
-        int i_periodic = Ng + Nx - 1 - g;
-        u_ptr[j * u_stride + i_ghost] = u_ptr[j * u_stride + i_periodic];
-    }
-    
-    // Right boundary
-    if (x_hi_noslip) {
-        // No-penetration: u = 0 at wall face (i = Ng + Nx)
-        if (g == 0) {
-            u_ptr[j * u_stride + (Ng + Nx)] = 0.0;
-        }
-        // Set ghost faces to zero for stencil consistency
-        int i_ghost = Ng + Nx + 1 + g;
-        u_ptr[j * u_stride + i_ghost] = 0.0;
-    } else if (x_hi_periodic) {
-        int i_ghost = Ng + Nx + 1 + g;  // Ghost on right (+1 because Ng+Nx is now interior)
-        int i_periodic = Ng + 1 + g;     // Wrap from left interior
-        u_ptr[j * u_stride + i_ghost] = u_ptr[j * u_stride + i_periodic];
-    }
+    apply_normal_bc_staggered(j, g, Nx, Ng, u_stride, true,
+                              x_lo_periodic, x_lo_noslip,
+                              x_hi_periodic, x_hi_noslip, u_ptr);
 }
 
 // Unified tangential velocity BC kernel for staggered grid
@@ -190,7 +219,7 @@ inline void apply_v_bc_x_staggered(
                                    x_hi_periodic, x_hi_noslip, v_ptr);
 }
 
-// Staggered grid BC kernel for v-velocity (at y-faces) in y-direction
+// Wrapper for v-velocity BC in y-direction (maintains backward compatibility)
 inline void apply_v_bc_y_staggered(
     int i, int g,
     int Ny, int Ng, int v_stride,
@@ -198,46 +227,9 @@ inline void apply_v_bc_y_staggered(
     bool y_hi_periodic, bool y_hi_noslip,
     double* v_ptr)
 {
-    // CRITICAL for staggered grid with periodic BCs:
-    // The topmost interior face (Ng+Ny) IS the bottommost interior face (Ng)
-    // They represent the same physical location in a periodic domain
-    if (y_lo_periodic && y_hi_periodic && g == 0) {
-        // Enforce periodicity: top edge = bottom edge
-        int j_bottom = Ng;
-        int j_top = Ng + Ny;
-        v_ptr[j_top * v_stride + i] = v_ptr[j_bottom * v_stride + i];
-    }
-    
-    // No-slip/no-penetration at walls
-    // v is stored AT the wall faces, so we set them to zero directly
-    // Also set ghost cells to enforce BC in stencils
-    if (y_lo_noslip) {
-        // Bottom wall is at j = Ng (first y-face)
-        if (g == 0) {
-            v_ptr[Ng * v_stride + i] = 0.0;
-        }
-        // Ghost cells below wall
-        int j_ghost = Ng - 1 - g;
-        v_ptr[j_ghost * v_stride + i] = 0.0;  // Also zero for consistency
-    } else if (y_lo_periodic) {
-        int j_ghost = Ng - 1 - g;
-        int j_periodic = Ng + Ny - 1 - g;
-        v_ptr[j_ghost * v_stride + i] = v_ptr[j_periodic * v_stride + i];
-    }
-    
-    if (y_hi_noslip) {
-        // Top wall is at j = Ng + Ny (last y-face)
-        if (g == 0) {
-            v_ptr[(Ng + Ny) * v_stride + i] = 0.0;
-        }
-        // Ghost cells above wall
-        int j_ghost = Ng + Ny + 1 + g;
-        v_ptr[j_ghost * v_stride + i] = 0.0;  // Also zero for consistency
-    } else if (y_hi_periodic) {
-        int j_ghost = Ng + Ny + 1 + g;  // Ghost on top (+1 because Ng+Ny is now interior)
-        int j_periodic = Ng + 1 + g;     // Wrap from bottom interior
-        v_ptr[j_ghost * v_stride + i] = v_ptr[j_periodic * v_stride + i];
-    }
+    apply_normal_bc_staggered(i, g, Ny, Ng, v_stride, false,
+                              y_lo_periodic, y_lo_noslip,
+                              y_hi_periodic, y_hi_noslip, v_ptr);
 }
 
 // Convective term kernel for a single cell
