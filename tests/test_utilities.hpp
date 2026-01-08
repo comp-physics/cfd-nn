@@ -1042,5 +1042,36 @@ inline void remove_mean(FieldT& f, const MeshT& mesh) {
     }
 }
 
+//=============================================================================
+// Physics Test Utilities
+//=============================================================================
+
+/// Initialize Taylor-Green vortex (MAC grid: u at x-faces, v at y-faces)
+inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = std::sin(mesh.xf[i]) * std::cos(mesh.y(j));
+        }
+    }
+    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            solver.velocity().v(i, j) = -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]);
+        }
+    }
+}
+
+/// Compute kinetic energy: 0.5 * integral(u^2 + v^2) dx dy
+inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
+    double KE = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+            KE += 0.5 * (u*u + v*v) * mesh.dx * mesh.dy;
+        }
+    }
+    return KE;
+}
+
 } // namespace test
 } // namespace nncfd

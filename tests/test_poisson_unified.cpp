@@ -17,7 +17,6 @@
 #include "fields.hpp"
 #include "poisson_solver.hpp"
 #include "poisson_solver_multigrid.hpp"
-#include "test_framework.hpp"
 #include "test_fixtures.hpp"
 #include "test_utilities.hpp"
 #include "test_harness.hpp"
