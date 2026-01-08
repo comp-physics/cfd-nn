@@ -520,6 +520,11 @@ add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
 target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
 add_executable(test_vcycle_graph_stress tests/test_vcycle_graph_stress.cpp)
 target_link_libraries(test_vcycle_graph_stress PRIVATE nn_cfd_core)
+# Register V-cycle graph stress test with CUDA graphs enabled
+add_test(NAME VCycleGraphStressTest COMMAND test_vcycle_graph_stress)
+set_tests_properties(VCycleGraphStressTest PROPERTIES
+    ENVIRONMENT "MG_USE_VCYCLE_GRAPH=1"
+    LABELS "gpu")
 add_executable(bench_256 tests/bench_256.cpp)
 target_link_libraries(bench_256 PRIVATE nn_cfd_core)
 add_executable(test_mg_physics_match tests/test_mg_physics_match.cpp)
