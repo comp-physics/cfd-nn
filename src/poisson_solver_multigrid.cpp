@@ -1900,7 +1900,9 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
         // Use full V-cycle graph if available (massive reduction in kernel launches)
         // Respect both config setting and environment variable override
-        const bool use_graph = use_vcycle_graph_ && cfg.use_vcycle_graph;
+        // NOTE: V-cycle graph is 3D only (2D path not fully tested)
+        const bool is_3d = (levels_[0]->Nz > 1);
+        const bool use_graph = use_vcycle_graph_ && cfg.use_vcycle_graph && is_3d;
         auto run_cycles = [&](int n) {
             if (use_graph) {
                 // Initialize graph on first use or if parameters changed
