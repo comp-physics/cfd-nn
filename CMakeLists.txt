@@ -469,6 +469,20 @@ if(BUILD_TESTS)
     endif()
 
     # =========================================================================
+    # Benchmarks (not run as tests, for profiling only)
+    # =========================================================================
+    add_executable(bench_fft_vs_mg tests/bench_fft_vs_mg.cpp)
+    target_link_libraries(bench_fft_vs_mg PRIVATE nn_cfd_core)
+    add_executable(bench_mg_tuning tests/bench_mg_tuning.cpp)
+    target_link_libraries(bench_mg_tuning PRIVATE nn_cfd_core)
+    add_executable(bench_mg_bc_sweep tests/bench_mg_bc_sweep.cpp)
+    target_link_libraries(bench_mg_bc_sweep PRIVATE nn_cfd_core)
+    if(USE_GPU_OFFLOAD)
+        add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
+        target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
+    endif()
+
+    # =========================================================================
     # Convenience targets for running tests
     # =========================================================================
     # Run all tests: make check
