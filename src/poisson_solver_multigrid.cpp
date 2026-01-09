@@ -46,6 +46,17 @@
 // NVHPC provides ompx_get_cuda_stream() to get the CUDA stream used by OpenMP.
 // This allows launching CUDA Graphs on the same stream, eliminating sync overhead.
 // The function returns void* which we cast to cudaStream_t.
+
+// CUDA error checking macro for synchronization calls
+#define CUDA_CHECK_SYNC(call)                                                  \
+    do {                                                                       \
+        cudaError_t err = call;                                                \
+        if (err != cudaSuccess) {                                              \
+            throw std::runtime_error(std::string("[MG] CUDA sync error: ") +   \
+                                     cudaGetErrorString(err) + " at " +        \
+                                     __FILE__ + ":" + std::to_string(__LINE__)); \
+        }                                                                      \
+    } while (0)
 #endif
 #include <cmath>
 #include <algorithm>
@@ -1790,7 +1801,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             // CRITICAL: Sync all device work before OpenMP target reduction
             // Both CUDA graph and OpenMP target regions may use different streams.
             // DeviceSynchronize ensures all async GPU work completes before reduction.
-            cudaDeviceSynchronize();
+            CUDA_CHECK_SYNC(cudaDeviceSynchronize());
 
             // Compute initial b_l2 for relative residual check
             // Use CPU reduction on device data to avoid OpenMP target reduction issues
@@ -1825,7 +1836,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             // Helper: sync all device work if graph mode was used
             auto sync_if_graphed = [&]() {
                 if (use_graph && vcycle_graph_ && vcycle_graph_->is_valid()) {
-                    cudaDeviceSynchronize();
+                    CUDA_CHECK_SYNC(cudaDeviceSynchronize());
                 }
             };
 
