@@ -45,9 +45,14 @@ struct PoissonConfig {
     // MG smoother tuning parameters
     // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
     // Benchmark: nu1=3,nu2=1,cyc=8 is 13% faster AND 10× lower div_L2 than baseline
-    int nu1 = 0;             ///< Pre-smoothing sweeps (0 = auto: 3 for accurate, 2 for fast)
+    int nu1 = 0;             ///< Pre-smoothing sweeps (0 = auto: 3 for wall BCs)
     int nu2 = 0;             ///< Post-smoothing sweeps (0 = auto: 1)
     int chebyshev_degree = 4; ///< Chebyshev polynomial degree (3-4 typical, lower = faster)
+
+    // CUDA Graph acceleration (GPU only)
+    // Captures entire V-cycle as single graph - massive speedup from reduced kernel launches
+    // Environment variable MG_USE_VCYCLE_GRAPH=0 can override to disable
+    bool use_vcycle_graph = true;  ///< Enable V-cycle CUDA Graph (default: ON)
 };
 
 /// Poisson solver for pressure equation

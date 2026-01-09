@@ -145,8 +145,8 @@ private:
     // CUDA Graph support for reduced kernel launch overhead
     std::unique_ptr<mg_cuda::CudaMGContext> cuda_ctx_;
     std::unique_ptr<mg_cuda::CudaVCycleGraph> vcycle_graph_;  // Full V-cycle graph
-    bool use_cuda_graphs_ = false;       // Set via MG_USE_CUDA_GRAPHS=1 (smoother only)
-    bool use_vcycle_graph_ = false;      // Set via MG_USE_VCYCLE_GRAPH=1 (full V-cycle)
+    bool use_cuda_graphs_ = false;       // Smoother-only graphs (legacy, set via MG_USE_CUDA_GRAPHS=1)
+    bool use_vcycle_graph_ = true;       // Full V-cycle graph (DEFAULT ON, disable via MG_USE_VCYCLE_GRAPH=0)
     int vcycle_graph_nu1_ = 2;           // Pre-smoothing iterations for graphed V-cycle
     int vcycle_graph_nu2_ = 2;           // Post-smoothing iterations for graphed V-cycle
     void initialize_cuda_graphs();

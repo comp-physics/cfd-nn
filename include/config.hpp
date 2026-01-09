@@ -138,9 +138,14 @@ struct Config {
     int poisson_check_after = 4;           ///< Check residual after this many cycles
 
     // MG smoother tuning parameters
-    int poisson_nu1 = 0;             ///< Pre-smoothing sweeps (0 = auto: 2 if fixed_cycles>3, else 1)
-    int poisson_nu2 = 0;             ///< Post-smoothing sweeps (0 = auto)
+    // Optimal at 128³ with walls: nu1=3, nu2=1 (more pre-smooth for wall BCs)
+    int poisson_nu1 = 0;             ///< Pre-smoothing sweeps (0 = auto: 3 for wall BCs)
+    int poisson_nu2 = 0;             ///< Post-smoothing sweeps (0 = auto: 1)
     int poisson_chebyshev_degree = 4; ///< Chebyshev polynomial degree (3-4 typical)
+
+    // CUDA Graph acceleration (GPU only)
+    // Captures entire V-cycle as single graph for massive kernel launch reduction
+    bool poisson_use_vcycle_graph = true;  ///< Enable V-cycle CUDA Graph (default: ON)
 
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

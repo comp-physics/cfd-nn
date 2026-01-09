@@ -44,7 +44,6 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
-#include <cstring>  // for memcpy in debug
 #include <cassert>
 #include <limits>   // for std::numeric_limits (NaN handling)
 #include <cstdlib>  // for std::getenv
@@ -59,18 +58,20 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
     initialize_gpu_buffers();
 
 #ifdef USE_GPU_OFFLOAD
-    // Check if CUDA Graphs are requested via environment variable
+    // Smoother-only CUDA Graphs (legacy option, usually not needed with V-cycle graph)
     const char* env = std::getenv("MG_USE_CUDA_GRAPHS");
     if (env != nullptr && (std::string(env) == "1" || std::string(env) == "true")) {
         use_cuda_graphs_ = true;
         cuda_ctx_ = std::make_unique<mg_cuda::CudaMGContext>();
-        std::cout << "[MG] CUDA Graphs enabled for smoother (set MG_USE_CUDA_GRAPHS=0 to disable)\n";
     }
 
-    // Check if full V-cycle graphing is requested
+    // Full V-cycle CUDA Graph: DEFAULT ON for massive kernel launch reduction
+    // Environment variable MG_USE_VCYCLE_GRAPH=0 disables it
     const char* vcycle_env = std::getenv("MG_USE_VCYCLE_GRAPH");
-    if (vcycle_env != nullptr && (std::string(vcycle_env) == "1" || std::string(vcycle_env) == "true")) {
-        use_vcycle_graph_ = true;
+    if (vcycle_env != nullptr && (std::string(vcycle_env) == "0" || std::string(vcycle_env) == "false")) {
+        use_vcycle_graph_ = false;
+    } else {
+        // Default: enabled (use_vcycle_graph_ = true set in header)
         std::cout << "[MG] Full V-cycle CUDA Graph enabled (set MG_USE_VCYCLE_GRAPH=0 to disable)\n";
     }
 #endif
@@ -1898,8 +1899,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         const int degree = cfg.chebyshev_degree;
 
         // Use full V-cycle graph if available (massive reduction in kernel launches)
+        // Respect both config setting and environment variable override
+        const bool use_graph = use_vcycle_graph_ && cfg.use_vcycle_graph;
         auto run_cycles = [&](int n) {
-            if (use_vcycle_graph_) {
+            if (use_graph) {
                 // Initialize graph on first use or if parameters changed
                 if (!vcycle_graph_ || vcycle_graph_nu1_ != nu1 ||
                     vcycle_graph_nu2_ != nu2 || vcycle_graph_degree_ != degree) {
@@ -1968,7 +1971,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
             // Helper: sync all device work if graph mode was used
             auto sync_if_graphed = [&]() {
-                if (use_vcycle_graph_ && vcycle_graph_ && vcycle_graph_->is_valid()) {
+                if (use_graph && vcycle_graph_ && vcycle_graph_->is_valid()) {
                     cudaDeviceSynchronize();
                 }
             };
