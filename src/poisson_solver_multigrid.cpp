@@ -56,6 +56,16 @@
 
 namespace nncfd {
 
+// ============================================================================
+// Chebyshev Eigenvalue Bounds
+// ============================================================================
+// Conservative eigenvalue bounds for D^{-1}*A where D = diag(A).
+// For the 7-point discrete Laplacian, the true eigenvalues are in (0, 2).
+// We use slightly narrower bounds [0.05, 1.95] for numerical stability.
+// Note: Keep in sync with mg_cuda_kernels.cpp (duplicated for CPU build isolation)
+constexpr double CHEBYSHEV_LAMBDA_MIN = 0.05;
+constexpr double CHEBYSHEV_LAMBDA_MAX = 1.95;
+
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
 
@@ -671,13 +681,9 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
                               static_cast<size_t>(Ny + 2) *
                               static_cast<size_t>(Nz + 2);
 
-    // Eigenvalue bounds for D^{-1}*A where D = diag(A)
-    // For discrete Laplacian with 5/7-point stencil, eigenvalues are in (0, 2)
-    // Use conservative bounds for stability across grid sizes and BCs
-    const double lambda_min = 0.05;   // Lower bound (> 0)
-    const double lambda_max = 1.95;   // Upper bound (< 2)
-    const double d = (lambda_max + lambda_min) / 2.0;
-    const double c = (lambda_max - lambda_min) / 2.0;
+    // Chebyshev eigenvalue bounds (see constants at top of file)
+    const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
+    const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
 
     // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
     double* u_ptr = u_ptrs_[level];

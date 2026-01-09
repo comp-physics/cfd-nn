@@ -26,6 +26,16 @@ namespace nncfd {
 namespace mg_cuda {
 
 // ============================================================================
+// Chebyshev Eigenvalue Bounds
+// ============================================================================
+// Conservative eigenvalue bounds for D^{-1}*A where D = diag(A).
+// For the 7-point discrete Laplacian, the true eigenvalues are in (0, 2).
+// We use slightly narrower bounds [0.05, 1.95] for numerical stability.
+// These ensure Chebyshev acceleration is stable across all grid sizes and BCs.
+constexpr double CHEBYSHEV_LAMBDA_MIN = 0.05;
+constexpr double CHEBYSHEV_LAMBDA_MAX = 1.95;
+
+// ============================================================================
 // CUDA Kernels
 // ============================================================================
 
@@ -611,11 +621,9 @@ void CudaSmootherGraph::initialize(const LevelConfig& config, int degree,
 }
 
 void CudaSmootherGraph::capture_graph(cudaStream_t stream) {
-    // Chebyshev eigenvalue bounds
-    const double lambda_min = 0.05;
-    const double lambda_max = 1.95;
-    const double d = (lambda_max + lambda_min) / 2.0;
-    const double c = (lambda_max - lambda_min) / 2.0;
+    // Chebyshev eigenvalue bounds (see constants at top of file)
+    const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
+    const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
 
     // Check if all BCs are periodic - can use fused kernel (no BC pass needed)
     const bool all_periodic = (bc_x_lo_ == BC::Periodic && bc_x_hi_ == BC::Periodic &&
@@ -894,11 +902,9 @@ void CudaVCycleGraph::capture_vcycle_level(cudaStream_t stream, int level) {
 void CudaVCycleGraph::capture_smoother(cudaStream_t stream, int level, int iterations) {
     const auto& cfg = levels_[level];
 
-    // Chebyshev eigenvalue bounds
-    const double lambda_min = 0.05;
-    const double lambda_max = 1.95;
-    const double d = (lambda_max + lambda_min) / 2.0;
-    const double c = (lambda_max - lambda_min) / 2.0;
+    // Chebyshev eigenvalue bounds (see constants at top of file)
+    const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
+    const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
 
     // Capture the Chebyshev smoother sequence
     for (int k = 0; k < iterations; ++k) {

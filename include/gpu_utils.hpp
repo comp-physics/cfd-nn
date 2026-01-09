@@ -309,6 +309,12 @@ inline void sync() {}
     _Pragma("omp parallel for") \
     for (int var = start; var < end; ++var)
 
+// CPU fallback for async - just a regular parallel for (no async semantics on CPU)
+// Note: gpu::sync() is a no-op on CPU, so async/sync pattern still works
+#define GPU_PARALLEL_FOR_ASYNC(var, start, end) \
+    _Pragma("omp parallel for") \
+    for (int var = start; var < end; ++var)
+
 #define GPU_PARALLEL_FOR_2D(i, i_start, i_end, j, j_start, j_end) \
     _Pragma("omp parallel for collapse(2)") \
     for (int j = j_start; j < j_end; ++j) \
