@@ -206,8 +206,8 @@ __global__ void bc_3d_kernel(
         int ik = remaining;
         int i = ik % (Nx + 2*Ng);
         int k = ik / (Nx + 2*Ng);
-        // Skip cells owned by x-faces (i=0 or i=Nx+Ng)
-        if (i == 0 || i == Nx + Ng) return;
+        // Skip cells owned by x-faces (all x-ghost layers, robust for any Ng)
+        if (i < Ng || i >= Nx + Ng) return;
         int idx = k * plane_stride + 0 * stride + i;
         int idx_int = k * plane_stride + Ng * stride + i;
         int idx_wrap = k * plane_stride + (Ny + Ng - 1) * stride + i;
@@ -228,8 +228,8 @@ __global__ void bc_3d_kernel(
         int ik = remaining;
         int i = ik % (Nx + 2*Ng);
         int k = ik / (Nx + 2*Ng);
-        // Skip cells owned by x-faces (i=0 or i=Nx+Ng)
-        if (i == 0 || i == Nx + Ng) return;
+        // Skip cells owned by x-faces (all x-ghost layers, robust for any Ng)
+        if (i < Ng || i >= Nx + Ng) return;
         int idx = k * plane_stride + (Ny + Ng) * stride + i;
         int idx_int = k * plane_stride + (Ny + Ng - 1) * stride + i;
         int idx_wrap = k * plane_stride + Ng * stride + i;
@@ -250,8 +250,8 @@ __global__ void bc_3d_kernel(
         int ij = remaining;
         int i = ij % (Nx + 2*Ng);
         int j = ij / (Nx + 2*Ng);
-        // Skip cells owned by x-faces or y-faces
-        if (i == 0 || i == Nx + Ng || j == 0 || j == Ny + Ng) return;
+        // Skip cells owned by x-faces or y-faces (all ghost layers, robust for any Ng)
+        if (i < Ng || i >= Nx + Ng || j < Ng || j >= Ny + Ng) return;
         int idx = 0 * plane_stride + j * stride + i;
         int idx_int = Ng * plane_stride + j * stride + i;
         int idx_wrap = (Nz + Ng - 1) * plane_stride + j * stride + i;
@@ -272,8 +272,8 @@ __global__ void bc_3d_kernel(
         int ij = remaining;
         int i = ij % (Nx + 2*Ng);
         int j = ij / (Nx + 2*Ng);
-        // Skip cells owned by x-faces or y-faces
-        if (i == 0 || i == Nx + Ng || j == 0 || j == Ny + Ng) return;
+        // Skip cells owned by x-faces or y-faces (all ghost layers, robust for any Ng)
+        if (i < Ng || i >= Nx + Ng || j < Ng || j >= Ny + Ng) return;
         int idx = (Nz + Ng) * plane_stride + j * stride + i;
         int idx_int = (Nz + Ng - 1) * plane_stride + j * stride + i;
         int idx_wrap = Ng * plane_stride + j * stride + i;
