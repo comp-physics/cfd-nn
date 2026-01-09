@@ -632,6 +632,40 @@ HYPRE is automatically downloaded and built by CMake. See `docs/HYPRE_POISSON_SO
 - EARSM tensor basis computations
 - Feature invariant calculations
 
+### V-cycle CUDA Graph Optimization
+
+On NVIDIA GPUs with NVHPC compiler, the native multigrid solver captures the **entire V-cycle kernel sequence as a CUDA Graph**. This eliminates per-kernel launch overhead and synchronization costs:
+
+**How it works:**
+1. On first solve, the V-cycle executes normally while CUDA captures all kernel launches
+2. The captured graph is stored and validated
+3. Subsequent solves replay the graph with a single `cudaGraphLaunch()` call
+4. Graph is automatically recaptured if boundary conditions change
+
+**Performance impact:**
+- Eliminates ~37% of GPU API time spent in `cudaStreamSynchronize` (measured with Nsys)
+- Reduces kernel launch overhead from O(levels × kernels) to O(1)
+- Most beneficial for iterative solves with many V-cycles
+
+**Configuration:**
+```cpp
+// Enabled by default in GPU builds with NVHPC
+config.poisson_use_vcycle_graph = true;   // Enable (default)
+config.poisson_use_vcycle_graph = false;  // Disable for debugging
+```
+
+**Requirements:**
+- NVIDIA GPU with CUDA support
+- NVHPC compiler (uses `ompx_get_cuda_stream()` for stream access)
+- 3D mesh (2D meshes use non-graphed path)
+
+**Fallback behavior:**
+- Non-NVHPC compilers: Automatic fallback to standard OpenMP target path
+- 2D meshes: V-cycle graph disabled (not fully optimized for 2D)
+- Graph capture failure: Falls back to non-graphed path with warning
+
+See `docs/POISSON_SOLVER_GUIDE.md` for detailed Poisson solver documentation.
+
 ## Validation
 
 The solver is validated against both **analytical solutions** and **fundamental physics principles**.
