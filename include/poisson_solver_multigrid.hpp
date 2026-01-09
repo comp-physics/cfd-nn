@@ -7,9 +7,8 @@
 #include <memory>
 
 #ifdef USE_GPU_OFFLOAD
-// Forward declarations for CUDA Graph contexts
+// Forward declaration for V-cycle CUDA Graph
 namespace nncfd { namespace mg_cuda {
-    class CudaMGContext;
     class CudaVCycleGraph;
 } }
 #endif
@@ -143,21 +142,17 @@ private:
 
 #ifdef USE_GPU_OFFLOAD
     // CUDA Graph support for reduced kernel launch overhead
-    std::unique_ptr<mg_cuda::CudaMGContext> cuda_ctx_;
     std::unique_ptr<mg_cuda::CudaVCycleGraph> vcycle_graph_;  // Full V-cycle graph
-    bool use_cuda_graphs_ = false;       // Smoother-only graphs (legacy, set via MG_USE_CUDA_GRAPHS=1)
-    bool use_vcycle_graph_ = true;       // Full V-cycle graph (DEFAULT ON, disable via MG_USE_VCYCLE_GRAPH=0)
+    bool use_vcycle_graph_ = true;       // Full V-cycle graph (DEFAULT ON, disable via config)
     int vcycle_graph_nu1_ = 2;           // Pre-smoothing iterations for graphed V-cycle
     int vcycle_graph_nu2_ = 2;           // Post-smoothing iterations for graphed V-cycle
-    void initialize_cuda_graphs();
+    int vcycle_graph_degree_ = 4;        // Chebyshev degree for graphed V-cycle
     void initialize_vcycle_graph(int nu1, int nu2, int degree);  // Initialize full V-cycle graph
-    int vcycle_graph_degree_ = 4;    // Chebyshev degree for graphed V-cycle
     void vcycle_graphed();  // Execute graphed V-cycle (single graph launch)
 #endif
 
     // Core multigrid operations
     void create_hierarchy();
-    void smooth(int level, int iterations, double omega = 1.8);
     void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
     void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
