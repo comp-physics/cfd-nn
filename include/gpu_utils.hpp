@@ -254,11 +254,11 @@ inline T* get_device_ptr(T* host_ptr) {
     return static_cast<T*>(dev_ptr);
 }
 
-/// Synchronize all GPU work (wait for all pending kernels to complete)
-/// Use this before reading results back to host (e.g., before reductions)
-/// When using nowait on target regions, this provides an explicit sync point
+/// Synchronize OpenMP target tasks (wait for deferred target regions to complete)
+/// Use this before reading results back to host after using `nowait` target regions.
+/// NOTE: This only synchronizes OpenMP target tasks, NOT direct CUDA kernel launches.
+///       CUDA kernels (e.g., in mg_cuda_kernels.cpp) use cudaStreamSynchronize instead.
 inline void sync() {
-    // OpenMP taskwait synchronizes all deferred target tasks
     #pragma omp taskwait
 }
 #else
