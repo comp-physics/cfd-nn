@@ -2176,13 +2176,13 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2, int degre
         configs.push_back(cfg);
     }
 
-    // Verify device pointers are valid
+    // Verify device pointers are valid - null indicates a bug in buffer initialization
     for (size_t lvl = 0; lvl < configs.size(); ++lvl) {
         if (!configs[lvl].u || !configs[lvl].f || !configs[lvl].r || !configs[lvl].tmp) {
-            std::cerr << "[MG] ERROR: Null device pointer at level " << lvl
-                      << " - V-cycle Graph disabled\n";
-            use_vcycle_graph_ = false;
-            return;
+            throw std::runtime_error(
+                "[MG] FATAL: Null device pointer at level " + std::to_string(lvl) +
+                ". GPU buffer initialization failed - check that omp target enter data "
+                "was called in initialize_gpu_buffers().");
         }
     }
 
