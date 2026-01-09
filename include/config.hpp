@@ -81,6 +81,7 @@ struct Config {
     double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
     int max_iter = 10000;       ///< Maximum iterations for steady-state convergence
+    double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_iter)
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
     
     // Numerical schemes
@@ -117,11 +118,34 @@ struct Config {
     int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)
     
     // Poisson solver
-    double poisson_tol = 1e-6;
-    int poisson_max_iter = 5;  ///< MG V-cycles per solve (5 for projection, increase for accurate solve)
-    double poisson_omega = 1.8; ///< SOR relaxation parameter
+    double poisson_tol = 1e-6;       ///< Legacy absolute tolerance (deprecated)
+    int poisson_max_iter = 20;       ///< Max MG V-cycles per solve (safety limit)
+    double poisson_omega = 1.8;      ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     PoissonSolverType poisson_solver = PoissonSolverType::Auto;  ///< Poisson solver selection
+
+    // Robust MG convergence criteria (recommended for projection)
+    double poisson_tol_abs = 0.0;    ///< Absolute tolerance on ||r||_∞ (0 = disabled)
+    double poisson_tol_rhs = 1e-3;   ///< RHS-relative: ||r||/||b|| (recommended for projection)
+    double poisson_tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0||
+    int poisson_check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap)
+    bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
+    double poisson_linf_safety = 10.0; ///< L∞ safety cap multiplier (prevent L2 from hiding bad cells)
+    int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
+
+    // Adaptive fixed-cycle mode: run check_after cycles, check residual, add 2 more if needed
+    bool poisson_adaptive_cycles = false;  ///< Enable adaptive checking within fixed-cycle mode
+    int poisson_check_after = 4;           ///< Check residual after this many cycles
+
+    // MG smoother tuning parameters
+    // Optimal at 128³ with walls: nu1=3, nu2=1 (more pre-smooth for wall BCs)
+    int poisson_nu1 = 0;             ///< Pre-smoothing sweeps (0 = auto: 3 for wall BCs)
+    int poisson_nu2 = 0;             ///< Post-smoothing sweeps (0 = auto: 1)
+    int poisson_chebyshev_degree = 4; ///< Chebyshev polynomial degree (3-4 typical)
+
+    // CUDA Graph acceleration (GPU only)
+    // Captures entire V-cycle as single graph for massive kernel launch reduction
+    bool poisson_use_vcycle_graph = true;  ///< Enable V-cycle CUDA Graph (default: ON)
 
     // Turbulence guard (abort on NaN/Inf)
     bool turb_guard_enabled = true;         ///< Enable NaN/Inf guard checks

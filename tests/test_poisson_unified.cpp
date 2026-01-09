@@ -351,8 +351,12 @@ void test_nullspace_periodic() {
               PoissonBC::Periodic, PoissonBC::Periodic);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-8;
+    cfg.tol = 1e-8;          // Legacy absolute tolerance
+    cfg.tol_abs = 1e-8;      // Absolute tolerance
+    cfg.tol_rhs = 0.0;       // Disable RHS-relative (we want absolute convergence)
+    cfg.tol_rel = 0.0;       // Disable initial-residual-relative
     cfg.max_iter = 100;
+    cfg.use_l2_norm = false;  // Use L∞ since we check mg.residual() (L∞)
     int iters = mg.solve(rhs, p, cfg);
 
     bool converged = (mg.residual() < 1e-6);
@@ -407,8 +411,12 @@ void test_3d_gpu_convergence() {
               PoissonBC::Periodic, PoissonBC::Periodic);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-8;
+    cfg.tol = 1e-8;          // Legacy absolute tolerance
+    cfg.tol_abs = 1e-8;      // Absolute tolerance
+    cfg.tol_rhs = 0.0;       // Disable RHS-relative (we want absolute convergence)
+    cfg.tol_rel = 0.0;       // Disable initial-residual-relative
     cfg.max_iter = 100;
+    cfg.use_l2_norm = false;  // Use L∞ since we check mg.residual() (L∞)
     mg.solve(rhs, p, cfg);
 
     bool converged = (mg.residual() < 1e-6);

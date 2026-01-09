@@ -248,7 +248,10 @@ add_library(nn_cfd_core ${LIB_SOURCES})
 
 # Add GPU-only sources and link OpenMP when GPU offload is enabled
 if(USE_GPU_OFFLOAD)
-    target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
+    target_sources(nn_cfd_core PRIVATE
+        src/gpu_init.cpp
+        src/mg_cuda_kernels.cpp
+    )
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
@@ -334,6 +337,10 @@ target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 # Profiling driver (limited steps for nsys analysis)
 add_executable(profile_solver app/profile_solver.cpp)
 target_link_libraries(profile_solver nn_cfd_core)
+
+# Comprehensive profiling across BCs, Poisson solvers, turbulence models
+add_executable(profile_comprehensive app/profile_comprehensive.cpp)
+target_link_libraries(profile_comprehensive nn_cfd_core)
 
 # Poisson warm-start profiling (3 V-cycles, 50 steps)
 add_executable(profile_poisson_warmstart app/profile_poisson_warmstart.cpp)
@@ -506,6 +513,26 @@ if(BUILD_TESTS)
     add_executable(test_physics_validation_advanced tests/test_physics_validation_advanced.cpp)
     target_link_libraries(test_physics_validation_advanced nn_cfd_core)
     add_test(NAME PhysicsValidationAdvancedTest COMMAND test_physics_validation_advanced)
+
+    # MG benchmarks (CPU/GPU agnostic)
+    add_executable(test_mg_physics_match tests/test_mg_physics_match.cpp)
+    target_link_libraries(test_mg_physics_match PRIVATE nn_cfd_core)
+    add_executable(bench_fft_vs_mg tests/bench_fft_vs_mg.cpp)
+    target_link_libraries(bench_fft_vs_mg PRIVATE nn_cfd_core)
+    add_executable(bench_mg_tuning tests/bench_mg_tuning.cpp)
+    target_link_libraries(bench_mg_tuning PRIVATE nn_cfd_core)
+    add_executable(bench_mg_bc_sweep tests/bench_mg_bc_sweep.cpp)
+    target_link_libraries(bench_mg_bc_sweep PRIVATE nn_cfd_core)
+
+    # GPU-specific benchmarks and tests (only when USE_GPU_OFFLOAD is enabled)
+    if(USE_GPU_OFFLOAD)
+        add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
+        target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
+        add_executable(test_vcycle_graph_stress tests/test_vcycle_graph_stress.cpp)
+        target_link_libraries(test_vcycle_graph_stress PRIVATE nn_cfd_core)
+        add_test(NAME VCycleGraphStressTest COMMAND test_vcycle_graph_stress)
+        set_tests_properties(VCycleGraphStressTest PROPERTIES LABELS "gpu")
+    endif()
 endif()
 
 # Installation
