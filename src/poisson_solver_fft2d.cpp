@@ -358,7 +358,7 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean subtraction
     double sum = 0.0;
     #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum) \
-        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
+        map(present, alloc: rhs_ptr[0:total_size]) is_device_ptr(packed)
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             // Source: 2D indexing [j+Ng][i+Ng] - matches solver's 2D path
@@ -423,7 +423,7 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     int bc_y_hi_int = (bc_y_hi_ == PoissonBC::Neumann) ? 1 : 0;
 
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: p_ptr[0:total_size]) is_device_ptr(unpacked)
+        map(present, alloc: p_ptr[0:total_size]) is_device_ptr(unpacked)
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             // Source: [j * Nx + i] (contiguous FFT output)

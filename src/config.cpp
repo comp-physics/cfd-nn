@@ -120,6 +120,7 @@ void Config::load(const std::string& filename) {
     CFL_max = get_double("CFL_max", CFL_max);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
     max_iter = get_int("max_iter", max_iter);
+    T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);
     
     // Numerical scheme
@@ -205,6 +206,15 @@ void Config::load(const std::string& filename) {
 
     // Poisson solver tuning
     poisson_abs_tol_floor = get_double("poisson_abs_tol_floor", poisson_abs_tol_floor);
+
+    // Robust MG convergence criteria
+    poisson_tol_abs = get_double("poisson_tol_abs", poisson_tol_abs);
+    poisson_tol_rhs = get_double("poisson_tol_rhs", poisson_tol_rhs);
+    poisson_tol_rel = get_double("poisson_tol_rel", poisson_tol_rel);
+    poisson_check_interval = get_int("poisson_check_interval", poisson_check_interval);
+    poisson_use_l2_norm = get_bool("poisson_use_l2_norm", poisson_use_l2_norm);
+    poisson_linf_safety = get_double("poisson_linf_safety", poisson_linf_safety);
+    poisson_fixed_cycles = get_int("poisson_fixed_cycles", poisson_fixed_cycles);
 
     // Turbulence guard settings
     turb_guard_enabled = get_bool("turb_guard_enabled", turb_guard_enabled);

@@ -248,7 +248,10 @@ add_library(nn_cfd_core ${LIB_SOURCES})
 
 # Add GPU-only sources and link OpenMP when GPU offload is enabled
 if(USE_GPU_OFFLOAD)
-    target_sources(nn_cfd_core PRIVATE src/gpu_init.cpp)
+    target_sources(nn_cfd_core PRIVATE
+        src/gpu_init.cpp
+        src/mg_cuda_kernels.cpp
+    )
     target_link_libraries(nn_cfd_core OpenMP::OpenMP_CXX)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
@@ -334,6 +337,10 @@ target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
 # Profiling driver (limited steps for nsys analysis)
 add_executable(profile_solver app/profile_solver.cpp)
 target_link_libraries(profile_solver nn_cfd_core)
+
+# Comprehensive profiling across BCs, Poisson solvers, turbulence models
+add_executable(profile_comprehensive app/profile_comprehensive.cpp)
+target_link_libraries(profile_comprehensive nn_cfd_core)
 
 # Poisson warm-start profiling (3 V-cycles, 50 steps)
 add_executable(profile_poisson_warmstart app/profile_poisson_warmstart.cpp)

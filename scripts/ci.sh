@@ -569,6 +569,10 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
     # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
     if [[ "$USE_GPU" == "ON" ]]; then
         run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300 "OMP_TARGET_OFFLOAD=MANDATORY"
+
+        # V-cycle CUDA Graph stress test - validates graphed MG solver
+        # Tests BC alternation (graph recapture), convergence parity, anisotropic grids
+        run_test "V-cycle Graph Stress" "$BUILD_DIR/test_vcycle_graph_stress" 120 "MG_USE_VCYCLE_GRAPH=1"
     fi
 fi
 

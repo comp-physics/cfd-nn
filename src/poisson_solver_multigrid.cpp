@@ -4,28 +4,78 @@
 /// This file implements a V-cycle geometric multigrid solver achieving O(N)
 /// complexity for the pressure correction equation in the fractional-step method.
 /// Key features:
-/// - V-cycle algorithm with SOR smoothing
+/// - V-cycle algorithm with Chebyshev or Jacobi smoothing
 /// - Automatic mesh hierarchy construction (restriction to coarsest level)
-/// - Full weighting restriction and bilinear prolongation
+/// - Full weighting restriction and bilinear/trilinear prolongation
 /// - GPU-accelerated smoothing and residual computation
+/// - Fused residual + norm computation for efficient convergence checking
+/// - L2 norm convergence with L∞ safety cap for robustness
 /// - 10-100x faster than pure SOR iteration for large grids
 ///
 /// The solver constructs a hierarchy of grids by recursive coarsening and solves
 /// the system using recursive V-cycles that combine smoothing on each level with
 /// coarse-grid correction.
+///
+/// GPU Synchronization & CUDA Graphs:
+/// -----------------------------------
+/// The MG kernels have data dependencies (each operation reads results from the
+/// previous one). Using OpenMP `nowait` on target regions causes race conditions
+/// because nvhpc may execute deferred tasks on different CUDA streams.
+///
+/// Solution: V-cycle CUDA Graphs (DEFAULT in GPU builds with NVHPC)
+/// - Captures entire V-cycle kernel sequence as a single CUDA graph
+/// - Replays with one graph launch, eliminating per-kernel sync overhead
+/// - See initialize_vcycle_graph() and vcycle_graphed() for implementation
+/// - Disable via config.poisson_use_vcycle_graph = false if needed
+///
+/// Fallback (non-NVHPC compilers or when graphs disabled):
+/// - All GPU kernels use synchronous execution (implicit barrier after each)
+/// - ~37% of GPU API time spent in cudaStreamSynchronize (from Nsys profiling)
+///
+/// Alternative approaches (not implemented):
+/// - OpenMP depend clauses: Express dependencies explicitly (complex)
+/// - Custom CUDA streams: Ensure all kernels use same stream (non-portable)
 
 #include "poisson_solver_multigrid.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#include "mg_cuda_kernels.hpp"
+#include <cuda_runtime.h>
+// NVHPC provides ompx_get_cuda_stream() to get the CUDA stream used by OpenMP.
+// This allows launching CUDA Graphs on the same stream, eliminating sync overhead.
+// The function returns void* which we cast to cudaStream_t.
+
+// CUDA error checking macro for synchronization calls
+#define CUDA_CHECK_SYNC(call)                                                  \
+    do {                                                                       \
+        cudaError_t err = call;                                                \
+        if (err != cudaSuccess) {                                              \
+            throw std::runtime_error(std::string("[MG] CUDA sync error: ") +   \
+                                     cudaGetErrorString(err) + " at " +        \
+                                     __FILE__ + ":" + std::to_string(__LINE__)); \
+        }                                                                      \
+    } while (0)
+#endif
 #include <cmath>
 #include <algorithm>
 #include <iostream>
-#include <cstring>  // for memcpy in debug
 #include <cassert>
 #include <limits>   // for std::numeric_limits (NaN handling)
 #include <cstdlib>  // for std::getenv
 
 namespace nncfd {
+
+// ============================================================================
+// Chebyshev Eigenvalue Bounds
+// ============================================================================
+// Conservative eigenvalue bounds for D^{-1}*A where D = diag(A).
+// For the 7-point discrete Laplacian, the true eigenvalues are in (0, 2).
+// We use slightly narrower bounds [0.05, 1.95] for numerical stability.
+// Note: Keep in sync with mg_cuda_kernels.cpp (duplicated for CPU build isolation)
+constexpr double CHEBYSHEV_LAMBDA_MIN = 0.05;
+constexpr double CHEBYSHEV_LAMBDA_MAX = 1.95;
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
@@ -33,6 +83,9 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
     // Initialize GPU buffers (maps to device) OR set up raw pointers for CPU
     // This enables unified loops to use cached pointers on both CPU and GPU
     initialize_gpu_buffers();
+
+    // V-cycle CUDA Graph is enabled by default (use_vcycle_graph_ = true in header)
+    // Can be disabled via config.poisson_use_vcycle_graph = false
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
@@ -46,6 +99,14 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     bc_y_lo_ = y_lo;
     bc_y_hi_ = y_hi;
     // Keep z BCs at default (periodic) for 2D compatibility
+
+#ifdef USE_GPU_OFFLOAD
+    // Invalidate V-cycle graph so it gets recaptured with new BCs
+    if (vcycle_graph_) {
+        vcycle_graph_->destroy();
+        vcycle_graph_.reset();
+    }
+#endif
 }
 
 void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
@@ -57,6 +118,14 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     bc_y_hi_ = y_hi;
     bc_z_lo_ = z_lo;
     bc_z_hi_ = z_hi;
+
+#ifdef USE_GPU_OFFLOAD
+    // Invalidate V-cycle graph so it gets recaptured with new BCs
+    if (vcycle_graph_) {
+        vcycle_graph_->destroy();
+        vcycle_graph_.reset();
+    }
+#endif
 }
 
 void MultigridPoissonSolver::create_hierarchy() {
@@ -103,6 +172,7 @@ void MultigridPoissonSolver::create_hierarchy() {
 }
 
 void MultigridPoissonSolver::apply_bc(int level) {
+    NVTX_SCOPE_BC("mg:apply_bc");
     // UNIFIED CPU/GPU implementation for boundary conditions
     // Uses raw pointers and identical arithmetic for bitwise consistency
     auto& grid = *levels_[level];
@@ -335,6 +405,7 @@ void MultigridPoissonSolver::apply_bc(int level) {
 }
 
 void MultigridPoissonSolver::apply_bc_to_residual(int level) {
+    NVTX_SCOPE_BC("mg:apply_bc_residual");
     // Apply boundary conditions to the residual array for proper restriction
     // The 9-point restriction stencil reads from ghost cells, so they must be set
     auto& grid = *levels_[level];
@@ -621,19 +692,17 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
                               static_cast<size_t>(Ny + 2) *
                               static_cast<size_t>(Nz + 2);
 
-    // Eigenvalue bounds for D^{-1}*A where D = diag(A)
-    // For discrete Laplacian with 5/7-point stencil, eigenvalues are in (0, 2)
-    // Use conservative bounds for stability across grid sizes and BCs
-    const double lambda_min = 0.05;   // Lower bound (> 0)
-    const double lambda_max = 1.95;   // Upper bound (< 2)
-    const double d = (lambda_max + lambda_min) / 2.0;
-    const double c = (lambda_max - lambda_min) / 2.0;
+    // Chebyshev eigenvalue bounds (see constants at top of file)
+    const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
+    const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
 
     // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
 #ifdef USE_GPU_OFFLOAD
     double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
+    // Note: Cannot use nowait here - Chebyshev iterations have data dependencies
+    // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define CHEBY_TARGET_3D \
@@ -733,6 +802,7 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
 #ifdef USE_GPU_OFFLOAD
     double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
     // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
+    // Note: Cannot use nowait here - Jacobi iterations have data dependencies
     #define JACOBI_TARGET_U_TO_TMP_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_2D \
@@ -845,121 +915,6 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     #undef JACOBI_TARGET_COPY
 }
 
-void MultigridPoissonSolver::smooth(int level, int iterations, double omega) {
-    NVTX_SCOPE_POISSON("mg:smooth");
-
-    // Red-Black Gauss-Seidel with SOR
-    // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
-    auto& grid = *levels_[level];
-    const double dx2 = grid.dx * grid.dx;
-    const double dy2 = grid.dy * grid.dy;
-    const double dz2 = grid.dz * grid.dz;
-    const bool is_2d = grid.is2D();
-    // Diagonal coefficient: 4 neighbors for 2D, 6 neighbors for 3D
-    const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
-                               : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
-
-    const int Ng = 1;
-    const int Nx = grid.Nx;
-    const int Ny = grid.Ny;
-    const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = (Nx + 2) * (Ny + 2);
-
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
-    double* u_ptr = u_ptrs_[level];
-    const double* f_ptr = f_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
-
-    if (is_2d) {
-        for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j even)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    if (((i + j) & 1) == 0) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                     - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                    }
-                }
-            }
-
-            // Black sweep (i + j odd)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    if (((i + j) & 1) == 1) {
-                        int idx = j * stride + i;
-                        double u_old = u_ptr[idx];
-                        double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                     - f_ptr[idx]) / coeff;
-                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                    }
-                }
-            }
-        }
-    } else {
-        // 3D path
-        for (int iter = 0; iter < iterations; ++iter) {
-            // Red sweep (i + j + k even)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int k = Ng; k < Nz + Ng; ++k) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j + k) & 1) == 0) {
-                            int idx = k * plane_stride + j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
-                                         - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                        }
-                    }
-                }
-            }
-
-            // Black sweep (i + j + k odd)
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_ptr[0:total_size], f_ptr[0:total_size])
-#endif
-            for (int k = Ng; k < Nz + Ng; ++k) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        if (((i + j + k) & 1) == 1) {
-                            int idx = k * plane_stride + j * stride + i;
-                            double u_old = u_ptr[idx];
-                            double u_gs = ((u_ptr[idx+1] + u_ptr[idx-1]) / dx2
-                                         + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
-                                         + (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2
-                                         - f_ptr[idx]) / coeff;
-                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_gs;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Apply boundary conditions once after all smoothing iterations
-    apply_bc(level);
-}
-
 void MultigridPoissonSolver::compute_residual(int level) {
     NVTX_SCOPE_RESIDUAL("mg:residual");
 
@@ -1015,6 +970,81 @@ void MultigridPoissonSolver::compute_residual(int level) {
             }
         }
     }
+}
+
+void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf, double& r_l2) {
+    NVTX_SCOPE_RESIDUAL("mg:residual+norms");
+
+    // Fused residual computation + norm calculation (single pass over memory)
+    // Computes r = f - L(u) AND ||r||_∞ AND ||r||_2 in one kernel
+    // Much more efficient than separate compute_residual() + compute_max_residual()
+    auto& grid = *levels_[level];
+    const double dx2 = grid.dx * grid.dx;
+    const double dy2 = grid.dy * grid.dy;
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
+
+    const int Ng = 1;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = Nx + 2;
+    const int plane_stride = (Nx + 2) * (Ny + 2);
+
+    const double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    double* r_ptr = r_ptrs_[level];
+    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+
+    double max_res = 0.0;
+    double sum_sq = 0.0;
+
+    if (is_2d) {
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
+            reduction(max: max_res) reduction(+: sum_sq)
+#endif
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * stride + i;
+                double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                 + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
+                double r = f_ptr[idx] - laplacian;
+                r_ptr[idx] = r;
+                // Compute norms
+                double abs_r = (r >= 0.0) ? r : -r;
+                if (abs_r > max_res) max_res = abs_r;
+                sum_sq += r * r;
+            }
+        }
+    } else {
+        // 3D path
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
+            reduction(max: max_res) reduction(+: sum_sq)
+#endif
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
+                                     + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                    double r = f_ptr[idx] - laplacian;
+                    r_ptr[idx] = r;
+                    // Compute norms
+                    double abs_r = (r >= 0.0) ? r : -r;
+                    if (abs_r > max_res) max_res = abs_r;
+                    sum_sq += r * r;
+                }
+            }
+        }
+    }
+
+    r_inf = max_res;
+    r_l2 = std::sqrt(sum_sq);
 }
 
 void MultigridPoissonSolver::restrict_residual(int fine_level) {
@@ -1214,14 +1244,15 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
 }
 
 void MultigridPoissonSolver::solve_coarsest(int iterations) {
-    // Direct solve on coarsest grid using many SOR iterations
-    // Use omega=1.0 (pure Gauss-Seidel) for maximum stability on coarse grids
-    // Higher omega can cause divergence on small grids with periodic BCs
+    // Direct solve on coarsest grid using multiple Chebyshev iterations
+    // Each Chebyshev call performs degree=4 polynomial sweeps
     int coarsest = levels_.size() - 1;
-    smooth(coarsest, iterations, 1.0);
+    for (int i = 0; i < iterations; ++i) {
+        smooth_chebyshev(coarsest, 4);
+    }
 }
 
-void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
+void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
     // Check environment variable override for smoother type (on first call)
@@ -1240,12 +1271,14 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     }
 
     // Helper lambda to call the appropriate smoother
-    // For Chebyshev, degree roughly corresponds to iterations (degree=4 ≈ 4 Jacobi iterations)
-    auto do_smooth = [this, level](int iters) {
-        if (smoother_type_ == MGSmootherType::Chebyshev) {
-            smooth_chebyshev(level, iters);  // degree = iters
-        } else {
-            smooth_jacobi(level, iters, 0.8);  // omega = 0.8 for stability
+    // nu = number of smoothing passes, degree = Chebyshev polynomial degree per pass
+    auto do_smooth = [this, level, degree](int nu) {
+        for (int pass = 0; pass < nu; ++pass) {
+            if (smoother_type_ == MGSmootherType::Chebyshev) {
+                smooth_chebyshev(level, degree);
+            } else {
+                smooth_jacobi(level, degree, 0.8);  // omega = 0.8 for stability
+            }
         }
     };
 
@@ -1254,14 +1287,14 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
         // With MIN_COARSE_SIZE=8, coarsest is 8x8 (64 points)
         // Use more iterations/higher degree for accurate coarse solve
         if (smoother_type_ == MGSmootherType::Chebyshev) {
-            smooth_chebyshev(level, 8);  // degree=8 for coarsest
+            smooth_chebyshev(level, std::max(8, degree * 2));  // Higher degree for coarse
         } else {
             smooth_jacobi(level, 20, 0.8);  // 20 Jacobi iterations
         }
         return;
     }
 
-    // Pre-smoothing
+    // Pre-smoothing (nu1 passes of degree-k Chebyshev)
     do_smooth(nu1);
 
     // Compute residual
@@ -1275,38 +1308,41 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2) {
     restrict_residual(level);
 
     // Zero coarse grid solution
-    auto& coarse = *levels_[level + 1];
+    {
+        NVTX_SCOPE_MG("mg:zero_coarse");
+        auto& coarse = *levels_[level + 1];
 
 #ifdef USE_GPU_OFFLOAD
-    assert(gpu_ready_ && "GPU must be initialized");
-    const size_t size_c = level_sizes_[level + 1];
-    double* u_coarse = u_ptrs_[level + 1];
+        assert(gpu_ready_ && "GPU must be initialized");
+        const size_t size_c = level_sizes_[level + 1];
+        double* u_coarse = u_ptrs_[level + 1];
 
-    #pragma omp target teams distribute parallel for \
-        map(present: u_coarse[0:size_c])
-    for (int idx = 0; idx < (int)size_c; ++idx) {
-        u_coarse[idx] = 0.0;
-    }
+        #pragma omp target teams distribute parallel for \
+            map(present: u_coarse[0:size_c])
+        for (int idx = 0; idx < (int)size_c; ++idx) {
+            u_coarse[idx] = 0.0;
+        }
 #else
-    const int Ng = 1;
-    for (int k = 0; k < coarse.Nz + 2*Ng; ++k) {
-        for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
-            for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
-                coarse.u(i, j, k) = 0.0;
+        const int Ng = 1;
+        for (int k = 0; k < coarse.Nz + 2*Ng; ++k) {
+            for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
+                for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
+                    coarse.u(i, j, k) = 0.0;
+                }
             }
         }
-    }
 #endif
+    }
 
     // Recursive call to coarser level
-    vcycle(level + 1, nu1, nu2);
+    vcycle(level + 1, nu1, nu2, degree);
 
     // Prolongate correction and apply boundary conditions
     // (BC needed before post-smoothing reads ghost cells)
     prolongate_correction(level + 1);
     apply_bc(level);
 
-    // Post-smoothing (projection mode: nu2=0 skips this)
+    // Post-smoothing (nu2 passes of degree-k Chebyshev)
     if (nu2 > 0) {
         do_smooth(nu2);
     }
@@ -1377,6 +1413,24 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     }
 
     return max_res;
+}
+
+bool MultigridPoissonSolver::has_nullspace() const {
+    // The Poisson operator with Neumann/Periodic BCs has a nullspace (constants).
+    // Dirichlet BC on ANY face pins the solution, eliminating the nullspace.
+    //
+    // This determines whether subtract_mean() is needed after solving.
+    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
+                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
+                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
+    return !has_dirichlet;
+}
+
+void MultigridPoissonSolver::fix_nullspace(int level) {
+    if (has_nullspace()) {
+        subtract_mean(level);
+        apply_bc(level);  // Re-apply BCs after mean subtraction (ghost cells now inconsistent)
+    }
 }
 
 void MultigridPoissonSolver::subtract_mean(int level) {
@@ -1478,37 +1532,158 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     assert(gpu_ready_ && "GPU must be initialized");
     sync_level_to_gpu(0);
 #endif
-    
+
     apply_bc(0);
 
-    // MG V-cycles: use cfg.max_iter to control number of V-cycles
-    // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
-    // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    // ========================================================================
+    // Fixed-cycle mode: run exactly N V-cycles without convergence checks
+    // This is the fastest mode for projection - no D→H transfers mid-solve
+    // ========================================================================
+    if (cfg.fixed_cycles > 0) {
+        const int num_cycles = cfg.fixed_cycles;
+        // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
+        // Benchmark: 10× better div_L2 AND 13% faster than nu1=2,nu2=2,cyc=10
+        const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : 3;
+        const int nu2 = (cfg.nu2 > 0) ? cfg.nu2 : 1;
+        const int degree = cfg.chebyshev_degree;
+
+        for (int cycle = 0; cycle < num_cycles; ++cycle) {
+            vcycle(0, nu1, nu2, degree);
+        }
+
+        // Set residual to 0 to indicate we didn't compute it
+        residual_ = 0.0;
+        residual_l2_ = 0.0;
+        r0_ = 0.0;
+        r0_l2_ = 0.0;
+        b_inf_ = 0.0;
+        b_l2_ = 0.0;
+
+        // Handle nullspace for singular problems (pure Neumann/Periodic)
+        fix_nullspace(0);
+
+#ifdef USE_GPU_OFFLOAD
+        sync_level_from_gpu(0);
+#endif
+
+        // Copy result back to output field
+        if (mesh_->is2D()) {
+            for (int j = 0; j < finest.Ny + 2*Ng; ++j) {
+                for (int i = 0; i < finest.Nx + 2*Ng; ++i) {
+                    p(i, j) = finest.u(i, j);
+                }
+            }
+        } else {
+            for (int k = 0; k < finest.Nz + 2*Ng; ++k) {
+                for (int j = 0; j < finest.Ny + 2*Ng; ++j) {
+                    for (int i = 0; i < finest.Nx + 2*Ng; ++i) {
+                        p(i, j, k) = finest.u(i, j, k);
+                    }
+                }
+            }
+        }
+
+        return num_cycles;
+    }
+
+    // ========================================================================
+    // Convergence-based mode: MG V-cycles with tolerance checking
+    // ========================================================================
+    // Convergence criteria (any one triggers exit):
+    //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
+    //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
+    //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
+    // Check every check_interval cycles to reduce overhead.
     assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
-    const int num_cycles = cfg.max_iter;
-    const bool accurate_mode = (num_cycles > 5);
-    const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
-    const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
+    const int max_cycles = cfg.max_iter;
+    const bool accurate_mode = (max_cycles > 5);
+    // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
+    const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : (accurate_mode ? 3 : 2);
+    const int nu2 = (cfg.nu2 > 0) ? cfg.nu2 : 1;
+    const int degree = cfg.chebyshev_degree;
+    const int check_interval = std::max(1, cfg.check_interval);
 
-    for (int cycle = 0; cycle < num_cycles; ++cycle) {
-        vcycle(0, nu1, nu2);
+    // Compute reference norms for relative tolerances (CPU path)
+    // ||b||_∞ = max|f| and ||b||_2 = sqrt(sum(f^2)) on finest level - store in member for diagnostics
+    auto& finest_cpu = *levels_[0];
+    b_inf_ = 0.0;
+    double b_sum_sq = 0.0;
+    if (mesh_->is2D()) {
+        for (int j = 1; j <= finest_cpu.Ny; ++j) {
+            for (int i = 1; i <= finest_cpu.Nx; ++i) {
+                double val = finest_cpu.f(i, j);
+                b_inf_ = std::max(b_inf_, std::abs(val));
+                b_sum_sq += val * val;
+            }
+        }
+    } else {
+        for (int k = 1; k <= finest_cpu.Nz; ++k) {
+            for (int j = 1; j <= finest_cpu.Ny; ++j) {
+                for (int i = 1; i <= finest_cpu.Nx; ++i) {
+                    double val = finest_cpu.f(i, j, k);
+                    b_inf_ = std::max(b_inf_, std::abs(val));
+                    b_sum_sq += val * val;
+                }
+            }
+        }
+    }
+    b_l2_ = std::sqrt(b_sum_sq);
+
+    // Initial residual - use fused function to compute residual + both norms in single pass
+    compute_residual_and_norms(0, r0_, r0_l2_);
+    residual_ = r0_;
+    residual_l2_ = r0_l2_;
+
+    int cycles_used = 0;
+    for (int cycle = 0; cycle < max_cycles; ++cycle) {
+        vcycle(0, nu1, nu2, degree);
+        cycles_used = cycle + 1;
+
+        // Check convergence every check_interval cycles (reduces overhead)
+        if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
+            // Fused residual + norm computation (single pass over memory, single GPU reduction)
+            compute_residual_and_norms(0, residual_, residual_l2_);
+
+            // Select norm for convergence based on config (L2 is smoother, less sensitive to hot cells)
+            const double r_norm = cfg.use_l2_norm ? residual_l2_ : residual_;
+            const double b_norm = cfg.use_l2_norm ? b_l2_ : b_inf_;
+            const double r0_norm = cfg.use_l2_norm ? r0_l2_ : r0_;
+
+            // Robust convergence check: any criterion triggers exit
+            bool converged = false;
+            if (cfg.tol_abs > 0.0 && r_norm <= cfg.tol_abs) {
+                converged = true;  // Absolute tolerance met
+            }
+            if (cfg.tol_rhs > 0.0 && r_norm <= cfg.tol_rhs * (b_norm + 1e-30)) {
+                converged = true;  // RHS-relative tolerance met
+            }
+            if (cfg.tol_rel > 0.0 && r_norm <= cfg.tol_rel * (r0_norm + 1e-30)) {
+                converged = true;  // Initial-residual relative tolerance met
+            }
+            // Legacy: also check cfg.tol for backward compatibility
+            if (cfg.tol > 0.0 && r_norm <= cfg.tol) {
+                converged = true;
+            }
+
+            // L∞ safety cap: when using L2, also enforce loose L∞ bound to catch "bad cells"
+            // This prevents L2 from hiding localized divergence spikes
+            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0 && cfg.tol_rhs > 0.0) {
+                double linf_ratio = residual_ / (b_inf_ + 1e-30);
+                double linf_cap = cfg.tol_rhs * cfg.linf_safety_factor;
+                if (linf_ratio > linf_cap) {
+                    converged = false;  // L∞ still too high, keep iterating
+                }
+            }
+
+            if (converged) {
+                break;
+            }
+        }
     }
 
-    // Final residual
-    residual_ = compute_max_residual(0);
-    
     // Subtract mean for singular Poisson problems (no Dirichlet BCs)
-    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
-    // and we must fix the nullspace by subtracting the mean
-    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
-                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
-
-    if (!has_dirichlet) {
-        subtract_mean(0);
-        // Re-apply BCs after mean subtraction since ghost cells are now inconsistent
-        apply_bc(0);
-    }
+    // Handle nullspace for singular problems (pure Neumann/Periodic)
+    fix_nullspace(0);
 
 #ifdef USE_GPU_OFFLOAD
     // Download from GPU once after all V-cycles
@@ -1535,7 +1710,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         }
     }
 
-    return num_cycles;  // Number of V-cycles executed
+    return cycles_used;  // Actual number of V-cycles executed
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -1572,34 +1747,259 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
     apply_bc(0);
 
-    // MG V-cycles: use cfg.max_iter to control number of V-cycles
-    // - Projection mode (max_iter <= 5): nu1=1, nu2=0 for fast projection
-    // - Accurate mode (max_iter > 5): nu1=2, nu2=2 for fast convergence
+    // ========================================================================
+    // Fixed-cycle mode: run N V-cycles with optional adaptive checking
+    // This is the fastest mode for projection - minimal D→H transfers
+    // ========================================================================
+    if (cfg.fixed_cycles > 0) {
+        const int max_cycles = cfg.fixed_cycles;
+
+        // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
+        // Benchmark: 10× better div_L2 AND 13% faster than nu1=2,nu2=2,cyc=10
+        const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : 3;
+        const int nu2 = (cfg.nu2 > 0) ? cfg.nu2 : 1;
+        const int degree = cfg.chebyshev_degree;
+
+        // Use full V-cycle graph if available (massive reduction in kernel launches)
+        // Respect both config setting and environment variable override
+        // NOTE: V-cycle graph is 3D only (2D path not fully tested)
+        const bool is_3d = (levels_[0]->Nz > 1);
+        const bool use_graph = use_vcycle_graph_ && cfg.use_vcycle_graph && is_3d;
+        auto run_cycles = [&](int n) {
+            if (use_graph) {
+                // Initialize graph on first use or if parameters changed
+                if (!vcycle_graph_ || vcycle_graph_nu1_ != nu1 ||
+                    vcycle_graph_nu2_ != nu2 || vcycle_graph_degree_ != degree) {
+                    initialize_vcycle_graph(nu1, nu2, degree);
+                }
+                if (vcycle_graph_ && vcycle_graph_->is_valid()) {
+                    for (int cycle = 0; cycle < n; ++cycle) {
+                        vcycle_graphed();
+                    }
+                    return;
+                }
+            }
+            // Fall back to non-graphed
+            for (int cycle = 0; cycle < n; ++cycle) {
+                vcycle(0, nu1, nu2, degree);
+            }
+        };
+
+        int cycles_run = 0;
+
+        if (cfg.adaptive_cycles) {
+            // Adaptive mode: run check_after cycles, then check, add more if needed
+            // Pattern: 4 cycles → check → +2 if bad → check → ... → cap at max
+            const int check_after = cfg.check_after;
+            const double target_tol = cfg.tol_rhs;
+
+            // First batch of cycles
+            int batch = std::min(check_after, max_cycles);
+            run_cycles(batch);
+            cycles_run = batch;
+
+            // CRITICAL: Sync all device work before OpenMP target reduction
+            // Both CUDA graph and OpenMP target regions may use different streams.
+            // DeviceSynchronize ensures all async GPU work completes before reduction.
+            CUDA_CHECK_SYNC(cudaDeviceSynchronize());
+
+            // Compute initial b_l2 for relative residual check
+            // Use CPU reduction on device data to avoid OpenMP target reduction issues
+            // with mixed CUDA/OpenMP environments
+            {
+                auto& finest = *levels_[0];
+                const int Ng = 1;
+                const int Nx = finest.Nx;
+                const int Ny = finest.Ny;
+                const int Nz = finest.Nz;
+                const int stride = Nx + 2 * Ng;
+                const int plane_stride = stride * (Ny + 2 * Ng);
+                const size_t f_size = level_sizes_[0];
+
+                // Sync f data from device to get b_l2
+                // This is a one-time overhead for adaptive mode startup
+                #pragma omp target update from(f_ptrs_[0][0:f_size])
+
+                // Compute on CPU (f data is now in host buffer)
+                double b_sum_sq = 0.0;
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            double val = f_ptrs_[0][k * plane_stride + j * stride + i];
+                            b_sum_sq += val * val;
+                        }
+                    }
+                }
+                b_l2_ = std::sqrt(b_sum_sq);
+            }
+
+            // Helper: sync all device work if graph mode was used
+            auto sync_if_graphed = [&]() {
+                if (use_graph && vcycle_graph_ && vcycle_graph_->is_valid()) {
+                    CUDA_CHECK_SYNC(cudaDeviceSynchronize());
+                }
+            };
+
+            // Check residual and add more cycles if needed
+            while (cycles_run < max_cycles) {
+                // Compute residual norm (this is the only D→H transfer per check)
+                compute_residual_and_norms(0, residual_, residual_l2_);
+                double rel_res = (b_l2_ > 0) ? residual_l2_ / b_l2_ : residual_l2_;
+
+                if (rel_res <= target_tol) {
+                    break;  // Converged!
+                }
+
+                // Run 2 more cycles
+                int add = std::min(2, max_cycles - cycles_run);
+                run_cycles(add);
+                cycles_run += add;
+
+                // Sync before next residual check if graph was used
+                sync_if_graphed();
+            }
+        } else {
+            // Pure fixed mode: run exactly max_cycles without checking
+            run_cycles(max_cycles);
+            cycles_run = max_cycles;
+        }
+
+        // Set residual to 0 if we didn't compute it (pure fixed mode)
+        if (!cfg.adaptive_cycles) {
+            residual_ = 0.0;
+            residual_l2_ = 0.0;
+            r0_ = 0.0;
+            r0_l2_ = 0.0;
+            b_inf_ = 0.0;
+            b_l2_ = 0.0;
+        }
+
+        // Handle nullspace for singular problems (pure Neumann/Periodic)
+        fix_nullspace(0);
+
+        // Copy result from multigrid buffer back to caller's present-mapped array (D-to-D)
+        #pragma omp target teams distribute parallel for \
+            map(present: p_present[0:total_size], u_dev[0:total_size])
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            p_present[idx] = u_dev[idx];
+        }
+
+        return cycles_run;
+    }
+
+    // ========================================================================
+    // Convergence-based mode: MG V-cycles with tolerance checking
+    // ========================================================================
+    // MG V-cycles with robust tolerance-based early termination (GPU path)
+    // Convergence criteria (any one triggers exit):
+    //   1. ||r||_∞ ≤ tol_abs  (absolute, usually disabled)
+    //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
+    //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
+    // Check every check_interval cycles to reduce overhead.
     assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
-    const int num_cycles = cfg.max_iter;
-    const bool accurate_mode = (num_cycles > 5);
-    const int nu1 = accurate_mode ? 2 : 1;  // Pre-smoothing sweeps
-    const int nu2 = accurate_mode ? 2 : 0;  // Post-smoothing sweeps
+    const int max_cycles = cfg.max_iter;
+    const bool accurate_mode = (max_cycles > 5);
+    // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
+    const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : (accurate_mode ? 3 : 2);
+    const int nu2 = (cfg.nu2 > 0) ? cfg.nu2 : 1;
+    const int degree = cfg.chebyshev_degree;
+    const int check_interval = std::max(1, cfg.check_interval);
 
-    for (int cycle = 0; cycle < num_cycles; ++cycle) {
-        vcycle(0, nu1, nu2);
+    // Compute ||b||_∞ and ||b||_2 on device via fused reduction - store in members for diagnostics
+    auto& finest_gpu = *levels_[0];
+    const int Ng = 1;
+    const int Nx_g = finest_gpu.Nx;
+    const int Ny_g = finest_gpu.Ny;
+    const int Nz_g = finest_gpu.Nz;
+    const int stride_gpu = Nx_g + 2 * Ng;
+    const int plane_stride_gpu = stride_gpu * (Ny_g + 2 * Ng);
+    const bool is_2d_gpu = finest_gpu.is2D();
+
+    double b_inf_local = 0.0;
+    double b_sum_sq = 0.0;
+    if (is_2d_gpu) {
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
+        for (int j = Ng; j < Ny_g + Ng; ++j) {
+            for (int i = Ng; i < Nx_g + Ng; ++i) {
+                int idx = j * stride_gpu + i;
+                double val = f_dev[idx];
+                b_inf_local = std::max(b_inf_local, std::abs(val));
+                b_sum_sq += val * val;
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
+        for (int k = Ng; k < Nz_g + Ng; ++k) {
+            for (int j = Ng; j < Ny_g + Ng; ++j) {
+                for (int i = Ng; i < Nx_g + Ng; ++i) {
+                    int idx = k * plane_stride_gpu + j * stride_gpu + i;
+                    double val = f_dev[idx];
+                    b_inf_local = std::max(b_inf_local, std::abs(val));
+                    b_sum_sq += val * val;
+                }
+            }
+        }
+    }
+    b_inf_ = b_inf_local;  // Store for diagnostics
+    b_l2_ = std::sqrt(b_sum_sq);
+
+    // Initial residual - use fused function to compute residual + both norms in single pass
+    compute_residual_and_norms(0, r0_, r0_l2_);
+    residual_ = r0_;
+    residual_l2_ = r0_l2_;
+
+    int cycles_used = 0;
+    for (int cycle = 0; cycle < max_cycles; ++cycle) {
+        vcycle(0, nu1, nu2, degree);
+        cycles_used = cycle + 1;
+
+        // Check convergence every check_interval cycles (reduces overhead)
+        if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
+            // Fused residual + norm computation (single pass over memory, single GPU reduction)
+            compute_residual_and_norms(0, residual_, residual_l2_);
+
+            // Select norm for convergence based on config (L2 is smoother, less sensitive to hot cells)
+            const double r_norm = cfg.use_l2_norm ? residual_l2_ : residual_;
+            const double b_norm = cfg.use_l2_norm ? b_l2_ : b_inf_;
+            const double r0_norm = cfg.use_l2_norm ? r0_l2_ : r0_;
+
+            // Robust convergence check: any criterion triggers exit
+            bool converged = false;
+            if (cfg.tol_abs > 0.0 && r_norm <= cfg.tol_abs) {
+                converged = true;  // Absolute tolerance met
+            }
+            if (cfg.tol_rhs > 0.0 && r_norm <= cfg.tol_rhs * (b_norm + 1e-30)) {
+                converged = true;  // RHS-relative tolerance met
+            }
+            if (cfg.tol_rel > 0.0 && r_norm <= cfg.tol_rel * (r0_norm + 1e-30)) {
+                converged = true;  // Initial-residual relative tolerance met
+            }
+            // Legacy: also check cfg.tol for backward compatibility
+            if (cfg.tol > 0.0 && r_norm <= cfg.tol) {
+                converged = true;
+            }
+
+            // L∞ safety cap: when using L2, also enforce loose L∞ bound to catch "bad cells"
+            // This prevents L2 from hiding localized divergence spikes
+            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0 && cfg.tol_rhs > 0.0) {
+                double linf_ratio = residual_ / (b_inf_ + 1e-30);
+                double linf_cap = cfg.tol_rhs * cfg.linf_safety_factor;
+                if (linf_ratio > linf_cap) {
+                    converged = false;  // L∞ still too high, keep iterating
+                }
+            }
+
+            if (converged) {
+                break;
+            }
+        }
     }
 
-    // Final residual (always compute at end for diagnostics)
-    residual_ = compute_max_residual(0);
-    
     // Subtract mean for singular Poisson problems (no Dirichlet BCs)
-    // Whenever all boundaries are Neumann or Periodic, the solution is defined up to a constant
-    // and we must fix the nullspace by subtracting the mean
-    bool has_dirichlet = (bc_x_lo_ == PoissonBC::Dirichlet || bc_x_hi_ == PoissonBC::Dirichlet ||
-                          bc_y_lo_ == PoissonBC::Dirichlet || bc_y_hi_ == PoissonBC::Dirichlet ||
-                          bc_z_lo_ == PoissonBC::Dirichlet || bc_z_hi_ == PoissonBC::Dirichlet);
-
-    if (!has_dirichlet) {
-        subtract_mean(0);
-        // Re-apply BCs after mean subtraction since ghost cells are now inconsistent
-        apply_bc(0);
-    }
+    // Handle nullspace for singular problems (pure Neumann/Periodic)
+    fix_nullspace(0);
 
     // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
     // This is device-to-device copy via present mappings (no host staging)
@@ -1609,7 +2009,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         p_present[idx] = u_dev[idx];
     }
 
-    return num_cycles;  // Number of V-cycles executed
+    return cycles_used;  // Actual number of V-cycles executed
 }
 
 void MultigridPoissonSolver::initialize_gpu_buffers() {
@@ -1704,10 +2104,152 @@ void MultigridPoissonSolver::sync_level_to_gpu(int level) {
 void MultigridPoissonSolver::sync_level_from_gpu(int level) {
     assert(gpu_ready_ && "GPU must be initialized");
     const size_t total_size = level_sizes_[level];
-    
+
     #pragma omp target update from(u_ptrs_[level][0:total_size])
     #pragma omp target update from(f_ptrs_[level][0:total_size])
     #pragma omp target update from(r_ptrs_[level][0:total_size])
+}
+
+void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2, int degree) {
+    // Initialize full V-cycle CUDA Graph
+    // This captures the entire V-cycle (all levels, all operations) as a single graph
+    if (!use_vcycle_graph_) return;
+
+    // Convert BCs to CUDA enum
+    auto to_cuda_bc = [](PoissonBC bc) -> mg_cuda::BC {
+        switch (bc) {
+            case PoissonBC::Dirichlet: return mg_cuda::BC::Dirichlet;
+            case PoissonBC::Neumann: return mg_cuda::BC::Neumann;
+            case PoissonBC::Periodic: return mg_cuda::BC::Periodic;
+            default: return mg_cuda::BC::Neumann;
+        }
+    };
+
+    // Build fingerprint to check if recapture is needed
+    mg_cuda::VCycleGraphFingerprint new_fp;
+    new_fp.num_levels = levels_.size();
+    new_fp.degree = degree;
+    new_fp.nu1 = nu1;
+    new_fp.nu2 = nu2;
+    new_fp.bc_x_lo = to_cuda_bc(bc_x_lo_);
+    new_fp.bc_x_hi = to_cuda_bc(bc_x_hi_);
+    new_fp.bc_y_lo = to_cuda_bc(bc_y_lo_);
+    new_fp.bc_y_hi = to_cuda_bc(bc_y_hi_);
+    new_fp.bc_z_lo = to_cuda_bc(bc_z_lo_);
+    new_fp.bc_z_hi = to_cuda_bc(bc_z_hi_);
+    new_fp.coarse_iters = 8;
+    for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
+        auto& grid = *levels_[lvl];
+        double dx2 = grid.dx * grid.dx;
+        double dy2 = grid.dy * grid.dy;
+        double dz2 = grid.dz * grid.dz;
+        double coeff = grid.is2D() ? (2.0/dx2 + 2.0/dy2) : (2.0/dx2 + 2.0/dy2 + 2.0/dz2);
+        new_fp.level_sizes.push_back(level_sizes_[lvl]);
+        new_fp.level_coeffs.push_back(coeff);
+        new_fp.level_dx.push_back(dx2);
+        new_fp.level_dy.push_back(dy2);
+        new_fp.level_dz.push_back(dz2);
+    }
+
+    // Check if existing graph is still valid
+    if (vcycle_graph_ && !vcycle_graph_->needs_recapture(new_fp)) {
+        // Graph is still valid, no recapture needed
+        return;
+    }
+
+    vcycle_graph_nu1_ = nu1;
+    vcycle_graph_nu2_ = nu2;
+    vcycle_graph_degree_ = degree;
+
+    // Build level configurations for V-cycle graph
+    std::vector<mg_cuda::VCycleLevelConfig> configs;
+    for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
+        auto& grid = *levels_[lvl];
+        mg_cuda::VCycleLevelConfig cfg;
+        cfg.Nx = grid.Nx;
+        cfg.Ny = grid.Ny;
+        cfg.Nz = grid.Nz;
+        cfg.Ng = 1;
+        cfg.dx2 = grid.dx * grid.dx;
+        cfg.dy2 = grid.dy * grid.dy;
+        cfg.dz2 = grid.dz * grid.dz;
+        cfg.inv_dx2 = 1.0 / cfg.dx2;
+        cfg.inv_dy2 = 1.0 / cfg.dy2;
+        cfg.inv_dz2 = (grid.Nz == 1) ? 0.0 : 1.0 / cfg.dz2;  // Zero for 2D
+        cfg.coeff = grid.is2D() ? (2.0/cfg.dx2 + 2.0/cfg.dy2)
+                                : (2.0/cfg.dx2 + 2.0/cfg.dy2 + 2.0/cfg.dz2);
+        cfg.total_size = level_sizes_[lvl];
+        // Convert host pointers to device pointers for CUDA kernels
+        cfg.u = gpu::get_device_ptr(u_ptrs_[lvl]);
+        cfg.f = gpu::get_device_ptr(f_ptrs_[lvl]);
+        cfg.r = gpu::get_device_ptr(r_ptrs_[lvl]);
+        cfg.tmp = tmp_ptrs_[lvl];  // Already device pointer
+        configs.push_back(cfg);
+    }
+
+    // Verify device pointers are valid - null indicates a bug in buffer initialization
+    for (size_t lvl = 0; lvl < configs.size(); ++lvl) {
+        if (!configs[lvl].u || !configs[lvl].f || !configs[lvl].r || !configs[lvl].tmp) {
+            throw std::runtime_error(
+                "[MG] FATAL: Null device pointer at level " + std::to_string(lvl) +
+                ". GPU buffer initialization failed - check that omp target enter data "
+                "was called in initialize_gpu_buffers().");
+        }
+    }
+
+    // Create/recapture the V-cycle graph
+    if (!vcycle_graph_) {
+        vcycle_graph_ = std::make_unique<mg_cuda::CudaVCycleGraph>();
+    }
+    vcycle_graph_->initialize(
+        configs, degree, nu1, nu2,
+        to_cuda_bc(bc_x_lo_), to_cuda_bc(bc_x_hi_),
+        to_cuda_bc(bc_y_lo_), to_cuda_bc(bc_y_hi_),
+        to_cuda_bc(bc_z_lo_), to_cuda_bc(bc_z_hi_));
+
+    std::cout << "[MG] Full V-cycle CUDA Graph "
+              << (vcycle_graph_->is_valid() ? "captured" : "FAILED")
+              << " for " << levels_.size()
+              << " levels (nu1=" << nu1 << ", nu2=" << nu2 << ")\n";
+}
+
+void MultigridPoissonSolver::vcycle_graphed() {
+    NVTX_SCOPE_POISSON("mg:vcycle_graphed");
+
+    if (!vcycle_graph_ || !vcycle_graph_->is_valid()) {
+        // Fall back to non-graphed V-cycle
+        vcycle(0, vcycle_graph_nu1_, vcycle_graph_nu2_, vcycle_graph_degree_);
+        return;
+    }
+
+#ifdef __NVCOMPILER
+    // Get OpenMP's CUDA stream for launching the graph (NVHPC-specific)
+    // This avoids cross-stream synchronization overhead
+    cudaStream_t omp_stream = reinterpret_cast<cudaStream_t>(
+        ompx_get_cuda_stream(omp_get_default_device(), /*sync=*/0));
+
+    // Runtime stream validation with graceful fallback
+    // A null stream would launch on CUDA default stream, causing potential race conditions
+    // with OpenMP target regions. Instead of crashing in production, fall back to the
+    // non-graphed path which is slower but correct.
+    if (omp_stream == nullptr) {
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "[MG] WARNING: OpenMP CUDA stream is null - falling back to non-graphed V-cycle\n"
+                      << "    This may indicate a runtime issue. Performance will be degraded.\n";
+            warned = true;
+        }
+        vcycle(0, vcycle_graph_nu1_, vcycle_graph_nu2_, vcycle_graph_degree_);
+        return;
+    }
+
+    // Single graph launch for entire V-cycle
+    vcycle_graph_->execute(omp_stream);
+#else
+    // Non-NVHPC compilers: fall back to non-graphed V-cycle
+    // (ompx_get_cuda_stream is NVHPC-specific)
+    vcycle(0, vcycle_graph_nu1_, vcycle_graph_nu2_, vcycle_graph_degree_);
+#endif
 }
 #else
 // CPU: Set raw pointers for unified code paths (no GPU mapping)

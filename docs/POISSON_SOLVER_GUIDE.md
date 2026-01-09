@@ -167,7 +167,7 @@ CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_HYPRE=ON
 ## 5. Native Multigrid Solver (MultigridPoissonSolver)
 
 ### Overview
-Geometric multigrid with V-cycle and Jacobi smoothing. Implemented with OpenMP target offload for GPU acceleration.
+Geometric multigrid with V-cycle and Chebyshev smoothing. Implemented with OpenMP target offload for GPU acceleration. Features **V-cycle CUDA Graph capture** for minimal kernel launch overhead on NVIDIA GPUs.
 
 ### When to Use
 - **Default solver**: Works for all configurations
@@ -175,26 +175,73 @@ Geometric multigrid with V-cycle and Jacobi smoothing. Implemented with OpenMP t
 - **General case**: Mixed boundary conditions, moderate stretching
 
 ### When NOT to Use
-- When FFT variants or HYPRE is applicable (both are faster)
+- When FFT variants or HYPRE is applicable (both are faster for their specific cases)
 - Heavily stretched grids (HYPRE handles better)
 
 ### V-Cycle Algorithm
 ```
 vcycle(level):
     if level == coarsest:
-        smooth(level, 100 iterations)  // Direct solve via relaxation
+        smooth(level, 8 iterations)      // Direct solve via Chebyshev
     else:
-        smooth(level, nu1 iterations)   // Pre-smoothing (default nu1=2)
+        smooth(level, nu1 iterations)    // Pre-smoothing (default nu1=3)
         compute_residual(level)
         restrict(level → level+1)        // Full-weighting restriction
         vcycle(level+1)                  // Recursive coarse solve
         prolongate(level+1 → level)      // Bilinear interpolation
-        smooth(level, nu2 iterations)    // Post-smoothing (default nu2=2)
+        smooth(level, nu2 iterations)    // Post-smoothing (default nu2=1)
 ```
+
+### V-cycle CUDA Graph Optimization (GPU Builds)
+
+On NVIDIA GPUs with NVHPC compiler, the MG solver captures the **entire V-cycle kernel sequence as a CUDA Graph**. This eliminates per-kernel launch overhead and synchronization costs.
+
+**How it works:**
+1. On first solve, the V-cycle is executed normally while CUDA captures all kernel launches
+2. The captured graph is stored and validated
+3. Subsequent solves replay the graph with a single `cudaGraphLaunch()` call
+4. Graph is automatically recaptured if boundary conditions or parameters change
+
+**Performance impact:**
+- Eliminates ~37% of GPU API time spent in `cudaStreamSynchronize` (measured with Nsys)
+- Reduces kernel launch overhead from O(levels × kernels) to O(1)
+- Most beneficial for iterative solves with many V-cycles
+
+**Configuration:**
+```cpp
+// Enabled by default in GPU builds with NVHPC
+config.poisson_use_vcycle_graph = true;   // Enable (default)
+config.poisson_use_vcycle_graph = false;  // Disable for debugging
+```
+
+**Requirements:**
+- NVIDIA GPU with CUDA support
+- NVHPC compiler (uses `ompx_get_cuda_stream()` for stream access)
+- 3D mesh (2D meshes use non-graphed path)
+
+**Fallback behavior:**
+- Non-NVHPC compilers: Automatic fallback to standard OpenMP target path
+- 2D meshes: V-cycle graph disabled (not fully optimized for 2D)
+- Graph capture failure: Falls back to non-graphed path with warning
+
+### Chebyshev Smoothing
+
+The MG solver uses Chebyshev polynomial smoothing instead of Jacobi/Gauss-Seidel:
+
+**Advantages:**
+- Better convergence rate than weighted Jacobi
+- Fully parallel (no red-black ordering needed)
+- Optimal for GPU execution
+
+**Eigenvalue bounds:**
+- For the 7-point discrete Laplacian, eigenvalues of D⁻¹A are in (0, 2)
+- Conservative bounds [0.05, 1.95] used for numerical stability
+- Defined as `CHEBYSHEV_LAMBDA_MIN` and `CHEBYSHEV_LAMBDA_MAX` constants
 
 ### Implementation Files
 - `include/poisson_solver_multigrid.hpp`
 - `src/poisson_solver_multigrid.cpp`
+- `src/mg_cuda_kernels.cpp` (CUDA Graph implementation)
 
 ---
 

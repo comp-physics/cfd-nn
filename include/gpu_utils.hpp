@@ -241,6 +241,29 @@ private:
 /// These are defined in src/gpu_init.cpp to enforce compile-time separation
 void verify_device_available();
 bool is_pointer_present(void* ptr);
+
+/// Get device pointer for an OpenMP-mapped host pointer
+/// Uses omp_get_mapped_ptr (OpenMP 5.1) to convert host -> device pointer
+/// Returns nullptr if pointer is not mapped or host_ptr is nullptr
+template<typename T>
+inline T* get_device_ptr(T* host_ptr) {
+    if (host_ptr == nullptr) return nullptr;
+    int device = omp_get_default_device();
+    void* dev_ptr = omp_get_mapped_ptr(host_ptr, device);
+    // omp_get_mapped_ptr returns nullptr if pointer is not mapped
+    return static_cast<T*>(dev_ptr);
+}
+
+/// Synchronize OpenMP target tasks (wait for deferred target regions to complete)
+/// Use this before reading results back to host after using `nowait` target regions.
+/// NOTE: This only synchronizes OpenMP target tasks, NOT direct CUDA kernel launches.
+///       CUDA kernels (e.g., in mg_cuda_kernels.cpp) use cudaStreamSynchronize instead.
+inline void sync() {
+    #pragma omp taskwait
+}
+#else
+/// CPU: sync is a no-op
+inline void sync() {}
 #endif
 
 } // namespace gpu
@@ -257,6 +280,12 @@ bool is_pointer_present(void* ptr);
 // Parallel for with device pointers (data already on GPU)
 #define GPU_PARALLEL_FOR_DEVICE(var, start, end) \
     _Pragma("omp target teams distribute parallel for") \
+    for (int var = start; var < end; ++var)
+
+// Async parallel for - kernel launches asynchronously, no host sync
+// Use gpu::sync() before reading results back to host
+#define GPU_PARALLEL_FOR_ASYNC(var, start, end) \
+    _Pragma("omp target teams distribute parallel for nowait") \
     for (int var = start; var < end; ++var)
 
 // Collapsed 2D parallel for
@@ -277,6 +306,12 @@ bool is_pointer_present(void* ptr);
     for (int var = start; var < end; ++var)
 
 #define GPU_PARALLEL_FOR_DEVICE(var, start, end) \
+    _Pragma("omp parallel for") \
+    for (int var = start; var < end; ++var)
+
+// CPU fallback for async - just a regular parallel for (no async semantics on CPU)
+// Note: gpu::sync() is a no-op on CPU, so async/sync pattern still works
+#define GPU_PARALLEL_FOR_ASYNC(var, start, end) \
     _Pragma("omp parallel for") \
     for (int var = start; var < end; ++var)
 

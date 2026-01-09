@@ -120,4 +120,5 @@ generate_channel_npz.py
 generate_phll_npz.py
 mcconkey_npz/
 profile_*
+profiles/
 
