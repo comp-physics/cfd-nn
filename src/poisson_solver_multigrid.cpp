@@ -16,25 +16,31 @@
 /// the system using recursive V-cycles that combine smoothing on each level with
 /// coarse-grid correction.
 ///
-/// GPU Synchronization Note:
-/// -------------------------
+/// GPU Synchronization & CUDA Graphs:
+/// -----------------------------------
 /// The MG kernels have data dependencies (each operation reads results from the
 /// previous one). Using OpenMP `nowait` on target regions causes race conditions
-/// because nvhpc may execute deferred tasks on different CUDA streams. Therefore,
-/// all GPU kernels use synchronous execution (implicit barrier at end of each
-/// target region).
+/// because nvhpc may execute deferred tasks on different CUDA streams.
 ///
-/// Nsys profiling shows ~37% of GPU API time is spent in cudaStreamSynchronize.
-/// Future optimization options to reduce this overhead:
-/// 1. CUDA Graphs: Capture V-cycle kernel sequence, replay with single launch
-/// 2. OpenMP depend clauses: Express dependencies explicitly (complex)
-/// 3. Custom CUDA streams: Ensure all kernels use same stream (non-portable)
+/// Solution: V-cycle CUDA Graphs (DEFAULT in GPU builds with NVHPC)
+/// - Captures entire V-cycle kernel sequence as a single CUDA graph
+/// - Replays with one graph launch, eliminating per-kernel sync overhead
+/// - See initialize_vcycle_graph() and vcycle_graphed() for implementation
+/// - Disable via config.poisson_use_vcycle_graph = false if needed
+///
+/// Fallback (non-NVHPC compilers or when graphs disabled):
+/// - All GPU kernels use synchronous execution (implicit barrier after each)
+/// - ~37% of GPU API time spent in cudaStreamSynchronize (from Nsys profiling)
+///
+/// Alternative approaches (not implemented):
+/// - OpenMP depend clauses: Express dependencies explicitly (complex)
+/// - Custom CUDA streams: Ensure all kernels use same stream (non-portable)
 
 #include "poisson_solver_multigrid.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
-#include <omp.h>
 #ifdef USE_GPU_OFFLOAD
+#include <omp.h>
 #include "mg_cuda_kernels.hpp"
 #include <cuda_runtime.h>
 // NVHPC provides ompx_get_cuda_stream() to get the CUDA stream used by OpenMP.
@@ -77,6 +83,7 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     // Invalidate V-cycle graph so it gets recaptured with new BCs
     if (vcycle_graph_) {
         vcycle_graph_->destroy();
+        vcycle_graph_.reset();
     }
 #endif
 }
@@ -95,6 +102,7 @@ void MultigridPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     // Invalidate V-cycle graph so it gets recaptured with new BCs
     if (vcycle_graph_) {
         vcycle_graph_->destroy();
+        vcycle_graph_.reset();
     }
 #endif
 }
@@ -1642,7 +1650,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
             // L∞ safety cap: when using L2, also enforce loose L∞ bound to catch "bad cells"
             // This prevents L2 from hiding localized divergence spikes
-            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0) {
+            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0 && cfg.tol_rhs > 0.0) {
                 double linf_ratio = residual_ / (b_inf_ + 1e-30);
                 double linf_cap = cfg.tol_rhs * cfg.linf_safety_factor;
                 if (linf_ratio > linf_cap) {
@@ -1958,7 +1966,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
             // L∞ safety cap: when using L2, also enforce loose L∞ bound to catch "bad cells"
             // This prevents L2 from hiding localized divergence spikes
-            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0) {
+            if (converged && cfg.use_l2_norm && cfg.linf_safety_factor > 0.0 && cfg.tol_rhs > 0.0) {
                 double linf_ratio = residual_ / (b_inf_ + 1e-30);
                 double linf_cap = cfg.tol_rhs * cfg.linf_safety_factor;
                 if (linf_ratio > linf_cap) {
@@ -2197,7 +2205,8 @@ void MultigridPoissonSolver::vcycle_graphed() {
         return;
     }
 
-    // Get OpenMP's CUDA stream for launching the graph
+#ifdef __NVCOMPILER
+    // Get OpenMP's CUDA stream for launching the graph (NVHPC-specific)
     // This avoids cross-stream synchronization overhead
     cudaStream_t omp_stream = reinterpret_cast<cudaStream_t>(
         ompx_get_cuda_stream(omp_get_default_device(), /*sync=*/0));
@@ -2219,6 +2228,11 @@ void MultigridPoissonSolver::vcycle_graphed() {
 
     // Single graph launch for entire V-cycle
     vcycle_graph_->execute(omp_stream);
+#else
+    // Non-NVHPC compilers: fall back to non-graphed V-cycle
+    // (ompx_get_cuda_stream is NVHPC-specific)
+    vcycle(0, vcycle_graph_nu1_, vcycle_graph_nu2_, vcycle_graph_degree_);
+#endif
 }
 #else
 // CPU: Set raw pointers for unified code paths (no GPU mapping)

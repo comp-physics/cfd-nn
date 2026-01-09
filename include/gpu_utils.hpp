@@ -244,11 +244,13 @@ bool is_pointer_present(void* ptr);
 
 /// Get device pointer for an OpenMP-mapped host pointer
 /// Uses omp_get_mapped_ptr (OpenMP 5.1) to convert host -> device pointer
-/// Returns nullptr if pointer is not mapped
+/// Returns nullptr if pointer is not mapped or host_ptr is nullptr
 template<typename T>
 inline T* get_device_ptr(T* host_ptr) {
+    if (host_ptr == nullptr) return nullptr;
     int device = omp_get_default_device();
     void* dev_ptr = omp_get_mapped_ptr(host_ptr, device);
+    // omp_get_mapped_ptr returns nullptr if pointer is not mapped
     return static_cast<T*>(dev_ptr);
 }
 
