@@ -2252,23 +2252,6 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     }
 }
 
-// Compute max absolute divergence of a velocity field (CPU-side, staggered grid)
-[[maybe_unused]] static double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
-    const double dx = mesh.dx;
-    const double dy = mesh.dy;
-    double max_div = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // Staggered divergence: div = (u(i+1,j) - u(i,j))/dx + (v(i,j+1) - v(i,j))/dy
-            const double du_dx = (vel.u(i+1, j) - vel.u(i, j)) / dx;
-            const double dv_dy = (vel.v(i, j+1) - vel.v(i, j)) / dy;
-            const double div = du_dx + dv_dy;
-            max_div = std::max(max_div, std::abs(div));
-        }
-    }
-    return max_div;
-}
-
 void RANSSolver::compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy) {
     double dx = mesh_->dx;
     double dy = mesh_->dy;

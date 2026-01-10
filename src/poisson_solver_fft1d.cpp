@@ -5,11 +5,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <stdexcept>
-
-#ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #include <cuda_runtime.h>
-#endif
 
 namespace nncfd {
 
