@@ -72,7 +72,7 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
 
     // Warmup (2 solves)
     for (int w = 0; w < 2; ++w) {
-        #pragma omp target teams distribute parallel for map(present: p_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for map(present, alloc: p_ptr[0:total_size])
         for (size_t idx = 0; idx < total_size; ++idx) {
             p_ptr[idx] = 0.0;
         }
@@ -84,7 +84,7 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
     times.reserve(trials);
 
     for (int t = 0; t < trials; ++t) {
-        #pragma omp target teams distribute parallel for map(present: p_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for map(present, alloc: p_ptr[0:total_size])
         for (size_t idx = 0; idx < total_size; ++idx) {
             p_ptr[idx] = 0.0;
         }
