@@ -409,58 +409,193 @@ $$KE(t) = KE(0) \cdot e^{-2\nu t}$$
 
 ---
 
-## Command-Line Options
+## Configuration Reference
 
-### Grid
+All parameters can be set via command-line arguments (`--param value`) or config file (key-value pairs). Command-line arguments override config file values.
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--Nx N` | Grid cells in x | 64 |
-| `--Ny N` | Grid cells in y | 64 |
-| `--Nz N` | Grid cells in z (1 for 2D) | 1 |
-| `--stretch` | Enable wall-normal stretching | off |
+### Domain and Mesh
 
-### Physics
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `Nx` | `--Nx` | 64 | Grid cells in x-direction |
+| `Ny` | `--Ny` | 64 | Grid cells in y-direction |
+| `Nz` | `--Nz` | 1 | Grid cells in z-direction (1 = 2D simulation) |
+| `x_min` | - | 0.0 | Domain minimum in x |
+| `x_max` | - | 2π | Domain maximum in x |
+| `y_min` | - | -1.0 | Domain minimum in y |
+| `y_max` | - | 1.0 | Domain maximum in y |
+| `z_min` | `--z_min` | 0.0 | Domain minimum in z |
+| `z_max` | `--z_max` | 1.0 | Domain maximum in z |
+| `stretch_y` | `--stretch` | false | Enable tanh stretching in y (clusters points near walls) |
+| `stretch_beta` | - | 2.0 | Y-stretching parameter (higher = more clustering) |
+| `stretch_z` | `--stretch_z` | false | Enable tanh stretching in z (3D only) |
+| `stretch_beta_z` | `--stretch_beta_z` | 2.0 | Z-stretching parameter |
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--Re VALUE` | Reynolds number | 1000 |
-| `--nu VALUE` | Kinematic viscosity | 0.001 |
-| `--dp_dx VALUE` | Pressure gradient | -1.0 |
+### Physics Parameters
 
-**Note:** Specify only TWO of (Re, nu, dp_dx); the third is computed automatically.
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `Re` | `--Re` | 1000.0 | Reynolds number |
+| `nu` | `--nu` | 0.001 | Kinematic viscosity |
+| `dp_dx` | `--dp_dx` | -1.0 | Pressure gradient (body force driving flow) |
+| `rho` | - | 1.0 | Density (constant for incompressible) |
 
-### Turbulence Model
+#### Auto-Computation of Physics Parameters
 
-| Option | Description |
-|--------|-------------|
-| `--model TYPE` | Closure type: `none`, `baseline`, `gep`, `sst`, `komega`, `earsm_wj`, `earsm_gs`, `earsm_pope`, `nn_mlp`, `nn_tbnn` |
-| `--nn_preset NAME` | Use NN model from `data/models/<NAME>` |
+The solver uses the relationship: $\text{Re} = \frac{-dp/dx \cdot \delta^3}{3\nu^2}$ where $\delta$ is the channel half-height.
+
+**You should specify only TWO of (Re, nu, dp_dx)**. The third is computed automatically:
+
+| Specified | Computed | Use Case |
+|-----------|----------|----------|
+| `--Re` only | nu (using default dp_dx=-1) | Quick setup at desired Re |
+| `--Re --nu` | dp_dx | Control both Re and viscosity |
+| `--Re --dp_dx` | nu | Control Re and driving force |
+| `--nu --dp_dx` | Re | Specify physical parameters directly |
+| None | Re (from defaults) | Uses nu=0.001, dp_dx=-1.0 → Re≈1000 |
+
+**If all three are specified**, the solver checks consistency and errors if they don't match (within 1% tolerance).
 
 ### Time Stepping
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--adaptive_dt` | Automatic CFL-based time step | on |
-| `--dt VALUE` | Fixed time step | 0.001 |
-| `--max_iter N` | Maximum iterations | 10000 |
-| `--CFL VALUE` | Maximum CFL number | 0.5 |
-| `--tol VALUE` | Convergence tolerance | 1e-6 |
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `dt` | `--dt` | 0.001 | Time step size (when not using adaptive) |
+| `adaptive_dt` | `--adaptive_dt` | true | Enable CFL-based adaptive time stepping |
+| `CFL_max` | `--CFL` | 0.5 | Maximum CFL number for adaptive dt |
+| `max_iter` | `--max_iter` | 10000 | Maximum iterations (steady) or time steps (unsteady) |
+| `T_final` | - | -1.0 | Final simulation time (-1 = use max_iter instead) |
+| `tol` | `--tol` | 1e-6 | Convergence tolerance for steady-state |
+
+**When adaptive_dt is enabled** (default), the time step is computed each iteration as:
+$$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delta y}{|v|_{\max}}, \frac{\Delta z}{|w|_{\max}}\right)$$
+
+### Simulation Mode
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `simulation_mode` | `--simulation_mode` | `steady` | `steady` or `unsteady` |
+| `perturbation_amplitude` | `--perturbation_amplitude` | 0.01 | Initial perturbation amplitude for DNS |
+
+- **Steady mode**: Iterates until $\|\mathbf{u}^{n+1} - \mathbf{u}^n\|_\infty < \text{tol}$ or max_iter reached
+- **Unsteady mode**: Runs exactly max_iter time steps (or until T_final)
 
 ### Numerical Schemes
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--convective_scheme TYPE` | Convection: `central`, `upwind` | central |
-| `--poisson_solver TYPE` | Solver: `auto`, `fft`, `fft2d`, `fft1d`, `hypre`, `mg` | auto |
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `convective_scheme` | `--scheme` | `central` | `central` (2nd-order) or `upwind` (1st-order, more stable) |
+
+### Turbulence Model
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `turb_model` | `--model` | `none` | Turbulence closure (see table below) |
+| `nu_t_max` | - | 1.0 | Maximum eddy viscosity (clipping) |
+| `nn_preset` | `--nn_preset` | - | NN model preset name (loads from `data/models/<NAME>/`) |
+| `nn_weights_path` | `--weights` | - | Custom NN weights directory |
+| `nn_scaling_path` | `--scaling` | - | Custom NN scaling directory |
+
+**Available turbulence models:**
+
+| `--model` value | Description |
+|-----------------|-------------|
+| `none` | Laminar (no turbulence model) |
+| `baseline` | Algebraic mixing length with van Driest damping |
+| `gep` | Gene Expression Programming (Weatheritt-Sandberg 2016) |
+| `sst` | SST k-ω transport model (Menter 1994) |
+| `komega` | Standard k-ω (Wilcox 1988) |
+| `earsm_wj` | SST k-ω + Wallin-Johansson EARSM |
+| `earsm_gs` | SST k-ω + Gatski-Speziale EARSM |
+| `earsm_pope` | SST k-ω + Pope quadratic EARSM |
+| `nn_mlp` | Neural network scalar eddy viscosity (requires `--nn_preset`) |
+| `nn_tbnn` | Tensor Basis NN anisotropy model (requires `--nn_preset`) |
+
+**For NN models**, you must specify either:
+- `--nn_preset NAME` (loads from `data/models/<NAME>/`), or
+- `--weights DIR --scaling DIR` (explicit paths)
+
+Available presets: `tbnn_channel_caseholdout`, `tbnn_phll_caseholdout`, `example_tbnn`, `example_scalar_nut`
+
+### Poisson Solver
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `poisson_solver` | `--poisson` | `auto` | Solver selection (see table below) |
+| `poisson_tol` | `--poisson_tol` | 1e-6 | Legacy absolute tolerance (deprecated) |
+| `poisson_max_iter` | `--poisson_max_iter` | 20 | Maximum V-cycles per solve |
+| `poisson_omega` | - | 1.8 | SOR relaxation parameter (1 < ω < 2) |
+| `poisson_abs_tol_floor` | `--poisson_abs_tol_floor` | 1e-8 | Absolute tolerance floor |
+
+**Poisson solver options:**
+
+| `--poisson` value | Description | Requirements |
+|-------------------|-------------|--------------|
+| `auto` | Auto-select best solver | (default) |
+| `fft` | 2D FFT in x-z + tridiagonal in y | 3D, periodic x AND z, uniform grid |
+| `fft2d` | 1D FFT in x + tridiagonal in y | 2D only (Nz=1), periodic x |
+| `fft1d` | 1D FFT + 2D Helmholtz per mode | 3D, periodic x OR z (one only) |
+| `hypre` | HYPRE PFMG GPU-accelerated | Requires `USE_HYPRE` build |
+| `mg` | Native geometric multigrid | Always available |
+
+**Auto-selection priority:** FFT → FFT2D → FFT1D → HYPRE → MG
+
+#### Advanced Multigrid Settings
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `poisson_tol_abs` | - | 0.0 | Absolute tolerance on ‖r‖ (0 = disabled) |
+| `poisson_tol_rhs` | - | 1e-3 | RHS-relative: ‖r‖/‖b‖ (recommended) |
+| `poisson_tol_rel` | - | 1e-3 | Initial-residual relative: ‖r‖/‖r₀‖ |
+| `poisson_check_interval` | - | 1 | Check convergence every N V-cycles |
+| `poisson_use_l2_norm` | - | true | Use L2 norm (smoother than L∞) |
+| `poisson_linf_safety` | - | 10.0 | L∞ safety cap multiplier |
+| `poisson_fixed_cycles` | - | 8 | Fixed V-cycle count (0 = convergence-based) |
+| `poisson_adaptive_cycles` | - | false | Enable adaptive checking in fixed-cycle mode |
+| `poisson_check_after` | - | 4 | Check residual after this many cycles |
+| `poisson_nu1` | - | 0 | Pre-smoothing sweeps (0 = auto: 3 for walls) |
+| `poisson_nu2` | - | 0 | Post-smoothing sweeps (0 = auto: 1) |
+| `poisson_chebyshev_degree` | - | 4 | Chebyshev polynomial degree (3-4 typical) |
+| `poisson_use_vcycle_graph` | - | true | Enable CUDA Graph for V-cycle (GPU only) |
+
+**Convergence criteria** (any triggers exit):
+- `tol_rhs`: ‖r‖/‖b‖ < ε (recommended for projection)
+- `tol_rel`: ‖r‖/‖r₀‖ < ε
+- `tol_abs`: ‖r‖ < ε
 
 ### Output
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--output DIR` | Output directory | ./output |
-| `--num_snapshots N` | VTK snapshots during run | 10 |
-| `--verbose` / `--quiet` | Verbosity control | verbose |
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `output_dir` | `--output` | `output/` | Output directory for VTK files |
+| `output_freq` | - | 100 | Console output frequency (iterations) |
+| `num_snapshots` | `--num_snapshots` | 10 | Number of VTK snapshots during simulation |
+| `verbose` | `--verbose` | true | Enable verbose output |
+| `postprocess` | `--no_postprocess` | true | Enable Poiseuille table + profile output |
+| `write_fields` | `--no_write_fields` | true | Enable VTK/field output |
+
+### Performance and Diagnostics
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `warmup_steps` | `--warmup_steps` | 0 | Steps to run before timing (excluded from benchmarks) |
+| `turb_guard_enabled` | `--turb_guard_enabled` | true | Enable NaN/Inf guard checks |
+| `turb_guard_interval` | `--turb_guard_interval` | 5 | Check for NaN/Inf every N steps |
+
+### Config File Format
+
+Config files use simple key-value syntax:
+
+```ini
+# Comment lines start with #
+Nx = 128
+Ny = 256
+Re = 5000
+turb_model = sst
+adaptive_dt = true
+```
+
+Load a config file with `--config FILE`. Command-line arguments override config file values.
 
 ---
 
