@@ -5,14 +5,18 @@
 /// - Conservation laws (energy dissipation)
 /// - Established benchmarks (lid-driven cavity, law of wall)
 /// - Convergence rate verification
-///
-/// REFACTORED: Using test_framework.hpp for common utilities
-/// Original: 1047 lines -> Refactored: ~700 lines
 
-#include "test_framework.hpp"
+#include "test_utilities.hpp"
+#include "solver.hpp"
+#include "config.hpp"
+#include "turbulence_model.hpp"
 #include <functional>
 #include <algorithm>
 #include <numeric>
+#include <iostream>
+#include <iomanip>
+#include <cmath>
+#include <stdexcept>
 
 using namespace nncfd;
 using namespace nncfd::test;

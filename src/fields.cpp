@@ -1,5 +1,6 @@
 #include "fields.hpp"
 #include <cmath>
+#include <fstream>
 #include <limits>
 
 namespace nncfd {

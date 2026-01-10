@@ -17,13 +17,12 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
-#include <iostream>
+#include "test_harness.hpp"
 #include <cmath>
-#include <iomanip>
-#include <vector>
 #include <string>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // ============================================================================
 // Metric computation
@@ -209,8 +208,6 @@ struct RepeatabilityTestCase {
 };
 
 bool run_repeatability_test(const RepeatabilityTestCase& tc) {
-    std::cout << "  " << tc.name << " (" << tc.nsteps << " steps x2)... " << std::flush;
-
     // Create mesh
     Mesh mesh;
     if (tc.Nz == 1) {
@@ -244,15 +241,7 @@ bool run_repeatability_test(const RepeatabilityTestCase& tc) {
 
     // Compare
     std::string failure_reason;
-    bool passed = compare_metrics(m1, m2, tc.tolerance, failure_reason);
-
-    if (passed) {
-        std::cout << "[PASS] KE=" << std::scientific << std::setprecision(6) << m1.kinetic_energy << "\n";
-    } else {
-        std::cout << "[FAIL] " << failure_reason << "\n";
-    }
-
-    return passed;
+    return compare_metrics(m1, m2, tc.tolerance, failure_reason);
 }
 
 // ============================================================================
@@ -260,77 +249,34 @@ bool run_repeatability_test(const RepeatabilityTestCase& tc) {
 // ============================================================================
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Repeatability Envelope Test (Same-Backend)\n";
-    std::cout << "================================================================\n\n";
+    return nncfd::test::harness::run("Repeatability Tests", [] {
+        const double REL_TOL = 1e-10;
+        const int NSTEPS = 100;
 
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
-#ifdef USE_HYPRE
-    std::cout << "HYPRE: enabled\n";
-#else
-    std::cout << "HYPRE: disabled\n";
-#endif
-    std::cout << "\n";
-
-    // Tolerance: We accept FP non-determinism up to ~1e-10 relative difference
-    // This catches race conditions and uninitialized memory while allowing
-    // normal FP operation reordering differences
-    const double REL_TOL = 1e-10;
-    const int NSTEPS = 100;  // Enough steps to accumulate any drift
-
-    std::vector<RepeatabilityTestCase> tests = {
         // 2D tests
-        {"2D_channel", 64, 64, 1, 2.0*M_PI, 2.0, 1.0,
-         VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::Periodic,
-         NSTEPS, REL_TOL},
+        record("2D channel repeatability (100 steps x2)", run_repeatability_test({
+            "2D_channel", 64, 64, 1, 2.0*M_PI, 2.0, 1.0,
+            VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::Periodic,
+            NSTEPS, REL_TOL
+        }));
 
-        {"2D_cavity", 64, 64, 1, 1.0, 1.0, 1.0,
-         VelocityBC::NoSlip, VelocityBC::NoSlip, VelocityBC::Periodic,
-         NSTEPS, REL_TOL},
+        record("2D cavity repeatability (100 steps x2)", run_repeatability_test({
+            "2D_cavity", 64, 64, 1, 1.0, 1.0, 1.0,
+            VelocityBC::NoSlip, VelocityBC::NoSlip, VelocityBC::Periodic,
+            NSTEPS, REL_TOL
+        }));
 
         // 3D tests
-        {"3D_channel", 32, 32, 32, 2.0*M_PI, 2.0, 2.0*M_PI,
-         VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::Periodic,
-         NSTEPS, REL_TOL},
+        record("3D channel repeatability (100 steps x2)", run_repeatability_test({
+            "3D_channel", 32, 32, 32, 2.0*M_PI, 2.0, 2.0*M_PI,
+            VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::Periodic,
+            NSTEPS, REL_TOL
+        }));
 
-        {"3D_duct", 32, 32, 32, 2.0*M_PI, 2.0, 2.0,
-         VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::NoSlip,
-         NSTEPS, REL_TOL},
-    };
-
-    std::cout << "--- Running " << tests.size() << " repeatability tests ---\n";
-    std::cout << "    (tolerance: " << std::scientific << REL_TOL << ")\n\n";
-
-    int passed = 0, failed = 0;
-
-    for (const auto& tc : tests) {
-        if (run_repeatability_test(tc)) {
-            ++passed;
-        } else {
-            ++failed;
-        }
-    }
-
-    // ========================================================================
-    // Summary
-    // ========================================================================
-    std::cout << "\n================================================================\n";
-    std::cout << "Repeatability Test Summary\n";
-    std::cout << "================================================================\n";
-    std::cout << "  Passed: " << passed << "/" << (passed + failed) << "\n";
-    std::cout << "  Failed: " << failed << "/" << (passed + failed) << "\n";
-
-    if (failed == 0) {
-        std::cout << "\n[PASS] All repeatability tests passed\n";
-        std::cout << "       Same simulation run twice produces matching results\n";
-        return 0;
-    } else {
-        std::cout << "\n[FAIL] " << failed << " repeatability test(s) failed\n";
-        std::cout << "       This indicates race conditions or uninitialized memory!\n";
-        return 1;
-    }
+        record("3D duct repeatability (100 steps x2)", run_repeatability_test({
+            "3D_duct", 32, 32, 32, 2.0*M_PI, 2.0, 2.0,
+            VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::NoSlip,
+            NSTEPS, REL_TOL
+        }));
+    });
 }

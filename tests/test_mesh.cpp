@@ -2,135 +2,106 @@
 
 #include "mesh.hpp"
 #include "fields.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <cmath>
 #include <cassert>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 void test_uniform_mesh() {
-    std::cout << "Testing uniform mesh... ";
-    
     Mesh mesh;
     mesh.init_uniform(10, 20, 0.0, 1.0, -1.0, 1.0);
-    
-    assert(mesh.Nx == 10);
-    assert(mesh.Ny == 20);
-    assert(std::abs(mesh.dx - 0.1) < 1e-10);
-    assert(std::abs(mesh.dy - 0.1) < 1e-10);
-    
-    // Check interior cell count
-    assert(mesh.total_Nx() == 12);  // 10 + 2 ghost
-    assert(mesh.total_Ny() == 22);  // 20 + 2 ghost
-    
+
+    bool pass = (mesh.Nx == 10) && (mesh.Ny == 20);
+    pass = pass && (std::abs(mesh.dx - 0.1) < 1e-10);
+    pass = pass && (std::abs(mesh.dy - 0.1) < 1e-10);
+    pass = pass && (mesh.total_Nx() == 12);  // 10 + 2 ghost
+    pass = pass && (mesh.total_Ny() == 22);  // 20 + 2 ghost
+
     // Check indexing
     int idx = mesh.index(5, 10);
     int i, j;
     mesh.inv_index(idx, i, j);
-    assert(i == 5 && j == 10);
-    
+    pass = pass && (i == 5 && j == 10);
+
     // Check interior detection
-    assert(mesh.isInterior(5, 10));
-    assert(!mesh.isInterior(0, 10));
-    assert(!mesh.isInterior(11, 10));
-    
+    pass = pass && mesh.isInterior(5, 10);
+    pass = pass && !mesh.isInterior(0, 10);
+    pass = pass && !mesh.isInterior(11, 10);
+
     // Check cell centers
-    assert(std::abs(mesh.x(1) - 0.05) < 1e-10);  // First interior cell at ghost index 1
-    
-    std::cout << "PASSED\n";
+    pass = pass && (std::abs(mesh.x(1) - 0.05) < 1e-10);
+
+    record("Uniform mesh", pass);
 }
 
 void test_stretched_mesh() {
-    std::cout << "Testing stretched mesh... ";
-    
     Mesh mesh;
-    mesh.init_stretched_y(10, 20, 0.0, 1.0, -1.0, 1.0, 
+    mesh.init_stretched_y(10, 20, 0.0, 1.0, -1.0, 1.0,
                           Mesh::tanh_stretching(2.0));
-    
-    assert(mesh.Nx == 10);
-    assert(mesh.Ny == 20);
-    
+
+    bool pass = (mesh.Nx == 10) && (mesh.Ny == 20);
+
     // Stretched mesh should have smaller dy near walls
     double dy_wall = mesh.dyv[mesh.Nghost];  // First interior cell
     double dy_center = mesh.dyv[mesh.Nghost + mesh.Ny/2];  // Center
-    
-    assert(dy_wall < dy_center);  // Finer at wall
-    (void)dy_wall; (void)dy_center;  // Used in assert
-    
-    std::cout << "PASSED\n";
+    pass = pass && (dy_wall < dy_center);  // Finer at wall
+
+    record("Stretched mesh", pass);
 }
 
 void test_wall_distance() {
-    std::cout << "Testing wall distance... ";
-    
     Mesh mesh;
     mesh.init_uniform(10, 20, 0.0, 1.0, -1.0, 1.0);
-    
-    // Cell at bottom wall should have small wall distance
+
     double dist_bottom = mesh.wall_distance(5, mesh.j_begin());
     double dist_top = mesh.wall_distance(5, mesh.j_end() - 1);
     double dist_center = mesh.wall_distance(5, mesh.j_begin() + mesh.Ny/2);
-    
-    assert(dist_bottom < 0.1);
-    assert(dist_top < 0.1);
-    assert(dist_center > 0.9);  // Near centerline
-    (void)dist_bottom; (void)dist_top; (void)dist_center;  // Used in assert
-    
-    std::cout << "PASSED\n";
+
+    bool pass = (dist_bottom < 0.1) && (dist_top < 0.1) && (dist_center > 0.9);
+    record("Wall distance", pass);
 }
 
 void test_scalar_field() {
-    std::cout << "Testing scalar field... ";
-    
     Mesh mesh;
     mesh.init_uniform(10, 10, 0.0, 1.0, 0.0, 1.0);
-    
+
     ScalarField f(mesh, 1.0);
-    
-    // Check initial value
-    assert(std::abs(f(5, 5) - 1.0) < 1e-10);
-    
-    // Modify and check
+    bool pass = std::abs(f(5, 5) - 1.0) < 1e-10;
+
     f(5, 5) = 2.0;
-    assert(std::abs(f(5, 5) - 2.0) < 1e-10);
-    
-    // Check fill
+    pass = pass && (std::abs(f(5, 5) - 2.0) < 1e-10);
+
     f.fill(3.0);
-    assert(std::abs(f(3, 3) - 3.0) < 1e-10);
-    
-    std::cout << "PASSED\n";
+    pass = pass && (std::abs(f(3, 3) - 3.0) < 1e-10);
+
+    record("Scalar field", pass);
 }
 
 void test_vector_field() {
-    std::cout << "Testing vector field... ";
-    
     Mesh mesh;
     mesh.init_uniform(10, 10, 0.0, 1.0, 0.0, 1.0);
-    
+
     VectorField v(mesh, 1.0, 2.0);
-    
-    assert(std::abs(v.u(5, 5) - 1.0) < 1e-10);
-    assert(std::abs(v.v(5, 5) - 2.0) < 1e-10);
-    
-    // Check magnitude
+    bool pass = (std::abs(v.u(5, 5) - 1.0) < 1e-10);
+    pass = pass && (std::abs(v.v(5, 5) - 2.0) < 1e-10);
+
     double mag = v.magnitude(5, 5);
-    assert(std::abs(mag - std::sqrt(5.0)) < 1e-10);
-    (void)mag;  // Used in assert
-    
-    std::cout << "PASSED\n";
+    pass = pass && (std::abs(mag - std::sqrt(5.0)) < 1e-10);
+
+    record("Vector field", pass);
 }
 
 int main() {
-    std::cout << "=== Mesh and Fields Tests ===\n\n";
-    
-    test_uniform_mesh();
-    test_stretched_mesh();
-    test_wall_distance();
-    test_scalar_field();
-    test_vector_field();
-    
-    std::cout << "\nAll tests PASSED!\n";
-    return 0;
+    return nncfd::test::harness::run("Mesh and Fields Tests", [] {
+        test_uniform_mesh();
+        test_stretched_mesh();
+        test_wall_distance();
+        test_scalar_field();
+        test_vector_field();
+    });
 }
 
 

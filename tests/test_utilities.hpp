@@ -11,6 +11,10 @@
 #include <random>
 #include <vector>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 namespace test {
 
@@ -111,6 +115,36 @@ constexpr double BITWISE_TOLERANCE = 1e-10;
 
 /// Minimum expected FP difference (to verify different backends executed)
 constexpr double MIN_EXPECTED_DIFF = 1e-14;
+
+//=============================================================================
+// Floating-Point Comparison Utilities (rel+abs tolerance)
+//=============================================================================
+
+/// Check if two values are close using combined relative and absolute tolerance.
+/// Returns true if |a - b| <= atol + rtol * max(|a|, |b|)
+/// This is the standard approach used in numpy.isclose() and similar.
+inline bool check_close(double a, double b, double rtol = 1e-5, double atol = 1e-8) {
+    double diff = std::abs(a - b);
+    double scale = std::max(std::abs(a), std::abs(b));
+    return diff <= atol + rtol * scale;
+}
+
+/// Check if value is close to zero (absolute tolerance only)
+inline bool check_near_zero(double val, double atol = 1e-10) {
+    return std::abs(val) <= atol;
+}
+
+/// Check if value is within relative tolerance of expected
+inline bool check_relative(double actual, double expected, double rtol = 1e-5) {
+    if (std::abs(expected) < 1e-15) return std::abs(actual) < 1e-15;
+    return std::abs(actual - expected) / std::abs(expected) <= rtol;
+}
+
+/// Macro for cleaner test assertions with rel+abs tolerance
+#define CHECK_CLOSE(a, b) nncfd::test::check_close((a), (b))
+#define CHECK_CLOSE_TOL(a, b, rtol, atol) nncfd::test::check_close((a), (b), (rtol), (atol))
+#define CHECK_NEAR_ZERO(val) nncfd::test::check_near_zero((val))
+#define CHECK_RELATIVE(actual, expected, rtol) nncfd::test::check_relative((actual), (expected), (rtol))
 
 //=============================================================================
 // Utility Functions
@@ -245,6 +279,126 @@ inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const 
     return std::sqrt(l2_error / count);
 }
 
+//=============================================================================
+// Unified L2 Error Computation
+//=============================================================================
+
+/// Unified L2 error computation against an exact function.
+/// Works with ScalarField, supports 2D/3D meshes, optional mean subtraction.
+///
+/// @param field     Numerical solution field
+/// @param mesh      Computational mesh
+/// @param exact_fn  Callable: exact_fn(x, y) for 2D, exact_fn(x, y, z) for 3D
+/// @param subtract_mean  If true, compare (field - mean(field)) vs (exact - mean(exact))
+/// @param relative  If true, return error / ||exact||, else return absolute L2 norm
+///
+/// Example:
+///   auto exact = [](double x, double y) { return std::sin(x) * std::cos(y); };
+///   double err = compute_l2_error(p, mesh, exact, true, true);
+///
+template<typename FieldT, typename MeshT, typename ExactFn>
+inline double compute_l2_error(const FieldT& field, const MeshT& mesh, ExactFn&& exact_fn,
+                                bool subtract_mean = true, bool relative = true) {
+    double field_mean = 0.0, exact_mean = 0.0;
+    double error_sq = 0.0, norm_sq = 0.0;
+    int count = 0;
+
+    // Determine if 3D based on mesh
+    const bool is_3d = (mesh.Nz > 1);
+
+    // First pass: compute means if needed
+    if (subtract_mean) {
+        if (is_3d) {
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        field_mean += field(i, j, k);
+                        exact_mean += exact_fn(mesh.x(i), mesh.y(j), mesh.z(k));
+                        ++count;
+                    }
+                }
+            }
+        } else {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    field_mean += field(i, j);
+                    exact_mean += exact_fn(mesh.x(i), mesh.y(j));
+                    ++count;
+                }
+            }
+        }
+        if (count > 0) {
+            field_mean /= count;
+            exact_mean /= count;
+        }
+        count = 0;  // Reset for second pass
+    }
+
+    // Second pass: compute error
+    if (is_3d) {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double f_val = field(i, j, k) - field_mean;
+                    double e_val = exact_fn(mesh.x(i), mesh.y(j), mesh.z(k)) - exact_mean;
+                    double diff = f_val - e_val;
+                    error_sq += diff * diff;
+                    norm_sq += e_val * e_val;
+                    ++count;
+                }
+            }
+        }
+    } else {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double f_val = field(i, j) - field_mean;
+                double e_val = exact_fn(mesh.x(i), mesh.y(j)) - exact_mean;
+                double diff = f_val - e_val;
+                error_sq += diff * diff;
+                norm_sq += e_val * e_val;
+                ++count;
+            }
+        }
+    }
+
+    if (count == 0) return 0.0;
+
+    double l2_abs = std::sqrt(error_sq / count);
+    if (relative && norm_sq > 1e-14) {
+        return l2_abs / std::sqrt(norm_sq / count);
+    }
+    return l2_abs;
+}
+
+/// Compute L2 error for velocity u-component against exact function
+/// Uses cell-centered interpolation of staggered u-velocity
+template<typename VelFieldT, typename MeshT, typename ExactFn>
+inline double compute_l2_error_velocity_u(const VelFieldT& vel, const MeshT& mesh,
+                                           ExactFn&& u_exact, bool relative = true) {
+    double error_sq = 0.0, norm_sq = 0.0;
+    int count = 0;
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Interpolate u to cell center
+            double u_num = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            double u_ex = u_exact(mesh.x(i), mesh.y(j));
+            double diff = u_num - u_ex;
+            error_sq += diff * diff;
+            norm_sq += u_ex * u_ex;
+            ++count;
+        }
+    }
+
+    if (count == 0) return 0.0;
+
+    double l2_abs = std::sqrt(error_sq / count);
+    if (relative && norm_sq > 1e-14) {
+        return l2_abs / std::sqrt(norm_sq / count);
+    }
+    return l2_abs;
+}
+
 } // namespace test
 } // namespace nncfd
 
@@ -263,12 +417,103 @@ inline double compute_l2_error_2d(const FieldT& p_num, const MeshT& mesh, const 
     for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
     for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
 
+/// Dimension-agnostic iteration over interior cells (2D or 3D)
+/// In 2D, k iterates once (k_begin to k_end is a single iteration).
+/// This allows the same loop body to work for both 2D and 3D meshes.
+///
+/// Usage:
+///   FOR_INTERIOR(mesh, i, j, k) {
+///       // Body executes for all interior cells
+///       // In 2D: k is always 0 (or mesh.Nghost for ghost-offset meshes)
+///       // In 3D: k iterates over z-slices
+///   }
+///
+#define FOR_INTERIOR(mesh, i, j, k) \
+    for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
+    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
+    for (int i = (mesh).i_begin(); i < (mesh).i_end(); ++i)
+
+/// Iterate over interior cells with optional stride for cache efficiency
+#define FOR_INTERIOR_STRIDED(mesh, i, j, k, i_stride) \
+    for (int k = (mesh).k_begin(); k < (mesh).k_end(); ++k) \
+    for (int j = (mesh).j_begin(); j < (mesh).j_end(); ++j) \
+    for (int i = (mesh).i_begin(); i < (mesh).i_end(); i += (i_stride))
+
 //=============================================================================
 // GPU/CPU Test Utilities
 //=============================================================================
 
 namespace nncfd {
 namespace test {
+
+//=============================================================================
+// GPU Availability and Verification (unified interface)
+//=============================================================================
+
+namespace gpu {
+
+/// Check if any GPU device is available
+inline bool available() {
+#ifdef USE_GPU_OFFLOAD
+    return omp_get_num_devices() > 0;
+#else
+    return false;
+#endif
+}
+
+/// Get number of available GPU devices
+inline int device_count() {
+#ifdef USE_GPU_OFFLOAD
+    return omp_get_num_devices();
+#else
+    return 0;
+#endif
+}
+
+/// Verify that code actually executes on GPU (not just compiled for it)
+/// Returns true if target region executes on device
+inline bool verify_execution() {
+#ifdef USE_GPU_OFFLOAD
+    if (omp_get_num_devices() == 0) return false;
+    int on_device = 0;
+    #pragma omp target map(tofrom: on_device)
+    { on_device = !omp_is_initial_device(); }
+    return on_device != 0;
+#else
+    return false;
+#endif
+}
+
+/// Check if this is a GPU build (compile-time check)
+inline constexpr bool is_gpu_build() {
+#ifdef USE_GPU_OFFLOAD
+    return true;
+#else
+    return false;
+#endif
+}
+
+/// Get build type string for display
+inline const char* build_type_string() {
+#ifdef USE_GPU_OFFLOAD
+    return "GPU (USE_GPU_OFFLOAD=ON)";
+#else
+    return "CPU (USE_GPU_OFFLOAD=OFF)";
+#endif
+}
+
+/// Print GPU configuration info
+inline void print_config() {
+    std::cout << "Build: " << build_type_string() << "\n";
+#ifdef USE_GPU_OFFLOAD
+    std::cout << "Devices: " << device_count() << "\n";
+    if (available()) {
+        std::cout << "GPU execution: " << (verify_execution() ? "YES" : "NO") << "\n";
+    }
+#endif
+}
+
+} // namespace gpu
 
 /// Test case configuration for turbulence model tests
 struct TurbulenceTestCase {
@@ -339,6 +584,493 @@ inline ToleranceCheck check_gpu_cpu_consistency(const FieldComparison& cmp) {
 /// Check cross-build consistency with relaxed tolerances
 inline ToleranceCheck check_cross_build_consistency(const FieldComparison& cmp) {
     return ToleranceCheck(cmp.max_abs_diff, cmp.max_rel_diff, CROSS_BUILD_ABS_TOL, CROSS_BUILD_REL_TOL);
+}
+
+//=============================================================================
+// Boundary Condition Pattern Helpers
+//=============================================================================
+
+/// Common velocity BC patterns for test setup
+/// Reduces duplication in test files where BC setup is repeated 25+ times
+enum class BCPattern {
+    Channel2D,      ///< Periodic x, NoSlip y (classic 2D channel)
+    Channel3D,      ///< Periodic x/z, NoSlip y (3D channel)
+    FullyPeriodic,  ///< All directions periodic (e.g., Taylor-Green)
+    AllNoSlip,      ///< All walls (e.g., lid-driven cavity)
+    Duct,           ///< Periodic x, NoSlip y/z (rectangular duct)
+    Pipe            ///< Periodic x, NoSlip y/z (same as Duct for now)
+};
+
+/// Get a descriptive name for a BC pattern
+inline const char* bc_pattern_name(BCPattern pattern) {
+    switch (pattern) {
+        case BCPattern::Channel2D:     return "Channel2D";
+        case BCPattern::Channel3D:     return "Channel3D";
+        case BCPattern::FullyPeriodic: return "FullyPeriodic";
+        case BCPattern::AllNoSlip:     return "AllNoSlip";
+        case BCPattern::Duct:          return "Duct";
+        case BCPattern::Pipe:          return "Pipe";
+    }
+    return "Unknown";
+}
+
+} // namespace test
+} // namespace nncfd
+
+// Include solver.hpp for VelocityBC - forward declare to avoid circular includes
+// Tests that use create_velocity_bc should include solver.hpp themselves
+#include "solver.hpp"
+
+namespace nncfd {
+namespace test {
+
+/// Create a VelocityBC struct for a common pattern
+/// Usage: solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+inline VelocityBC create_velocity_bc(BCPattern pattern) {
+    VelocityBC bc;
+
+    switch (pattern) {
+        case BCPattern::Channel2D:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::Periodic;
+            bc.z_hi = VelocityBC::Periodic;
+            break;
+
+        case BCPattern::Channel3D:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::Periodic;
+            bc.z_hi = VelocityBC::Periodic;
+            break;
+
+        case BCPattern::FullyPeriodic:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::Periodic;
+            bc.y_hi = VelocityBC::Periodic;
+            bc.z_lo = VelocityBC::Periodic;
+            bc.z_hi = VelocityBC::Periodic;
+            break;
+
+        case BCPattern::AllNoSlip:
+            bc.x_lo = VelocityBC::NoSlip;
+            bc.x_hi = VelocityBC::NoSlip;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::NoSlip;
+            bc.z_hi = VelocityBC::NoSlip;
+            break;
+
+        case BCPattern::Duct:
+        case BCPattern::Pipe:
+            bc.x_lo = VelocityBC::Periodic;
+            bc.x_hi = VelocityBC::Periodic;
+            bc.y_lo = VelocityBC::NoSlip;
+            bc.y_hi = VelocityBC::NoSlip;
+            bc.z_lo = VelocityBC::NoSlip;
+            bc.z_hi = VelocityBC::NoSlip;
+            break;
+    }
+
+    return bc;
+}
+
+//=============================================================================
+// Mesh Factory Functions
+//=============================================================================
+
+/// Create a uniform 2D mesh for channel flow (periodic x, walls y)
+/// @param Nx  Grid cells in x
+/// @param Ny  Grid cells in y
+/// @param Lx  Domain length in x (default 2π)
+/// @param Ly  Domain height in y (default 2, from -1 to 1)
+inline Mesh create_channel_mesh_2d(int Nx, int Ny, double Lx = 2.0 * M_PI, double Ly = 2.0) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, 0.0, Lx, -Ly/2, Ly/2);
+    return mesh;
+}
+
+/// Create a uniform 3D mesh for channel flow (periodic x/z, walls y)
+/// @param Nx  Grid cells in x
+/// @param Ny  Grid cells in y
+/// @param Nz  Grid cells in z
+/// @param Lx  Domain length in x (default 2π)
+/// @param Ly  Domain height in y (default 2, from -1 to 1)
+/// @param Lz  Domain length in z (default π)
+inline Mesh create_channel_mesh_3d(int Nx, int Ny, int Nz,
+                                    double Lx = 2.0 * M_PI, double Ly = 2.0, double Lz = M_PI) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, Nz, 0.0, Lx, -Ly/2, Ly/2, 0.0, Lz);
+    return mesh;
+}
+
+/// Create a uniform 2D periodic mesh (periodic in both directions)
+/// @param N  Grid cells in each direction
+/// @param L  Domain size in each direction (default 2π)
+inline Mesh create_periodic_mesh_2d(int N, double L = 2.0 * M_PI) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+    return mesh;
+}
+
+/// Create a uniform 3D periodic mesh (periodic in all directions)
+/// @param N  Grid cells in each direction
+/// @param L  Domain size in each direction (default 2π)
+inline Mesh create_periodic_mesh_3d(int N, double L = 2.0 * M_PI) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, N, 0.0, L, 0.0, L, 0.0, L);
+    return mesh;
+}
+
+/// Create a uniform 2D unit square mesh [0,1] x [0,1]
+/// @param N  Grid cells in each direction
+inline Mesh create_unit_square_mesh(int N) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, 1.0, 0.0, 1.0);
+    return mesh;
+}
+
+/// Create a uniform 3D unit cube mesh [0,1]^3
+/// @param N  Grid cells in each direction
+inline Mesh create_unit_cube_mesh(int N) {
+    Mesh mesh;
+    mesh.init_uniform(N, N, N, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    return mesh;
+}
+
+/// Create a 2D mesh with custom dimensions
+/// @param Nx, Ny  Grid cells
+/// @param Lx, Ly  Domain dimensions
+inline Mesh create_uniform_mesh_2d(int Nx, int Ny, double Lx, double Ly) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, 0.0, Lx, 0.0, Ly);
+    return mesh;
+}
+
+/// Create a 3D mesh with custom dimensions
+/// @param Nx, Ny, Nz  Grid cells
+/// @param Lx, Ly, Lz  Domain dimensions
+inline Mesh create_uniform_mesh_3d(int Nx, int Ny, int Nz, double Lx, double Ly, double Lz) {
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, Nz, 0.0, Lx, 0.0, Ly, 0.0, Lz);
+    return mesh;
+}
+
+//=============================================================================
+// Config Factory Functions
+//=============================================================================
+
+/// Create a laminar flow configuration
+/// @param nu  Kinematic viscosity
+/// @param dt  Time step
+/// @param verbose  Enable verbose output (default false)
+inline Config create_laminar_config(double nu, double dt, bool verbose = false) {
+    Config config;
+    config.nu = nu;
+    config.dt = dt;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = verbose;
+    return config;
+}
+
+/// Create a turbulent flow configuration
+/// @param nu  Kinematic viscosity
+/// @param dt  Time step
+/// @param turb_model  Turbulence model type
+/// @param verbose  Enable verbose output (default false)
+inline Config create_turbulent_config(double nu, double dt,
+                                       TurbulenceModelType turb_model,
+                                       bool verbose = false) {
+    Config config;
+    config.nu = nu;
+    config.dt = dt;
+    config.turb_model = turb_model;
+    config.verbose = verbose;
+    return config;
+}
+
+/// Create a configuration with adaptive time stepping
+/// @param nu  Kinematic viscosity
+/// @param CFL_max  Maximum CFL number for stability
+/// @param verbose  Enable verbose output (default false)
+inline Config create_adaptive_config(double nu, double CFL_max = 0.5, bool verbose = false) {
+    Config config;
+    config.nu = nu;
+    config.dt = 0.001;  // Initial guess, will be overridden by adaptive dt
+    config.CFL_max = CFL_max;
+    config.adaptive_dt = true;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = verbose;
+    return config;
+}
+
+/// Create a minimal test configuration (low verbosity, fast)
+/// @param nu  Kinematic viscosity (default 0.01)
+/// @param dt  Time step (default 0.001)
+inline Config create_test_config(double nu = 0.01, double dt = 0.001) {
+    Config config;
+    config.nu = nu;
+    config.dt = dt;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
+    return config;
+}
+
+//=============================================================================
+// Solver Setup Helper
+//=============================================================================
+
+/// Configure a solver with standard settings for testing
+/// @param solver  RANSSolver reference to configure
+/// @param bc_pattern  Boundary condition pattern
+/// @param u_init  Initial u-velocity (default 0.0)
+/// @param v_init  Initial v-velocity (default 0.0)
+inline void setup_solver_for_test(RANSSolver& solver, BCPattern bc_pattern,
+                                   double u_init = 0.0, double v_init = 0.0) {
+    solver.set_velocity_bc(create_velocity_bc(bc_pattern));
+    solver.initialize_uniform(u_init, v_init);
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+}
+
+//=============================================================================
+// Unified Test Solver Factory
+//=============================================================================
+
+/// Complete test solver bundle: mesh + config + solver in one struct.
+/// Eliminates 15-20 lines of boilerplate per test function.
+///
+/// Usage:
+///   auto ts = make_test_solver(32, 32, BCPattern::Channel2D);
+///   ts.solver->step();
+///   // Access: ts.mesh, ts.config, ts.solver
+struct TestSolver {
+    Mesh mesh;
+    Config config;
+    std::unique_ptr<RANSSolver> solver;
+
+    /// Get reference to solver (convenience)
+    RANSSolver& operator*() { return *solver; }
+    RANSSolver* operator->() { return solver.get(); }
+};
+
+/// Create a complete 2D test solver setup in one call.
+/// Replaces ~15 lines of mesh/config/solver/BC setup boilerplate.
+///
+/// @param Nx, Ny  Grid dimensions
+/// @param bc  Boundary condition pattern (default Channel2D)
+/// @param nu  Kinematic viscosity (default 0.01)
+/// @param dt  Time step (default 0.001)
+/// @param turb  Turbulence model (default None)
+/// @param u_init, v_init  Initial velocity (default 0, 0)
+///
+/// Example:
+///   auto ts = make_test_solver(64, 64);  // Channel2D, laminar
+///   ts->step();
+///
+inline TestSolver make_test_solver(int Nx, int Ny,
+                                    BCPattern bc = BCPattern::Channel2D,
+                                    double nu = 0.01,
+                                    double dt = 0.001,
+                                    TurbulenceModelType turb = TurbulenceModelType::None,
+                                    double u_init = 0.0,
+                                    double v_init = 0.0) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, 0.0, 2.0 * M_PI, 0.0, 2.0);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = turb;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(u_init, v_init);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+/// Create a 2D test solver with custom domain bounds
+inline TestSolver make_test_solver_domain(int Nx, int Ny,
+                                           double x_min, double x_max,
+                                           double y_min, double y_max,
+                                           BCPattern bc = BCPattern::Channel2D,
+                                           double nu = 0.01,
+                                           double dt = 0.001) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, x_min, x_max, y_min, y_max);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = TurbulenceModelType::None;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(0.0, 0.0);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+/// Create a 3D test solver setup
+inline TestSolver make_test_solver_3d(int Nx, int Ny, int Nz,
+                                       BCPattern bc = BCPattern::Channel3D,
+                                       double nu = 0.01,
+                                       double dt = 0.001,
+                                       TurbulenceModelType turb = TurbulenceModelType::None) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, Nz, 0.0, 2.0 * M_PI, 0.0, 2.0, 0.0, M_PI);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = turb;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(0.0, 0.0);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+/// Create a 3D test solver with custom domain bounds
+inline TestSolver make_test_solver_3d_domain(int Nx, int Ny, int Nz,
+                                              double x_min, double x_max,
+                                              double y_min, double y_max,
+                                              double z_min, double z_max,
+                                              BCPattern bc = BCPattern::Channel3D,
+                                              double nu = 0.01,
+                                              double dt = 0.001) {
+    TestSolver ts;
+    ts.mesh.init_uniform(Nx, Ny, Nz, x_min, x_max, y_min, y_max, z_min, z_max);
+    ts.config.nu = nu;
+    ts.config.dt = dt;
+    ts.config.turb_model = TurbulenceModelType::None;
+    ts.config.verbose = false;
+    ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
+    ts.solver->set_velocity_bc(create_velocity_bc(bc));
+    ts.solver->initialize_uniform(0.0, 0.0);
+#ifdef USE_GPU_OFFLOAD
+    ts.solver->sync_to_gpu();
+#endif
+    return ts;
+}
+
+//=============================================================================
+// Field Norm Utilities
+//=============================================================================
+
+/// Compute L2 norm of a scalar field over interior cells
+template<typename FieldT, typename MeshT>
+inline double l2_norm(const FieldT& f, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += f(i, j, k) * f(i, j, k);
+                ++count;
+            }
+        }
+    }
+    return std::sqrt(sum / std::max(1, count));
+}
+
+/// Compute L-infinity (max) norm of a scalar field over interior cells
+template<typename FieldT, typename MeshT>
+inline double linf_norm(const FieldT& f, const MeshT& mesh) {
+    double max_val = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                max_val = std::max(max_val, std::abs(f(i, j, k)));
+            }
+        }
+    }
+    return max_val;
+}
+
+/// Compute L2 difference between two scalar fields
+template<typename FieldT, typename MeshT>
+inline double l2_diff(const FieldT& a, const FieldT& b, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double d = a(i, j, k) - b(i, j, k);
+                sum += d * d;
+                ++count;
+            }
+        }
+    }
+    return std::sqrt(sum / std::max(1, count));
+}
+
+/// Compute mean value of a scalar field over interior cells
+template<typename FieldT, typename MeshT>
+inline double mean_value(const FieldT& f, const MeshT& mesh) {
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += f(i, j, k);
+                ++count;
+            }
+        }
+    }
+    return sum / std::max(1, count);
+}
+
+/// Remove mean from a scalar field (in-place)
+template<typename FieldT, typename MeshT>
+inline void remove_mean(FieldT& f, const MeshT& mesh) {
+    double m = mean_value(f, mesh);
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                f(i, j, k) -= m;
+            }
+        }
+    }
+}
+
+//=============================================================================
+// Physics Test Utilities
+//=============================================================================
+
+/// Initialize Taylor-Green vortex (MAC grid: u at x-faces, v at y-faces)
+inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = std::sin(mesh.xf[i]) * std::cos(mesh.y(j));
+        }
+    }
+    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            solver.velocity().v(i, j) = -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]);
+        }
+    }
+}
+
+/// Compute kinetic energy: 0.5 * integral(u^2 + v^2) dx dy
+inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
+    double KE = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+            KE += 0.5 * (u*u + v*v) * mesh.dx * mesh.dy;
+        }
+    }
+    return KE;
 }
 
 } // namespace test

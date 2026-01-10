@@ -13,6 +13,7 @@
 /// without solving additional transport equations for Reynolds stresses.
 
 #include "turbulence_earsm.hpp"
+#include "numerics.hpp"
 #include "timing.hpp"
 #include "gpu_kernels.hpp"
 #include <cmath>
@@ -217,18 +218,20 @@ void EARSMClosure::compute_nu_t(
     feature_computer_->set_reference(nu_, delta_, 1.0);
     feature_computer_->compute_tbnn_features(velocity, k, omega, features_, basis_);
     
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     
+    using namespace numerics;
+
     int idx = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i, ++idx) {
             // Regularize k and omega to prevent division by zero
             double k_loc = std::max(thresholds_.k_min, k(i, j));
             double omega_loc = std::max(thresholds_.omega_min, omega(i, j));
-            
+
             // Compute turbulence Reynolds number: Re_t = k/(ν·ω)
             // This measures the ratio of turbulent to molecular timescales
-            double Re_t = k_loc / (nu_ * omega_loc);
+            double Re_t = safe_divide(k_loc, nu_ * omega_loc, OMEGA_FLOOR * nu_);
             
             // Smooth blending factor for nonlinear EARSM corrections
             // alpha = 0: pure Boussinesq (laminar-like, Re_t << 1)
@@ -248,7 +251,7 @@ void EARSMClosure::compute_nu_t(
             }
             
             double eps = C_mu * k_loc * omega_loc;
-            double tau = k_loc / std::max(eps, 1e-20);
+            double tau = safe_divide(k_loc, eps, K_FLOOR);
             
             // Get velocity gradient for strain/rotation magnitudes (MAC-aware)
             const double inv_2dx = 1.0 / (2.0 * mesh.dx);
@@ -319,11 +322,11 @@ void EARSMClosure::compute_nu_t(
             
             if (std::abs(Sxy) > 1e-10) {
                 // Match τ_xy = -2k b_xy with Boussinesq: τ_xy = -2ν_t S_xy
-                nu_t_loc = std::abs(-b_xy * k_loc / Sxy);
+                nu_t_loc = std::abs(safe_divide(-b_xy * k_loc, Sxy, 1e-10));
             } else if (S_mag > 1e-10) {
                 // Fallback: use magnitude
                 double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                nu_t_loc = k_loc * b_mag / S_mag;
+                nu_t_loc = safe_divide(k_loc * b_mag, S_mag, 1e-10);
             }
             
             // Clipping
@@ -502,7 +505,7 @@ void PopeQuadraticEARSM::compute_G(
     // This is a simple quadratic extension that captures some
     // anisotropy effects while remaining computationally cheap.
     
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     
     // PHYSICAL CHECK: Clamp eta to reasonable range
     // eta > 100 indicates pathological timescales (e.g., k/omega at floors)
@@ -995,7 +998,7 @@ void compute_earsm_wj_full_gpu(
     const double A2 = constants.A2();
     const double A3 = constants.A3();
     const double A4 = constants.A4();
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
@@ -1041,7 +1044,7 @@ void compute_earsm_gs_full_gpu(
     const double C1 = constants.C1;
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
-    const double C_mu_eps = 0.09;
+    const double C_mu_eps = numerics::C_MU;
     const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
@@ -1083,7 +1086,7 @@ void compute_earsm_pope_full_gpu(
     int Nx, int Ny, int Ng, int stride,
     double nu, double C1, double C2)
 {
-    const double C_mu = 0.09;
+    const double C_mu = numerics::C_MU;
     const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD

@@ -1,4 +1,5 @@
 #include "gpu_kernels.hpp"
+#include "numerics.hpp"
 #include "profiling.hpp"
 #include <cmath>
 #include <algorithm>
@@ -37,10 +38,10 @@ void compute_gradients_from_mac_gpu(
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallelize over interior cells
-    // CRITICAL: map(present, alloc:...) indicates these arrays are already mapped by solver
-    // (use host pointers, lengths required for map clause)
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by caller
+    // NVHPC requires map(present:) not map(present, alloc:) for pre-mapped data
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present, alloc: u_face[0:u_total_size], v_face[0:v_total_size], \
+        map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
                      dudx_cell[0:cell_total_size], dudy_cell[0:cell_total_size], \
                      dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size])
     for (int jj = 0; jj < Ny; ++jj) {
@@ -99,11 +100,9 @@ void compute_mlp_scalar_features_gpu(
     NVTX_SCOPE_TURB("kernel:mlp_features");
 
 #ifdef USE_GPU_OFFLOAD
-    const double C_mu = 0.09;
-    
-    // CRITICAL: map(present, alloc:...) indicates these arrays are already mapped by solver/turbulence model
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by caller
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present, alloc: dudx[0:total_cells], dudy[0:total_cells], \
+        map(present: dudx[0:total_cells], dudy[0:total_cells], \
                      dvdx[0:total_cells], dvdy[0:total_cells], \
                      k[0:total_cells], omega[0:total_cells], \
                      wall_distance[0:total_cells], \
@@ -131,12 +130,10 @@ void compute_mlp_scalar_features_gpu(
             // Frobenius norm (matches CPU VelocityGradient::S_mag())
             double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
             double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-            
-            // Get k, omega
-            double k_val = k[idx_cell];
-            double omega_val = omega[idx_cell];
-            double eps = C_mu * k_val * omega_val;
-            
+
+            // Note: k and omega are mapped but not used in current feature set
+            // (reserved for future features like turbulent time scale)
+
             // Velocity magnitude (from staggered grid)
             double u_avg = 0.5 * (u_face[j * u_stride + i] + u_face[j * u_stride + (i+1)]);
             double v_avg = 0.5 * (v_face[j * v_stride + i] + v_face[(j+1) * v_stride + i]);
@@ -187,9 +184,9 @@ void postprocess_mlp_outputs_gpu(
 #ifdef USE_GPU_OFFLOAD
     const int total_field_size = stride * (Ny + 2*Ng);
     
-    // CRITICAL: map(present, alloc:...) indicates these arrays are already mapped
+    // CRITICAL: map(present:...) indicates these arrays are already mapped
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present, alloc: nn_outputs[0:(Nx*Ny)], nu_t_field[0:total_field_size])
+        map(present: nn_outputs[0:(Nx*Ny)], nu_t_field[0:total_field_size])
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
             const int i = ii + Ng;
@@ -236,9 +233,9 @@ void compute_tbnn_features_gpu(
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
     
-    // CRITICAL: map(present, alloc:...) indicates these arrays are already mapped by solver/turbulence model
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by solver/turbulence model
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present, alloc: dudx[0:total_cells], dudy[0:total_cells], \
+        map(present: dudx[0:total_cells], dudy[0:total_cells], \
                      dvdx[0:total_cells], dvdy[0:total_cells], \
                      k[0:total_cells], omega[0:total_cells], \
                      wall_distance[0:total_cells], \
@@ -274,8 +271,8 @@ void compute_tbnn_features_gpu(
         double eps = C_mu * k_val * omega_val;
         
         // Safe values
-        double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
-        double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+        double k_safe = (k_val > numerics::K_FLOOR) ? k_val : numerics::K_FLOOR;
+        double eps_safe = (eps > numerics::EPS_FLOOR) ? eps : numerics::EPS_FLOOR;
         
         // Time scale for normalization
         double tau = k_safe / eps_safe;
@@ -361,11 +358,11 @@ void postprocess_nn_outputs_gpu(
     const int NUM_BASIS = 4;
     const bool compute_tau = (tau_xx != nullptr);
     
-    // CRITICAL: map(present, alloc:...) indicates these arrays are already mapped by turbulence model
+    // CRITICAL: map(present:...) indicates these arrays are already mapped by turbulence model
     // nn_outputs/basis are interior-only (Nx*Ny), k/gradients/nu_t/tau are ghosted (total_cells)
     if (!compute_tau) {
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present, alloc: nn_outputs[0:(Nx*Ny*output_dim)], basis[0:(Nx*Ny*12)], \
+            map(present: nn_outputs[0:(Nx*Ny*output_dim)], basis[0:(Nx*Ny*12)], \
                          k[0:total_cells], dudx[0:total_cells], dudy[0:total_cells], \
                          dvdx[0:total_cells], dvdy[0:total_cells], nu_t[0:total_cells])
         for (int jj = 0; jj < Ny; ++jj) {
@@ -430,7 +427,7 @@ void postprocess_nn_outputs_gpu(
         }
     } else {
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present, alloc: nn_outputs[0:(Nx*Ny*output_dim)], basis[0:(Nx*Ny*12)], \
+            map(present: nn_outputs[0:(Nx*Ny*output_dim)], basis[0:(Nx*Ny*12)], \
                          k[0:total_cells], dudx[0:total_cells], dudy[0:total_cells], \
                          dvdx[0:total_cells], dvdy[0:total_cells], nu_t[0:total_cells], \
                          tau_xx[0:total_cells], tau_xy[0:total_cells], tau_yy[0:total_cells])
@@ -601,16 +598,17 @@ void tbnn_full_pipeline_gpu(
         double Syy = dvdy_v;
         double Sxy = 0.5 * (dudy_v + dvdx_v);
         double Oxy = 0.5 * (dudy_v - dvdx_v);
-        
-        double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+
+        // Frobenius norm (matches features.hpp::VelocityGradient::S_mag for ML invariants)
+        double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
         double Omega_mag = sqrt(2.0 * Oxy * Oxy);
         
         double k_val = k[cell_idx];
         double omega_val = omega[cell_idx];
         double eps = C_mu * k_val * omega_val;
         
-        double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
-        double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+        double k_safe = (k_val > numerics::K_FLOOR) ? k_val : numerics::K_FLOOR;
+        double eps_safe = (eps > numerics::EPS_FLOOR) ? eps : numerics::EPS_FLOOR;
         double tau = k_safe / eps_safe;
         
         double S_norm = S_mag * tau;
@@ -799,9 +797,9 @@ void compute_boussinesq_closure_gpu(
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     
-    // CRITICAL: map(present, alloc:...) for solver-managed device buffers
+    // CRITICAL: map(present:...) for solver-managed device buffers
     #pragma omp target teams distribute parallel for \
-        map(present, alloc: k[0:total_size], omega[0:total_size], nu_t[0:total_size])
+        map(present: k[0:total_size], omega[0:total_size], nu_t[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {
         // Convert flat index to (i,j) including ghost cells
         const int i = idx % Nx + Ng;
@@ -863,10 +861,10 @@ void compute_sst_closure_gpu(
 #ifdef USE_GPU_OFFLOAD
     const int n_cells = Nx * Ny;
     
-    // CRITICAL: map(present, alloc:...) for solver-managed device buffers
+    // CRITICAL: map(present:...) for solver-managed device buffers
     // wall_distance has same layout as k/omega/nu_t (full field with ghosts)
     #pragma omp target teams distribute parallel for \
-        map(present, alloc: k[0:total_size], omega[0:total_size], \
+        map(present: k[0:total_size], omega[0:total_size], \
                      dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
                      wall_distance[0:wall_dist_size], \
@@ -956,9 +954,9 @@ void komega_transport_step_gpu(
     const double inv_dx2 = 1.0 / (dx * dx);
     const double inv_dy2 = 1.0 / (dy * dy);
     
-    // CRITICAL: map(present, alloc:...) for all solver-managed device buffers
+    // CRITICAL: map(present:...) for all solver-managed device buffers
     #pragma omp target teams distribute parallel for \
-        map(present, alloc: u[0:vel_u_size], v[0:vel_v_size], \
+        map(present: u[0:vel_u_size], v[0:vel_v_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t_prev[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {

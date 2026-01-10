@@ -27,6 +27,10 @@ FFT2DPoissonSolver::FFT2DPoissonSolver(const Mesh& mesh)
     if (!mesh.is2D()) {
         throw std::runtime_error("FFT2DPoissonSolver requires 2D mesh (Nz=1)");
     }
+    // FFT solver's BC application only fills outermost ghost layer
+    if (mesh.Nghost != 1) {
+        throw std::runtime_error("FFT2DPoissonSolver requires Nghost == 1");
+    }
 
     N_modes_ = Nx_ / 2 + 1;
 
@@ -337,8 +341,8 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     const int Ng = mesh_->Nghost;
     const int Nx_full = Nx + 2 * Ng;
     const int Ny_full = Ny + 2 * Ng;
-    const int Nz_full = 1 + 2 * Ng;  // For 2D mesh
-    const size_t total_size = (size_t)Nx_full * Ny_full * Nz_full;
+    // 2D solver uses 2D indexing: only accesses [0, Nx_full*Ny_full)
+    const size_t plane_size = (size_t)Nx_full * Ny_full;
     const double norm = 1.0 / Nx;  // FFT normalization
 
     double* packed = in_pack_;
@@ -358,7 +362,7 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean subtraction
     double sum = 0.0;
     #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum) \
-        map(present, alloc: rhs_ptr[0:total_size]) is_device_ptr(packed)
+        map(present: rhs_ptr[0:plane_size]) is_device_ptr(packed)
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             // Source: 2D indexing [j+Ng][i+Ng] - matches solver's 2D path
@@ -423,7 +427,7 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     int bc_y_hi_int = (bc_y_hi_ == PoissonBC::Neumann) ? 1 : 0;
 
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present, alloc: p_ptr[0:total_size]) is_device_ptr(unpacked)
+        map(present: p_ptr[0:plane_size]) is_device_ptr(unpacked)
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             // Source: [j * Nx + i] (contiguous FFT output)

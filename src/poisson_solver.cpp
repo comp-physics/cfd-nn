@@ -1,4 +1,5 @@
 #include "poisson_solver.hpp"
+#include "poisson_bc_utils.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>

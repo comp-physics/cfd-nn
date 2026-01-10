@@ -318,7 +318,8 @@ private:
     double* wall_distance_ptr_ = nullptr;
     
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
-    
+
+    void extract_field_pointers();  // Set raw pointers to field data (shared by CPU/GPU paths)
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)
     void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
     

@@ -17,13 +17,12 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
-#include <iostream>
+#include "test_harness.hpp"
 #include <cmath>
-#include <iomanip>
-#include <vector>
 #include <string>
 
 using namespace nncfd;
+using nncfd::test::harness::record;
 
 // Apply discrete 2D Laplacian operator: L(p) = (p_{i+1} - 2p_i + p_{i-1})/dx^2 + ...
 void apply_laplacian_2d(const ScalarField& p, ScalarField& Lp, const Mesh& mesh) {
@@ -160,65 +159,21 @@ double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, in
 }
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Discrete Residual Consistency Test\n";
-    std::cout << "================================================================\n\n";
-
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
-    std::cout << "\n";
-
-    std::cout << "Sanity check: Poisson solver produces reasonable pressure fields.\n";
-    std::cout << "Checking: p is non-zero and L(p) is finite after projection.\n\n";
-
-    int passed = 0, failed = 0;
-
-    // Test 1: MG 2D periodic
-    std::cout << "--- Test 1: MG 2D Periodic ---\n";
-    {
-        double result = run_residual_test_2d("MG_2D_periodic", 64, 64,
-                                              VelocityBC::Periodic, VelocityBC::Periodic,
-                                              PoissonSolverType::MG);
-        if (result > 0 && result < 1e6) {
-            std::cout << "  [PASS] |L(p)| = " << std::scientific << result << "\n";
-            ++passed;
-        } else {
-            std::cout << "  [FAIL] Invalid solution\n";
-            ++failed;
+    return nncfd::test::harness::run("Poisson Residual Consistency Tests", [] {
+        // Test 1: MG 2D periodic
+        {
+            double result = run_residual_test_2d("MG_2D_periodic", 64, 64,
+                                                  VelocityBC::Periodic, VelocityBC::Periodic,
+                                                  PoissonSolverType::MG);
+            record("MG 2D Periodic", result > 0 && result < 1e6);
         }
-    }
 
-    // Test 2: MG 2D channel
-    std::cout << "\n--- Test 2: MG 2D Channel ---\n";
-    {
-        double result = run_residual_test_2d("MG_2D_channel", 64, 64,
-                                              VelocityBC::Periodic, VelocityBC::NoSlip,
-                                              PoissonSolverType::MG);
-        if (result > 0 && result < 1e6) {
-            std::cout << "  [PASS] |L(p)| = " << std::scientific << result << "\n";
-            ++passed;
-        } else {
-            std::cout << "  [FAIL] Invalid solution\n";
-            ++failed;
+        // Test 2: MG 2D channel
+        {
+            double result = run_residual_test_2d("MG_2D_channel", 64, 64,
+                                                  VelocityBC::Periodic, VelocityBC::NoSlip,
+                                                  PoissonSolverType::MG);
+            record("MG 2D Channel", result > 0 && result < 1e6);
         }
-    }
-
-    // Summary
-    std::cout << "\n================================================================\n";
-    std::cout << "Poisson Sanity Check Summary\n";
-    std::cout << "================================================================\n";
-    std::cout << "  Passed:  " << passed << "/" << (passed + failed) << "\n";
-    std::cout << "  Failed:  " << failed << "/" << (passed + failed) << "\n";
-
-    if (failed == 0) {
-        std::cout << "\n[PASS] All sanity checks passed\n";
-        std::cout << "       Pressure fields are non-trivial and finite\n";
-        return 0;
-    } else {
-        std::cout << "\n[FAIL] " << failed << " sanity check(s) failed\n";
-        return 1;
-    }
+    });
 }

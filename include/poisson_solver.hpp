@@ -2,7 +2,6 @@
 
 #include "mesh.hpp"
 #include "fields.hpp"
-#include <functional>
 
 namespace nncfd {
 

@@ -2,6 +2,7 @@
 #include "gpu_kernels.hpp"
 #include "timing.hpp"
 #include "features.hpp"
+#include "numerics.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -189,15 +190,16 @@ double TurbulenceGEP::compute_gep_factor(double I1_S, double I2_S,
             (void)S_mag;  // Reserved for future use
             
             // Basic mixing length: l = kappa * y * (1 - exp(-y+/A+))
-            double kappa = 0.41;
-            double A_plus = 26.0;
-            
+            // Use numerics constants for consistency
+            constexpr double kappa_local = 0.41;   // numerics::KAPPA
+            constexpr double A_plus_local = 26.0;  // numerics::A_PLUS
+
             // van Driest damping
-            double f_damp = 1.0 - std::exp(-y_plus / A_plus);
+            double f_damp = 1.0 - std::exp(-y_plus / A_plus_local);
             f_damp = f_damp * f_damp;
-            
+
             // Mixing length squared (normalized)
-            double l_plus = kappa * y_plus * f_damp;
+            double l_plus = kappa_local * y_plus * f_damp;
             (void)l_plus;  // Computed for documentation; nu_t uses f_damp directly
             
             // nu_t = l^2 * |S|
@@ -245,8 +247,8 @@ void TurbulenceGEP::update(const Mesh& mesh,
         );
         
         // Then run GEP algebraic model on GPU
-        const double kappa = 0.41;
-        const double A_plus = 26.0;
+        const double kappa = numerics::KAPPA;
+        const double A_plus = numerics::A_PLUS;
         const double nu_val = nu_;
         const int variant_val = static_cast<int>(variant_);
         
@@ -284,8 +286,8 @@ void TurbulenceGEP::update(const Mesh& mesh,
     ScalarField dudx_field(mesh), dudy_field(mesh), dvdx_field(mesh), dvdy_field(mesh);
     compute_gradients_from_mac(mesh, velocity, dudx_field, dudy_field, dvdx_field, dvdy_field);
 
-    constexpr double kappa = 0.41;
-    constexpr double A_plus = 26.0;
+    constexpr double kappa = numerics::KAPPA;
+    constexpr double A_plus = numerics::A_PLUS;
     const int variant_val = static_cast<int>(variant_);
     const int cell_stride = mesh.total_Nx();
 

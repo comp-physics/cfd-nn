@@ -17,16 +17,13 @@
 #include "fields.hpp"
 #include "poisson_solver.hpp"
 #include "poisson_solver_multigrid.hpp"
-#include "test_framework.hpp"
 #include "test_fixtures.hpp"
 #include "test_utilities.hpp"
+#include "test_harness.hpp"
 #include "solver.hpp"
 #include "config.hpp"
 #ifdef USE_HYPRE
 #include "poisson_solver_hypre.hpp"
-#endif
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
 #endif
 #include <iostream>
 #include <iomanip>
@@ -37,26 +34,7 @@
 
 using namespace nncfd;
 using namespace nncfd::test;
-
-//=============================================================================
-// Test Result Tracking
-//=============================================================================
-
-struct TestResult {
-    std::string name;
-    bool passed;
-    std::string message;
-};
-
-static std::vector<TestResult> results;
-
-static void record(const std::string& name, bool passed, const std::string& msg = "") {
-    results.push_back({name, passed, msg});
-    std::cout << "  " << std::left << std::setw(50) << name;
-    std::cout << (passed ? "[PASS]" : "[FAIL]");
-    if (!msg.empty()) std::cout << " " << msg;
-    std::cout << "\n";
-}
+using nncfd::test::harness::record;
 
 //=============================================================================
 // Section 1: Basic Unit Tests (from test_poisson.cpp)
@@ -167,92 +145,89 @@ void test_periodic_solve() {
 }
 
 void run_unit_tests() {
-    std::cout << "\n=== Unit Tests ===\n";
     test_laplacian();
     test_basic_solve();
     test_periodic_solve();
 }
 
 //=============================================================================
-// Section 2: Grid Convergence Tests (from test_poisson_solvers.cpp)
+// Section 2: Grid Convergence Tests (table-driven)
 //=============================================================================
 
-double compute_l2_error_func(const ScalarField& p, const Mesh& mesh,
-                              std::function<double(double,double)> exact) {
-    double p_mean = 0.0, exact_mean = 0.0;
-    int count = 0;
+/// Test case for grid convergence verification
+struct ConvergenceTestCase {
+    const char* name;
+    std::vector<int> grid_sizes;
+    double Lx, Ly;
+    PoissonBC bc_x, bc_y;
+    double expected_rate;
+    double rate_tolerance;
+};
 
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            p_mean += p(i, j);
-            exact_mean += exact(mesh.x(i), mesh.y(j));
-            ++count;
-        }
-    }
-
-    if (count == 0) return 0.0;
-
-    p_mean /= count;
-    exact_mean /= count;
-
-    double l2 = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double diff = (p(i,j) - p_mean) - (exact(mesh.x(i), mesh.y(j)) - exact_mean);
-            l2 += diff * diff;
-        }
-    }
-    return std::sqrt(l2 / count);
-}
-
-void test_mg_convergence_2d() {
-    std::cout << "\n=== Multigrid 2D Convergence ===\n";
-
-    std::vector<int> sizes = {16, 32, 64};
+/// Run a convergence test for a specific manufactured solution
+template<typename Solution>
+void run_convergence_case(const ConvergenceTestCase& tc) {
     std::vector<double> errors;
+    std::vector<double> h_values;
 
-    for (int N : sizes) {
+    for (int N : tc.grid_sizes) {
         Mesh mesh;
-        double L = 2.0 * M_PI;
-        mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+        mesh.init_uniform(N, N, 0.0, tc.Lx, 0.0, tc.Ly);
+        Solution sol(tc.Lx, tc.Ly);
 
-        auto exact = [](double x, double y) { return std::sin(x) * std::sin(y); };
-        auto rhs_fn = [](double x, double y) { return -2.0 * std::sin(x) * std::sin(y); };
-
+        // Set up RHS from manufactured solution
         ScalarField rhs(mesh);
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                rhs(i, j) = rhs_fn(mesh.x(i), mesh.y(j));
+                rhs(i, j) = sol.rhs(mesh.x(i), mesh.y(j));
             }
         }
 
+        // Solve with multigrid
         ScalarField p(mesh, 0.0);
         MultigridPoissonSolver mg(mesh);
-        mg.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                  PoissonBC::Periodic, PoissonBC::Periodic);
+        mg.set_bc(tc.bc_x, tc.bc_x, tc.bc_y, tc.bc_y);
 
         PoissonConfig cfg;
         cfg.tol = 1e-10;
         cfg.max_iter = 100;
         mg.solve(rhs, p, cfg);
 
-        double err = compute_l2_error_func(p, mesh, exact);
+        // Compute L2 error with mean subtraction (Neumann compatibility)
+        double err = compute_l2_error_2d(p, mesh, sol);
         errors.push_back(err);
+        h_values.push_back(tc.Lx / N);
 
-        record("MG 2D N=" + std::to_string(N), true,
+        record(std::string(tc.name) + " N=" + std::to_string(N), true,
                "L2=" + std::to_string(err));
     }
 
-    // Check 2nd order convergence
+    // Compute and check convergence rate
     if (errors.size() >= 2) {
-        double rate = std::log(errors[0] / errors[1]) / std::log(2.0);
-        record("MG 2D convergence rate", rate > 1.5,
-               "rate=" + std::to_string(rate) + " (expect ~2)");
+        double rate = std::log(errors[0] / errors[1]) / std::log(h_values[0] / h_values[1]);
+        bool rate_ok = rate > tc.expected_rate - tc.rate_tolerance;
+        record(std::string(tc.name) + " rate", rate_ok,
+               "rate=" + std::to_string(rate) + " (expect >" +
+               std::to_string(tc.expected_rate - tc.rate_tolerance) + ")");
     }
 }
 
 void run_convergence_tests() {
-    test_mg_convergence_2d();
+    // Table of convergence test cases
+    const std::vector<ConvergenceTestCase> cases = {
+        {"MG Periodic", {16, 32, 64}, 2*M_PI, 2*M_PI,
+         PoissonBC::Periodic, PoissonBC::Periodic, 2.0, 0.3},
+        {"MG Channel", {16, 32, 64}, 4.0, 2.0,
+         PoissonBC::Periodic, PoissonBC::Neumann, 2.0, 0.3},
+    };
+
+    for (const auto& tc : cases) {
+        if (tc.bc_y == PoissonBC::Periodic) {
+            run_convergence_case<PeriodicSolution2D>(tc);
+        } else {
+            run_convergence_case<ChannelSolution2D>(tc);
+        }
+    }
 }
 
 //=============================================================================
@@ -260,8 +235,6 @@ void run_convergence_tests() {
 //=============================================================================
 
 void test_solver_selection() {
-    std::cout << "\n=== Solver Selection ===\n";
-
     // Test 2D channel auto-selection
     {
         Mesh mesh;
@@ -275,13 +248,7 @@ void test_solver_selection() {
         config.poisson_solver = PoissonSolverType::Auto;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         PoissonSolverType selected = solver.poisson_solver_type();
 
@@ -309,13 +276,7 @@ void test_solver_selection() {
         config.poisson_solver = PoissonSolverType::MG;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         bool ok = (solver.poisson_solver_type() == PoissonSolverType::MG);
         record("Explicit MG request honored", ok);
@@ -331,8 +292,6 @@ void run_selection_tests() {
 //=============================================================================
 
 void test_nullspace_periodic() {
-    std::cout << "\n=== Nullspace Handling ===\n";
-
     // Fully periodic - has nullspace (constant functions)
     Mesh mesh;
     int N = 32;
@@ -388,8 +347,6 @@ void run_nullspace_tests() {
 
 #ifdef USE_GPU_OFFLOAD
 void test_3d_gpu_convergence() {
-    std::cout << "\n=== 3D GPU Convergence ===\n";
-
     Mesh mesh;
     mesh.init_uniform(16, 16, 8, 0.0, 2*M_PI, 0.0, 2.0, 0.0, 2*M_PI);
 
@@ -440,7 +397,7 @@ void run_3d_tests() {
 #ifdef USE_GPU_OFFLOAD
     test_3d_gpu_convergence();
 #else
-    std::cout << "\n=== 3D Tests (skipped - CPU build) ===\n";
+    record("3D GPU tests", true, true);  // Skip on CPU build
 #endif
 }
 
@@ -449,8 +406,6 @@ void run_3d_tests() {
 //=============================================================================
 
 void test_stretched_grid() {
-    std::cout << "\n=== Stretched Grid ===\n";
-
     // Test anisotropic grid with compressed domain (thin in y)
     // Use uniform grid cells, but fewer in y for higher AR
     Mesh mesh;
@@ -478,7 +433,7 @@ void test_stretched_grid() {
     PoissonConfig cfg;
     cfg.tol = 1e-6;
     cfg.max_iter = 500;
-    int iters = mg.solve(rhs, p, cfg);
+    [[maybe_unused]] int iters = mg.solve(rhs, p, cfg);
 
     // Compute error
     double max_err = 0.0;
@@ -515,8 +470,6 @@ void run_stretched_tests() {
 //=============================================================================
 
 void test_cross_solver_consistency() {
-    std::cout << "\n=== Cross-Solver Consistency ===\n";
-
     // Compare SOR vs MG on same problem
     Mesh mesh;
     int N = 32;
@@ -584,8 +537,6 @@ void run_cross_solver_tests() {
 //=============================================================================
 
 void test_dirichlet_bc() {
-    std::cout << "\n=== Dirichlet/Mixed BCs ===\n";
-
     // Pure Dirichlet 2D
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, M_PI, 0.0, M_PI);
@@ -630,49 +581,28 @@ void run_dirichlet_tests() {
 //=============================================================================
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  UNIFIED POISSON SOLVER TEST SUITE\n";
+    using namespace nncfd::test::harness;
+
     std::cout << "  Consolidates 10 test files into one parameterized suite\n";
-    std::cout << "================================================================\n";
-
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU\n";
-#else
-    std::cout << "Build: CPU\n";
-#endif
-
 #ifdef USE_FFT_POISSON
-    std::cout << "FFT Poisson: ENABLED\n";
+    std::cout << "  FFT Poisson: ENABLED\n";
 #else
-    std::cout << "FFT Poisson: DISABLED\n";
+    std::cout << "  FFT Poisson: DISABLED\n";
 #endif
-
 #ifdef USE_HYPRE
-    std::cout << "HYPRE: ENABLED\n";
+    std::cout << "  HYPRE: ENABLED\n";
 #else
-    std::cout << "HYPRE: DISABLED\n";
+    std::cout << "  HYPRE: DISABLED\n";
 #endif
 
-    // Run all test sections
-    run_unit_tests();
-    run_convergence_tests();
-    run_selection_tests();
-    run_nullspace_tests();
-    run_3d_tests();
-    run_stretched_tests();
-    run_cross_solver_tests();
-    run_dirichlet_tests();
-
-    // Summary
-    int passed = 0, failed = 0;
-    for (const auto& r : results) {
-        if (r.passed) ++passed;
-        else ++failed;
-    }
-
-    std::cout << "\n================================================================\n";
-    std::cout << "SUMMARY: " << passed << " passed, " << failed << " failed\n";
-    std::cout << "================================================================\n";
-
-    return failed > 0 ? 1 : 0;
+    return run_sections("Unified Poisson Solver Test Suite", {
+        {"Unit Tests", run_unit_tests},
+        {"Grid Convergence", run_convergence_tests},
+        {"Solver Selection", run_selection_tests},
+        {"Nullspace Handling", run_nullspace_tests},
+        {"3D Tests", run_3d_tests},
+        {"Stretched Grid", run_stretched_tests},
+        {"Cross-Solver Consistency", run_cross_solver_tests},
+        {"Dirichlet/Mixed BCs", run_dirichlet_tests}
+    });
 }

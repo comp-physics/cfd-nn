@@ -14,6 +14,7 @@
 #include "solver.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -22,29 +23,10 @@
 #include <fstream>
 #include <cassert>
 
-#ifdef USE_GPU_OFFLOAD
-#include <omp.h>
-#endif
-
 using namespace nncfd;
-
-static int passed = 0, failed = 0, skipped = 0;
-
-static void record(const char* name, bool pass, bool skip = false) {
-    std::cout << "  " << std::left << std::setw(45) << name;
-    if (skip) { std::cout << "[SKIP]\n"; ++skipped; }
-    else if (pass) { std::cout << "[PASS]\n"; ++passed; }
-    else { std::cout << "[FAIL]\n"; ++failed; }
-}
-
-//=============================================================================
-// Helpers
-//=============================================================================
-
-static bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
-}
+using nncfd::test::file_exists;
+using nncfd::test::harness::record;
+namespace test_gpu = nncfd::test::gpu;
 
 static std::string resolve_model_dir(const std::string& p) {
     std::string path = p;
@@ -68,19 +50,18 @@ static double generate_value(int idx) {
 //=============================================================================
 
 bool test_backend_available() {
-#ifdef USE_GPU_OFFLOAD
-    int num_devices = omp_get_num_devices();
-    if (num_devices > 0) {
-        record("Backend available (GPU)", true);
-        return true;
+    if (test_gpu::is_gpu_build()) {
+        if (test_gpu::available()) {
+            record("Backend available (GPU)", true);
+            return true;
+        } else {
+            record("Backend available (GPU build, no devices)", true);
+            return false;  // No GPU devices
+        }
     } else {
-        record("Backend available (GPU build, no devices)", true);
-        return false;  // No GPU devices
+        record("Backend available (CPU)", true);
+        return true;
     }
-#else
-    record("Backend available (CPU)", true);
-    return true;
-#endif
 }
 
 //=============================================================================
@@ -269,27 +250,13 @@ void test_turbulence_nn(bool gpu_available) {
 //=============================================================================
 
 int main() {
-    std::cout << "================================================================\n";
-    std::cout << "  Unified Backend Tests\n";
-    std::cout << "================================================================\n\n";
+    using namespace nncfd::test::harness;
 
-#ifdef USE_GPU_OFFLOAD
-    std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-    std::cout << "Devices: " << omp_get_num_devices() << "\n\n";
-#else
-    std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n\n";
-#endif
-
-    bool gpu_available = test_backend_available();
-    test_basic_computation(gpu_available);
-    test_canary(gpu_available);
-    test_mlp_execution(gpu_available);
-    test_turbulence_nn(gpu_available);
-
-    std::cout << "\n================================================================\n";
-    std::cout << "Summary: " << passed << " passed, " << failed << " failed, "
-              << skipped << " skipped\n";
-    std::cout << "================================================================\n";
-
-    return failed > 0 ? 1 : 0;
+    return run("Unified Backend Tests", []() {
+        bool gpu_avail = test_backend_available();
+        test_basic_computation(gpu_avail);
+        test_canary(gpu_avail);
+        test_mlp_execution(gpu_avail);
+        test_turbulence_nn(gpu_avail);
+    });
 }
