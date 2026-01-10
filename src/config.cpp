@@ -383,6 +383,36 @@ void Config::parse_args(int argc, char** argv) {
             perturbation_amplitude = std::stod(val);
         } else if ((val = get_value(i, arg, "--warmup_steps")) != "") {
             warmup_steps = std::stoi(val);
+        } else if (is_flag(arg, "--benchmark")) {
+            // Benchmark mode: optimized for timing 3D duct flow
+            benchmark = true;
+            // Grid: 192^3 (can be overridden by subsequent --Nx, --Ny, --Nz)
+            Nx = 192;
+            Ny = 192;
+            Nz = 192;
+            // Domain: 3D duct (periodic x, walls y/z)
+            x_min = 0.0;
+            x_max = 2.0 * 3.14159265358979;
+            y_min = -1.0;
+            y_max = 1.0;
+            z_min = -1.0;
+            z_max = 1.0;
+            // Disable all output for clean timing
+            verbose = false;
+            postprocess = false;
+            write_fields = false;
+            num_snapshots = 0;
+            // Numerics: upwind convection, 1 Poisson cycle per step
+            convective_scheme = ConvectiveScheme::Upwind;
+            poisson_fixed_cycles = 1;
+            poisson_adaptive_cycles = false;
+            // No turbulence model
+            turb_model = TurbulenceModelType::None;
+            // Default to 20 iterations (can be overridden)
+            max_iter = 20;
+            // Fixed time step (no adaptive dt for consistent timing)
+            adaptive_dt = false;
+            dt = 0.001;
         } else if (is_flag(arg, "--help") || is_flag(arg, "-h")) {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -432,6 +462,8 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
                       << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
+                      << "  --benchmark       Benchmark mode: 192^3 3D duct, upwind, 1 Poisson cycle,\n"
+                      << "                      no output/turbulence (all overridable by other flags)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"

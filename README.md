@@ -582,6 +582,37 @@ Available presets: `tbnn_channel_caseholdout`, `tbnn_phll_caseholdout`, `example
 | `turb_guard_enabled` | `--turb_guard_enabled` | true | Enable NaN/Inf guard checks |
 | `turb_guard_interval` | `--turb_guard_interval` | 5 | Check for NaN/Inf every N steps |
 
+### Benchmark Mode
+
+The `--benchmark` flag configures the solver for performance timing with minimal overhead:
+
+```bash
+# Run benchmark with defaults (192^3 grid, 20 iterations)
+./duct --benchmark
+
+# Override grid size
+./duct --benchmark --Nx 256 --Ny 256 --Nz 256
+
+# Override iteration count
+./duct --benchmark --max_iter 100
+```
+
+**Benchmark mode sets these defaults** (all can be overridden by subsequent flags):
+
+| Setting | Value | Rationale |
+|---------|-------|-----------|
+| Grid size | 192 × 192 × 192 | Large enough for meaningful timing |
+| Domain | 3D duct (periodic x, walls y/z) | Representative wall-bounded flow |
+| `verbose` | false | No console output |
+| `postprocess` | false | No profile analysis |
+| `write_fields` | false | No VTK output |
+| `num_snapshots` | 0 | No intermediate snapshots |
+| `convective_scheme` | upwind | First-order upwind |
+| `poisson_fixed_cycles` | 1 | Single V-cycle per time step |
+| `turb_model` | none | No turbulence model |
+| `max_iter` | 20 | Default iteration count |
+| `adaptive_dt` | false | Fixed time step (dt=0.001) |
+
 ### Config File Format
 
 Config files use simple key-value syntax:
