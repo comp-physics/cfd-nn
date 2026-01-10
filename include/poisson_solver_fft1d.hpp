@@ -110,10 +110,6 @@ private:
     // Precomputed eigenvalues
     double* lambda_ = nullptr;               // Discrete eigenvalues [N_modes]
 
-    // 2D Helmholtz solver workspace (for Jacobi/Chebyshev - legacy)
-    double* work_real_ = nullptr;            // Real part workspace [N_modes * N_yz]
-    double* work_imag_ = nullptr;            // Imag part workspace [N_modes * N_yz]
-
     // For mean subtraction
     double* partial_sums_ = nullptr;
     double* sum_dev_ = nullptr;
@@ -162,17 +158,10 @@ private:
     void cleanup();
     void cleanup_mg();
 
-    // 2D Helmholtz solve for all modes
-    // Uses weighted Jacobi iteration (baseline) or Chebyshev (optimized)
-    void solve_helmholtz_2d(int iterations, double omega);
-
-    // 2D Multigrid V-cycle for Helmholtz (preferred method)
+    // 2D Multigrid V-cycle for Helmholtz solve
     void solve_helmholtz_2d_mg(int nu1 = 2, int nu2 = 1);
-    void mg_smooth_2d(int level, int iterations, double omega);
     void mg_smooth_2d_chebyshev(int level, int degree);
-    void mg_residual_2d(int level);
-    void mg_restrict_2d(int fine_level);
-    void mg_residual_restrict_fused_2d(int fine_level);  // Fused for reduced memory traffic
+    void mg_residual_restrict_fused_2d(int fine_level);
     void mg_prolongate_2d(int coarse_level);
     void mg_vcycle_2d(int level, int nu1, int nu2);
 
