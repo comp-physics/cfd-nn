@@ -2545,7 +2545,8 @@ double RANSSolver::compute_residual() {
 
 double RANSSolver::step() {
     TIMED_SCOPE("solver_step");
-    
+    NVTX_SCOPE_SOLVER("time_step");
+
     // Store old velocity for convergence check (at face locations for staggered grid)
     const int Ng = mesh_->Nghost;
     const int Nx = mesh_->Nx;
@@ -3456,8 +3457,9 @@ double RANSSolver::step() {
     }
     
     // Note: iter_ is managed by the outer solve loop, don't increment here
-    
+
     // Return max velocity change as convergence criterion (unified view-based)
+    NVTX_PUSH("residual_computation");
     auto v_res = get_solver_view();
 
     [[maybe_unused]] const size_t u_total_size_res = velocity_.u_total_size();
@@ -3542,6 +3544,8 @@ double RANSSolver::step() {
         }
         if (max_dw > max_change) max_change = max_dw;
     }
+
+    NVTX_POP();  // End residual_computation
 
     // NaN/Inf GUARD: Check for numerical stability issues
     // Do this after turbulence update but before next iteration starts
