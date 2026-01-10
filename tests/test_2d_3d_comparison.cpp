@@ -152,7 +152,12 @@ void test_degenerate_nz1() {
     mesh_3d.init_uniform(NX, NY, 1, 0.0, LX, 0.0, LY, 0.0, LZ);
     RANSSolver solver_3d(mesh_3d, cfg);
     solver_3d.set_body_force(-cfg.dp_dx, 0.0, 0.0);
-    init_poiseuille_3d(solver_3d, mesh_3d, cfg.dp_dx, cfg.nu);
+    // Use 2D init to match solver_2d exactly; explicitly zero w for completeness
+    init_poiseuille_2d(solver_3d, mesh_3d, cfg.dp_dx, cfg.nu);
+    for (int k = mesh_3d.k_begin(); k <= mesh_3d.k_end(); ++k)
+        for (int j = mesh_3d.j_begin(); j < mesh_3d.j_end(); ++j)
+            for (int i = mesh_3d.i_begin(); i < mesh_3d.i_end(); ++i)
+                solver_3d.velocity().w(i, j, k) = 0.0;
     solver_3d.sync_to_gpu();
     solver_3d.solve_steady();
 
