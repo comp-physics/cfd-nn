@@ -18,12 +18,12 @@ namespace nncfd {
 namespace numerics {
 
 /// Safe division with floor to prevent overflow from small denominators.
-/// Returns num / max(|den|, floor)
+/// Returns num / den_safe where |den_safe| >= floor and sign is preserved.
 ///
 /// @param num    Numerator
-/// @param den    Denominator (will be floored to prevent division by ~0)
+/// @param den    Denominator (magnitude floored, sign preserved)
 /// @param floor  Minimum absolute value for denominator (default 1e-30)
-/// @return       num / max(|den|, floor)
+/// @return       num / den_safe (sign-preserving)
 ///
 /// Example:
 ///   safe_divide(1.0, 0.0)      → 1e30
@@ -31,7 +31,10 @@ namespace numerics {
 ///   safe_divide(1.0, 2.0)      → 0.5
 ///   safe_divide(-1.0, -0.5)    → 2.0
 inline double safe_divide(double num, double den, double floor = 1e-30) {
-    return num / std::max(std::abs(den), floor);
+    const double mag = std::max(std::abs(den), floor);
+    // Preserve sign of denominator (treat ±0 as +0)
+    const double den_safe = (den < 0.0) ? -mag : mag;
+    return num / den_safe;
 }
 
 /// Bounded ratio: safe division with ceiling on result magnitude.
