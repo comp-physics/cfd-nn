@@ -667,6 +667,322 @@ __global__ void kernel_mg2d_prolongate(
     p_fine_imag[idx_f] += corr_i;
 }
 
+// ============================================================================
+// FP32 (Mixed Precision) 2D Multigrid Kernels
+// Using float for MG smoothing gives ~2x memory bandwidth improvement
+// ============================================================================
+
+// Convert complex double array to split float arrays (for MG entry)
+__global__ void kernel_complex_to_split_float(
+    const cufftDoubleComplex* __restrict__ c,
+    float* __restrict__ real,
+    float* __restrict__ imag,
+    int total)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    real[tid] = -static_cast<float>(c[tid].x);  // Negate for Helmholtz RHS
+    imag[tid] = -static_cast<float>(c[tid].y);
+}
+
+// Convert split float arrays back to complex double (for MG exit)
+__global__ void kernel_split_float_to_complex(
+    const float* __restrict__ real,
+    const float* __restrict__ imag,
+    cufftDoubleComplex* __restrict__ c,
+    int total)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    c[tid].x = static_cast<double>(real[tid]);
+    c[tid].y = static_cast<double>(imag[tid]);
+}
+
+// FP32 2D Helmholtz smoother (weighted Jacobi)
+__global__ void kernel_mg2d_smooth_f32(
+    const float* __restrict__ f_real,
+    const float* __restrict__ f_imag,
+    const float* __restrict__ p_real_in,
+    const float* __restrict__ p_imag_in,
+    float* __restrict__ p_real_out,
+    float* __restrict__ p_imag_out,
+    const float* __restrict__ lambda,
+    int N_modes, int Ny, int Nz,
+    float ay, float az,
+    float omega)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = N_modes * Ny * Nz;
+    if (tid >= total) return;
+
+    const int k = tid % Nz;
+    const int rem = tid / Nz;
+    const int j = rem % Ny;
+    const int m = rem / Ny;
+
+    const int N_yz = Ny * Nz;
+    const int idx = m * N_yz + j * Nz + k;
+
+    // Diagonal: D = 2*ay + 2*az + λ_m
+    float D = 2.0f * ay + 2.0f * az + lambda[m];
+    if (j == 0) D -= ay;
+    if (j == Ny - 1) D -= ay;
+    if (k == 0) D -= az;
+    if (k == Nz - 1) D -= az;
+
+    if (D < 1e-7f) D = 1e-7f;
+    float inv_D = 1.0f / D;
+
+    float p_r = p_real_in[idx];
+    float p_i = p_imag_in[idx];
+
+    // Neighbor contributions
+    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
+    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
+    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
+    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+
+    float sum_r = ay * (p_real_in[idx_s] + p_real_in[idx_n])
+                + az * (p_real_in[idx_w] + p_real_in[idx_e]);
+    float sum_i = ay * (p_imag_in[idx_s] + p_imag_in[idx_n])
+                + az * (p_imag_in[idx_w] + p_imag_in[idx_e]);
+
+    float Ap_r = D * p_r - sum_r;
+    float Ap_i = D * p_i - sum_i;
+
+    float res_r = f_real[idx] - Ap_r;
+    float res_i = f_imag[idx] - Ap_i;
+
+    p_real_out[idx] = p_r + omega * res_r * inv_D;
+    p_imag_out[idx] = p_i + omega * res_i * inv_D;
+}
+
+// FP32 residual computation
+__global__ void kernel_mg2d_residual_f32(
+    const float* __restrict__ f_real,
+    const float* __restrict__ f_imag,
+    const float* __restrict__ p_real,
+    const float* __restrict__ p_imag,
+    float* __restrict__ r_real,
+    float* __restrict__ r_imag,
+    const float* __restrict__ lambda,
+    int N_modes, int Ny, int Nz,
+    float ay, float az)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = N_modes * Ny * Nz;
+    if (tid >= total) return;
+
+    const int k = tid % Nz;
+    const int rem = tid / Nz;
+    const int j = rem % Ny;
+    const int m = rem / Ny;
+
+    const int N_yz = Ny * Nz;
+    const int idx = m * N_yz + j * Nz + k;
+
+    float D = 2.0f * ay + 2.0f * az + lambda[m];
+    if (j == 0) D -= ay;
+    if (j == Ny - 1) D -= ay;
+    if (k == 0) D -= az;
+    if (k == Nz - 1) D -= az;
+
+    float p_r = p_real[idx];
+    float p_i = p_imag[idx];
+
+    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
+    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
+    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
+    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+
+    float sum_r = ay * (p_real[idx_s] + p_real[idx_n]) + az * (p_real[idx_w] + p_real[idx_e]);
+    float sum_i = ay * (p_imag[idx_s] + p_imag[idx_n]) + az * (p_imag[idx_w] + p_imag[idx_e]);
+
+    r_real[idx] = f_real[idx] - (D * p_r - sum_r);
+    r_imag[idx] = f_imag[idx] - (D * p_i - sum_i);
+}
+
+// FP32 restriction (fine -> coarse)
+__global__ void kernel_mg2d_restrict_f32(
+    const float* __restrict__ r_fine_real,
+    const float* __restrict__ r_fine_imag,
+    float* __restrict__ f_coarse_real,
+    float* __restrict__ f_coarse_imag,
+    int N_modes, int Ny_f, int Nz_f, int Ny_c, int Nz_c)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_c = N_modes * Ny_c * Nz_c;
+    if (tid >= total_c) return;
+
+    const int k_c = tid % Nz_c;
+    const int rem = tid / Nz_c;
+    const int j_c = rem % Ny_c;
+    const int m = rem / Ny_c;
+
+    const int N_yz_f = Ny_f * Nz_f;
+    const int N_yz_c = Ny_c * Nz_c;
+
+    int j_f = 2 * j_c;
+    int k_f = 2 * k_c;
+    int j_f1 = (j_f + 1 < Ny_f) ? j_f + 1 : j_f;
+    int k_f1 = (k_f + 1 < Nz_f) ? k_f + 1 : k_f;
+
+    int idx00 = m * N_yz_f + j_f * Nz_f + k_f;
+    int idx01 = m * N_yz_f + j_f * Nz_f + k_f1;
+    int idx10 = m * N_yz_f + j_f1 * Nz_f + k_f;
+    int idx11 = m * N_yz_f + j_f1 * Nz_f + k_f1;
+
+    int idx_c = m * N_yz_c + j_c * Nz_c + k_c;
+
+    f_coarse_real[idx_c] = 0.25f * (r_fine_real[idx00] + r_fine_real[idx01]
+                                   + r_fine_real[idx10] + r_fine_real[idx11]);
+    f_coarse_imag[idx_c] = 0.25f * (r_fine_imag[idx00] + r_fine_imag[idx01]
+                                   + r_fine_imag[idx10] + r_fine_imag[idx11]);
+}
+
+// FP32 prolongation (coarse -> fine, add correction)
+__global__ void kernel_mg2d_prolongate_f32(
+    const float* __restrict__ p_coarse_real,
+    const float* __restrict__ p_coarse_imag,
+    float* __restrict__ p_fine_real,
+    float* __restrict__ p_fine_imag,
+    int N_modes, int Ny_f, int Nz_f, int Ny_c, int Nz_c)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_f = N_modes * Ny_f * Nz_f;
+    if (tid >= total_f) return;
+
+    const int k_f = tid % Nz_f;
+    const int rem = tid / Nz_f;
+    const int j_f = rem % Ny_f;
+    const int m = rem / Ny_f;
+
+    const int N_yz_f = Ny_f * Nz_f;
+    const int N_yz_c = Ny_c * Nz_c;
+
+    int j_c = j_f / 2;
+    int k_c = k_f / 2;
+    float wy = (j_f % 2 == 0) ? 0.75f : 0.25f;
+    float wz = (k_f % 2 == 0) ? 0.75f : 0.25f;
+
+    int j_c1 = (j_c + 1 < Ny_c) ? j_c + 1 : j_c;
+    int k_c1 = (k_c + 1 < Nz_c) ? k_c + 1 : k_c;
+
+    int idx00 = m * N_yz_c + j_c * Nz_c + k_c;
+    int idx01 = m * N_yz_c + j_c * Nz_c + k_c1;
+    int idx10 = m * N_yz_c + j_c1 * Nz_c + k_c;
+    int idx11 = m * N_yz_c + j_c1 * Nz_c + k_c1;
+
+    float corr_r = wy * wz * p_coarse_real[idx00]
+                 + wy * (1.0f-wz) * p_coarse_real[idx01]
+                 + (1.0f-wy) * wz * p_coarse_real[idx10]
+                 + (1.0f-wy) * (1.0f-wz) * p_coarse_real[idx11];
+    float corr_i = wy * wz * p_coarse_imag[idx00]
+                 + wy * (1.0f-wz) * p_coarse_imag[idx01]
+                 + (1.0f-wy) * wz * p_coarse_imag[idx10]
+                 + (1.0f-wy) * (1.0f-wz) * p_coarse_imag[idx11];
+
+    int idx_f = m * N_yz_f + j_f * Nz_f + k_f;
+    p_fine_real[idx_f] += corr_r;
+    p_fine_imag[idx_f] += corr_i;
+}
+
+// FP32 pin zero mode
+__global__ void kernel_pin_zero_mode_f32(
+    float* __restrict__ p_real,
+    float* __restrict__ p_imag,
+    int N_yz)
+{
+    p_real[0] = 0.0f;
+    p_imag[0] = 0.0f;
+}
+
+// ============================================================================
+// Fused MG kernels for reduced memory traffic
+// ============================================================================
+
+// Helper: compute residual at a single fine grid point (inline)
+__device__ __forceinline__ void compute_residual_at_point(
+    const float* __restrict__ f_real, const float* __restrict__ f_imag,
+    const float* __restrict__ p_real, const float* __restrict__ p_imag,
+    const float* __restrict__ lambda,
+    int m, int j, int k, int Ny, int Nz, int N_yz,
+    float ay, float az,
+    float& res_r, float& res_i)
+{
+    int idx = m * N_yz + j * Nz + k;
+
+    // Diagonal coefficient
+    float D = 2.0f * ay + 2.0f * az + lambda[m];
+    if (j == 0) D -= ay;
+    if (j == Ny - 1) D -= ay;
+    if (k == 0) D -= az;
+    if (k == Nz - 1) D -= az;
+
+    float p_r = p_real[idx];
+    float p_i = p_imag[idx];
+
+    // Neighbor indices with Neumann BC (mirror at boundary)
+    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
+    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
+    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
+    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+
+    float sum_r = ay * (p_real[idx_s] + p_real[idx_n]) + az * (p_real[idx_w] + p_real[idx_e]);
+    float sum_i = ay * (p_imag[idx_s] + p_imag[idx_n]) + az * (p_imag[idx_w] + p_imag[idx_e]);
+
+    res_r = f_real[idx] - (D * p_r - sum_r);
+    res_i = f_imag[idx] - (D * p_i - sum_i);
+}
+
+// Fused residual + restriction: computes residual at fine level and restricts to coarse
+// Eliminates the intermediate fine residual write to global memory
+__global__ void kernel_mg2d_residual_restrict_fused_f32(
+    const float* __restrict__ f_fine_real,  // RHS at fine level
+    const float* __restrict__ f_fine_imag,
+    const float* __restrict__ p_fine_real,  // Solution at fine level
+    const float* __restrict__ p_fine_imag,
+    float* __restrict__ f_coarse_real,      // RHS at coarse level (output)
+    float* __restrict__ f_coarse_imag,
+    const float* __restrict__ lambda,
+    int N_modes, int Ny_f, int Nz_f, int Ny_c, int Nz_c,
+    float ay, float az)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_c = N_modes * Ny_c * Nz_c;
+    if (tid >= total_c) return;
+
+    const int k_c = tid % Nz_c;
+    const int rem = tid / Nz_c;
+    const int j_c = rem % Ny_c;
+    const int m = rem / Ny_c;
+
+    const int N_yz_f = Ny_f * Nz_f;
+    const int N_yz_c = Ny_c * Nz_c;
+
+    // Fine grid coordinates (2:1 coarsening)
+    int j_f0 = 2 * j_c;
+    int k_f0 = 2 * k_c;
+    int j_f1 = (j_f0 + 1 < Ny_f) ? j_f0 + 1 : j_f0;
+    int k_f1 = (k_f0 + 1 < Nz_f) ? k_f0 + 1 : k_f0;
+
+    // Compute residuals at all 4 fine grid points
+    float r00_r, r00_i, r01_r, r01_i, r10_r, r10_i, r11_r, r11_i;
+    compute_residual_at_point(f_fine_real, f_fine_imag, p_fine_real, p_fine_imag,
+                              lambda, m, j_f0, k_f0, Ny_f, Nz_f, N_yz_f, ay, az, r00_r, r00_i);
+    compute_residual_at_point(f_fine_real, f_fine_imag, p_fine_real, p_fine_imag,
+                              lambda, m, j_f0, k_f1, Ny_f, Nz_f, N_yz_f, ay, az, r01_r, r01_i);
+    compute_residual_at_point(f_fine_real, f_fine_imag, p_fine_real, p_fine_imag,
+                              lambda, m, j_f1, k_f0, Ny_f, Nz_f, N_yz_f, ay, az, r10_r, r10_i);
+    compute_residual_at_point(f_fine_real, f_fine_imag, p_fine_real, p_fine_imag,
+                              lambda, m, j_f1, k_f1, Ny_f, Nz_f, N_yz_f, ay, az, r11_r, r11_i);
+
+    // Restriction: average the 4 residuals
+    int idx_c = m * N_yz_c + j_c * Nz_c + k_c;
+    f_coarse_real[idx_c] = 0.25f * (r00_r + r01_r + r10_r + r11_r);
+    f_coarse_imag[idx_c] = 0.25f * (r00_i + r01_i + r10_i + r11_i);
+}
+
 #endif // USE_GPU_OFFLOAD
 
 // ============================================================================
@@ -876,6 +1192,19 @@ void FFT1DPoissonSolver::cleanup() {
 void FFT1DPoissonSolver::cleanup_mg() {
     if (!mg_initialized_) return;
 
+    // Destroy full solve CUDA graph
+    if (solve_graph_exec_) {
+        cudaGraphExecDestroy(solve_graph_exec_);
+        solve_graph_exec_ = nullptr;
+    }
+    if (solve_graph_) {
+        cudaGraphDestroy(solve_graph_);
+        solve_graph_ = nullptr;
+    }
+    solve_graph_captured_ = false;
+    cached_rhs_dev_ = nullptr;
+    cached_p_dev_ = nullptr;
+
     for (int l = 0; l < mg_num_levels_; ++l) {
         if (mg_p_real_[l]) cudaFree(mg_p_real_[l]);
         if (mg_p_imag_[l]) cudaFree(mg_p_imag_[l]);
@@ -886,6 +1215,8 @@ void FFT1DPoissonSolver::cleanup_mg() {
     if (mg_tmp_real_) cudaFree(mg_tmp_real_);
     if (mg_tmp_imag_) cudaFree(mg_tmp_imag_);
     mg_tmp_real_ = mg_tmp_imag_ = nullptr;
+    if (lambda_f_) cudaFree(lambda_f_);
+    lambda_f_ = nullptr;
     mg_initialized_ = false;
 }
 
@@ -897,9 +1228,10 @@ void FFT1DPoissonSolver::initialize_mg_levels() {
     int Nz_base = (periodic_dir_ == 0) ? Nz_ : Ny_;
 
     // Build hierarchy: coarsen by 2 until grid is small enough
+    // Stop at 24x24 to ensure proper MG for all grid sizes
     mg_num_levels_ = 0;
     int Ny = Ny_base, Nz = Nz_base;
-    while (Ny >= 4 && Nz >= 4 && mg_num_levels_ < MG_MAX_LEVELS) {
+    while (Ny >= 24 && Nz >= 24 && mg_num_levels_ < MG_MAX_LEVELS) {
         mg_Ny_[mg_num_levels_] = Ny;
         mg_Nz_[mg_num_levels_] = Nz;
         mg_N_yz_[mg_num_levels_] = Ny * Nz;
@@ -908,15 +1240,19 @@ void FFT1DPoissonSolver::initialize_mg_levels() {
         Nz /= 2;
     }
 
-    if (mg_num_levels_ < 2) {
-        std::cerr << "[FFT1D-MG] Warning: grid too small for MG, using single level\n";
+    if (mg_num_levels_ < 1) {
+        // Grid is smaller than 48x48 - use single level with base dimensions
+        std::cerr << "[FFT1D-MG] Warning: grid too small for MG (" << Ny_base << "x" << Nz_base << "), using single level\n";
         mg_num_levels_ = 1;
+        mg_Ny_[0] = Ny_base;
+        mg_Nz_[0] = Nz_base;
+        mg_N_yz_[0] = Ny_base * Nz_base;
     }
 
-    // Allocate arrays for each level
+    // Allocate FP32 arrays for each level (mixed precision MG)
     cudaError_t err;
     for (int l = 0; l < mg_num_levels_; ++l) {
-        size_t size = static_cast<size_t>(N_modes_) * mg_N_yz_[l] * sizeof(double);
+        size_t size = static_cast<size_t>(N_modes_) * mg_N_yz_[l] * sizeof(float);
         err = cudaMalloc(&mg_p_real_[l], size);
         err = cudaMalloc(&mg_p_imag_[l], size);
         err = cudaMalloc(&mg_r_real_[l], size);
@@ -926,12 +1262,24 @@ void FFT1DPoissonSolver::initialize_mg_levels() {
             cleanup_mg();
             return;
         }
+        // Zero solution arrays for first solve (warm-start thereafter)
+        cudaMemset(mg_p_real_[l], 0, size);
+        cudaMemset(mg_p_imag_[l], 0, size);
     }
 
-    // Temp buffer for ping-pong smoothing (size of finest level)
-    size_t fine_size = static_cast<size_t>(N_modes_) * mg_N_yz_[0] * sizeof(double);
+    // Temp buffer for ping-pong smoothing (size of finest level, FP32)
+    size_t fine_size = static_cast<size_t>(N_modes_) * mg_N_yz_[0] * sizeof(float);
     cudaMalloc(&mg_tmp_real_, fine_size);
     cudaMalloc(&mg_tmp_imag_, fine_size);
+
+    // Allocate and copy eigenvalues in FP32
+    std::vector<float> lambda_f_host(N_modes_);
+    for (int m = 0; m < N_modes_; ++m) {
+        double theta = 2.0 * M_PI * m / N_periodic_;
+        lambda_f_host[m] = static_cast<float>((2.0 - 2.0 * std::cos(theta)) / (d_periodic_ * d_periodic_));
+    }
+    cudaMalloc(&lambda_f_, N_modes_ * sizeof(float));
+    cudaMemcpy(lambda_f_, lambda_f_host.data(), N_modes_ * sizeof(float), cudaMemcpyHostToDevice);
 
     mg_initialized_ = true;
     std::cout << "[FFT1D-MG] Initialized " << mg_num_levels_ << " levels: ";
@@ -943,44 +1291,97 @@ void FFT1DPoissonSolver::initialize_mg_levels() {
 }
 
 void FFT1DPoissonSolver::mg_smooth_2d(int level, int iterations, double omega) {
+    // Legacy weighted Jacobi smoother (FP32) - Chebyshev is preferred
     const int Ny = mg_Ny_[level];
     const int Nz = mg_Nz_[level];
     const int total = N_modes_ * Ny * Nz;
     const int block = 256;
     const int grid = (total + block - 1) / block;
 
-    double ay = (periodic_dir_ == 0) ? 1.0 / (dy_ * dy_) : 1.0 / (dx_ * dx_);
-    double az = (periodic_dir_ == 0) ? 1.0 / (dz_ * dz_) : 1.0 / (dy_ * dy_);
+    float ay = (periodic_dir_ == 0) ? 1.0f / (dy_ * dy_) : 1.0f / (dx_ * dx_);
+    float az = (periodic_dir_ == 0) ? 1.0f / (dz_ * dz_) : 1.0f / (dy_ * dy_);
 
     // Scale coefficients for coarser grids (spacing doubles each level)
-    double scale = 1.0 / (1 << level);  // 1, 0.5, 0.25, ...
+    float scale = 1.0f / (1 << level);  // 1, 0.5, 0.25, ...
     scale = scale * scale;  // spacing squared
     ay *= scale;
     az *= scale;
 
-    double* p_in = mg_p_real_[level];
-    double* pi_in = mg_p_imag_[level];
-    double* p_out = mg_tmp_real_;
-    double* pi_out = mg_tmp_imag_;
+    // Use ping-pong between p and tmp, but avoid unnecessary copies
+    // by always doing even number of iterations
+    int actual_iters = (iterations + 1) & ~1;  // Round up to even
 
-    for (int iter = 0; iter < iterations; ++iter) {
-        kernel_mg2d_smooth<<<grid, block, 0, stream_>>>(
+    float* p_in = mg_p_real_[level];
+    float* pi_in = mg_p_imag_[level];
+    float* p_out = mg_tmp_real_;
+    float* pi_out = mg_tmp_imag_;
+
+    for (int iter = 0; iter < actual_iters; ++iter) {
+        kernel_mg2d_smooth_f32<<<grid, block, 0, stream_>>>(
             mg_r_real_[level], mg_r_imag_[level],  // RHS (f)
             p_in, pi_in,
             p_out, pi_out,
-            lambda_, N_modes_, Ny, Nz, ay, az, omega
+            lambda_f_, N_modes_, Ny, Nz, ay, az, static_cast<float>(omega)
         );
         // Swap pointers
         std::swap(p_in, p_out);
         std::swap(pi_in, pi_out);
     }
+    // After even iterations, result is back in mg_p_real_[level], no copy needed
+}
 
-    // If odd iterations, result is in tmp, copy back
-    if (iterations % 2 == 1) {
+void FFT1DPoissonSolver::mg_smooth_2d_chebyshev(int level, int degree) {
+    // Chebyshev polynomial acceleration for the 2D Helmholtz smoother (FP32)
+    // Uses optimal weights that sweep through the eigenvalue spectrum
+    constexpr float LAMBDA_MIN = 0.05f;
+    constexpr float LAMBDA_MAX = 1.95f;
+    const float d = (LAMBDA_MAX + LAMBDA_MIN) / 2.0f;  // 1.0
+    const float c = (LAMBDA_MAX - LAMBDA_MIN) / 2.0f;  // 0.95
+
+    const int Ny = mg_Ny_[level];
+    const int Nz = mg_Nz_[level];
+    const int total = N_modes_ * Ny * Nz;
+    const int block = 256;
+    const int grid = (total + block - 1) / block;
+
+    float ay = (periodic_dir_ == 0) ? 1.0f / (dy_ * dy_) : 1.0f / (dx_ * dx_);
+    float az = (periodic_dir_ == 0) ? 1.0f / (dz_ * dz_) : 1.0f / (dy_ * dy_);
+
+    // Scale coefficients for coarser grids
+    float scale = 1.0f / (1 << level);
+    scale = scale * scale;
+    ay *= scale;
+    az *= scale;
+
+    // Ping-pong buffers (FP32)
+    float* p_in = mg_p_real_[level];
+    float* pi_in = mg_p_imag_[level];
+    float* p_out = mg_tmp_real_;
+    float* pi_out = mg_tmp_imag_;
+
+    for (int k = 0; k < degree; ++k) {
+        // Chebyshev-optimal weight for step k
+        float theta = static_cast<float>(M_PI) * (2.0f * k + 1.0f) / (2.0f * degree);
+        float omega = 1.0f / (d - c * std::cos(theta));
+
+        kernel_mg2d_smooth_f32<<<grid, block, 0, stream_>>>(
+            mg_r_real_[level], mg_r_imag_[level],  // RHS (f)
+            p_in, pi_in,
+            p_out, pi_out,
+            lambda_f_, N_modes_, Ny, Nz, ay, az, omega
+        );
+
+        // Swap pointers for next iteration
+        std::swap(p_in, p_out);
+        std::swap(pi_in, pi_out);
+    }
+
+    // If odd number of iterations, result is in tmp - copy back
+    if (degree % 2 == 1) {
         cudaMemcpyAsync(mg_p_real_[level], mg_tmp_real_,
-                        N_modes_ * Ny * Nz * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+                        total * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
         cudaMemcpyAsync(mg_p_imag_[level], mg_tmp_imag_,
-                        N_modes_ * Ny * Nz * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+                        total * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
     }
 }
 
@@ -991,26 +1392,26 @@ void FFT1DPoissonSolver::mg_residual_2d(int level) {
     const int block = 256;
     const int grid = (total + block - 1) / block;
 
-    double ay = (periodic_dir_ == 0) ? 1.0 / (dy_ * dy_) : 1.0 / (dx_ * dx_);
-    double az = (periodic_dir_ == 0) ? 1.0 / (dz_ * dz_) : 1.0 / (dy_ * dy_);
-    double scale = 1.0 / (1 << level);
+    float ay = (periodic_dir_ == 0) ? 1.0f / (dy_ * dy_) : 1.0f / (dx_ * dx_);
+    float az = (periodic_dir_ == 0) ? 1.0f / (dz_ * dz_) : 1.0f / (dy_ * dy_);
+    float scale = 1.0f / (1 << level);
     scale = scale * scale;
     ay *= scale;
     az *= scale;
 
-    // Use tmp as scratch for residual output, then copy to r
-    kernel_mg2d_residual<<<grid, block, 0, stream_>>>(
+    // Use tmp as scratch for residual output, then copy to r (FP32)
+    kernel_mg2d_residual_f32<<<grid, block, 0, stream_>>>(
         mg_r_real_[level], mg_r_imag_[level],  // f (RHS)
         mg_p_real_[level], mg_p_imag_[level],  // p (solution)
         mg_tmp_real_, mg_tmp_imag_,            // r output (temp)
-        lambda_, N_modes_, Ny, Nz, ay, az
+        lambda_f_, N_modes_, Ny, Nz, ay, az
     );
 
     // Copy residual to r array (will be restricted to next level)
     cudaMemcpyAsync(mg_r_real_[level], mg_tmp_real_,
-                    total * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+                    total * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
     cudaMemcpyAsync(mg_r_imag_[level], mg_tmp_imag_,
-                    total * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+                    total * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
 }
 
 void FFT1DPoissonSolver::mg_restrict_2d(int fine_level) {
@@ -1024,17 +1425,53 @@ void FFT1DPoissonSolver::mg_restrict_2d(int fine_level) {
     const int block = 256;
     const int grid = (total_c + block - 1) / block;
 
-    kernel_mg2d_restrict<<<grid, block, 0, stream_>>>(
+    kernel_mg2d_restrict_f32<<<grid, block, 0, stream_>>>(
         mg_r_real_[fine_level], mg_r_imag_[fine_level],
         mg_r_real_[coarse_level], mg_r_imag_[coarse_level],
         N_modes_, Ny_f, Nz_f, Ny_c, Nz_c
     );
 
-    // Zero coarse solution for V-cycle
+    // Zero coarse solution for V-cycle (FP32)
     cudaMemsetAsync(mg_p_real_[coarse_level], 0,
-                    N_modes_ * Ny_c * Nz_c * sizeof(double), stream_);
+                    N_modes_ * Ny_c * Nz_c * sizeof(float), stream_);
     cudaMemsetAsync(mg_p_imag_[coarse_level], 0,
-                    N_modes_ * Ny_c * Nz_c * sizeof(double), stream_);
+                    N_modes_ * Ny_c * Nz_c * sizeof(float), stream_);
+}
+
+// Fused residual + restriction: computes residual at fine level and directly restricts to coarse
+// Eliminates intermediate fine residual storage (saves 2 global memory passes)
+void FFT1DPoissonSolver::mg_residual_restrict_fused_2d(int fine_level) {
+    const int coarse_level = fine_level + 1;
+    const int Ny_f = mg_Ny_[fine_level];
+    const int Nz_f = mg_Nz_[fine_level];
+    const int Ny_c = mg_Ny_[coarse_level];
+    const int Nz_c = mg_Nz_[coarse_level];
+
+    const int total_c = N_modes_ * Ny_c * Nz_c;
+    const int block = 256;
+    const int grid = (total_c + block - 1) / block;
+
+    // Grid spacing coefficients at fine level
+    float ay = (periodic_dir_ == 0) ? 1.0f / (dy_ * dy_) : 1.0f / (dx_ * dx_);
+    float az = (periodic_dir_ == 0) ? 1.0f / (dz_ * dz_) : 1.0f / (dy_ * dy_);
+    float scale = 1.0f / (1 << fine_level);
+    scale = scale * scale;
+    ay *= scale;
+    az *= scale;
+
+    // Fused kernel: compute residual at 4 fine points, average to 1 coarse point
+    kernel_mg2d_residual_restrict_fused_f32<<<grid, block, 0, stream_>>>(
+        mg_r_real_[fine_level], mg_r_imag_[fine_level],   // RHS at fine
+        mg_p_real_[fine_level], mg_p_imag_[fine_level],   // Solution at fine
+        mg_r_real_[coarse_level], mg_r_imag_[coarse_level], // RHS at coarse (output)
+        lambda_f_, N_modes_, Ny_f, Nz_f, Ny_c, Nz_c, ay, az
+    );
+
+    // Zero coarse solution for V-cycle (FP32)
+    cudaMemsetAsync(mg_p_real_[coarse_level], 0,
+                    N_modes_ * Ny_c * Nz_c * sizeof(float), stream_);
+    cudaMemsetAsync(mg_p_imag_[coarse_level], 0,
+                    N_modes_ * Ny_c * Nz_c * sizeof(float), stream_);
 }
 
 void FFT1DPoissonSolver::mg_prolongate_2d(int coarse_level) {
@@ -1048,7 +1485,7 @@ void FFT1DPoissonSolver::mg_prolongate_2d(int coarse_level) {
     const int block = 256;
     const int grid = (total_f + block - 1) / block;
 
-    kernel_mg2d_prolongate<<<grid, block, 0, stream_>>>(
+    kernel_mg2d_prolongate_f32<<<grid, block, 0, stream_>>>(
         mg_p_real_[coarse_level], mg_p_imag_[coarse_level],
         mg_p_real_[fine_level], mg_p_imag_[fine_level],
         N_modes_, Ny_f, Nz_f, Ny_c, Nz_c
@@ -1056,22 +1493,24 @@ void FFT1DPoissonSolver::mg_prolongate_2d(int coarse_level) {
 }
 
 void FFT1DPoissonSolver::mg_vcycle_2d(int level, int nu1, int nu2) {
-    const double omega = 0.8;
+    // Use Chebyshev smoothing for faster convergence
+    // Mode-aware: low-λ modes (small m) need more iterations than high-λ modes
+    // High modes converge faster due to stronger diagonal dominance
 
     if (level == mg_num_levels_ - 1) {
-        // Coarsest level: many smoothing iterations
-        mg_smooth_2d(level, 20, omega);
+        // Coarsest level: need more iterations for larger grids
+        // For single-level (no actual MG), use more iterations
+        int degree = (mg_num_levels_ == 1) ? 20 : 4;  // 20 for single-level, 4 for proper MG
+        mg_smooth_2d_chebyshev(level, degree);
         return;
     }
 
-    // Pre-smoothing
-    mg_smooth_2d(level, nu1, omega);
+    // Pre-smoothing: degree 2
+    mg_smooth_2d_chebyshev(level, 2);
 
-    // Compute residual
-    mg_residual_2d(level);
-
-    // Restrict to coarse grid
-    mg_restrict_2d(level);
+    // Fused residual + restriction: eliminates intermediate fine residual storage
+    // (Previously: mg_residual_2d(level) + mg_restrict_2d(level))
+    mg_residual_restrict_fused_2d(level);
 
     // Recurse
     mg_vcycle_2d(level + 1, nu1, nu2);
@@ -1079,8 +1518,8 @@ void FFT1DPoissonSolver::mg_vcycle_2d(int level, int nu1, int nu2) {
     // Prolongate correction
     mg_prolongate_2d(level + 1);
 
-    // Post-smoothing
-    mg_smooth_2d(level, nu2, omega);
+    // Post-smoothing: degree 2
+    mg_smooth_2d_chebyshev(level, 2);
 }
 
 void FFT1DPoissonSolver::solve_helmholtz_2d_mg(int nu1, int nu2) {
@@ -1093,25 +1532,159 @@ void FFT1DPoissonSolver::solve_helmholtz_2d_mg(int nu1, int nu2) {
     const int block = 256;
     const int grid = (total + block - 1) / block;
 
-    // Convert RHS from complex to split real/imag (negated)
-    kernel_complex_to_split_negate<<<grid, block, 0, stream_>>>(
+    // Convert RHS from complex double to split float arrays (negated)
+    kernel_complex_to_split_float<<<grid, block, 0, stream_>>>(
         rhs_hat_, mg_r_real_[0], mg_r_imag_[0], total
     );
 
-    // Zero initial solution
-    cudaMemsetAsync(mg_p_real_[0], 0, total * sizeof(double), stream_);
-    cudaMemsetAsync(mg_p_imag_[0], 0, total * sizeof(double), stream_);
+    // Warm-start: reuse previous solution instead of zeroing
+    // First solve needs initialization (done in initialize_mg_levels)
+    // Subsequent solves benefit from warm-start since pressure changes smoothly
 
-    // Single V-cycle
+    // V-cycle (all in FP32)
     mg_vcycle_2d(0, nu1, nu2);
 
-    // Pin m=0, (j=0, k=0) to zero for gauge
-    kernel_pin_zero_mode<<<1, 1, 0, stream_>>>(mg_p_real_[0], mg_p_imag_[0], mg_N_yz_[0]);
+    // Pin m=0, (j=0, k=0) to zero for gauge (FP32)
+    kernel_pin_zero_mode_f32<<<1, 1, 0, stream_>>>(mg_p_real_[0], mg_p_imag_[0], mg_N_yz_[0]);
 
-    // Convert solution back to complex
-    kernel_split_to_complex<<<grid, block, 0, stream_>>>(
+    // Convert solution back from split float to complex double
+    kernel_split_float_to_complex<<<grid, block, 0, stream_>>>(
         mg_p_real_[0], mg_p_imag_[0], p_hat_, total
     );
+}
+
+void FFT1DPoissonSolver::capture_solve_graph(double* rhs_dev, double* p_dev) {
+    if (solve_graph_captured_) return;
+
+    // Store pointers for graph execution
+    cached_rhs_dev_ = rhs_dev;
+    cached_p_dev_ = p_dev;
+
+    const int stride = Nx_ + 2;
+    const int plane_stride = (Nx_ + 2) * (Ny_ + 2);
+    const int total_interior = Nx_ * Ny_ * Nz_;
+
+    const int block = 256;
+    const int grid = (total_interior + block - 1) / block;
+    const size_t smem = block * sizeof(double);
+
+    // Create a separate stream for capture
+    cudaStream_t capture_stream;
+    cudaStreamCreate(&capture_stream);
+
+    // Associate cuFFT plans with the capture stream for graph capture
+    cufftSetStream(fft_plan_r2c_, capture_stream);
+    cufftSetStream(fft_plan_c2r_, capture_stream);
+
+    // Begin stream capture
+    cudaStreamBeginCapture(capture_stream, cudaStreamCaptureModeGlobal);
+
+    // 1. Pack RHS from ghost layout to contiguous periodic lines + compute sum for mean
+    if (periodic_dir_ == 0) {
+        kernel_pack_ghost_to_lines<<<grid, block, smem, capture_stream>>>(
+            rhs_dev, in_pack_, partial_sums_,
+            Nx_, Ny_, Nz_, stride, plane_stride
+        );
+    } else {
+        kernel_pack_ghost_to_zlines<<<grid, block, smem, capture_stream>>>(
+            rhs_dev, in_pack_, partial_sums_,
+            Nx_, Ny_, Nz_, stride, plane_stride
+        );
+    }
+
+    // 2. Reduce partial sums to get total sum
+    kernel_reduce_sum<<<1, 256, 256 * sizeof(double), capture_stream>>>(
+        partial_sums_, sum_dev_, num_blocks_
+    );
+
+    // 3. Subtract mean from packed RHS
+    kernel_subtract_mean<<<grid, block, 0, capture_stream>>>(
+        in_pack_, sum_dev_, total_interior
+    );
+
+    // 4. Forward FFT: real -> complex
+    cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
+
+    // 5. MG Helmholtz solve (mixed precision: FP32 for MG)
+    const int total_modes = N_modes_ * mg_N_yz_[0];
+    const int grid_modes = (total_modes + block - 1) / block;
+
+    // Convert RHS from complex double to split float arrays (negated)
+    kernel_complex_to_split_float<<<grid_modes, block, 0, capture_stream>>>(
+        rhs_hat_, mg_r_real_[0], mg_r_imag_[0], total_modes
+    );
+
+    // Warm-start: solution arrays were zeroed during initialization
+    // Subsequent solves reuse previous solution for faster convergence
+
+    // V-cycle (temporarily switch stream, all FP32)
+    cudaStream_t old_stream = stream_;
+    stream_ = capture_stream;
+    mg_vcycle_2d(0, 2, 1);
+    stream_ = old_stream;
+
+    // Pin m=0, (j=0, k=0) to zero for gauge (FP32)
+    kernel_pin_zero_mode_f32<<<1, 1, 0, capture_stream>>>(mg_p_real_[0], mg_p_imag_[0], mg_N_yz_[0]);
+
+    // Convert solution back from split float to complex double
+    kernel_split_float_to_complex<<<grid_modes, block, 0, capture_stream>>>(
+        mg_p_real_[0], mg_p_imag_[0], p_hat_, total_modes
+    );
+
+    // 6. Inverse FFT: complex -> real
+    cufftExecZ2D(fft_plan_c2r_, p_hat_, out_pack_);
+
+    // 7. Unpack from packed layout to ghost layout with normalization
+    const double invN = 1.0 / (double)N_periodic_;
+    if (periodic_dir_ == 0) {
+        kernel_unpack_lines_to_ghost<<<grid, block, 0, capture_stream>>>(
+            out_pack_, p_dev,
+            Nx_, Ny_, Nz_, stride, plane_stride,
+            invN
+        );
+    } else {
+        kernel_unpack_zlines_to_ghost<<<grid, block, 0, capture_stream>>>(
+            out_pack_, p_dev,
+            Nx_, Ny_, Nz_, stride, plane_stride,
+            invN
+        );
+    }
+
+    // End capture and instantiate graph
+    cudaError_t err = cudaStreamEndCapture(capture_stream, &solve_graph_);
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] ERROR: cudaStreamEndCapture failed: " << cudaGetErrorString(err) << "\n";
+        cudaStreamDestroy(capture_stream);
+        cufftSetStream(fft_plan_r2c_, stream_);
+        cufftSetStream(fft_plan_c2r_, stream_);
+        return;
+    }
+
+    err = cudaGraphInstantiate(&solve_graph_exec_, solve_graph_, nullptr, nullptr, 0);
+    if (err != cudaSuccess) {
+        std::cerr << "[FFT1D] ERROR: cudaGraphInstantiate failed: " << cudaGetErrorString(err) << "\n";
+        cudaGraphDestroy(solve_graph_);
+        solve_graph_ = nullptr;
+        cudaStreamDestroy(capture_stream);
+        cufftSetStream(fft_plan_r2c_, stream_);
+        cufftSetStream(fft_plan_c2r_, stream_);
+        return;
+    }
+
+    cudaStreamDestroy(capture_stream);
+
+    // Restore cuFFT plans to original stream
+    cufftSetStream(fft_plan_r2c_, stream_);
+    cufftSetStream(fft_plan_c2r_, stream_);
+
+    solve_graph_captured_ = true;
+
+    std::cout << "[FFT1D] CUDA graph captured for full solve (pack->FFT->MG->IFFT->unpack)\n";
+}
+
+void FFT1DPoissonSolver::execute_solve_graph() {
+    if (!solve_graph_exec_) return;
+    cudaGraphLaunch(solve_graph_exec_, stream_);
 }
 
 void FFT1DPoissonSolver::solve_helmholtz_2d(int iterations, double omega) {
@@ -1240,14 +1813,6 @@ void FFT1DPoissonSolver::solve_helmholtz_2d(int iterations, double omega) {
 }
 
 int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
-    const int stride = Nx_ + 2;
-    const int plane_stride = (Nx_ + 2) * (Ny_ + 2);
-    const int total_interior = Nx_ * Ny_ * Nz_;
-
-    const int block = 256;
-    const int grid = (total_interior + block - 1) / block;
-    const size_t smem = block * sizeof(double);
-
     // Convert OMP-mapped host pointers to CUDA device pointers
     int device = omp_get_default_device();
     double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_ptr, device));
@@ -1262,140 +1827,163 @@ int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
         return -1;
     }
 
-    cudaError_t err;
-
-    // Profiling: enabled by NNCFD_FFT1D_PROFILE environment variable
-    static bool profile_enabled = (std::getenv("NNCFD_FFT1D_PROFILE") != nullptr);
-    static int profile_call = 0;
-    static double t_pack = 0, t_fft_fwd = 0, t_helmholtz = 0, t_fft_inv = 0, t_unpack = 0;
-    cudaEvent_t ev_start, ev_pack, ev_fft_fwd, ev_helmholtz, ev_fft_inv, ev_unpack;
-
-    if (profile_enabled) {
-        cudaEventCreate(&ev_start);
-        cudaEventCreate(&ev_pack);
-        cudaEventCreate(&ev_fft_fwd);
-        cudaEventCreate(&ev_helmholtz);
-        cudaEventCreate(&ev_fft_inv);
-        cudaEventCreate(&ev_unpack);
-        cudaEventRecord(ev_start, stream_);
+    // Initialize MG levels if needed (required before graph capture)
+    if (!mg_initialized_) {
+        initialize_mg_levels();
     }
 
-    // 1. Pack RHS from ghost layout to contiguous periodic lines + compute sum for mean
-    if (periodic_dir_ == 0) {
-        // x-periodic: pack x-lines
-        kernel_pack_ghost_to_lines<<<grid, block, smem, stream_>>>(
-            rhs_dev, in_pack_, partial_sums_,
-            Nx_, Ny_, Nz_, stride, plane_stride
-        );
-    } else {
-        // z-periodic: pack z-lines
-        kernel_pack_ghost_to_zlines<<<grid, block, smem, stream_>>>(
-            rhs_dev, in_pack_, partial_sums_,
-            Nx_, Ny_, Nz_, stride, plane_stride
-        );
-    }
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        std::cerr << "[FFT1D] kernel_pack failed: " << cudaGetErrorString(err) << "\n";
-        return -1;
-    }
+    // Profiling mode: bypass graph to measure individual components
+    static bool profile_mode = (std::getenv("NNCFD_FFT1D_PROFILE") != nullptr);
+    if (profile_mode) {
+        static int call_count = 0;
+        static double t_pack = 0, t_fft_fwd = 0, t_helmholtz = 0, t_fft_inv = 0, t_unpack = 0;
+        cudaEvent_t ev0, ev1, ev2, ev3, ev4, ev5;
+        cudaEventCreate(&ev0); cudaEventCreate(&ev1); cudaEventCreate(&ev2);
+        cudaEventCreate(&ev3); cudaEventCreate(&ev4); cudaEventCreate(&ev5);
 
-    // 2. Reduce partial sums to get total sum
-    kernel_reduce_sum<<<1, 256, 256 * sizeof(double), stream_>>>(
-        partial_sums_, sum_dev_, num_blocks_
-    );
+        const int stride = Nx_ + 2;
+        const int plane_stride = (Nx_ + 2) * (Ny_ + 2);
+        const int total_interior = Nx_ * Ny_ * Nz_;
+        const int block = 256;
+        const int grid = (total_interior + block - 1) / block;
+        const size_t smem = block * sizeof(double);
 
-    // 3. Subtract mean from packed RHS (for compatibility with singular Poisson)
-    kernel_subtract_mean<<<grid, block, 0, stream_>>>(
-        in_pack_, sum_dev_, total_interior
-    );
+        cudaEventRecord(ev0, stream_);
 
-    if (profile_enabled) cudaEventRecord(ev_pack, stream_);
-
-    // 4. Forward FFT: real -> complex (mode-major output)
-    cufftResult fft_result = cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
-    if (fft_result != CUFFT_SUCCESS) {
-        std::cerr << "[FFT1D] cufftExecD2Z failed: " << fft_result << "\n";
-        return -1;
-    }
-
-    if (profile_enabled) cudaEventRecord(ev_fft_fwd, stream_);
-
-    // 5. Solve 2D Helmholtz for each mode using 2D Multigrid V-cycle
-    // Much better convergence than Jacobi iterations
-    solve_helmholtz_2d_mg(2, 1);  // nu1=2 pre-smooth, nu2=1 post-smooth
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        std::cerr << "[FFT1D] solve_helmholtz_2d_mg failed: " << cudaGetErrorString(err) << "\n";
-        return -1;
-    }
-
-    if (profile_enabled) cudaEventRecord(ev_helmholtz, stream_);
-
-    // 6. Inverse FFT: complex -> real
-    fft_result = cufftExecZ2D(fft_plan_c2r_, p_hat_, out_pack_);
-    if (fft_result != CUFFT_SUCCESS) {
-        std::cerr << "[FFT1D] cufftExecZ2D failed: " << fft_result << "\n";
-        return -1;
-    }
-
-    if (profile_enabled) cudaEventRecord(ev_fft_inv, stream_);
-
-    // 7. Unpack from packed layout to ghost layout with normalization
-    const double invN = 1.0 / (double)N_periodic_;
-    if (periodic_dir_ == 0) {
-        // x-periodic: unpack x-lines
-        kernel_unpack_lines_to_ghost<<<grid, block, 0, stream_>>>(
-            out_pack_, p_dev,
-            Nx_, Ny_, Nz_, stride, plane_stride,
-            invN
-        );
-    } else {
-        // z-periodic: unpack z-lines
-        kernel_unpack_zlines_to_ghost<<<grid, block, 0, stream_>>>(
-            out_pack_, p_dev,
-            Nx_, Ny_, Nz_, stride, plane_stride,
-            invN
-        );
-    }
-
-    if (profile_enabled) cudaEventRecord(ev_unpack, stream_);
-
-    // 8. Synchronize
-    cudaStreamSynchronize(stream_);
-
-    // Profiling: accumulate and report
-    if (profile_enabled) {
-        float ms;
-        cudaEventElapsedTime(&ms, ev_start, ev_pack);     t_pack += ms;
-        cudaEventElapsedTime(&ms, ev_pack, ev_fft_fwd);   t_fft_fwd += ms;
-        cudaEventElapsedTime(&ms, ev_fft_fwd, ev_helmholtz); t_helmholtz += ms;
-        cudaEventElapsedTime(&ms, ev_helmholtz, ev_fft_inv); t_fft_inv += ms;
-        cudaEventElapsedTime(&ms, ev_fft_inv, ev_unpack); t_unpack += ms;
-
-        cudaEventDestroy(ev_start);
-        cudaEventDestroy(ev_pack);
-        cudaEventDestroy(ev_fft_fwd);
-        cudaEventDestroy(ev_helmholtz);
-        cudaEventDestroy(ev_fft_inv);
-        cudaEventDestroy(ev_unpack);
-
-        profile_call++;
-        if (profile_call % 100 == 0) {
-            double total = t_pack + t_fft_fwd + t_helmholtz + t_fft_inv + t_unpack;
-            std::cout << "\n[FFT1D Profile] After " << profile_call << " solves (avg per solve):\n"
-                      << "  Pack+mean:   " << (t_pack / profile_call) << " ms ("
-                      << (100.0 * t_pack / total) << "%)\n"
-                      << "  FFT forward: " << (t_fft_fwd / profile_call) << " ms ("
-                      << (100.0 * t_fft_fwd / total) << "%)\n"
-                      << "  Helmholtz:   " << (t_helmholtz / profile_call) << " ms ("
-                      << (100.0 * t_helmholtz / total) << "%)\n"
-                      << "  FFT inverse: " << (t_fft_inv / profile_call) << " ms ("
-                      << (100.0 * t_fft_inv / total) << "%)\n"
-                      << "  Unpack:      " << (t_unpack / profile_call) << " ms ("
-                      << (100.0 * t_unpack / total) << "%)\n"
-                      << "  TOTAL:       " << (total / profile_call) << " ms\n";
+        // Pack + mean
+        if (periodic_dir_ == 0) {
+            kernel_pack_ghost_to_lines<<<grid, block, smem, stream_>>>(
+                rhs_dev, in_pack_, partial_sums_, Nx_, Ny_, Nz_, stride, plane_stride);
+        } else {
+            kernel_pack_ghost_to_zlines<<<grid, block, smem, stream_>>>(
+                rhs_dev, in_pack_, partial_sums_, Nx_, Ny_, Nz_, stride, plane_stride);
         }
+        kernel_reduce_sum<<<1, 256, 256 * sizeof(double), stream_>>>(partial_sums_, sum_dev_, num_blocks_);
+        kernel_subtract_mean<<<grid, block, 0, stream_>>>(in_pack_, sum_dev_, total_interior);
+        cudaEventRecord(ev1, stream_);
+
+        // FFT forward
+        cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
+        cudaEventRecord(ev2, stream_);
+
+        // Helmholtz solve
+        solve_helmholtz_2d_mg(2, 1);
+        cudaEventRecord(ev3, stream_);
+
+        // FFT inverse
+        cufftExecZ2D(fft_plan_c2r_, p_hat_, out_pack_);
+        cudaEventRecord(ev4, stream_);
+
+        // Unpack
+        const double invN = 1.0 / (double)N_periodic_;
+        if (periodic_dir_ == 0) {
+            kernel_unpack_lines_to_ghost<<<grid, block, 0, stream_>>>(
+                out_pack_, p_dev, Nx_, Ny_, Nz_, stride, plane_stride, invN);
+        } else {
+            kernel_unpack_zlines_to_ghost<<<grid, block, 0, stream_>>>(
+                out_pack_, p_dev, Nx_, Ny_, Nz_, stride, plane_stride, invN);
+        }
+        cudaEventRecord(ev5, stream_);
+        cudaStreamSynchronize(stream_);
+
+        float ms;
+        cudaEventElapsedTime(&ms, ev0, ev1); t_pack += ms;
+        cudaEventElapsedTime(&ms, ev1, ev2); t_fft_fwd += ms;
+        cudaEventElapsedTime(&ms, ev2, ev3); t_helmholtz += ms;
+        cudaEventElapsedTime(&ms, ev3, ev4); t_fft_inv += ms;
+        cudaEventElapsedTime(&ms, ev4, ev5); t_unpack += ms;
+
+        cudaEventDestroy(ev0); cudaEventDestroy(ev1); cudaEventDestroy(ev2);
+        cudaEventDestroy(ev3); cudaEventDestroy(ev4); cudaEventDestroy(ev5);
+
+        call_count++;
+        if (call_count % 50 == 0) {
+            double total = t_pack + t_fft_fwd + t_helmholtz + t_fft_inv + t_unpack;
+            std::cout << "\n[FFT1D Profile] " << call_count << " calls (avg per solve):\n"
+                      << "  Pack+mean:   " << (t_pack / call_count) << " ms (" << (100.0 * t_pack / total) << "%)\n"
+                      << "  FFT forward: " << (t_fft_fwd / call_count) << " ms (" << (100.0 * t_fft_fwd / total) << "%)\n"
+                      << "  Helmholtz:   " << (t_helmholtz / call_count) << " ms (" << (100.0 * t_helmholtz / total) << "%)\n"
+                      << "  FFT inverse: " << (t_fft_inv / call_count) << " ms (" << (100.0 * t_fft_inv / total) << "%)\n"
+                      << "  Unpack:      " << (t_unpack / call_count) << " ms (" << (100.0 * t_unpack / total) << "%)\n"
+                      << "  TOTAL:       " << (total / call_count) << " ms\n";
+        }
+        return N_modes_;
+    }
+
+    // Use CUDA graph for the entire solve sequence
+    // Note: Graph is captured with fixed pointers - if they change, we need to recapture
+    if (solve_graph_captured_) {
+        if (rhs_dev == cached_rhs_dev_ && p_dev == cached_p_dev_) {
+            // Same pointers - just execute the graph
+            execute_solve_graph();
+            cudaStreamSynchronize(stream_);
+            return N_modes_;
+        } else {
+            // Pointers changed - need to recapture
+            // (This shouldn't happen in normal use, but handle it)
+            if (solve_graph_exec_) {
+                cudaGraphExecDestroy(solve_graph_exec_);
+                solve_graph_exec_ = nullptr;
+            }
+            if (solve_graph_) {
+                cudaGraphDestroy(solve_graph_);
+                solve_graph_ = nullptr;
+            }
+            solve_graph_captured_ = false;
+        }
+    }
+
+    // First call (or pointer change): capture and execute the graph
+    capture_solve_graph(rhs_dev, p_dev);
+
+    if (solve_graph_captured_) {
+        // Graph captured successfully - execute it
+        execute_solve_graph();
+        cudaStreamSynchronize(stream_);
+    } else {
+        // Graph capture failed - fall back to non-graph execution
+        std::cerr << "[FFT1D] Warning: Graph capture failed, using fallback path\n";
+
+        const int stride = Nx_ + 2;
+        const int plane_stride = (Nx_ + 2) * (Ny_ + 2);
+        const int total_interior = Nx_ * Ny_ * Nz_;
+        const int block = 256;
+        const int grid = (total_interior + block - 1) / block;
+        const size_t smem = block * sizeof(double);
+
+        // Pack RHS
+        if (periodic_dir_ == 0) {
+            kernel_pack_ghost_to_lines<<<grid, block, smem, stream_>>>(
+                rhs_dev, in_pack_, partial_sums_, Nx_, Ny_, Nz_, stride, plane_stride);
+        } else {
+            kernel_pack_ghost_to_zlines<<<grid, block, smem, stream_>>>(
+                rhs_dev, in_pack_, partial_sums_, Nx_, Ny_, Nz_, stride, plane_stride);
+        }
+
+        // Reduce + subtract mean
+        kernel_reduce_sum<<<1, 256, 256 * sizeof(double), stream_>>>(partial_sums_, sum_dev_, num_blocks_);
+        kernel_subtract_mean<<<grid, block, 0, stream_>>>(in_pack_, sum_dev_, total_interior);
+
+        // Forward FFT
+        cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
+
+        // MG solve
+        solve_helmholtz_2d_mg(2, 1);
+
+        // Inverse FFT
+        cufftExecZ2D(fft_plan_c2r_, p_hat_, out_pack_);
+
+        // Unpack
+        const double invN = 1.0 / (double)N_periodic_;
+        if (periodic_dir_ == 0) {
+            kernel_unpack_lines_to_ghost<<<grid, block, 0, stream_>>>(
+                out_pack_, p_dev, Nx_, Ny_, Nz_, stride, plane_stride, invN);
+        } else {
+            kernel_unpack_zlines_to_ghost<<<grid, block, 0, stream_>>>(
+                out_pack_, p_dev, Nx_, Ny_, Nz_, stride, plane_stride, invN);
+        }
+
+        cudaStreamSynchronize(stream_);
     }
 
     // Return 1 V-cycle per mode

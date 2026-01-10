@@ -487,13 +487,13 @@ bool test_hypre_vs_multigrid_3d_duct() {
 //=============================================================================
 
 #ifdef USE_HYPRE
-void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int num_steps) {
+void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int num_iter) {
     mesh.init_uniform(NX, NY, NZ, 0.0, 4.0, 0.0, 2.0, 0.0, 1.0);
 
     config.nu = 0.01;
     config.dt = 0.001;
     config.adaptive_dt = false;
-    config.max_iter = num_steps;
+    config.max_iter = num_iter;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
     config.postprocess = false;

@@ -4,8 +4,11 @@
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
 #include "poisson_solver.hpp"
+#include "timing.hpp"
 #include <cmath>
 #include <vector>
+#include <chrono>
+#include <iomanip>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
@@ -440,6 +443,62 @@ void test_2d_indexing() {
 }
 
 //=============================================================================
+// Benchmark: FFT1D Performance
+//=============================================================================
+
+void benchmark_fft1d_performance() {
+#if defined(USE_GPU_OFFLOAD) && defined(USE_FFT_POISSON)
+    std::cout << "\n=== FFT1D Performance Benchmark ===\n";
+    std::cout << "Grid\tms/step\t\tPoisson(ms)\tFraction\n";
+
+    std::vector<int> sizes = {64, 96, 128, 192};
+
+    for (int N : sizes) {
+        Mesh mesh;
+        mesh.init_uniform(N, N, N, 0.0, 2*M_PI, -1.0, 1.0, -1.0, 1.0);
+
+        Config cfg;
+        cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
+        cfg.dt = 0.001; cfg.max_iter = 100; cfg.nu = 0.0001;
+        cfg.poisson_solver = PoissonSolverType::FFT1D;
+        cfg.dp_dx = -0.0002;
+
+        RANSSolver solver(mesh, cfg);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+
+        if (solver.poisson_solver_type() != PoissonSolverType::FFT1D) {
+            std::cout << "N=" << N << ": FFT1D not available\n";
+            continue;
+        }
+
+        VectorField vel(mesh);
+        vel.fill(0.0, 0.0, 0.0);
+        solver.initialize(vel);
+
+        // Warm up
+        for (int i = 0; i < 5; ++i) solver.step();
+
+        // Reset timing stats
+        TimingStats::instance().reset();
+
+        // Time 50 steps
+        auto t0 = std::chrono::high_resolution_clock::now();
+        for (int i = 0; i < 50; ++i) solver.step();
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double poisson_ms = TimingStats::instance().total("poisson_solve") * 1000.0;
+        double fraction = poisson_ms / ms;
+
+        std::cout << N << "^3\t" << std::fixed << std::setprecision(3) << ms/50
+                  << "\t\t" << poisson_ms/50
+                  << "\t\t" << std::setprecision(1) << fraction*100 << "%\n";
+    }
+    std::cout << "\n";
+#endif
+}
+
+//=============================================================================
 // Main
 //=============================================================================
 
@@ -467,6 +526,9 @@ int main() {
         test_fft1d_correctness();
         test_fft1d_grid_convergence();
         test_2d_indexing();
+
+        // Performance benchmark
+        benchmark_fft1d_performance();
 
         const auto& c = harness::counters();
         if (c.skipped > 0 && c.passed == 0 && c.failed == 0) {

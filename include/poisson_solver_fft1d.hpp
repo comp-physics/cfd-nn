@@ -130,16 +130,30 @@ private:
 
     // Per-level device arrays: [N_modes * mg_N_yz_[level]]
     // p = solution, r = residual/RHS
-    double* mg_p_real_[MG_MAX_LEVELS] = {};
-    double* mg_p_imag_[MG_MAX_LEVELS] = {};
-    double* mg_r_real_[MG_MAX_LEVELS] = {};
-    double* mg_r_imag_[MG_MAX_LEVELS] = {};
+    // Using FP32 for MG (2x memory bandwidth, 2x compute throughput)
+    float* mg_p_real_[MG_MAX_LEVELS] = {};
+    float* mg_p_imag_[MG_MAX_LEVELS] = {};
+    float* mg_r_real_[MG_MAX_LEVELS] = {};
+    float* mg_r_imag_[MG_MAX_LEVELS] = {};
 
-    // Temporary buffer for ping-pong smoothing
-    double* mg_tmp_real_ = nullptr;
-    double* mg_tmp_imag_ = nullptr;
+    // Temporary buffer for ping-pong smoothing (FP32)
+    float* mg_tmp_real_ = nullptr;
+    float* mg_tmp_imag_ = nullptr;
+
+    // Precomputed eigenvalues in FP32 for MG kernels
+    float* lambda_f_ = nullptr;
 
     bool mg_initialized_ = false;
+
+    // CUDA Graph for FULL solve (pack → FFT → MG → IFFT → unpack)
+    // Captures entire Poisson solve including cuFFT calls (CUDA 11.1+)
+    cudaGraph_t solve_graph_ = nullptr;
+    cudaGraphExec_t solve_graph_exec_ = nullptr;
+    bool solve_graph_captured_ = false;
+
+    // Cached pointers for graph execution (set during capture)
+    double* cached_rhs_dev_ = nullptr;
+    double* cached_p_dev_ = nullptr;
 
     // Initialization
     void initialize_fft();
@@ -155,10 +169,16 @@ private:
     // 2D Multigrid V-cycle for Helmholtz (preferred method)
     void solve_helmholtz_2d_mg(int nu1 = 2, int nu2 = 1);
     void mg_smooth_2d(int level, int iterations, double omega);
+    void mg_smooth_2d_chebyshev(int level, int degree);
     void mg_residual_2d(int level);
     void mg_restrict_2d(int fine_level);
+    void mg_residual_restrict_fused_2d(int fine_level);  // Fused for reduced memory traffic
     void mg_prolongate_2d(int coarse_level);
     void mg_vcycle_2d(int level, int nu1, int nu2);
+
+    // CUDA Graph support for full solve
+    void capture_solve_graph(double* rhs_dev, double* p_dev);
+    void execute_solve_graph();
 #endif
 };
 

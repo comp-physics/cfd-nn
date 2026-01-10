@@ -15,7 +15,7 @@
 set -euo pipefail
 
 echo "=========================================="
-echo "GPU Profiling: SST Channel (200 steps)"
+echo "GPU Profiling: SST Channel (200 iterations)"
 echo "=========================================="
 echo "Started: $(date)"
 echo "Node: $(hostname)"

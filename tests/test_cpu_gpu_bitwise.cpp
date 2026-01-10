@@ -221,13 +221,13 @@ FieldData read_field_data(const std::string& filename) {
 // Test case: Channel flow with body force (same as original test)
 //=============================================================================
 
-void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int num_steps) {
+void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int num_iter) {
     mesh.init_uniform(NX, NY, NZ, 0.0, 4.0, 0.0, 2.0, 0.0, 1.0);
 
     config.nu = 0.01;
     config.dt = 0.0005;
     config.adaptive_dt = false;  // Fixed dt for reproducibility
-    config.max_iter = num_steps;
+    config.max_iter = num_iter;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;

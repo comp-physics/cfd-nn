@@ -52,7 +52,7 @@ static bool is_transport_model(TurbulenceModelType type) {
 
 struct SmokeResult { bool passed = false, skipped = false; std::string message; };
 
-static SmokeResult run_smoke_test(TurbulenceModelType type, int num_steps = 100) {
+static SmokeResult run_smoke_test(TurbulenceModelType type, int num_iter = 100) {
     SmokeResult result;
 
     std::string nn_path;
@@ -89,7 +89,7 @@ static SmokeResult run_smoke_test(TurbulenceModelType type, int num_steps = 100)
         solver.velocity().u(mesh.i_end(), mesh.j_begin()) = 0.0;  // Staggered
         solver.sync_to_gpu();
 
-        for (int step = 0; step < num_steps; ++step) solver.step();
+        for (int step = 0; step < num_iter; ++step) solver.step();
         solver.sync_from_gpu();
 
         const auto& vel = solver.velocity();

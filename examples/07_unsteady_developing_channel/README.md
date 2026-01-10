@@ -55,7 +55,7 @@ cd ../../build
 
 - **Time steps**: 5000
 - **Grid**: 64 × 128
-- **Snapshots**: 20 (every 250 steps)
+- **Snapshots**: 20 (every 250 iterations)
 - **Runtime**: ~2-5 minutes
 
 ### `laminar_fine.cfg` - High Resolution

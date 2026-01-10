@@ -345,12 +345,12 @@ int main(int argc, char** argv) {
         }
         residual = solver.step();
 
-        // Reset timers after warmup steps (excluded from reported timing)
-        if (config.warmup_steps > 0 && iter == config.warmup_steps) {
+        // Reset timers after warmup iterations (excluded from reported timing)
+        if (config.warmup_iter > 0 && iter == config.warmup_iter) {
             TimingStats::instance().reset();
             if (config.verbose) {
-                std::cout << "    [Warmup complete: " << config.warmup_steps
-                          << " steps, timers reset]\n";
+                std::cout << "    [Warmup complete: " << config.warmup_iter
+                          << " iterations, timers reset]\n";
             }
         }
 

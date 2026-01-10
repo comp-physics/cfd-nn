@@ -114,7 +114,7 @@ struct Config {
     bool write_fields = true;
 
     // Performance benchmarking
-    int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)
+    int warmup_iter = 0;            ///< Iterations to run before resetting timers (excluded from timing)
     
     // Poisson solver
     double poisson_tol = 1e-6;       ///< Legacy absolute tolerance (deprecated)

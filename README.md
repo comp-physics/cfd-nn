@@ -578,9 +578,9 @@ Available presets: `tbnn_channel_caseholdout`, `tbnn_phll_caseholdout`, `example
 
 | Parameter | CLI | Default | Description |
 |-----------|-----|---------|-------------|
-| `warmup_steps` | `--warmup_steps` | 0 | Steps to run before timing (excluded from benchmarks) |
+| `warmup_iter` | `--warmup_iter` | 0 | Iterations to run before timing (excluded from benchmarks) |
 | `turb_guard_enabled` | `--turb_guard_enabled` | true | Enable NaN/Inf guard checks |
-| `turb_guard_interval` | `--turb_guard_interval` | 5 | Check for NaN/Inf every N steps |
+| `turb_guard_interval` | `--turb_guard_interval` | 5 | Check for NaN/Inf every N iterations |
 
 ### Benchmark Mode
 

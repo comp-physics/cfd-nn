@@ -381,8 +381,8 @@ void Config::parse_args(int argc, char** argv) {
             }
         } else if ((val = get_value(i, arg, "--perturbation_amplitude")) != "") {
             perturbation_amplitude = std::stod(val);
-        } else if ((val = get_value(i, arg, "--warmup_steps")) != "") {
-            warmup_steps = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--warmup_iter")) != "") {
+            warmup_iter = std::stoi(val);
         } else if (is_flag(arg, "--benchmark")) {
             // Benchmark mode: optimized for timing 3D duct flow
             benchmark = true;
@@ -428,10 +428,10 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --nu V            Kinematic viscosity\n"
                       << "  --dp_dx D         Pressure gradient (driving force)\n"
                       << "  --dt T            Time step\n"
-                      << "  --max_iter N      Maximum outer iterations (time steps)\n"
+                      << "  --max_iter N      Maximum outer iterations\n"
                       << "  --tol T           Convergence tolerance for steady solve\n"
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
-                      << "  --poisson_max_iter N  Max Poisson iterations per solve (per time step)\n"
+                      << "  --poisson_max_iter N  Max Poisson iterations per solve\n"
                       << "  --poisson S       Poisson solver (auto, fft, fft2d, fft1d, hypre, mg)\n"
                       << "                      auto: FFT -> FFT2D -> FFT1D -> HYPRE -> MG\n"
                       << "                      fft: 2D FFT (3D only, requires periodic x AND z, uniform dx/dz)\n"
@@ -461,7 +461,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
-                      << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
+                      << "  --warmup_iter N   Warmup iterations excluded from timing (default 0)\n"
                       << "  --benchmark       Benchmark mode: 192^3 3D duct, upwind, 1 Poisson cycle,\n"
                       << "                      no output/turbulence (all overridable by other flags)\n"
                       << "  --verbose/--quiet Print progress\n"

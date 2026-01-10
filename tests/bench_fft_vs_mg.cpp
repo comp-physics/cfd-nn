@@ -15,7 +15,7 @@ using namespace nncfd;
 using namespace std::chrono;
 
 /// Run Taylor-Green for a few steps with specified solver and return avg Poisson time
-double benchmark_solver(int N, PoissonSolverType solver_type, int num_steps, bool fixed_cycles) {
+double benchmark_solver(int N, PoissonSolverType solver_type, int num_iter, bool fixed_cycles) {
     const double L = 2 * M_PI;
     const double Re = 100.0;
     const double V0 = 1.0;
@@ -76,13 +76,13 @@ double benchmark_solver(int N, PoissonSolverType solver_type, int num_steps, boo
 
     // Time the steps
     auto start = high_resolution_clock::now();
-    for (int s = 0; s < num_steps; ++s) {
+    for (int s = 0; s < num_iter; ++s) {
         solver.step();
     }
     auto end = high_resolution_clock::now();
 
     double total_ms = duration_cast<microseconds>(end - start).count() / 1000.0;
-    return total_ms / num_steps;
+    return total_ms / num_iter;
 }
 
 int main() {
@@ -90,7 +90,7 @@ int main() {
     std::cout << "Measuring full timestep cost (includes advection, diffusion, projection)\n";
     std::cout << "FFT: cuFFT (direct)  |  MG: fixed 8 V-cycles\n\n";
 
-    const int num_steps = 10;
+    const int num_iter = 10;
 
     std::cout << std::string(85, '-') << std::endl;
     std::cout << std::setw(6) << "Grid" << std::setw(10) << "Cells"
@@ -99,8 +99,8 @@ int main() {
     std::cout << std::string(85, '-') << std::endl;
 
     for (int N : {64, 96, 128, 160, 192}) {
-        double fft_time = benchmark_solver(N, PoissonSolverType::FFT, num_steps, false);
-        double mg_time = benchmark_solver(N, PoissonSolverType::MG, num_steps, true);
+        double fft_time = benchmark_solver(N, PoissonSolverType::FFT, num_iter, false);
+        double mg_time = benchmark_solver(N, PoissonSolverType::MG, num_iter, true);
 
         double cells_M = (N * N * N) / 1e6;
         double ratio = mg_time / fft_time;
