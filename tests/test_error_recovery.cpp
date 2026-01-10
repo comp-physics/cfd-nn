@@ -165,7 +165,7 @@ bool test_inf_detection_pressure() {
 // Turbulence Realizability Tests
 // ============================================================================
 
-static nncfd::test::TestSolver make_turb_solver(TurbulenceModelType model) {
+static nncfd::test::TestSolver make_turb_solver(TurbulenceModelType model, double nu_t_max = -1.0) {
     nncfd::test::TestSolver ts;
     ts.mesh.init_uniform(32, 64, 0.0, 2.0, -1.0, 1.0);
     ts.config.nu = 0.001;
@@ -173,6 +173,7 @@ static nncfd::test::TestSolver make_turb_solver(TurbulenceModelType model) {
     ts.config.turb_model = model;
     ts.config.turb_guard_enabled = true;
     ts.config.verbose = false;
+    if (nu_t_max > 0.0) ts.config.nu_t_max = nu_t_max;
     ts.solver = std::make_unique<RANSSolver>(ts.mesh, ts.config);
     ts.solver->set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
     auto turb = create_turbulence_model(model, "", "");
@@ -208,15 +209,15 @@ bool test_realizability_omega_positive() {
 }
 
 bool test_nu_t_bounded() {
-    auto ts = make_turb_solver(TurbulenceModelType::SSTKOmega);
-    ts.config.nu_t_max = 0.5;
+    const double nu_t_max = 0.5;
+    auto ts = make_turb_solver(TurbulenceModelType::SSTKOmega, nu_t_max);
 
     for (int i = 0; i < 50; ++i) ts->step();
     ts->sync_from_gpu();
 
     const ScalarField& nu_t = ts->nu_t();
     FOR_INTERIOR_2D(ts.mesh, i, j) {
-        if (nu_t(i, j) > ts.config.nu_t_max * 1.01) return false;
+        if (nu_t(i, j) > nu_t_max * 1.01) return false;
     }
     return true;
 }

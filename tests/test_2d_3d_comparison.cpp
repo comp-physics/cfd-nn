@@ -3,6 +3,7 @@
 
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
+#include <cassert>
 #include <cmath>
 #include <vector>
 
@@ -18,12 +19,14 @@ constexpr double NU = 0.01, DP_DX = -0.001;
 constexpr int MAX_ITER = 500;
 
 static double vec_l2_diff(const std::vector<double>& a, const std::vector<double>& b) {
+    assert(a.size() == b.size() && "vec_l2_diff: vectors must have same size");
     double sum = 0.0;
     for (size_t i = 0; i < a.size(); ++i) { double d = a[i] - b[i]; sum += d * d; }
     return std::sqrt(sum / a.size());
 }
 
 static double vec_linf_diff(const std::vector<double>& a, const std::vector<double>& b) {
+    assert(a.size() == b.size() && "vec_linf_diff: vectors must have same size");
     double m = 0.0;
     for (size_t i = 0; i < a.size(); ++i) m = std::max(m, std::abs(a[i] - b[i]));
     return m;
