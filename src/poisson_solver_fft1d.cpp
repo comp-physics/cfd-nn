@@ -442,6 +442,231 @@ __global__ void kernel_split_to_complex(
     c[tid].y = imag[tid];
 }
 
+// ============================================================================
+// 2D Multigrid Kernels for Helmholtz solve
+// All kernels process all modes in parallel (batched)
+// Layout: [m * N_yz + j * Nz + k] where m=mode, j=y-index, k=z-index
+// ============================================================================
+
+// 2D Helmholtz smoother (weighted Jacobi) - processes all modes
+// Solves: (∂²/∂y² + ∂²/∂z² - λ_m) p = f with Neumann BCs
+__global__ void kernel_mg2d_smooth(
+    const double* __restrict__ f_real,
+    const double* __restrict__ f_imag,
+    const double* __restrict__ p_real_in,
+    const double* __restrict__ p_imag_in,
+    double* __restrict__ p_real_out,
+    double* __restrict__ p_imag_out,
+    const double* __restrict__ lambda,
+    int N_modes, int Ny, int Nz,
+    double ay, double az,
+    double omega)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = N_modes * Ny * Nz;
+    if (tid >= total) return;
+
+    const int k = tid % Nz;
+    const int rem = tid / Nz;
+    const int j = rem % Ny;
+    const int m = rem / Ny;
+
+    const int N_yz = Ny * Nz;
+    const int idx = m * N_yz + j * Nz + k;
+
+    // Diagonal: D = 2*ay + 2*az + λ_m (with Neumann BC adjustments)
+    double D = 2.0 * ay + 2.0 * az + lambda[m];
+
+    // Neumann BC: reduce diagonal at boundaries
+    if (j == 0) D -= ay;
+    if (j == Ny - 1) D -= ay;
+    if (k == 0) D -= az;
+    if (k == Nz - 1) D -= az;
+
+    if (D < 1e-14) D = 1e-14;
+    double inv_D = 1.0 / D;
+
+    double p_r = p_real_in[idx];
+    double p_i = p_imag_in[idx];
+
+    // Neighbor contributions (Neumann: use same value at boundary)
+    double sum_r = 0.0, sum_i = 0.0;
+
+    // South (j-1)
+    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
+    sum_r += ay * p_real_in[idx_s];
+    sum_i += ay * p_imag_in[idx_s];
+
+    // North (j+1)
+    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
+    sum_r += ay * p_real_in[idx_n];
+    sum_i += ay * p_imag_in[idx_n];
+
+    // West (k-1)
+    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
+    sum_r += az * p_real_in[idx_w];
+    sum_i += az * p_imag_in[idx_w];
+
+    // East (k+1)
+    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+    sum_r += az * p_real_in[idx_e];
+    sum_i += az * p_imag_in[idx_e];
+
+    // Ap = D*p - sum_neighbors
+    double Ap_r = D * p_r - sum_r;
+    double Ap_i = D * p_i - sum_i;
+
+    // Residual = f - Ap, then Jacobi update
+    double res_r = f_real[idx] - Ap_r;
+    double res_i = f_imag[idx] - Ap_i;
+
+    p_real_out[idx] = p_r + omega * res_r * inv_D;
+    p_imag_out[idx] = p_i + omega * res_i * inv_D;
+}
+
+// Compute residual: r = f - Ap for 2D Helmholtz
+__global__ void kernel_mg2d_residual(
+    const double* __restrict__ f_real,
+    const double* __restrict__ f_imag,
+    const double* __restrict__ p_real,
+    const double* __restrict__ p_imag,
+    double* __restrict__ r_real,
+    double* __restrict__ r_imag,
+    const double* __restrict__ lambda,
+    int N_modes, int Ny, int Nz,
+    double ay, double az)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = N_modes * Ny * Nz;
+    if (tid >= total) return;
+
+    const int k = tid % Nz;
+    const int rem = tid / Nz;
+    const int j = rem % Ny;
+    const int m = rem / Ny;
+
+    const int N_yz = Ny * Nz;
+    const int idx = m * N_yz + j * Nz + k;
+
+    double D = 2.0 * ay + 2.0 * az + lambda[m];
+    if (j == 0) D -= ay;
+    if (j == Ny - 1) D -= ay;
+    if (k == 0) D -= az;
+    if (k == Nz - 1) D -= az;
+
+    double p_r = p_real[idx];
+    double p_i = p_imag[idx];
+
+    double sum_r = 0.0, sum_i = 0.0;
+    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
+    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
+    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
+    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+
+    sum_r = ay * (p_real[idx_s] + p_real[idx_n]) + az * (p_real[idx_w] + p_real[idx_e]);
+    sum_i = ay * (p_imag[idx_s] + p_imag[idx_n]) + az * (p_imag[idx_w] + p_imag[idx_e]);
+
+    double Ap_r = D * p_r - sum_r;
+    double Ap_i = D * p_i - sum_i;
+
+    r_real[idx] = f_real[idx] - Ap_r;
+    r_imag[idx] = f_imag[idx] - Ap_i;
+}
+
+// Full-weighting restriction: fine -> coarse (9-point stencil for 2D)
+__global__ void kernel_mg2d_restrict(
+    const double* __restrict__ r_fine_real,
+    const double* __restrict__ r_fine_imag,
+    double* __restrict__ f_coarse_real,
+    double* __restrict__ f_coarse_imag,
+    int N_modes, int Ny_f, int Nz_f, int Ny_c, int Nz_c)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_c = N_modes * Ny_c * Nz_c;
+    if (tid >= total_c) return;
+
+    const int k_c = tid % Nz_c;
+    const int rem = tid / Nz_c;
+    const int j_c = rem % Ny_c;
+    const int m = rem / Ny_c;
+
+    const int N_yz_f = Ny_f * Nz_f;
+    const int N_yz_c = Ny_c * Nz_c;
+
+    // Fine grid indices (2:1 coarsening)
+    int j_f = 2 * j_c;
+    int k_f = 2 * k_c;
+
+    // Clamp to fine grid bounds
+    int j_f0 = j_f;
+    int j_f1 = (j_f + 1 < Ny_f) ? j_f + 1 : j_f;
+    int k_f0 = k_f;
+    int k_f1 = (k_f + 1 < Nz_f) ? k_f + 1 : k_f;
+
+    // 4-point average (simple injection at boundaries, full-weighting interior)
+    int idx00 = m * N_yz_f + j_f0 * Nz_f + k_f0;
+    int idx01 = m * N_yz_f + j_f0 * Nz_f + k_f1;
+    int idx10 = m * N_yz_f + j_f1 * Nz_f + k_f0;
+    int idx11 = m * N_yz_f + j_f1 * Nz_f + k_f1;
+
+    int idx_c = m * N_yz_c + j_c * Nz_c + k_c;
+
+    f_coarse_real[idx_c] = 0.25 * (r_fine_real[idx00] + r_fine_real[idx01]
+                                  + r_fine_real[idx10] + r_fine_real[idx11]);
+    f_coarse_imag[idx_c] = 0.25 * (r_fine_imag[idx00] + r_fine_imag[idx01]
+                                  + r_fine_imag[idx10] + r_fine_imag[idx11]);
+}
+
+// Bilinear prolongation: coarse -> fine (add correction)
+__global__ void kernel_mg2d_prolongate(
+    const double* __restrict__ p_coarse_real,
+    const double* __restrict__ p_coarse_imag,
+    double* __restrict__ p_fine_real,
+    double* __restrict__ p_fine_imag,
+    int N_modes, int Ny_f, int Nz_f, int Ny_c, int Nz_c)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total_f = N_modes * Ny_f * Nz_f;
+    if (tid >= total_f) return;
+
+    const int k_f = tid % Nz_f;
+    const int rem = tid / Nz_f;
+    const int j_f = rem % Ny_f;
+    const int m = rem / Ny_f;
+
+    const int N_yz_f = Ny_f * Nz_f;
+    const int N_yz_c = Ny_c * Nz_c;
+
+    // Find coarse cell and interpolation weights
+    int j_c = j_f / 2;
+    int k_c = k_f / 2;
+    double wy = (j_f % 2 == 0) ? 0.75 : 0.25;  // Weight for j_c vs j_c+1
+    double wz = (k_f % 2 == 0) ? 0.75 : 0.25;
+
+    // Clamp coarse indices
+    int j_c1 = (j_c + 1 < Ny_c) ? j_c + 1 : j_c;
+    int k_c1 = (k_c + 1 < Nz_c) ? k_c + 1 : k_c;
+
+    int idx00 = m * N_yz_c + j_c * Nz_c + k_c;
+    int idx01 = m * N_yz_c + j_c * Nz_c + k_c1;
+    int idx10 = m * N_yz_c + j_c1 * Nz_c + k_c;
+    int idx11 = m * N_yz_c + j_c1 * Nz_c + k_c1;
+
+    // Bilinear interpolation
+    double corr_r = wy * wz * p_coarse_real[idx00]
+                  + wy * (1.0-wz) * p_coarse_real[idx01]
+                  + (1.0-wy) * wz * p_coarse_real[idx10]
+                  + (1.0-wy) * (1.0-wz) * p_coarse_real[idx11];
+    double corr_i = wy * wz * p_coarse_imag[idx00]
+                  + wy * (1.0-wz) * p_coarse_imag[idx01]
+                  + (1.0-wy) * wz * p_coarse_imag[idx10]
+                  + (1.0-wy) * (1.0-wz) * p_coarse_imag[idx11];
+
+    int idx_f = m * N_yz_f + j_f * Nz_f + k_f;
+    p_fine_real[idx_f] += corr_r;
+    p_fine_imag[idx_f] += corr_i;
+}
+
 #endif // USE_GPU_OFFLOAD
 
 // ============================================================================
@@ -645,6 +870,248 @@ void FFT1DPoissonSolver::cleanup() {
     if (lambda_) cudaFree(lambda_);
     if (partial_sums_) cudaFree(partial_sums_);
     if (sum_dev_) cudaFree(sum_dev_);
+    cleanup_mg();
+}
+
+void FFT1DPoissonSolver::cleanup_mg() {
+    if (!mg_initialized_) return;
+
+    for (int l = 0; l < mg_num_levels_; ++l) {
+        if (mg_p_real_[l]) cudaFree(mg_p_real_[l]);
+        if (mg_p_imag_[l]) cudaFree(mg_p_imag_[l]);
+        if (mg_r_real_[l]) cudaFree(mg_r_real_[l]);
+        if (mg_r_imag_[l]) cudaFree(mg_r_imag_[l]);
+        mg_p_real_[l] = mg_p_imag_[l] = mg_r_real_[l] = mg_r_imag_[l] = nullptr;
+    }
+    if (mg_tmp_real_) cudaFree(mg_tmp_real_);
+    if (mg_tmp_imag_) cudaFree(mg_tmp_imag_);
+    mg_tmp_real_ = mg_tmp_imag_ = nullptr;
+    mg_initialized_ = false;
+}
+
+void FFT1DPoissonSolver::initialize_mg_levels() {
+    if (mg_initialized_) return;
+
+    // Determine grid sizes for 2D MG (y-z plane for x-periodic)
+    int Ny_base = (periodic_dir_ == 0) ? Ny_ : Nx_;
+    int Nz_base = (periodic_dir_ == 0) ? Nz_ : Ny_;
+
+    // Build hierarchy: coarsen by 2 until grid is small enough
+    mg_num_levels_ = 0;
+    int Ny = Ny_base, Nz = Nz_base;
+    while (Ny >= 4 && Nz >= 4 && mg_num_levels_ < MG_MAX_LEVELS) {
+        mg_Ny_[mg_num_levels_] = Ny;
+        mg_Nz_[mg_num_levels_] = Nz;
+        mg_N_yz_[mg_num_levels_] = Ny * Nz;
+        mg_num_levels_++;
+        Ny /= 2;
+        Nz /= 2;
+    }
+
+    if (mg_num_levels_ < 2) {
+        std::cerr << "[FFT1D-MG] Warning: grid too small for MG, using single level\n";
+        mg_num_levels_ = 1;
+    }
+
+    // Allocate arrays for each level
+    cudaError_t err;
+    for (int l = 0; l < mg_num_levels_; ++l) {
+        size_t size = static_cast<size_t>(N_modes_) * mg_N_yz_[l] * sizeof(double);
+        err = cudaMalloc(&mg_p_real_[l], size);
+        err = cudaMalloc(&mg_p_imag_[l], size);
+        err = cudaMalloc(&mg_r_real_[l], size);
+        err = cudaMalloc(&mg_r_imag_[l], size);
+        if (err != cudaSuccess) {
+            std::cerr << "[FFT1D-MG] cudaMalloc failed for level " << l << "\n";
+            cleanup_mg();
+            return;
+        }
+    }
+
+    // Temp buffer for ping-pong smoothing (size of finest level)
+    size_t fine_size = static_cast<size_t>(N_modes_) * mg_N_yz_[0] * sizeof(double);
+    cudaMalloc(&mg_tmp_real_, fine_size);
+    cudaMalloc(&mg_tmp_imag_, fine_size);
+
+    mg_initialized_ = true;
+    std::cout << "[FFT1D-MG] Initialized " << mg_num_levels_ << " levels: ";
+    for (int l = 0; l < mg_num_levels_; ++l) {
+        std::cout << mg_Ny_[l] << "x" << mg_Nz_[l];
+        if (l < mg_num_levels_ - 1) std::cout << " -> ";
+    }
+    std::cout << "\n";
+}
+
+void FFT1DPoissonSolver::mg_smooth_2d(int level, int iterations, double omega) {
+    const int Ny = mg_Ny_[level];
+    const int Nz = mg_Nz_[level];
+    const int total = N_modes_ * Ny * Nz;
+    const int block = 256;
+    const int grid = (total + block - 1) / block;
+
+    double ay = (periodic_dir_ == 0) ? 1.0 / (dy_ * dy_) : 1.0 / (dx_ * dx_);
+    double az = (periodic_dir_ == 0) ? 1.0 / (dz_ * dz_) : 1.0 / (dy_ * dy_);
+
+    // Scale coefficients for coarser grids (spacing doubles each level)
+    double scale = 1.0 / (1 << level);  // 1, 0.5, 0.25, ...
+    scale = scale * scale;  // spacing squared
+    ay *= scale;
+    az *= scale;
+
+    double* p_in = mg_p_real_[level];
+    double* pi_in = mg_p_imag_[level];
+    double* p_out = mg_tmp_real_;
+    double* pi_out = mg_tmp_imag_;
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        kernel_mg2d_smooth<<<grid, block, 0, stream_>>>(
+            mg_r_real_[level], mg_r_imag_[level],  // RHS (f)
+            p_in, pi_in,
+            p_out, pi_out,
+            lambda_, N_modes_, Ny, Nz, ay, az, omega
+        );
+        // Swap pointers
+        std::swap(p_in, p_out);
+        std::swap(pi_in, pi_out);
+    }
+
+    // If odd iterations, result is in tmp, copy back
+    if (iterations % 2 == 1) {
+        cudaMemcpyAsync(mg_p_real_[level], mg_tmp_real_,
+                        N_modes_ * Ny * Nz * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+        cudaMemcpyAsync(mg_p_imag_[level], mg_tmp_imag_,
+                        N_modes_ * Ny * Nz * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+    }
+}
+
+void FFT1DPoissonSolver::mg_residual_2d(int level) {
+    const int Ny = mg_Ny_[level];
+    const int Nz = mg_Nz_[level];
+    const int total = N_modes_ * Ny * Nz;
+    const int block = 256;
+    const int grid = (total + block - 1) / block;
+
+    double ay = (periodic_dir_ == 0) ? 1.0 / (dy_ * dy_) : 1.0 / (dx_ * dx_);
+    double az = (periodic_dir_ == 0) ? 1.0 / (dz_ * dz_) : 1.0 / (dy_ * dy_);
+    double scale = 1.0 / (1 << level);
+    scale = scale * scale;
+    ay *= scale;
+    az *= scale;
+
+    // Use tmp as scratch for residual output, then copy to r
+    kernel_mg2d_residual<<<grid, block, 0, stream_>>>(
+        mg_r_real_[level], mg_r_imag_[level],  // f (RHS)
+        mg_p_real_[level], mg_p_imag_[level],  // p (solution)
+        mg_tmp_real_, mg_tmp_imag_,            // r output (temp)
+        lambda_, N_modes_, Ny, Nz, ay, az
+    );
+
+    // Copy residual to r array (will be restricted to next level)
+    cudaMemcpyAsync(mg_r_real_[level], mg_tmp_real_,
+                    total * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+    cudaMemcpyAsync(mg_r_imag_[level], mg_tmp_imag_,
+                    total * sizeof(double), cudaMemcpyDeviceToDevice, stream_);
+}
+
+void FFT1DPoissonSolver::mg_restrict_2d(int fine_level) {
+    const int coarse_level = fine_level + 1;
+    const int Ny_f = mg_Ny_[fine_level];
+    const int Nz_f = mg_Nz_[fine_level];
+    const int Ny_c = mg_Ny_[coarse_level];
+    const int Nz_c = mg_Nz_[coarse_level];
+
+    const int total_c = N_modes_ * Ny_c * Nz_c;
+    const int block = 256;
+    const int grid = (total_c + block - 1) / block;
+
+    kernel_mg2d_restrict<<<grid, block, 0, stream_>>>(
+        mg_r_real_[fine_level], mg_r_imag_[fine_level],
+        mg_r_real_[coarse_level], mg_r_imag_[coarse_level],
+        N_modes_, Ny_f, Nz_f, Ny_c, Nz_c
+    );
+
+    // Zero coarse solution for V-cycle
+    cudaMemsetAsync(mg_p_real_[coarse_level], 0,
+                    N_modes_ * Ny_c * Nz_c * sizeof(double), stream_);
+    cudaMemsetAsync(mg_p_imag_[coarse_level], 0,
+                    N_modes_ * Ny_c * Nz_c * sizeof(double), stream_);
+}
+
+void FFT1DPoissonSolver::mg_prolongate_2d(int coarse_level) {
+    const int fine_level = coarse_level - 1;
+    const int Ny_f = mg_Ny_[fine_level];
+    const int Nz_f = mg_Nz_[fine_level];
+    const int Ny_c = mg_Ny_[coarse_level];
+    const int Nz_c = mg_Nz_[coarse_level];
+
+    const int total_f = N_modes_ * Ny_f * Nz_f;
+    const int block = 256;
+    const int grid = (total_f + block - 1) / block;
+
+    kernel_mg2d_prolongate<<<grid, block, 0, stream_>>>(
+        mg_p_real_[coarse_level], mg_p_imag_[coarse_level],
+        mg_p_real_[fine_level], mg_p_imag_[fine_level],
+        N_modes_, Ny_f, Nz_f, Ny_c, Nz_c
+    );
+}
+
+void FFT1DPoissonSolver::mg_vcycle_2d(int level, int nu1, int nu2) {
+    const double omega = 0.8;
+
+    if (level == mg_num_levels_ - 1) {
+        // Coarsest level: many smoothing iterations
+        mg_smooth_2d(level, 20, omega);
+        return;
+    }
+
+    // Pre-smoothing
+    mg_smooth_2d(level, nu1, omega);
+
+    // Compute residual
+    mg_residual_2d(level);
+
+    // Restrict to coarse grid
+    mg_restrict_2d(level);
+
+    // Recurse
+    mg_vcycle_2d(level + 1, nu1, nu2);
+
+    // Prolongate correction
+    mg_prolongate_2d(level + 1);
+
+    // Post-smoothing
+    mg_smooth_2d(level, nu2, omega);
+}
+
+void FFT1DPoissonSolver::solve_helmholtz_2d_mg(int nu1, int nu2) {
+    // Initialize MG levels if needed
+    if (!mg_initialized_) {
+        initialize_mg_levels();
+    }
+
+    const int total = N_modes_ * mg_N_yz_[0];
+    const int block = 256;
+    const int grid = (total + block - 1) / block;
+
+    // Convert RHS from complex to split real/imag (negated)
+    kernel_complex_to_split_negate<<<grid, block, 0, stream_>>>(
+        rhs_hat_, mg_r_real_[0], mg_r_imag_[0], total
+    );
+
+    // Zero initial solution
+    cudaMemsetAsync(mg_p_real_[0], 0, total * sizeof(double), stream_);
+    cudaMemsetAsync(mg_p_imag_[0], 0, total * sizeof(double), stream_);
+
+    // Single V-cycle
+    mg_vcycle_2d(0, nu1, nu2);
+
+    // Pin m=0, (j=0, k=0) to zero for gauge
+    kernel_pin_zero_mode<<<1, 1, 0, stream_>>>(mg_p_real_[0], mg_p_imag_[0], mg_N_yz_[0]);
+
+    // Convert solution back to complex
+    kernel_split_to_complex<<<grid, block, 0, stream_>>>(
+        mg_p_real_[0], mg_p_imag_[0], p_hat_, total
+    );
 }
 
 void FFT1DPoissonSolver::solve_helmholtz_2d(int iterations, double omega) {
@@ -854,16 +1321,12 @@ int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
 
     if (profile_enabled) cudaEventRecord(ev_fft_fwd, stream_);
 
-    // 5. Solve 2D Helmholtz for each mode
-    // Tuned: 6 iterations is optimal (0.687 ms vs MG 0.768 ms)
-    // Lower values have diminishing returns due to kernel launch overhead
-    int iterations = 6;
-    double omega = 0.8;   // Damped Jacobi
-
-    solve_helmholtz_2d(iterations, omega);
+    // 5. Solve 2D Helmholtz for each mode using 2D Multigrid V-cycle
+    // Much better convergence than Jacobi iterations
+    solve_helmholtz_2d_mg(2, 1);  // nu1=2 pre-smooth, nu2=1 post-smooth
     err = cudaGetLastError();
     if (err != cudaSuccess) {
-        std::cerr << "[FFT1D] solve_helmholtz_2d failed: " << cudaGetErrorString(err) << "\n";
+        std::cerr << "[FFT1D] solve_helmholtz_2d_mg failed: " << cudaGetErrorString(err) << "\n";
         return -1;
     }
 
@@ -935,8 +1398,8 @@ int FFT1DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
         }
     }
 
-    // Return total iterations across all modes (approximate)
-    return iterations * N_modes_;
+    // Return 1 V-cycle per mode
+    return N_modes_;
 }
 
 #endif // USE_GPU_OFFLOAD

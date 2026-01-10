@@ -110,7 +110,7 @@ private:
     // Precomputed eigenvalues
     double* lambda_ = nullptr;               // Discrete eigenvalues [N_modes]
 
-    // 2D Helmholtz solver workspace (for Jacobi/Chebyshev)
+    // 2D Helmholtz solver workspace (for Jacobi/Chebyshev - legacy)
     double* work_real_ = nullptr;            // Real part workspace [N_modes * N_yz]
     double* work_imag_ = nullptr;            // Imag part workspace [N_modes * N_yz]
 
@@ -119,14 +119,46 @@ private:
     double* sum_dev_ = nullptr;
     int num_blocks_ = 0;
 
+    // ========================================================================
+    // 2D Multigrid for Helmholtz solve (replaces Jacobi iterations)
+    // ========================================================================
+    static constexpr int MG_MAX_LEVELS = 8;
+    int mg_num_levels_ = 0;
+    int mg_Ny_[MG_MAX_LEVELS];              // Grid size in y at each level
+    int mg_Nz_[MG_MAX_LEVELS];              // Grid size in z at each level
+    int mg_N_yz_[MG_MAX_LEVELS];            // Ny * Nz at each level
+
+    // Per-level device arrays: [N_modes * mg_N_yz_[level]]
+    // p = solution, r = residual/RHS
+    double* mg_p_real_[MG_MAX_LEVELS] = {};
+    double* mg_p_imag_[MG_MAX_LEVELS] = {};
+    double* mg_r_real_[MG_MAX_LEVELS] = {};
+    double* mg_r_imag_[MG_MAX_LEVELS] = {};
+
+    // Temporary buffer for ping-pong smoothing
+    double* mg_tmp_real_ = nullptr;
+    double* mg_tmp_imag_ = nullptr;
+
+    bool mg_initialized_ = false;
+
     // Initialization
     void initialize_fft();
     void initialize_eigenvalues();
+    void initialize_mg_levels();
     void cleanup();
+    void cleanup_mg();
 
     // 2D Helmholtz solve for all modes
     // Uses weighted Jacobi iteration (baseline) or Chebyshev (optimized)
     void solve_helmholtz_2d(int iterations, double omega);
+
+    // 2D Multigrid V-cycle for Helmholtz (preferred method)
+    void solve_helmholtz_2d_mg(int nu1 = 2, int nu2 = 1);
+    void mg_smooth_2d(int level, int iterations, double omega);
+    void mg_residual_2d(int level);
+    void mg_restrict_2d(int fine_level);
+    void mg_prolongate_2d(int coarse_level);
+    void mg_vcycle_2d(int level, int nu1, int nu2);
 #endif
 };
 
