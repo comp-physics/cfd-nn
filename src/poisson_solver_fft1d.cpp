@@ -489,28 +489,36 @@ __global__ void kernel_mg2d_smooth(
     double p_r = p_real_in[idx];
     double p_i = p_imag_in[idx];
 
-    // Neighbor contributions (Neumann: use same value at boundary)
+    // Neighbor contributions (only add if neighbor exists - Neumann BC)
     double sum_r = 0.0, sum_i = 0.0;
 
     // South (j-1)
-    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
-    sum_r += ay * p_real_in[idx_s];
-    sum_i += ay * p_imag_in[idx_s];
+    if (j > 0) {
+        int idx_s = m * N_yz + (j-1) * Nz + k;
+        sum_r += ay * p_real_in[idx_s];
+        sum_i += ay * p_imag_in[idx_s];
+    }
 
     // North (j+1)
-    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
-    sum_r += ay * p_real_in[idx_n];
-    sum_i += ay * p_imag_in[idx_n];
+    if (j < Ny - 1) {
+        int idx_n = m * N_yz + (j+1) * Nz + k;
+        sum_r += ay * p_real_in[idx_n];
+        sum_i += ay * p_imag_in[idx_n];
+    }
 
     // West (k-1)
-    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
-    sum_r += az * p_real_in[idx_w];
-    sum_i += az * p_imag_in[idx_w];
+    if (k > 0) {
+        int idx_w = m * N_yz + j * Nz + (k-1);
+        sum_r += az * p_real_in[idx_w];
+        sum_i += az * p_imag_in[idx_w];
+    }
 
     // East (k+1)
-    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
-    sum_r += az * p_real_in[idx_e];
-    sum_i += az * p_imag_in[idx_e];
+    if (k < Nz - 1) {
+        int idx_e = m * N_yz + j * Nz + (k+1);
+        sum_r += az * p_real_in[idx_e];
+        sum_i += az * p_imag_in[idx_e];
+    }
 
     // Ap = D*p - sum_neighbors
     double Ap_r = D * p_r - sum_r;
@@ -557,14 +565,29 @@ __global__ void kernel_mg2d_residual(
     double p_r = p_real[idx];
     double p_i = p_imag[idx];
 
+    // Neighbor contributions (only add if neighbor exists - Neumann BC)
     double sum_r = 0.0, sum_i = 0.0;
-    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
-    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
-    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
-    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
 
-    sum_r = ay * (p_real[idx_s] + p_real[idx_n]) + az * (p_real[idx_w] + p_real[idx_e]);
-    sum_i = ay * (p_imag[idx_s] + p_imag[idx_n]) + az * (p_imag[idx_w] + p_imag[idx_e]);
+    if (j > 0) {
+        int idx_s = m * N_yz + (j-1) * Nz + k;
+        sum_r += ay * p_real[idx_s];
+        sum_i += ay * p_imag[idx_s];
+    }
+    if (j < Ny - 1) {
+        int idx_n = m * N_yz + (j+1) * Nz + k;
+        sum_r += ay * p_real[idx_n];
+        sum_i += ay * p_imag[idx_n];
+    }
+    if (k > 0) {
+        int idx_w = m * N_yz + j * Nz + (k-1);
+        sum_r += az * p_real[idx_w];
+        sum_i += az * p_imag[idx_w];
+    }
+    if (k < Nz - 1) {
+        int idx_e = m * N_yz + j * Nz + (k+1);
+        sum_r += az * p_real[idx_e];
+        sum_i += az * p_imag[idx_e];
+    }
 
     double Ap_r = D * p_r - sum_r;
     double Ap_i = D * p_i - sum_i;
@@ -736,16 +759,33 @@ __global__ void kernel_mg2d_smooth_f32(
     float p_r = p_real_in[idx];
     float p_i = p_imag_in[idx];
 
-    // Neighbor contributions
-    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
-    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
-    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
-    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+    // Neighbor contributions (only add if neighbor exists - Neumann BC handling)
+    float sum_r = 0.0f, sum_i = 0.0f;
 
-    float sum_r = ay * (p_real_in[idx_s] + p_real_in[idx_n])
-                + az * (p_real_in[idx_w] + p_real_in[idx_e]);
-    float sum_i = ay * (p_imag_in[idx_s] + p_imag_in[idx_n])
-                + az * (p_imag_in[idx_w] + p_imag_in[idx_e]);
+    // South (j-1)
+    if (j > 0) {
+        int idx_s = m * N_yz + (j-1) * Nz + k;
+        sum_r += ay * p_real_in[idx_s];
+        sum_i += ay * p_imag_in[idx_s];
+    }
+    // North (j+1)
+    if (j < Ny - 1) {
+        int idx_n = m * N_yz + (j+1) * Nz + k;
+        sum_r += ay * p_real_in[idx_n];
+        sum_i += ay * p_imag_in[idx_n];
+    }
+    // West (k-1)
+    if (k > 0) {
+        int idx_w = m * N_yz + j * Nz + (k-1);
+        sum_r += az * p_real_in[idx_w];
+        sum_i += az * p_imag_in[idx_w];
+    }
+    // East (k+1)
+    if (k < Nz - 1) {
+        int idx_e = m * N_yz + j * Nz + (k+1);
+        sum_r += az * p_real_in[idx_e];
+        sum_i += az * p_imag_in[idx_e];
+    }
 
     float Ap_r = D * p_r - sum_r;
     float Ap_i = D * p_i - sum_i;
@@ -790,13 +830,29 @@ __global__ void kernel_mg2d_residual_f32(
     float p_r = p_real[idx];
     float p_i = p_imag[idx];
 
-    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
-    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
-    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
-    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+    // Neighbor contributions (only add if neighbor exists - Neumann BC handling)
+    float sum_r = 0.0f, sum_i = 0.0f;
 
-    float sum_r = ay * (p_real[idx_s] + p_real[idx_n]) + az * (p_real[idx_w] + p_real[idx_e]);
-    float sum_i = ay * (p_imag[idx_s] + p_imag[idx_n]) + az * (p_imag[idx_w] + p_imag[idx_e]);
+    if (j > 0) {
+        int idx_s = m * N_yz + (j-1) * Nz + k;
+        sum_r += ay * p_real[idx_s];
+        sum_i += ay * p_imag[idx_s];
+    }
+    if (j < Ny - 1) {
+        int idx_n = m * N_yz + (j+1) * Nz + k;
+        sum_r += ay * p_real[idx_n];
+        sum_i += ay * p_imag[idx_n];
+    }
+    if (k > 0) {
+        int idx_w = m * N_yz + j * Nz + (k-1);
+        sum_r += az * p_real[idx_w];
+        sum_i += az * p_imag[idx_w];
+    }
+    if (k < Nz - 1) {
+        int idx_e = m * N_yz + j * Nz + (k+1);
+        sum_r += az * p_real[idx_e];
+        sum_i += az * p_imag[idx_e];
+    }
 
     r_real[idx] = f_real[idx] - (D * p_r - sum_r);
     r_imag[idx] = f_imag[idx] - (D * p_i - sum_i);
@@ -922,14 +978,29 @@ __device__ __forceinline__ void compute_residual_at_point(
     float p_r = p_real[idx];
     float p_i = p_imag[idx];
 
-    // Neighbor indices with Neumann BC (mirror at boundary)
-    int idx_s = (j > 0) ? (m * N_yz + (j-1) * Nz + k) : idx;
-    int idx_n = (j < Ny - 1) ? (m * N_yz + (j+1) * Nz + k) : idx;
-    int idx_w = (k > 0) ? (m * N_yz + j * Nz + (k-1)) : idx;
-    int idx_e = (k < Nz - 1) ? (m * N_yz + j * Nz + (k+1)) : idx;
+    // Neighbor contributions (only add if neighbor exists - Neumann BC)
+    float sum_r = 0.0f, sum_i = 0.0f;
 
-    float sum_r = ay * (p_real[idx_s] + p_real[idx_n]) + az * (p_real[idx_w] + p_real[idx_e]);
-    float sum_i = ay * (p_imag[idx_s] + p_imag[idx_n]) + az * (p_imag[idx_w] + p_imag[idx_e]);
+    if (j > 0) {
+        int idx_s = m * N_yz + (j-1) * Nz + k;
+        sum_r += ay * p_real[idx_s];
+        sum_i += ay * p_imag[idx_s];
+    }
+    if (j < Ny - 1) {
+        int idx_n = m * N_yz + (j+1) * Nz + k;
+        sum_r += ay * p_real[idx_n];
+        sum_i += ay * p_imag[idx_n];
+    }
+    if (k > 0) {
+        int idx_w = m * N_yz + j * Nz + (k-1);
+        sum_r += az * p_real[idx_w];
+        sum_i += az * p_imag[idx_w];
+    }
+    if (k < Nz - 1) {
+        int idx_e = m * N_yz + j * Nz + (k+1);
+        sum_r += az * p_real[idx_e];
+        sum_i += az * p_imag[idx_e];
+    }
 
     res_r = f_real[idx] - (D * p_r - sum_r);
     res_i = f_imag[idx] - (D * p_i - sum_i);
