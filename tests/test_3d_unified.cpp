@@ -394,7 +394,7 @@ void test_poisson_3d_all_periodic() {
                   PoissonBC::Periodic, PoissonBC::Periodic);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-6; cfg.max_steps = 5000; cfg.omega = 1.5;
+    cfg.tol = 1e-6; cfg.max_vcycles = 5000; cfg.omega = 1.5;
     solver.solve(rhs, p, cfg);
 
     record("3D Poisson all periodic BCs", solver.residual() < 1e-4);
@@ -411,7 +411,7 @@ void test_poisson_3d_dirichlet() {
     solver.set_dirichlet_value(0.0);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-6; cfg.max_steps = 10000; cfg.omega = 1.5;
+    cfg.tol = 1e-6; cfg.max_vcycles = 10000; cfg.omega = 1.5;
     solver.solve(rhs, p, cfg);
 
     record("3D Poisson all Dirichlet BCs", solver.residual() < 1e-4);

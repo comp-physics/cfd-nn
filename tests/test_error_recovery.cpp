@@ -35,7 +35,7 @@ bool test_poisson_limited_iterations() {
     PoissonConfig cfg{1e-12, 1, 1.5};  // Very tight tol, 1 iteration
     int iters = solver.solve(rhs, p, cfg);
 
-    if (iters > cfg.max_steps + 1) return false;
+    if (iters > cfg.max_vcycles + 1) return false;
     if (solver.residual() <= 1e-6) return false;
 
     FOR_INTERIOR_2D(mesh, i, j) {
