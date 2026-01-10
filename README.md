@@ -45,7 +45,7 @@ make -j4
 
 ```bash
 # Laminar channel flow (Poiseuille, analytical validation)
-./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_iter 10000
+./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_steps 10000
 
 # Turbulent channel with SST k-omega
 ./channel --Nx 64 --Ny 128 --Re 5000 --model sst --adaptive_dt
@@ -54,7 +54,7 @@ make -j4
 ./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout --adaptive_dt
 
 # 3D Taylor-Green vortex
-./taylor_green_3d --Nx 64 --Ny 64 --Nz 64 --Re 100 --max_iter 1000
+./taylor_green_3d --Nx 64 --Ny 64 --Nz 64 --Re 100 --max_steps 1000
 ```
 
 ---
@@ -463,7 +463,7 @@ The solver uses the relationship: $\text{Re} = \frac{-dp/dx \cdot \delta^3}{3\nu
 | `dt` | `--dt` | 0.001 | Time step size (when not using adaptive) |
 | `adaptive_dt` | `--adaptive_dt` | true | Enable CFL-based adaptive time stepping |
 | `CFL_max` | `--CFL` | 0.5 | Maximum CFL number for adaptive dt |
-| `max_iter` | `--max_iter` | 10000 | Maximum iterations (steady) or time steps (unsteady) |
+| `max_steps` | `--max_steps` | 10000 | Maximum iterations (steady) or time steps (unsteady) |
 | `T_final` | - | -1.0 | Final simulation time (-1 = use max_iter instead) |
 | `tol` | `--tol` | 1e-6 | Convergence tolerance for steady-state |
 
@@ -523,7 +523,7 @@ Available presets: `tbnn_channel_caseholdout`, `tbnn_phll_caseholdout`, `example
 |-----------|-----|---------|-------------|
 | `poisson_solver` | `--poisson` | `auto` | Solver selection (see table below) |
 | `poisson_tol` | `--poisson_tol` | 1e-6 | Legacy absolute tolerance (deprecated) |
-| `poisson_max_iter` | `--poisson_max_iter` | 20 | Maximum V-cycles per solve |
+| `poisson_max_vcycles` | `--poisson_max_vcycles` | 20 | Maximum V-cycles per solve |
 | `poisson_omega` | - | 1.8 | SOR relaxation parameter (1 < ω < 2) |
 | `poisson_abs_tol_floor` | `--poisson_abs_tol_floor` | 1e-8 | Absolute tolerance floor |
 
@@ -594,7 +594,7 @@ The `--benchmark` flag configures the solver for performance timing with minimal
 ./duct --benchmark --Nx 256 --Ny 256 --Nz 256
 
 # Override iteration count
-./duct --benchmark --max_iter 100
+./duct --benchmark --max_steps 100
 ```
 
 **Benchmark mode sets these defaults** (all can be overridden by subsequent flags):
@@ -610,7 +610,7 @@ The `--benchmark` flag configures the solver for performance timing with minimal
 | `convective_scheme` | upwind | First-order upwind |
 | `poisson_fixed_cycles` | 1 | Single V-cycle per time step |
 | `turb_model` | none | No turbulence model |
-| `max_iter` | 20 | Default iteration count |
+| `max_steps` | 20 | Default iteration count |
 | `adaptive_dt` | false | Fixed time step (dt=0.001) |
 
 ### Config File Format

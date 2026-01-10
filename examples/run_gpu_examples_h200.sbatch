@@ -57,9 +57,9 @@ mkdir -p "${SST_OUT_DIR}"
 time stdbuf -oL -eL ./channel \
   --config "${SST_CASE_DIR}/channel.cfg" \
   --output "${SST_OUT_DIR}/" \
-  --max_iter 20000 \
+  --max_steps 20000 \
   --tol 1e-6 \
-  --poisson_max_iter 10 \
+  --poisson_max_vcycles 10 \
   --verbose
 
 echo ""
@@ -81,8 +81,8 @@ mkdir -p "${CHAN_EX}/output_gpu/retau180_unsteady_laminar"
 time stdbuf -oL -eL ./channel \
   --config "${CHAN_EX}/cases/retau180_unsteady_laminar.cfg" \
   --output "${CHAN_EX}/output_gpu/retau180_unsteady_laminar/" \
-  --max_iter 2000 \
-  --poisson_max_iter 10 \
+  --max_steps 2000 \
+  --poisson_max_vcycles 10 \
   --no_postprocess
 
 echo ""
@@ -96,9 +96,9 @@ mkdir -p "${HILLS_EX}/output_gpu/hills_sst"
 time stdbuf -oL -eL ./periodic_hills \
   --config "${HILLS_EX}/cases/hills_sst.cfg" \
   --output "${HILLS_EX}/output_gpu/hills_sst/" \
-  --max_iter 20000 \
+  --max_steps 20000 \
   --tol 1e-5 \
-  --poisson_max_iter 10 \
+  --poisson_max_vcycles 10 \
   --verbose
 
 echo ""

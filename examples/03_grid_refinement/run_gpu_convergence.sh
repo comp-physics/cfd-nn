@@ -68,7 +68,7 @@ for grid_config in "${grids[@]}"; do
     
     ./channel --config "$EXAMPLE_DIR/$cfg" \
               --output "$OUTPUT_DIR/$grid/" \
-              --max_iter ${grid_iters[$grid]}
+              --max_steps ${grid_iters[$grid]}
     
     END_TIME=$(date +%s)
     ELAPSED=$((END_TIME - START_TIME))
