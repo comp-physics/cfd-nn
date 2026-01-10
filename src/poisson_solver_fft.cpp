@@ -607,7 +607,7 @@ double FFTPoissonSolver::pack_rhs_with_sum(double* rhs_ptr) {
     // This fuses pack + sum into one kernel pass for better performance
     double sum = 0.0;
     #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum) \
-        map(present, alloc: rhs_ptr[0:total_size]) is_device_ptr(packed)
+        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
     for (int i = 0; i < Nx; ++i) {
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
@@ -653,7 +653,7 @@ void FFTPoissonSolver::pack_rhs(double* rhs_ptr) {
     // This matches the cuFFT interleaved input layout: rhs_packed[(i*Nz + k)*Ny + j]
     // with j varying fastest, enabling direct cuSPARSE compatibility after FFT.
     #pragma omp target teams distribute parallel for collapse(3) \
-        map(present, alloc: rhs_ptr[0:total_size]) is_device_ptr(packed)
+        map(present: rhs_ptr[0:total_size]) is_device_ptr(packed)
     for (int i = 0; i < Nx; ++i) {
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
@@ -683,7 +683,7 @@ void FFTPoissonSolver::unpack_solution(double* p_ptr) {
     // OPTIMIZED LAYOUT: Unpack from [(i*Nz+k)][j] back to [k][j][i] with ghosts
     // This matches the cuFFT interleaved output: p_packed[(i*Nz + k)*Ny + j]
     #pragma omp target teams distribute parallel for collapse(3) \
-        map(present, alloc: p_ptr[0:total_size]) is_device_ptr(packed)
+        map(present: p_ptr[0:total_size]) is_device_ptr(packed)
     for (int i = 0; i < Nx; ++i) {
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
@@ -713,7 +713,7 @@ void FFTPoissonSolver::unpack_and_apply_bc(double* p_ptr) {
     // FUSED: Unpack interior + fill all ghost cells in one pass
     // This eliminates 3 separate BC kernels and improves memory access
     #pragma omp target teams distribute parallel for collapse(3) \
-        map(present, alloc: p_ptr[0:total_size]) is_device_ptr(packed)
+        map(present: p_ptr[0:total_size]) is_device_ptr(packed)
     for (int i = 0; i < Nx; ++i) {
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
@@ -774,7 +774,7 @@ void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
     const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
 
     // X boundaries (periodic)
-    #pragma omp target teams distribute parallel for collapse(2) map(present, alloc: p_ptr[0:total_size])
+    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
     for (int k = 0; k < Nz; ++k) {
         for (int j = 0; j < Ny; ++j) {
             const int kk = k + Ng;
@@ -789,7 +789,7 @@ void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
     }
 
     // Y boundaries (Neumann)
-    #pragma omp target teams distribute parallel for collapse(2) map(present, alloc: p_ptr[0:total_size])
+    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
     for (int k = 0; k < Nz; ++k) {
         for (int i = 0; i < Nx + 2 * Ng; ++i) {
             const int kk = k + Ng;
@@ -803,7 +803,7 @@ void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
     }
 
     // Z boundaries (periodic)
-    #pragma omp target teams distribute parallel for collapse(2) map(present, alloc: p_ptr[0:total_size])
+    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
     for (int j = 0; j < Ny + 2 * Ng; ++j) {
         for (int i = 0; i < Nx + 2 * Ng; ++i) {
             // z_lo ghost
