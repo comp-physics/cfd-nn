@@ -448,9 +448,15 @@ if(BUILD_TESTS)
     # =========================================================================
     # GPU-specific tests - run with: ctest -L gpu
     # =========================================================================
+    # test_cpu_gpu_bitwise must be built unconditionally (used by both CPU and GPU CI builds)
+    # but only registered as a test when GPU offload is enabled
+    add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
+    target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
+
     if(USE_GPU_OFFLOAD)
         add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS gpu)
-        add_nncfd_test(test_cpu_gpu_bitwise TEST_NAME_SUFFIX CPUGPUBitwiseTest LABELS gpu)
+        add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
+        set_tests_properties(CPUGPUBitwiseTest PROPERTIES LABELS "gpu")
         add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
     endif()
 
