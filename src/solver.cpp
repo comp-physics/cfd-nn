@@ -3028,9 +3028,10 @@ double RANSSolver::step() {
         compute_divergence(VelocityWhich::Star, div_velocity_);
         NVTX_POP();
     }
-    
+
     // Build RHS on GPU and subtract mean divergence to ensure solvability
     // GPU-RESIDENT OPTIMIZATION: Keep all data on device, only transfer scalars
+    NVTX_PUSH("poisson_rhs_build");
     double mean_div = 0.0;
     
 #ifdef USE_GPU_OFFLOAD
@@ -3182,7 +3183,8 @@ double RANSSolver::step() {
             pressure_correction_.fill(0.0);
         }
     }
-    
+    NVTX_POP();  // End poisson_rhs_build
+
     // 4b. Solve Poisson equation for pressure correction
     {
         TIMED_SCOPE("poisson_solve");
