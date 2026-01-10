@@ -188,6 +188,10 @@ __global__ void kernel_unpack_and_bc(
 
 FFTPoissonSolver::FFTPoissonSolver(const Mesh& mesh)
     : mesh_(&mesh) {
+    // FFT solver's apply_bc_device() only fills outermost ghost layer
+    if (mesh.Nghost != 1) {
+        throw std::runtime_error("FFTPoissonSolver requires Nghost == 1");
+    }
 #ifdef USE_GPU_OFFLOAD
     using_gpu_ = true;
     initialize_fft();
