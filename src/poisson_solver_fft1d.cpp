@@ -340,8 +340,11 @@ __global__ void kernel_mg2d_prolongate_f32(
 
     int j_c = j_f / 2;
     int k_c = k_f / 2;
-    float wy = (j_f % 2 == 0) ? 0.75f : 0.25f;
-    float wz = (k_f % 2 == 0) ? 0.75f : 0.25f;
+    // Standard bilinear interpolation weights:
+    // - Even indices (coincident with coarse): weight 1.0 from that coarse point
+    // - Odd indices (midpoint): weight 0.5 from each neighboring coarse point
+    float wy = 1.0f - 0.5f * (j_f % 2);
+    float wz = 1.0f - 0.5f * (k_f % 2);
 
     int j_c1 = (j_c + 1 < Ny_c) ? j_c + 1 : j_c;
     int k_c1 = (k_c + 1 < Nz_c) ? k_c + 1 : k_c;
