@@ -5000,7 +5000,6 @@ void RANSSolver::cleanup_gpu_buffers() {
         const size_t w_total_size = velocity_.w_total_size();
         #pragma omp target exit data map(from: velocity_w_ptr_[0:w_total_size])
     }
-    // k and omega are managed by turbulence model, not unmapped here
 
     // Delete temporary/work arrays without copying back
     #pragma omp target exit data map(delete: velocity_star_u_ptr_[0:u_total_size])

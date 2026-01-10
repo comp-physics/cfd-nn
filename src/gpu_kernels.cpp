@@ -1,4 +1,5 @@
 #include "gpu_kernels.hpp"
+#include "numerics.hpp"
 #include "profiling.hpp"
 #include <cmath>
 #include <algorithm>
@@ -99,8 +100,6 @@ void compute_mlp_scalar_features_gpu(
     NVTX_SCOPE_TURB("kernel:mlp_features");
 
 #ifdef USE_GPU_OFFLOAD
-    const double C_mu = 0.09;
-    
     // CRITICAL: map(present:...) indicates these arrays are already mapped by caller
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: dudx[0:total_cells], dudy[0:total_cells], \
@@ -131,12 +130,10 @@ void compute_mlp_scalar_features_gpu(
             // Frobenius norm (matches CPU VelocityGradient::S_mag())
             double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
             double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-            
-            // Get k, omega
-            double k_val = k[idx_cell];
-            double omega_val = omega[idx_cell];
-            double eps = C_mu * k_val * omega_val;
-            
+
+            // Note: k and omega are mapped but not used in current feature set
+            // (reserved for future features like turbulent time scale)
+
             // Velocity magnitude (from staggered grid)
             double u_avg = 0.5 * (u_face[j * u_stride + i] + u_face[j * u_stride + (i+1)]);
             double v_avg = 0.5 * (v_face[j * v_stride + i] + v_face[(j+1) * v_stride + i]);
@@ -274,8 +271,8 @@ void compute_tbnn_features_gpu(
         double eps = C_mu * k_val * omega_val;
         
         // Safe values
-        double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
-        double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+        double k_safe = (k_val > numerics::K_FLOOR) ? k_val : numerics::K_FLOOR;
+        double eps_safe = (eps > numerics::EPS_FLOOR) ? eps : numerics::EPS_FLOOR;
         
         // Time scale for normalization
         double tau = k_safe / eps_safe;
@@ -601,16 +598,17 @@ void tbnn_full_pipeline_gpu(
         double Syy = dvdy_v;
         double Sxy = 0.5 * (dudy_v + dvdx_v);
         double Oxy = 0.5 * (dudy_v - dvdx_v);
-        
-        double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+
+        // Frobenius norm (matches features.hpp::VelocityGradient::S_mag for ML invariants)
+        double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
         double Omega_mag = sqrt(2.0 * Oxy * Oxy);
         
         double k_val = k[cell_idx];
         double omega_val = omega[cell_idx];
         double eps = C_mu * k_val * omega_val;
         
-        double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
-        double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+        double k_safe = (k_val > numerics::K_FLOOR) ? k_val : numerics::K_FLOOR;
+        double eps_safe = (eps > numerics::EPS_FLOOR) ? eps : numerics::EPS_FLOOR;
         double tau = k_safe / eps_safe;
         
         double S_norm = S_mag * tau;

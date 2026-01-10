@@ -102,6 +102,10 @@ constexpr double K_FLOOR = 1e-10;
 /// Prevents division by zero in k/omega ratios
 constexpr double OMEGA_FLOOR = 1e-10;
 
+/// Minimum dissipation rate (epsilon) [m²/s³]
+/// Prevents division by zero in k/epsilon ratios
+constexpr double EPS_FLOOR = 1e-20;
+
 /// Minimum wall distance [m]
 /// Prevents division by zero in wall function calculations
 constexpr double Y_WALL_FLOOR = 1e-10;

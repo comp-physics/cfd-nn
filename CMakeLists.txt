@@ -448,15 +448,17 @@ if(BUILD_TESTS)
     # =========================================================================
     # GPU-specific tests - run with: ctest -L gpu
     # =========================================================================
-    add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS gpu)
-    add_nncfd_test(test_cpu_gpu_bitwise TEST_NAME_SUFFIX CPUGPUBitwiseTest LABELS gpu)
-    add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
+    if(USE_GPU_OFFLOAD)
+        add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS gpu)
+        add_nncfd_test(test_cpu_gpu_bitwise TEST_NAME_SUFFIX CPUGPUBitwiseTest LABELS gpu)
+        add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
+    endif()
 
     # =========================================================================
     # FFT tests (require USE_FFT_POISSON) - run with: ctest -L fft
     # =========================================================================
     if(USE_GPU_OFFLOAD AND CUDAToolkit_FOUND)
-        add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest LABELS fft)
+        add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest LABELS "fft;gpu")
     endif()
 
     # =========================================================================
