@@ -156,7 +156,7 @@ run_gpu_perf_gate "duct_fft1d_64" \
     duct 3.0 \
     --Nx 64 --Ny 64 --Nz 64 \
     --nu 0.001 --dp_dx -1.0 \
-    --max_iter 25 --warmup_iter 5 \
+    --max_steps 25 --warmup_steps 5 \
     --poisson fft1d \
     --simulation_mode unsteady \
     --no_postprocess --no_write_fields --verbose || true
@@ -167,7 +167,7 @@ run_gpu_perf_gate "duct_fft1d_128" \
     duct 8.0 \
     --Nx 128 --Ny 64 --Nz 64 \
     --nu 0.001 --dp_dx -1.0 \
-    --max_iter 25 --warmup_iter 5 \
+    --max_steps 25 --warmup_steps 5 \
     --poisson fft1d \
     --simulation_mode unsteady \
     --no_postprocess --no_write_fields --verbose || true
@@ -178,7 +178,7 @@ run_gpu_perf_gate "channel_mg_512" \
     channel 100.0 \
     --Nx 512 --Ny 512 \
     --nu 0.001 --dp_dx -0.0001 \
-    --max_iter 25 --warmup_iter 5 \
+    --max_steps 25 --warmup_steps 5 \
     --poisson mg \
     --simulation_mode unsteady \
     --no_postprocess --no_write_fields --verbose || true
@@ -194,7 +194,7 @@ run_gpu_perf_info "channel_mg_128_info" \
     channel \
     --Nx 128 --Ny 128 \
     --nu 0.001 --dp_dx -0.0001 \
-    --max_iter 25 --warmup_iter 5 \
+    --max_steps 25 --warmup_steps 5 \
     --poisson mg \
     --simulation_mode unsteady \
     --no_postprocess --no_write_fields --verbose

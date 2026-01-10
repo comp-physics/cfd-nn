@@ -15,7 +15,7 @@ import sys
 import argparse
 import numpy as np
 
-def run_solver(model, output_dir, nx=32, ny=64, nu=0.01, max_iter=20000, 
+def run_solver(model, output_dir, nx=32, ny=64, nu=0.01, max_steps=20000, 
                adaptive_dt=True, extra_args=None):
     """Run the channel solver with specified model."""
     
@@ -24,7 +24,7 @@ def run_solver(model, output_dir, nx=32, ny=64, nu=0.01, max_iter=20000,
         "--Nx", str(nx),
         "--Ny", str(ny),
         "--nu", str(nu),
-        "--max_iter", str(max_iter),
+        "--max_steps", str(max_steps),
         "--model", model,
         "--output", output_dir,
     ]
@@ -92,7 +92,7 @@ def main():
     parser.add_argument("--nx", type=int, default=32, help="Grid cells in x")
     parser.add_argument("--ny", type=int, default=64, help="Grid cells in y")
     parser.add_argument("--nu", type=float, default=0.01, help="Kinematic viscosity")
-    parser.add_argument("--max_iter", type=int, default=20000, help="Max iterations")
+    parser.add_argument("--max_steps", type=int, default=20000, help="Max iterations")
     parser.add_argument("--models", nargs="+", 
                        default=["none", "baseline", "gep"],
                        help="Models to compare")
@@ -120,7 +120,7 @@ def main():
             nx=args.nx,
             ny=args.ny,
             nu=args.nu,
-            max_iter=args.max_iter,
+            max_steps=args.max_steps,
             adaptive_dt=True
         )
         
@@ -138,7 +138,7 @@ def main():
     
     print(f"\nGrid: {args.nx} x {args.ny}")
     print(f"Viscosity: {args.nu}")
-    print(f"Max iterations: {args.max_iter}")
+    print(f"Max iterations: {args.max_steps}")
     
     print("\nModels tested:")
     for model in args.models:
@@ -152,7 +152,7 @@ def main():
         f.write("="*40 + "\n\n")
         f.write(f"Grid: {args.nx} x {args.ny}\n")
         f.write(f"Viscosity: {args.nu}\n")
-        f.write(f"Max iterations: {args.max_iter}\n\n")
+        f.write(f"Max iterations: {args.max_steps}\n\n")
         f.write("Models:\n")
         for model in args.models:
             status = "OK" if results[model]["y"] is not None else "FAILED"

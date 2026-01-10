@@ -119,7 +119,7 @@ TuningResult run_single_benchmark(const TuningConfig& cfg, int N, int nsteps) {
     config.nu = 1e-4;
     config.dt = 1e-4;
     config.adaptive_dt = false;
-    config.max_iter = 20;
+    config.max_steps = 20;
     config.turb_model = TurbulenceModelType::None;
     config.poisson_solver = PoissonSolverType::MG;
     config.verbose = false;

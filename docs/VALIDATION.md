@@ -30,18 +30,18 @@ where H is the channel half-height and dp/dx < 0 is the imposed pressure gradien
 
 #### High viscosity (nu >= 0.1):
 ```bash
-./channel --Nx 32 --Ny 64 --nu 0.1 --dt 0.005 --max_iter 10000 --tol 1e-8
+./channel --Nx 32 --Ny 64 --nu 0.1 --dt 0.005 --max_steps 10000 --tol 1e-8
 ```
 
 #### Moderate viscosity (nu ~ 0.01):
 ```bash
-./channel --Nx 32 --Ny 64 --nu 0.01 --dt 0.0002 --max_iter 100000 --tol 1e-8
+./channel --Nx 32 --Ny 64 --nu 0.01 --dt 0.0002 --max_steps 100000 --tol 1e-8
 ```
 
 #### Low viscosity (nu < 0.01):
 Consider grid stretching and smaller timestep:
 ```bash
-./channel --Nx 64 --Ny 128 --nu 0.001 --dt 0.0001 --max_iter 200000 --stretch
+./channel --Nx 64 --Ny 128 --nu 0.001 --dt 0.0001 --max_steps 200000 --stretch
 ```
 
 ### Timestep Selection
@@ -71,7 +71,7 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 **Test case:** Re = 10,000 (based on channel height and mean velocity)
 
 ```bash
-./channel --Nx 64 --Ny 128 --nu 0.001 --model baseline --max_iter 20000
+./channel --Nx 64 --Ny 128 --nu 0.001 --model baseline --max_steps 20000
 ```
 
 **Results:**

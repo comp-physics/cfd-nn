@@ -59,7 +59,7 @@ cd /storage/home/hcoda1/6/sbryngelson3/cfd-nn
 ./channel --model nn_tbnn --nn_preset tbnn_phll_caseholdout \
   --Nx 128 --Ny 256 \
   --Re 2800 \
-  --max_iter 50000 \
+  --max_steps 50000 \
   --output output/tbnn_phll_run
 ```
 
@@ -71,7 +71,7 @@ nn_preset = tbnn_phll_caseholdout
 Nx = 128
 Ny = 256
 Re = 2800
-max_iter = 50000
+max_steps = 50000
 output_dir = output/tbnn_phll_run
 ```
 

@@ -1447,7 +1447,7 @@ void RANSSolver::print_solver_info() const {
     // Poisson solver parameters (MG uses these, others may not)
     if (selected_solver_ == PoissonSolverType::MG) {
         std::cout << "MG params: tol=" << config_.poisson_tol
-                  << ", max_vcycles=" << config_.poisson_max_iter
+                  << ", max_vcycles=" << config_.poisson_max_vcycles
                   << ", omega=" << config_.poisson_omega << "\n";
     }
 
@@ -3237,7 +3237,7 @@ double RANSSolver::step() {
         //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
         //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
         PoissonConfig pcfg;
-        pcfg.max_iter = config_.poisson_max_iter;
+        pcfg.max_vcycles = config_.poisson_max_vcycles;
         pcfg.omega = config_.poisson_omega;
         pcfg.verbose = false;  // Disable per-cycle output (too verbose)
 
@@ -3561,7 +3561,7 @@ std::pair<double, int> RANSSolver::solve_steady() {
         }
     }
     
-    for (iter_ = 0; iter_ < config_.max_iter; ++iter_) {
+    for (iter_ = 0; iter_ < config_.max_steps; ++iter_) {
         // Update time step if adaptive
         if (config_.adaptive_dt) {
             current_dt_ = compute_adaptive_dt();
@@ -3619,7 +3619,7 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
 {
     // Calculate snapshot frequency if not provided
     if (snapshot_freq < 0 && num_snapshots > 0) {
-        snapshot_freq = std::max(1, config_.max_iter / num_snapshots);
+        snapshot_freq = std::max(1, config_.max_steps / num_snapshots);
     }
     
     if (config_.verbose && !output_prefix.empty()) {
@@ -3636,7 +3636,7 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
     int snapshot_count = 0;
 
     // Progress output interval for CI visibility (always enabled)
-    const int progress_interval = std::max(1, config_.max_iter / 10);
+    const int progress_interval = std::max(1, config_.max_steps / 10);
 
     if (config_.verbose) {
         // Enable line buffering for immediate output visibility
@@ -3656,7 +3656,7 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
         }
     }
 
-    for (iter_ = 0; iter_ < config_.max_iter; ++iter_) {
+    for (iter_ = 0; iter_ < config_.max_steps; ++iter_) {
         // Update time step if adaptive
         if (config_.adaptive_dt) {
             current_dt_ = compute_adaptive_dt();
@@ -3684,8 +3684,8 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
         
         // Always show progress every ~10% for CI visibility
         if ((iter_ + 1) % progress_interval == 0 || iter_ == 0) {
-            std::cout << "    Iter " << std::setw(6) << iter_ + 1 << " / " << config_.max_iter
-                      << "  (" << std::setw(3) << (100 * (iter_ + 1) / config_.max_iter) << "%)"
+            std::cout << "    Iter " << std::setw(6) << iter_ + 1 << " / " << config_.max_steps
+                      << "  (" << std::setw(3) << (100 * (iter_ + 1) / config_.max_steps) << "%)"
                       << "  residual = " << std::scientific << std::setprecision(3) << residual
                       << std::fixed << "\n" << std::flush;
         } else if (config_.verbose && (iter_ + 1) % config_.output_freq == 0) {

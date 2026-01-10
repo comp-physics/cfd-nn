@@ -138,7 +138,7 @@ Compare these quantities with DNS:
 
 **Simulation doesn't converge:**
 - Reduce time step: `dt = 0.0005`
-- Increase max iterations: `max_iter = 500000`
+- Increase max iterations: `max_steps = 500000`
 - Check CFL number in output (should be < 0.5)
 
 **Poor agreement with DNS:**

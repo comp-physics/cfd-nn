@@ -13,11 +13,11 @@
 
 ```bash
 # From build directory
-./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --max_iter 10000
+./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --max_steps 10000
 
 # With custom parameters
 ./channel --model nn_mlp --nn_preset mlp_channel_caseholdout \
-    --Nx 128 --Ny 256 --Re 5000 --adaptive_dt --max_iter 20000
+    --Nx 128 --Ny 256 --Re 5000 --adaptive_dt --max_steps 20000
 ```
 
 ## Model Details
@@ -166,7 +166,7 @@ The MLP model has full GPU offload support:
 
 ```bash
 ./channel --model nn_mlp --nn_preset mlp_channel_caseholdout \
-    --max_iter 20000 --num_snapshots 20 --output ./output_mlp
+    --max_steps 20000 --num_snapshots 20 --output ./output_mlp
 ```
 
 ### Comparing with Other Models
@@ -242,7 +242,7 @@ Error: NaN detected in velocity field
 **Solution:**
 ```bash
 ./channel --model nn_mlp --nn_preset mlp_channel_caseholdout \
-    --adaptive_dt --CFL 0.3 --max_iter 50000
+    --adaptive_dt --CFL 0.3 --max_steps 50000
 ```
 
 ## File Structure

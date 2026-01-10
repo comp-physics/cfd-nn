@@ -160,7 +160,7 @@ Run the model on the same test case from the paper:
 
 ```bash
 ./channel --model nn_tbnn --nn_preset ling_tbnn_2016 \
-    --Nx 64 --Ny 128 --Re 2800 --max_iter 50000
+    --Nx 64 --Ny 128 --Re 2800 --max_steps 50000
 ```
 
 Compare results:
@@ -295,7 +295,7 @@ Error: Expected 6 features, got 5
 ./channel --model nn_tbnn --nn_preset ling_tbnn_2016 \
     --Nx 128 --Ny 256 \
     --Re 2800 \
-    --max_iter 100000 \
+    --max_steps 100000 \
     --tol 1e-8 \
     --stretch
 ```

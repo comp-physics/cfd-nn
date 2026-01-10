@@ -355,13 +355,13 @@ TestResult test_single_model(TurbulenceModelType model_type) {
 
     Config config;
     config.nu = 0.01;
-    config.max_iter = 1000;
+    config.max_steps = 1000;
     config.turb_model = model_type;
     config.verbose = false;
     config.turb_guard_enabled = false;  // Handle exceptions ourselves
 
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 1000;
+    config.poisson_max_vcycles = 1000;
     config.poisson_abs_tol_floor = 1e-6;
 
     if (is_nn_mlp || is_earsm) {
@@ -453,7 +453,7 @@ bool test_earsm_model(TurbulenceModelType model_type) {
     config.verbose = false;
     config.turb_guard_enabled = false;  // Disable guard to catch instability ourselves
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 1000;
+    config.poisson_max_vcycles = 1000;
     config.poisson_abs_tol_floor = 1e-6;
 
     RANSSolver solver(mesh, config);

@@ -196,7 +196,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     config.nu = 0.01;
     config.dt = 0.001;
     config.adaptive_dt = false;
-    config.max_iter = NUM_STEPS;
+    config.max_steps = NUM_STEPS;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
     config.postprocess = false;
@@ -378,7 +378,7 @@ bool test_hypre_vs_multigrid_3d_duct() {
     config.nu = 0.01;
     config.dt = 0.0001;  // Small time step for stability
     config.adaptive_dt = false;
-    config.max_iter = NUM_STEPS;
+    config.max_steps = NUM_STEPS;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
     config.postprocess = false;
@@ -493,7 +493,7 @@ void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int 
     config.nu = 0.01;
     config.dt = 0.001;
     config.adaptive_dt = false;
-    config.max_iter = num_iter;
+    config.max_steps = num_iter;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
     config.postprocess = false;

@@ -48,7 +48,7 @@ void profile_turbulence_model(const std::string& name, TurbulenceModelType type,
     config.dp_dx = -0.001;
     config.dt = 0.001;
     config.adaptive_dt = false;  // Fixed dt for consistent profiling
-    config.max_iter = nsteps;
+    config.max_steps = nsteps;
     config.tol = 1e-8;
     config.turb_model = type;
     config.verbose = false;
@@ -100,8 +100,8 @@ void profile_poisson_solver(int nsteps, int Nx, int Ny) {
     config.dp_dx = -0.001;
     config.dt = 0.001;
     config.adaptive_dt = false;
-    config.max_iter = nsteps;
-    config.poisson_max_iter = 50;  // More Poisson iterations for profiling
+    config.max_steps = nsteps;
+    config.poisson_max_vcycles = 50;  // More Poisson iterations for profiling
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
 
@@ -137,7 +137,7 @@ void profile_3d_solver(int nsteps, int Nx, int Ny, int Nz) {
     config.nu = 0.01;
     config.dt = 0.001;
     config.adaptive_dt = false;
-    config.max_iter = nsteps;
+    config.max_steps = nsteps;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
 

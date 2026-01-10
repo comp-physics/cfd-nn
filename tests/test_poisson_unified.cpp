@@ -82,7 +82,7 @@ void test_basic_solve() {
 
     PoissonConfig cfg;
     cfg.tol = 1e-6;
-    cfg.max_iter = 20000;
+    cfg.max_steps = 20000;
     cfg.omega = 1.8;
 
     int iters = solver.solve(rhs, p, cfg);
@@ -114,7 +114,7 @@ void test_periodic_solve() {
 
     PoissonConfig cfg;
     cfg.tol = 1e-8;
-    cfg.max_iter = 10000;
+    cfg.max_steps = 10000;
 
     solver.solve(rhs, p, cfg);
 
@@ -190,7 +190,7 @@ void run_convergence_case(const ConvergenceTestCase& tc) {
 
         PoissonConfig cfg;
         cfg.tol = 1e-10;
-        cfg.max_iter = 100;
+        cfg.max_steps = 100;
         mg.solve(rhs, p, cfg);
 
         // Compute L2 error with mean subtraction (Neumann compatibility)
@@ -314,7 +314,7 @@ void test_nullspace_periodic() {
     cfg.tol_abs = 1e-8;      // Absolute tolerance
     cfg.tol_rhs = 0.0;       // Disable RHS-relative (we want absolute convergence)
     cfg.tol_rel = 0.0;       // Disable initial-residual-relative
-    cfg.max_iter = 100;
+    cfg.max_steps = 100;
     cfg.use_l2_norm = false;  // Use L∞ since we check mg.residual() (L∞)
     int iters = mg.solve(rhs, p, cfg);
 
@@ -372,7 +372,7 @@ void test_3d_gpu_convergence() {
     cfg.tol_abs = 1e-8;      // Absolute tolerance
     cfg.tol_rhs = 0.0;       // Disable RHS-relative (we want absolute convergence)
     cfg.tol_rel = 0.0;       // Disable initial-residual-relative
-    cfg.max_iter = 100;
+    cfg.max_steps = 100;
     cfg.use_l2_norm = false;  // Use L∞ since we check mg.residual() (L∞)
     mg.solve(rhs, p, cfg);
 
@@ -432,7 +432,7 @@ void test_stretched_grid() {
 
     PoissonConfig cfg;
     cfg.tol = 1e-6;
-    cfg.max_iter = 500;
+    cfg.max_steps = 500;
     [[maybe_unused]] int iters = mg.solve(rhs, p, cfg);
 
     // Compute error
@@ -490,7 +490,7 @@ void test_cross_solver_consistency() {
                PoissonBC::Periodic, PoissonBC::Periodic);
     PoissonConfig cfg_sor;
     cfg_sor.tol = 1e-8;
-    cfg_sor.max_iter = 10000;
+    cfg_sor.max_steps = 10000;
     sor.solve(rhs, p_sor, cfg_sor);
 
     // Solve with MG
@@ -500,7 +500,7 @@ void test_cross_solver_consistency() {
               PoissonBC::Periodic, PoissonBC::Periodic);
     PoissonConfig cfg_mg;
     cfg_mg.tol = 1e-10;
-    cfg_mg.max_iter = 100;
+    cfg_mg.max_steps = 100;
     mg.solve(rhs, p_mg, cfg_mg);
 
     // Compare (after subtracting means)
@@ -556,7 +556,7 @@ void test_dirichlet_bc() {
 
     PoissonConfig cfg;
     cfg.tol = 1e-8;
-    cfg.max_iter = 100;
+    cfg.max_steps = 100;
     mg.solve(rhs, p, cfg);
 
     // Check error

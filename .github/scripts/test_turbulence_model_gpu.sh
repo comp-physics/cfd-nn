@@ -26,7 +26,7 @@ mkdir -p "$OUTPUT_PREFIX"
 
 # Run the model
 echo "Running simulation..."
-./channel --Nx $NX --Ny $NY --nu 0.001 --max_iter $MAX_ITER \
+./channel --Nx $NX --Ny $NY --nu 0.001 --max_steps $MAX_ITER \
          --model $MODEL --dp_dx -0.0001 \
          --output $OUTPUT_PREFIX --num_snapshots 0 --quiet
 

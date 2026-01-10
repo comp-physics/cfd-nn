@@ -256,7 +256,7 @@ This suite follows **ASME V&V 20-2009** guidelines:
 **Fixes**:
 ```bash
 # Increase iterations
-max_iter = 100000
+max_steps = 100000
 
 # Reduce CFL for stability
 CFL_max = 0.3

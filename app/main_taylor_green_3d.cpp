@@ -177,12 +177,12 @@ int main(int argc, char** argv) {
         T_final = 10.0;
     }
 
-    // Only override max_iter from T_final if T_final was explicitly set
-    // This allows config file to set max_iter directly for profiling
+    // Only override max_steps from T_final if T_final was explicitly set
+    // This allows config file to set max_steps directly for profiling
     if (T_final_from_cmdline || config.T_final > 0) {
-        config.max_iter = static_cast<int>(T_final / config.dt) + 1;
+        config.max_steps = static_cast<int>(T_final / config.dt) + 1;
     }
-    // Otherwise, use max_iter from config file (or default)
+    // Otherwise, use max_steps from config file (or default)
 
     std::cout << "=== Configuration ===\n";
     std::cout << "Grid: " << config.Nx << "³ cells\n";
@@ -268,7 +268,7 @@ int main(int argc, char** argv) {
     ens_hist.push_back(ens0);
 
     // Snapshot frequency
-    int snapshot_freq = (config.num_snapshots > 0) ? std::max(1, config.max_iter / config.num_snapshots) : 0;
+    int snapshot_freq = (config.num_snapshots > 0) ? std::max(1, config.max_steps / config.num_snapshots) : 0;
 
     std::cout << "=== Running unsteady simulation ===\n\n";
     std::cout << std::setw(10) << "Step"
@@ -285,7 +285,7 @@ int main(int argc, char** argv) {
     int snap_count = 0;
     double dt = config.dt;
 
-    for (int step = 1; step <= config.max_iter && t < T_final; ++step) {
+    for (int step = 1; step <= config.max_steps && t < T_final; ++step) {
         if (config.adaptive_dt) {
             dt = solver.compute_adaptive_dt();
         }
@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
         }
 
         // Periodic output
-        if (step % 100 == 0 || step == config.max_iter || t >= T_final) {
+        if (step % 100 == 0 || step == config.max_steps || t >= T_final) {
 #ifdef USE_GPU_OFFLOAD
             solver.sync_from_gpu();
 #endif

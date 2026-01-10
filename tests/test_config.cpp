@@ -149,7 +149,7 @@ void test_load_integers() {
 Nx = 128
 Ny = 256
 Nz = 32
-max_iter = 5000
+max_steps = 5000
 )";
     std::string filename = create_temp_config(cfg);
 
@@ -159,7 +159,7 @@ max_iter = 5000
     bool pass = (config.Nx == 128);
     pass = pass && (config.Ny == 256);
     pass = pass && (config.Nz == 32);
-    pass = pass && (config.max_iter == 5000);
+    pass = pass && (config.max_steps == 5000);
 
     remove_temp_file(filename);
     record("Integer loading", pass);

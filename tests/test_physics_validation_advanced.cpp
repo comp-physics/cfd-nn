@@ -91,7 +91,7 @@ void test_poiseuille_flow() {
     config.nu = nu;
     config.dt = 0.005;
     config.adaptive_dt = false;
-    config.max_iter = 2000;
+    config.max_steps = 2000;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
@@ -160,7 +160,7 @@ void test_spatial_convergence() {
         config.dp_dx = dp_dx;
         config.dt = 0.001;
         config.adaptive_dt = true;
-        config.max_iter = 2000;
+        config.max_steps = 2000;
         config.tol = 1e-8;
         config.turb_model = TurbulenceModelType::None;
         config.verbose = false;
@@ -279,7 +279,7 @@ void test_mms_navier_stokes() {
         config.nu = nu;
         config.dt = 0.001;
         config.adaptive_dt = true;
-        config.max_iter = 500;
+        config.max_steps = 500;
         config.tol = 1e-8;
         config.turb_model = TurbulenceModelType::None;
         config.verbose = false;
@@ -529,7 +529,7 @@ void test_lid_driven_cavity_re100() {
     config.nu = nu;
     config.dt = 0.001;
     config.adaptive_dt = true;
-    config.max_iter = 10000;
+    config.max_steps = 10000;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
@@ -547,7 +547,7 @@ void test_lid_driven_cavity_re100() {
     solver.sync_to_gpu();
 
     std::cout << "  Solving... " << std::flush;
-    for (int iter = 0; iter < config.max_iter; ++iter) {
+    for (int iter = 0; iter < config.max_steps; ++iter) {
         int j_ghost = mesh.j_end();
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
             solver.velocity().u(i, j_ghost) = 2.0 * U_lid - solver.velocity().u(i, mesh.j_end() - 1);
@@ -595,7 +595,7 @@ void test_law_of_wall() {
     config.dp_dx = dp_dx;
     config.dt = 0.001;
     config.adaptive_dt = true;
-    config.max_iter = 5000;
+    config.max_steps = 5000;
     config.tol = 1e-5;
     config.turb_model = TurbulenceModelType::KOmega;
     config.verbose = false;

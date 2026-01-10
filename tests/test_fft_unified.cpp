@@ -44,7 +44,7 @@ void test_fft1d_selection() {
 
     Config cfg;
     cfg.Nx = 32; cfg.Ny = 32; cfg.Nz = 32;
-    cfg.dt = 0.001; cfg.max_iter = 1; cfg.nu = 1.0;
+    cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 1.0;
     cfg.poisson_solver = PoissonSolverType::FFT1D;
 
     RANSSolver solver(mesh, cfg);
@@ -89,7 +89,7 @@ void test_fft_vs_mg_periodic() {
     // MG reference
     Config cfg_mg;
     cfg_mg.Nx = N; cfg_mg.Ny = N; cfg_mg.Nz = N;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -152,7 +152,7 @@ void test_fft1d_vs_mg_channel() {
 
     Config cfg_mg;
     cfg_mg.Nx = N; cfg_mg.Ny = N; cfg_mg.Nz = N;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -214,7 +214,7 @@ void test_fft1d_vs_mg_duct() {
 
     Config cfg_mg;
     cfg_mg.Nx = N; cfg_mg.Ny = N; cfg_mg.Nz = N;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -285,7 +285,7 @@ void test_fft2d_vs_mg_channel() {
     // MG reference
     Config cfg_mg;
     cfg_mg.Nx = Nx; cfg_mg.Ny = Ny;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -343,7 +343,7 @@ void test_fft1d_correctness() {
 
     Config cfg;
     cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
-    cfg.dt = 0.001; cfg.max_iter = 1; cfg.nu = 1.0;
+    cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 1.0;
     cfg.poisson_solver = PoissonSolverType::FFT1D;
 
     RANSSolver solver(mesh, cfg);
@@ -385,7 +385,7 @@ void test_fft1d_grid_convergence() {
 
         Config cfg;
         cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
-        cfg.dt = 0.001; cfg.max_iter = 1; cfg.nu = 1.0;
+        cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 1.0;
         cfg.poisson_solver = PoissonSolverType::FFT1D;
 
         RANSSolver solver(mesh, cfg);
@@ -459,7 +459,7 @@ void benchmark_fft1d_performance() {
 
         Config cfg;
         cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
-        cfg.dt = 0.001; cfg.max_iter = 100; cfg.nu = 0.0001;
+        cfg.dt = 0.001; cfg.max_steps = 100; cfg.nu = 0.0001;
         cfg.poisson_solver = PoissonSolverType::FFT1D;
         cfg.dp_dx = -0.0002;
 

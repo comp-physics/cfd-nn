@@ -5,7 +5,7 @@
 /// method has known issues in CUDA mode.
 ///
 /// For comprehensive HYPRE testing, use the channel application:
-///   ./channel --use_hypre --Nx 64 --Ny 128 --Nz 64 --max_iter 100 --model baseline
+///   ./channel --use_hypre --Nx 64 --Ny 128 --Nz 64 --max_steps 100 --model baseline
 ///
 /// This test verifies basic HYPRE initialization and configuration.
 
@@ -75,7 +75,7 @@ int main() {
 
     std::cout << "\n=== All HYPRE integration tests passed ===\n";
     std::cout << "\nFor solve validation, run:\n";
-    std::cout << "  ./channel --use_hypre --Nx 32 --Ny 64 --Nz 32 --max_iter 20\n";
+    std::cout << "  ./channel --use_hypre --Nx 32 --Ny 64 --Nz 32 --max_steps 20\n";
 
     return 0;
 }

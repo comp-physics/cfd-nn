@@ -315,7 +315,7 @@ For pure Neumann or fully periodic problems, the Poisson equation has a nullspac
 ```ini
 poisson_solver = auto    # auto, fft, fft2d, fft1d, hypre, mg
 poisson_tol = 1e-6       # Convergence tolerance
-poisson_max_iter = 10    # Max iterations/V-cycles per solve
+poisson_max_steps = 10    # Max iterations/V-cycles per solve
 ```
 
 ### Automatic Selection

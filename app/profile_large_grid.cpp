@@ -60,14 +60,14 @@ int main(int argc, char** argv) {
     config.verbose = false;
     
     // CRITICAL: Limit Poisson iterations to 30 V-cycles
-    config.poisson_max_iter = 30;
+    config.poisson_max_vcycles = 30;
     config.poisson_tol = 1e-6;  // Relative tolerance
     
     std::cout << "Grid: " << config.Nx << " x " << config.Ny << " = " 
               << (config.Nx * config.Ny / 1e6) << "M cells\n";
     std::cout << "Timesteps: 10\n";
     std::cout << "Timestep size: " << config.dt << "\n";
-    std::cout << "Poisson max V-cycles: " << config.poisson_max_iter << "\n";
+    std::cout << "Poisson max V-cycles: " << config.poisson_max_vcycles << "\n";
     std::cout << "Warm-start: YES (reuses previous solution)\n\n";
 
     Mesh mesh;

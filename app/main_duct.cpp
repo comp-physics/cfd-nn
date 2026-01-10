@@ -201,7 +201,7 @@ void print_usage(const char* prog) {
     std::cout << "  --nu V            Kinematic viscosity\n";
     std::cout << "  --dp_dx D         Pressure gradient\n";
     std::cout << "  --dt T            Time step\n";
-    std::cout << "  --max_iter N      Maximum iterations\n";
+    std::cout << "  --max_steps N      Maximum iterations\n";
     std::cout << "  --tol T           Convergence tolerance\n";
     std::cout << "  --model M         Turbulence model (none, baseline, sst, etc.)\n";
     std::cout << "  --output DIR      Output directory\n";
@@ -226,13 +226,13 @@ int main(int argc, char** argv) {
     config.nu = 0.01;
     config.dp_dx = -1.0;
     config.dt = 0.001;
-    config.max_iter = 10000;
+    config.max_steps = 10000;
     config.tol = 1e-8;
     config.output_freq = 500;
     config.verbose = true;
     config.turb_model = TurbulenceModelType::None;
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 20;  // V-cycles for multigrid (not SOR iterations)
+    config.poisson_max_vcycles = 20;  // V-cycles for multigrid (not SOR iterations)
 
     // Parse command line (handles all args including --Nx, --Ny, --Nz, etc.)
     config.parse_args(argc, argv);
@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
 
     if (is_unsteady) {
         std::cout << "=== Running UNSTEADY simulation (DNS) ===\n";
-        std::cout << "Max iterations: " << config.max_iter << "\n\n";
+        std::cout << "Max iterations: " << config.max_steps << "\n\n";
     } else {
         std::cout << "=== Running STEADY solve ===\n";
         std::cout << "Convergence tolerance: " << config.tol << "\n\n";
@@ -319,8 +319,8 @@ int main(int argc, char** argv) {
 
     // Setup VTK snapshots
     const std::string snapshot_prefix = config.write_fields ? (config.output_dir + "duct") : "";
-    const int snapshot_freq = (config.num_snapshots > 0 && config.max_iter > 0) ?
-        std::max(1, config.max_iter / config.num_snapshots) : 0;
+    const int snapshot_freq = (config.num_snapshots > 0 && config.max_steps > 0) ?
+        std::max(1, config.max_steps / config.num_snapshots) : 0;
     int snap_count = 0;
 
     if (!snapshot_prefix.empty()) {
@@ -331,10 +331,10 @@ int main(int argc, char** argv) {
     int iter = 0;
 
     // Progress output interval for CI visibility (always enabled)
-    const int progress_interval = std::max(1, config.max_iter / 10);
+    const int progress_interval = std::max(1, config.max_steps / 10);
 
     // Unsteady: run all iterations; Steady: check convergence
-    for (iter = 1; iter <= config.max_iter; ++iter) {
+    for (iter = 1; iter <= config.max_steps; ++iter) {
         // For steady mode, check convergence
         if (!is_unsteady && residual <= config.tol) {
             break;
@@ -346,10 +346,10 @@ int main(int argc, char** argv) {
         residual = solver.step();
 
         // Reset timers after warmup iterations (excluded from reported timing)
-        if (config.warmup_iter > 0 && iter == config.warmup_iter) {
+        if (config.warmup_steps > 0 && iter == config.warmup_steps) {
             TimingStats::instance().reset();
             if (config.verbose) {
-                std::cout << "    [Warmup complete: " << config.warmup_iter
+                std::cout << "    [Warmup complete: " << config.warmup_steps
                           << " iterations, timers reset]\n";
             }
         }
@@ -365,8 +365,8 @@ int main(int argc, char** argv) {
 
         // Always show progress every ~10% for CI visibility
         if (iter % progress_interval == 0 || iter == 1) {
-            std::cout << "    Step " << std::setw(6) << iter << " / " << config.max_iter
-                      << "  (" << std::setw(3) << (100 * iter / config.max_iter) << "%)"
+            std::cout << "    Step " << std::setw(6) << iter << " / " << config.max_steps
+                      << "  (" << std::setw(3) << (100 * iter / config.max_steps) << "%)"
                       << "  residual = " << std::scientific << std::setprecision(3) << residual
                       << std::fixed << "\n" << std::flush;
         } else if (config.verbose && (iter % config.output_freq == 0)) {
@@ -400,7 +400,7 @@ int main(int argc, char** argv) {
     std::cout << "Final residual: " << std::scientific << residual << "\n";
     std::cout << "Iterations: " << iter - 1 << "\n";
     if (is_unsteady) {
-        std::cout << "Mode: Unsteady (ran all " << config.max_iter << " iterations)\n";
+        std::cout << "Mode: Unsteady (ran all " << config.max_steps << " iterations)\n";
         std::cout << "VTK snapshots written: " << snap_count << "\n";
     } else {
         std::cout << "Converged: " << (residual < config.tol ? "YES" : "NO") << "\n";

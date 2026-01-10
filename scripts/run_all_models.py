@@ -35,11 +35,11 @@ class ModelRunner:
         if quick:
             self.nx = 32 if case == 'channel' else 32
             self.ny = 64 if case == 'channel' else 48
-            self.max_iter = 5000
+            self.max_steps = 5000
         else:
             self.nx = 64 if case == 'channel' else 64
             self.ny = 128 if case == 'channel' else 96
-            self.max_iter = 20000
+            self.max_steps = 20000
         
         # Model configurations
         self.models = {
@@ -96,7 +96,7 @@ class ModelRunner:
             str(executable),
             '--Nx', str(self.nx),
             '--Ny', str(self.ny),
-            '--max_iter', str(self.max_iter),
+            '--max_steps', str(self.max_steps),
             '--adaptive_dt',
             '--output', str(output_dir),
             '--quiet'
@@ -167,7 +167,7 @@ class ModelRunner:
         print(f"\n{'#'*70}")
         print(f"# Running All Models - Case: {self.case}")
         print(f"# Grid: {self.nx} x {self.ny}")
-        print(f"# Max iterations: {self.max_iter}")
+        print(f"# Max iterations: {self.max_steps}")
         print(f"# Models to run: {len(self.models)}")
         print(f"{'#'*70}\n")
         
@@ -194,7 +194,7 @@ class ModelRunner:
         
         report_lines = []
         report_lines.append(f"Turbulence Model Comparison - {self.case.upper()}")
-        report_lines.append(f"Grid: {self.nx} x {self.ny}, Max iterations: {self.max_iter}")
+        report_lines.append(f"Grid: {self.nx} x {self.ny}, Max iterations: {self.max_steps}")
         report_lines.append("=" * 70)
         report_lines.append("")
         

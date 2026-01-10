@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
     config.nu = 0.001;
     config.dp_dx = -0.0001;
     config.dt = 0.001;
-    config.max_iter = 200;
+    config.max_steps = 200;
     config.tol = 1e-8;
     config.turb_model = TurbulenceModelType::Baseline;
     config.verbose = false;
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
     std::cout << "  Grid: " << config.Nx << "x" << config.Ny << "\n";
     std::cout << "  nu: " << config.nu << "\n";
     std::cout << "  dp/dx: " << config.dp_dx << "\n";
-    std::cout << "  max_iter: " << config.max_iter << "\n";
+    std::cout << "  max_steps: " << config.max_steps << "\n";
     std::cout << "  Model: ";
     switch (config.turb_model) {
         case TurbulenceModelType::None: std::cout << "none\n"; break;

@@ -227,7 +227,7 @@ void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int 
     config.nu = 0.01;
     config.dt = 0.0005;
     config.adaptive_dt = false;  // Fixed dt for reproducibility
-    config.max_iter = num_iter;
+    config.max_steps = num_iter;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;

@@ -119,7 +119,7 @@ void Config::load(const std::string& filename) {
     dt = get_double("dt", dt);
     CFL_max = get_double("CFL_max", CFL_max);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
-    max_iter = get_int("max_iter", max_iter);
+    max_steps = get_int("max_steps", max_steps);
     T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);
     
@@ -181,7 +181,7 @@ void Config::load(const std::string& filename) {
     
     // Poisson
     poisson_tol = get_double("poisson_tol", poisson_tol);
-    poisson_max_iter = get_int("poisson_max_iter", poisson_max_iter);
+    poisson_max_vcycles = get_int("poisson_max_vcycles", poisson_max_vcycles);
     poisson_omega = get_double("poisson_omega", poisson_omega);
 
     // Parse poisson_solver: auto, fft, fft2d, fft1d, hypre, mg
@@ -281,14 +281,14 @@ void Config::parse_args(int argc, char** argv) {
             dp_dx_specified = true;
         } else if ((val = get_value(i, arg, "--dt")) != "") {
             dt = std::stod(val);
-        } else if ((val = get_value(i, arg, "--max_iter")) != "") {
-            max_iter = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--max_steps")) != "") {
+            max_steps = std::stoi(val);
         } else if ((val = get_value(i, arg, "--tol")) != "") {
             tol = std::stod(val);
         } else if ((val = get_value(i, arg, "--poisson_tol")) != "") {
             poisson_tol = std::stod(val);
-        } else if ((val = get_value(i, arg, "--poisson_max_iter")) != "") {
-            poisson_max_iter = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--poisson_max_vcycles")) != "") {
+            poisson_max_vcycles = std::stoi(val);
         } else if ((val = get_value(i, arg, "--poisson")) != "") {
             if (val == "auto") {
                 poisson_solver = PoissonSolverType::Auto;
@@ -381,8 +381,8 @@ void Config::parse_args(int argc, char** argv) {
             }
         } else if ((val = get_value(i, arg, "--perturbation_amplitude")) != "") {
             perturbation_amplitude = std::stod(val);
-        } else if ((val = get_value(i, arg, "--warmup_iter")) != "") {
-            warmup_iter = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--warmup_steps")) != "") {
+            warmup_steps = std::stoi(val);
         } else if (is_flag(arg, "--benchmark")) {
             // Benchmark mode: optimized for timing 3D duct flow
             benchmark = true;
@@ -408,8 +408,8 @@ void Config::parse_args(int argc, char** argv) {
             poisson_adaptive_cycles = false;
             // No turbulence model
             turb_model = TurbulenceModelType::None;
-            // Default to 20 iterations (can be overridden)
-            max_iter = 20;
+            // Default to 20 steps (can be overridden)
+            max_steps = 20;
             // Fixed time step (no adaptive dt for consistent timing)
             adaptive_dt = false;
             dt = 0.001;
@@ -428,10 +428,10 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --nu V            Kinematic viscosity\n"
                       << "  --dp_dx D         Pressure gradient (driving force)\n"
                       << "  --dt T            Time step\n"
-                      << "  --max_iter N      Maximum outer iterations\n"
+                      << "  --max_steps N     Maximum time steps\n"
                       << "  --tol T           Convergence tolerance for steady solve\n"
                       << "  --poisson_tol T   Poisson solver tolerance (per solve)\n"
-                      << "  --poisson_max_iter N  Max Poisson iterations per solve\n"
+                      << "  --poisson_max_vcycles N  Max MG V-cycles per Poisson solve\n"
                       << "  --poisson S       Poisson solver (auto, fft, fft2d, fft1d, hypre, mg)\n"
                       << "                      auto: FFT -> FFT2D -> FFT1D -> HYPRE -> MG\n"
                       << "                      fft: 2D FFT (3D only, requires periodic x AND z, uniform dx/dz)\n"
@@ -461,7 +461,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
-                      << "  --warmup_iter N   Warmup iterations excluded from timing (default 0)\n"
+                      << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
                       << "  --benchmark       Benchmark mode: 192^3 3D duct, upwind, 1 Poisson cycle,\n"
                       << "                      no output/turbulence (all overridable by other flags)\n"
                       << "  --verbose/--quiet Print progress\n"
@@ -893,7 +893,7 @@ void Config::print() const {
     std::cout << "\n"
               << "Convective scheme: "
               << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
-              << "dt: " << dt << ", max_iter: " << max_iter << ", tol: " << tol << "\n"
+              << "dt: " << dt << ", max_steps: " << max_steps << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     
     switch (turb_model) {

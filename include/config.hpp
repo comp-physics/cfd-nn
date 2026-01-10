@@ -79,8 +79,8 @@ struct Config {
     double dt = 0.001;          ///< Time step
     double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
-    int max_iter = 10000;       ///< Maximum iterations for steady-state convergence
-    double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_iter)
+    int max_steps = 10000;      ///< Maximum time steps for simulation
+    double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_steps)
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
     
     // Numerical schemes
@@ -114,11 +114,11 @@ struct Config {
     bool write_fields = true;
 
     // Performance benchmarking
-    int warmup_iter = 0;            ///< Iterations to run before resetting timers (excluded from timing)
+    int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)
     
     // Poisson solver
     double poisson_tol = 1e-6;       ///< Legacy absolute tolerance (deprecated)
-    int poisson_max_iter = 20;       ///< Max MG V-cycles per solve (safety limit)
+    int poisson_max_vcycles = 20;    ///< Max MG V-cycles per Poisson solve
     double poisson_omega = 1.8;      ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     PoissonSolverType poisson_solver = PoissonSolverType::Auto;  ///< Poisson solver selection

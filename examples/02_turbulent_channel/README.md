@@ -195,7 +195,7 @@ output/
 
 ### Models Don't Converge
 
-- **Increase max_iter**: Edit `config_base.cfg`, set `max_iter = 100000`
+- **Increase max_iter**: Edit `config_base.cfg`, set `max_steps = 100000`
 - **Reduce CFL**: Change `CFL_max = 0.3` for more stability
 - **Check turbulence model**: NN models with bad weights may not converge
 

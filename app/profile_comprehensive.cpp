@@ -131,7 +131,7 @@ void run_profile(const ProfileConfig& cfg) {
     config.nu = 1e-4;  // Re ~ 10000 based on unit velocity
     config.dt = 1e-4;
     config.adaptive_dt = false;  // Fixed dt for consistent profiling
-    config.max_iter = cfg.nsteps;
+    config.max_steps = cfg.nsteps;
     config.tol = 1e-6;
     config.turb_model = cfg.turb_model;
     config.poisson_solver = cfg.poisson_solver;
