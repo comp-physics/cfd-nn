@@ -522,6 +522,10 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = 
 
     # Configuration and I/O tests (very fast)
     run_test "Config" "$BUILD_DIR/test_config" 30
+
+    # New CI invariant tests (fast: 2D, small grids)
+    run_test "TGV 2D Invariants" "$BUILD_DIR/test_tgv_2d_invariants" 120
+    run_test "TGV Repeatability" "$BUILD_DIR/test_tgv_repeatability" 60
 fi
 
 # Medium tests (~2-5 minutes total)
@@ -540,6 +544,11 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "Mesh Edge Cases" "$BUILD_DIR/test_mesh_edge_cases" 120
     run_test "3D BC Corners" "$BUILD_DIR/test_3d_bc_corners" 180
     run_test "VTK Output" "$BUILD_DIR/test_vtk_output" 60
+
+    # New CI invariant tests (medium: 3D, convergence, RANS)
+    run_test "TGV 3D Invariants" "$BUILD_DIR/test_tgv_3d_invariants" 300
+    run_test "MMS Convergence" "$BUILD_DIR/test_mms_convergence" 300
+    run_test "RANS Channel Sanity" "$BUILD_DIR/test_rans_channel_sanity" 600
 fi
 
 # GPU-specific tests
