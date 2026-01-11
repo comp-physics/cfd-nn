@@ -3,9 +3,6 @@ name: GPU CI
 on:
   push:
 
-concurrency:
-  group: gpu-ci-${{ github.ref }}
-
 jobs:
   gpu-tests:
     runs-on: self-hosted
