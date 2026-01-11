@@ -405,14 +405,21 @@ inline void emit_qoi_fourier_mode(double ke_ratio, double max_v_over_max_u) {
 }
 
 /// Emit QOI JSON for performance gates
-/// Each gate emits its own line; ci.sh aggregates into perf_gates array
-inline void emit_qoi_perf(const std::string& gate_name, double ms_per_step,
-                           double threshold_ms) {
+/// Each gate emits its own line; ci.sh aggregates into perf_gate nested map
+/// Includes warmup/timed steps so baseline comparisons account for methodology changes
+inline void emit_qoi_perf(const std::string& case_name, double ms_per_step,
+                           double threshold_ms, int warmup_steps = 0, int timed_steps = 0) {
     std::cout << "QOI_JSON: {\"test\":\"perf_gate\""
-              << ",\"case\":\"" << gate_name << "\""
+              << ",\"case\":\"" << case_name << "\""
               << ",\"ms_per_step\":" << json_double(ms_per_step)
-              << ",\"threshold_ms\":" << json_double(threshold_ms)
-              << "}\n";
+              << ",\"threshold_ms\":" << json_double(threshold_ms);
+    if (warmup_steps > 0) {
+        std::cout << ",\"warmup_steps\":" << warmup_steps;
+    }
+    if (timed_steps > 0) {
+        std::cout << ",\"timed_steps\":" << timed_steps;
+    }
+    std::cout << "}\n";
 }
 
 //=============================================================================

@@ -88,9 +88,9 @@ static TGVMetrics run_tgv_2d(int N, int nsteps, double nu, double dt) {
 
 // ============================================================================
 // Helper: Compute relative L2 norm of velocity difference
+// Re-runs simulations to get full fields for comparison
 // ============================================================================
-static double compute_velocity_rel_l2(const TGVMetrics& m1, const TGVMetrics& m2,
-                                       int N, double nu, double dt) {
+static double compute_velocity_rel_l2(int N, double nu, double dt) {
     // Re-run simulations to get full fields for L2 comparison
     // This is a bit wasteful but keeps the metrics struct simple
     Mesh mesh;
@@ -164,7 +164,7 @@ void test_tgv_repeatability() {
     double E_rel = std::abs(m1.kinetic_energy - m2.kinetic_energy) / m1.kinetic_energy;
 
     // Always compute L2 norm for metrics (not just on failure)
-    double u_rel_l2 = compute_velocity_rel_l2(m1, m2, N, nu, dt);
+    double u_rel_l2 = compute_velocity_rel_l2(N, nu, dt);
 
     std::cout << "\n  Run 1: E=" << std::scientific << std::setprecision(12) << m1.kinetic_energy
               << ", max|u|=" << m1.max_velocity << "\n";

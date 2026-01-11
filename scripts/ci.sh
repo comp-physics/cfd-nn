@@ -259,7 +259,7 @@ extract_qoi_metrics() {
     # Mark that we expected QoI from this test
     # These are the tests that MUST emit QOI_JSON lines
     case "$test_name" in
-        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity")
+        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel")
             QOI_EXPECTED["$test_name"]=1
             ;;
     esac
@@ -278,15 +278,33 @@ extract_qoi_metrics() {
             test_id=$(echo "$json" | grep -oP '"test":"\K[^"]+' || true)
 
             if [ -n "$test_id" ]; then
-                # Remove "test" key from JSON for embedding
-                local metrics
-                metrics=$(echo "$json" | sed 's/"test":"[^"]*",//' | sed 's/^{//' | sed 's/}$//')
+                # Handle perf_gate specially: nest by case name
+                # {"test":"perf_gate","case":"foo",...} -> "perf_gate": {"foo": {...}}
+                if [ "$test_id" = "perf_gate" ]; then
+                    local case_id
+                    case_id=$(echo "$json" | grep -oP '"case":"\K[^"]+' || true)
+                    if [ -n "$case_id" ]; then
+                        # Remove test and case keys, keep the rest
+                        local metrics
+                        metrics=$(echo "$json" | sed 's/"test":"[^"]*",//' | sed 's/"case":"[^"]*",//' | sed 's/^{//' | sed 's/}$//')
+                        # Use composite key: perf_gate.$case_id
+                        if [ $QOI_COUNT -gt 0 ]; then
+                            echo "," >> "$QOI_METRICS_FILE"
+                        fi
+                        echo "    \"perf_gate.$case_id\": {$metrics}" >> "$QOI_METRICS_FILE"
+                        QOI_COUNT=$((QOI_COUNT + 1))
+                    fi
+                else
+                    # Standard case: use test_id as key
+                    local metrics
+                    metrics=$(echo "$json" | sed 's/"test":"[^"]*",//' | sed 's/^{//' | sed 's/}$//')
 
-                if [ $QOI_COUNT -gt 0 ]; then
-                    echo "," >> "$QOI_METRICS_FILE"
+                    if [ $QOI_COUNT -gt 0 ]; then
+                        echo "," >> "$QOI_METRICS_FILE"
+                    fi
+                    echo "    \"$test_id\": {$metrics}" >> "$QOI_METRICS_FILE"
+                    QOI_COUNT=$((QOI_COUNT + 1))
                 fi
-                echo "    \"$test_id\": {$metrics}" >> "$QOI_METRICS_FILE"
-                QOI_COUNT=$((QOI_COUNT + 1))
                 QOI_EXTRACTED["$test_name"]=1
             fi
         done <<< "$qoi_lines"
