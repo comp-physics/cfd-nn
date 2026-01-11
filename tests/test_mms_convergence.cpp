@@ -218,6 +218,10 @@ void test_mms_spatial_convergence() {
            qoi(min_rate, 1.4));
     record("MMS avg convergence rate >= 1.6", avg_rate >= 1.6,
            qoi(avg_rate, 1.6));
+
+    // Emit machine-readable QoI for CI metrics
+    // Report average rate (more stable than min) and finest grid error
+    harness::emit_qoi_mms(avg_rate, errors.back());
 }
 
 // ============================================================================
