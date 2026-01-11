@@ -37,7 +37,7 @@ python scripts/train_tbnn_mcconkey.py \
 
 ```bash
 cd build
-./channel --model nn_tbnn --nn_preset my_tbnn --max_iter 10000
+./channel --model nn_tbnn --nn_preset my_tbnn --max_steps 10000
 ```
 
 ## Option B: Quick Test with Dummy Data (5 min)
@@ -53,7 +53,7 @@ python scripts/train_tbnn_mcconkey.py \
 
 # Run in solver
 cd build
-./channel --model nn_tbnn --nn_preset test_tbnn --max_iter 1000
+./channel --model nn_tbnn --nn_preset test_tbnn --max_steps 1000
 ```
 
 **Note**: Dummy data trains quickly but results are not physically meaningful. Use real data for actual research.

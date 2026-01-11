@@ -38,7 +38,7 @@ void benchmark_grid(int N, int trials, int vcycles, bool use_fixed_cycles) {
         cfg.fixed_cycles = vcycles;  // Fixed mode: no convergence checks
     } else {
         cfg.tol = 1e-10;  // Convergence mode
-        cfg.max_iter = vcycles;
+        cfg.max_vcycles = vcycles;
         cfg.check_interval = 1;
     }
 

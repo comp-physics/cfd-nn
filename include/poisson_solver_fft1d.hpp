@@ -110,23 +110,64 @@ private:
     // Precomputed eigenvalues
     double* lambda_ = nullptr;               // Discrete eigenvalues [N_modes]
 
-    // 2D Helmholtz solver workspace (for Jacobi/Chebyshev)
-    double* work_real_ = nullptr;            // Real part workspace [N_modes * N_yz]
-    double* work_imag_ = nullptr;            // Imag part workspace [N_modes * N_yz]
-
     // For mean subtraction
     double* partial_sums_ = nullptr;
     double* sum_dev_ = nullptr;
     int num_blocks_ = 0;
 
+    // ========================================================================
+    // 2D Multigrid for Helmholtz solve (replaces Jacobi iterations)
+    // ========================================================================
+    static constexpr int MG_MAX_LEVELS = 8;
+    int mg_num_levels_ = 0;
+    int mg_Ny_[MG_MAX_LEVELS];              // Grid size in y at each level
+    int mg_Nz_[MG_MAX_LEVELS];              // Grid size in z at each level
+    int mg_N_yz_[MG_MAX_LEVELS];            // Ny * Nz at each level
+
+    // Per-level device arrays: [N_modes * mg_N_yz_[level]]
+    // p = solution, r = residual/RHS
+    // Using FP32 for MG (2x memory bandwidth, 2x compute throughput)
+    float* mg_p_real_[MG_MAX_LEVELS] = {};
+    float* mg_p_imag_[MG_MAX_LEVELS] = {};
+    float* mg_r_real_[MG_MAX_LEVELS] = {};
+    float* mg_r_imag_[MG_MAX_LEVELS] = {};
+
+    // Temporary buffer for ping-pong smoothing (FP32)
+    float* mg_tmp_real_ = nullptr;
+    float* mg_tmp_imag_ = nullptr;
+
+    // Precomputed eigenvalues in FP32 for MG kernels
+    float* lambda_f_ = nullptr;
+
+    bool mg_initialized_ = false;
+
+    // CUDA Graph for FULL solve (pack → FFT → MG → IFFT → unpack)
+    // Captures entire Poisson solve including cuFFT calls (CUDA 11.1+)
+    cudaGraph_t solve_graph_ = nullptr;
+    cudaGraphExec_t solve_graph_exec_ = nullptr;
+    bool solve_graph_captured_ = false;
+
+    // Cached pointers for graph execution (set during capture)
+    double* cached_rhs_dev_ = nullptr;
+    double* cached_p_dev_ = nullptr;
+
     // Initialization
     void initialize_fft();
     void initialize_eigenvalues();
+    void initialize_mg_levels();
     void cleanup();
+    void cleanup_mg();
 
-    // 2D Helmholtz solve for all modes
-    // Uses weighted Jacobi iteration (baseline) or Chebyshev (optimized)
-    void solve_helmholtz_2d(int iterations, double omega);
+    // 2D Multigrid V-cycle for Helmholtz solve
+    void solve_helmholtz_2d_mg(int nu1 = 2, int nu2 = 1);
+    void mg_smooth_2d_chebyshev(int level, int degree);
+    void mg_residual_restrict_fused_2d(int fine_level);
+    void mg_prolongate_2d(int coarse_level);
+    void mg_vcycle_2d(int level, int nu1, int nu2);
+
+    // CUDA Graph support for full solve
+    void capture_solve_graph(double* rhs_dev, double* p_dev);
+    void execute_solve_graph();
 #endif
 };
 

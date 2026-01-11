@@ -58,12 +58,12 @@ int main(int argc, char** argv) {
     config.verbose = false;
     
     // CRITICAL: Limit Poisson iterations to 3 V-cycles
-    config.poisson_max_iter = 3;
+    config.poisson_max_vcycles = 3;
     config.poisson_tol = 1e-6;  // Relative tolerance
     
     std::cout << "Grid: " << config.Nx << " x " << config.Ny << "\n";
     std::cout << "Timesteps: 50\n";
-    std::cout << "Poisson max V-cycles: " << config.poisson_max_iter << "\n";
+    std::cout << "Poisson max V-cycles: " << config.poisson_max_vcycles << "\n";
     std::cout << "Warm-start: YES (reuses previous solution)\n\n";
 
     Mesh mesh;

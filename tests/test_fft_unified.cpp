@@ -4,8 +4,11 @@
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
 #include "poisson_solver.hpp"
+#include "timing.hpp"
 #include <cmath>
 #include <vector>
+#include <chrono>
+#include <iomanip>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
@@ -41,7 +44,7 @@ void test_fft1d_selection() {
 
     Config cfg;
     cfg.Nx = 32; cfg.Ny = 32; cfg.Nz = 32;
-    cfg.dt = 0.001; cfg.max_iter = 1; cfg.nu = 1.0;
+    cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 1.0;
     cfg.poisson_solver = PoissonSolverType::FFT1D;
 
     RANSSolver solver(mesh, cfg);
@@ -86,7 +89,7 @@ void test_fft_vs_mg_periodic() {
     // MG reference
     Config cfg_mg;
     cfg_mg.Nx = N; cfg_mg.Ny = N; cfg_mg.Nz = N;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -95,6 +98,7 @@ void test_fft_vs_mg_periodic() {
     init_velocity(vel_mg);
     solver_mg.initialize(vel_mg);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     ScalarField p_mg(mesh);
     FOR_INTERIOR_3D(mesh, i, j, k) { p_mg(i, j, k) = solver_mg.pressure()(i, j, k); }
@@ -149,7 +153,7 @@ void test_fft1d_vs_mg_channel() {
 
     Config cfg_mg;
     cfg_mg.Nx = N; cfg_mg.Ny = N; cfg_mg.Nz = N;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -158,6 +162,7 @@ void test_fft1d_vs_mg_channel() {
     vel.fill(1.0, 0.0, 0.0);
     solver_mg.initialize(vel);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     ScalarField p_mg(mesh);
     FOR_INTERIOR_3D(mesh, i, j, k) { p_mg(i, j, k) = solver_mg.pressure()(i, j, k); }
@@ -211,7 +216,7 @@ void test_fft1d_vs_mg_duct() {
 
     Config cfg_mg;
     cfg_mg.Nx = N; cfg_mg.Ny = N; cfg_mg.Nz = N;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -220,6 +225,7 @@ void test_fft1d_vs_mg_duct() {
     vel.fill(1.0, 0.0, 0.0);
     solver_mg.initialize(vel);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     ScalarField p_mg(mesh);
     FOR_INTERIOR_3D(mesh, i, j, k) { p_mg(i, j, k) = solver_mg.pressure()(i, j, k); }
@@ -282,7 +288,7 @@ void test_fft2d_vs_mg_channel() {
     // MG reference
     Config cfg_mg;
     cfg_mg.Nx = Nx; cfg_mg.Ny = Ny;
-    cfg_mg.dt = 0.001; cfg_mg.max_iter = 1; cfg_mg.nu = 0.01;
+    cfg_mg.dt = 0.001; cfg_mg.max_steps = 1; cfg_mg.nu = 0.01;
     cfg_mg.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver_mg(mesh, cfg_mg);
@@ -291,6 +297,7 @@ void test_fft2d_vs_mg_channel() {
     init_velocity(vel);
     solver_mg.initialize(vel);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     double mg_max = linf_norm(solver_mg.pressure(), mesh);
 
@@ -340,7 +347,7 @@ void test_fft1d_correctness() {
 
     Config cfg;
     cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
-    cfg.dt = 0.001; cfg.max_iter = 1; cfg.nu = 1.0;
+    cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 1.0;
     cfg.poisson_solver = PoissonSolverType::FFT1D;
 
     RANSSolver solver(mesh, cfg);
@@ -382,16 +389,23 @@ void test_fft1d_grid_convergence() {
 
         Config cfg;
         cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
-        cfg.dt = 0.001; cfg.max_iter = 1; cfg.nu = 1.0;
+        cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 0.01;
         cfg.poisson_solver = PoissonSolverType::FFT1D;
+        cfg.dp_dx = -1.0;  // Add pressure gradient to drive flow
 
         RANSSolver solver(mesh, cfg);
         solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
 
         if (solver.poisson_solver_type() != PoissonSolverType::FFT1D) continue;
 
+        // Use non-uniform velocity to create non-zero divergence
         VectorField vel(mesh);
-        vel.fill(1.0, 0.0, 0.0);
+        FOR_INTERIOR_3D(mesh, i, j, k) {
+            double y = mesh.y(j);
+            double z = mesh.z(k);
+            // Parabolic profile in y and z (duct flow approximation)
+            vel.u(i, j, k) = (1.0 - (y - 1.0)*(y - 1.0)) * (1.0 - (z - 1.0)*(z - 1.0));
+        }
         solver.initialize(vel);
 
         for (int step = 0; step < 5; ++step) solver.step();
@@ -440,6 +454,62 @@ void test_2d_indexing() {
 }
 
 //=============================================================================
+// Benchmark: FFT1D Performance
+//=============================================================================
+
+void benchmark_fft1d_performance() {
+#if defined(USE_GPU_OFFLOAD) && defined(USE_FFT_POISSON)
+    std::cout << "\n=== FFT1D Performance Benchmark ===\n";
+    std::cout << "Grid\tms/step\t\tPoisson(ms)\tFraction\n";
+
+    std::vector<int> sizes = {64, 96, 128, 192};
+
+    for (int N : sizes) {
+        Mesh mesh;
+        mesh.init_uniform(N, N, N, 0.0, 2*M_PI, -1.0, 1.0, -1.0, 1.0);
+
+        Config cfg;
+        cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
+        cfg.dt = 0.001; cfg.max_steps = 100; cfg.nu = 0.0001;
+        cfg.poisson_solver = PoissonSolverType::FFT1D;
+        cfg.dp_dx = -0.0002;
+
+        RANSSolver solver(mesh, cfg);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+
+        if (solver.poisson_solver_type() != PoissonSolverType::FFT1D) {
+            std::cout << "N=" << N << ": FFT1D not available\n";
+            continue;
+        }
+
+        VectorField vel(mesh);
+        vel.fill(0.0, 0.0, 0.0);
+        solver.initialize(vel);
+
+        // Warm up
+        for (int i = 0; i < 5; ++i) solver.step();
+
+        // Reset timing stats
+        TimingStats::instance().reset();
+
+        // Time 50 steps
+        auto t0 = std::chrono::high_resolution_clock::now();
+        for (int i = 0; i < 50; ++i) solver.step();
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double poisson_ms = TimingStats::instance().total("poisson_solve") * 1000.0;
+        double fraction = poisson_ms / ms;
+
+        std::cout << N << "^3\t" << std::fixed << std::setprecision(3) << ms/50
+                  << "\t\t" << poisson_ms/50
+                  << "\t\t" << std::setprecision(1) << fraction*100 << "%\n";
+    }
+    std::cout << "\n";
+#endif
+}
+
+//=============================================================================
 // Main
 //=============================================================================
 
@@ -467,6 +537,9 @@ int main() {
         test_fft1d_correctness();
         test_fft1d_grid_convergence();
         test_2d_indexing();
+
+        // Performance benchmark
+        benchmark_fft1d_performance();
 
         const auto& c = harness::counters();
         if (c.skipped > 0 && c.passed == 0 && c.failed == 0) {

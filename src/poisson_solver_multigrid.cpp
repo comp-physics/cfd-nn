@@ -1594,8 +1594,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
     //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
     // Check every check_interval cycles to reduce overhead.
-    assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
-    const int max_cycles = cfg.max_iter;
+    assert(cfg.max_vcycles > 0 && "PoissonConfig.max_vcycles must be positive");
+    const int max_cycles = cfg.max_vcycles;
     const bool accurate_mode = (max_cycles > 5);
     // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
     const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : (accurate_mode ? 3 : 2);
@@ -1896,8 +1896,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     //   2. ||r||/||b|| ≤ tol_rhs  (RHS-relative, recommended for projection)
     //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
     // Check every check_interval cycles to reduce overhead.
-    assert(cfg.max_iter > 0 && "PoissonConfig.max_iter must be positive");
-    const int max_cycles = cfg.max_iter;
+    assert(cfg.max_vcycles > 0 && "PoissonConfig.max_vcycles must be positive");
+    const int max_cycles = cfg.max_vcycles;
     const bool accurate_mode = (max_cycles > 5);
     // Optimal at 128³ channel: nu1=3, nu2=1 (more pre-smooth for wall BCs)
     const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : (accurate_mode ? 3 : 2);

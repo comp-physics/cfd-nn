@@ -352,7 +352,7 @@ void test_nn_tbnn_solver_integration() {
     config.dp_dx = -1.0;
     config.adaptive_dt = true;
     config.CFL_max = 0.5;
-    config.max_iter = 50;
+    config.max_steps = 50;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::NNTBNN;
     config.nn_weights_path = model_path;

@@ -251,12 +251,12 @@ This suite follows **ASME V&V 20-2009** guidelines:
 
 ### Case Doesn't Converge
 
-**Symptoms**: max_iter reached, residual still high
+**Symptoms**: max_steps reached, residual still high
 
 **Fixes**:
 ```bash
 # Increase iterations
-max_iter = 100000
+max_steps = 100000
 
 # Reduce CFL for stability
 CFL_max = 0.3

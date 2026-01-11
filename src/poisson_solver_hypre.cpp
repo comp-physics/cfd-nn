@@ -330,7 +330,7 @@ void HyprePoissonSolver::create_solver() {
 
 void HyprePoissonSolver::setup_solver(const PoissonConfig& cfg) {
     // Set solver parameters
-    HYPRE_StructPFMGSetMaxIter(solver_, cfg.max_iter);
+    HYPRE_StructPFMGSetMaxIter(solver_, cfg.max_vcycles);
     HYPRE_StructPFMGSetTol(solver_, cfg.tol);
 
     // Configure PFMG parameters - different settings for 2D vs 3D

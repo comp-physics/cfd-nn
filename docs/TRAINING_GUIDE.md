@@ -344,7 +344,7 @@ python scripts/train_mlp_mcconkey.py \
 
 # 3. Test in solver
 cd build
-./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --max_iter 10000
+./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --max_steps 10000
 ```
 
 ## Step 5: Use Trained Model in Solver

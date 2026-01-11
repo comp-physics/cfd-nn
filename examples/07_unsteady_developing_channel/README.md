@@ -55,7 +55,7 @@ cd ../../build
 
 - **Time steps**: 5000
 - **Grid**: 64 × 128
-- **Snapshots**: 20 (every 250 steps)
+- **Snapshots**: 20 (every 250 iterations)
 - **Runtime**: ~2-5 minutes
 
 ### `laminar_fine.cfg` - High Resolution
@@ -171,7 +171,7 @@ adaptive_dt = false  # Fixed time step
 
 ```ini
 num_snapshots = 50   # More frequent output
-max_iter = 10000     # More time steps
+max_steps = 10000     # More time steps
 ```
 
 ## Validation Checks
@@ -194,7 +194,7 @@ max_iter = 10000     # More time steps
 
 **Flow doesn't evolve:**
 - Check body force: `dp_dx = -0.0002`
-- Increase time steps: `max_iter = 10000`
+- Increase time steps: `max_steps = 10000`
 
 ## Comparison with RANS
 

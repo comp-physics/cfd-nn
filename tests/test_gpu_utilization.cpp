@@ -109,7 +109,7 @@ ModelResult run_model(TurbulenceModelType type) {
         config.nu = 0.001;
         config.dt = 0.001;
         config.adaptive_dt = false;
-        config.max_iter = 100;
+        config.max_steps = 100;
         config.tol = 1e-6;
         config.turb_model = type;
         config.verbose = false;

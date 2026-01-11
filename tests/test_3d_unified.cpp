@@ -78,7 +78,7 @@ void test_mass_conservation() {
 
     Config cfg;
     cfg.nu = 0.01; cfg.dp_dx = -0.001;
-    cfg.adaptive_dt = true; cfg.max_iter = 500; cfg.tol = 1e-6;
+    cfg.adaptive_dt = true; cfg.max_steps = 500; cfg.tol = 1e-6;
     cfg.turb_model = TurbulenceModelType::None; cfg.verbose = false;
 
     RANSSolver solver(mesh, cfg);
@@ -325,7 +325,7 @@ void test_corner_cells_finite() {
 
 void test_divergence_free_3d() {
     auto ts = make_test_solver_3d_domain(16, 16, 16, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0, BCPattern::FullyPeriodic);
-    ts.config.poisson_max_iter = 50;
+    ts.config.poisson_max_vcycles = 50;
     ts->initialize_uniform(1.0, 0.5);
 
     for (int i = 0; i < 5; ++i) ts->step();
@@ -394,7 +394,7 @@ void test_poisson_3d_all_periodic() {
                   PoissonBC::Periodic, PoissonBC::Periodic);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-6; cfg.max_iter = 5000; cfg.omega = 1.5;
+    cfg.tol = 1e-6; cfg.max_vcycles = 5000; cfg.omega = 1.5;
     solver.solve(rhs, p, cfg);
 
     record("3D Poisson all periodic BCs", solver.residual() < 1e-4);
@@ -411,7 +411,7 @@ void test_poisson_3d_dirichlet() {
     solver.set_dirichlet_value(0.0);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-6; cfg.max_iter = 10000; cfg.omega = 1.5;
+    cfg.tol = 1e-6; cfg.max_vcycles = 10000; cfg.omega = 1.5;
     solver.solve(rhs, p, cfg);
 
     record("3D Poisson all Dirichlet BCs", solver.residual() < 1e-4);

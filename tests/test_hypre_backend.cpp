@@ -141,7 +141,7 @@ int main() {
     }
 
     PoissonConfig cfg;
-    cfg.max_iter = 200;
+    cfg.max_vcycles = 200;
     cfg.tol = 1e-10;
     cfg.verbose = false;
 

@@ -74,7 +74,7 @@ Nz = 32
 nu = 0.01           # Viscosity (sets Re = 1/nu for V₀=L=1)
 Re = 100            # Reynolds number
 dt = 0.01           # Time step
-max_iter = 1000     # Max steps (determines T_final)
+max_steps = 1000     # Max steps (determines T_final)
 ```
 
 ## Output

@@ -43,7 +43,7 @@ struct PerfTestCase {
     VelocityBC::Type x_bc, y_bc, z_bc;
     PoissonSolverType solver;
     int warmup_steps;
-    int timed_steps;
+    int timed_iter;
     // Baseline: time per step in milliseconds (very conservative)
     // These are set high to avoid false positives - we're catching 5x slowdowns, not 10% regressions
     double baseline_cpu_ms;  // Expected CPU time per step
@@ -82,7 +82,7 @@ PerfResult run_perf_test(const PerfTestCase& tc) {
     config.y_min = 0.0; config.y_max = tc.Ly;
     config.z_min = 0.0; config.z_max = tc.Lz;
     config.dt = 0.001;
-    config.max_iter = tc.warmup_steps + tc.timed_steps + 100;
+    config.max_steps = tc.warmup_steps + tc.timed_iter + 100;
     config.nu = 0.01;
     config.poisson_solver = tc.solver;
     config.verbose = false;
@@ -109,13 +109,13 @@ PerfResult run_perf_test(const PerfTestCase& tc) {
 
     // Timed run
     auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < tc.timed_steps; ++i) {
+    for (int i = 0; i < tc.timed_iter; ++i) {
         solver.step();
     }
     auto end = std::chrono::high_resolution_clock::now();
 
     double total_ms = std::chrono::duration<double, std::milli>(end - start).count();
-    result.time_per_step_ms = total_ms / tc.timed_steps;
+    result.time_per_step_ms = total_ms / tc.timed_iter;
 
     // Select baseline based on build type
 #ifdef USE_GPU_OFFLOAD
@@ -246,7 +246,7 @@ int main() {
     int passed = 0, failed = 0;
 
     for (const auto& tc : tests) {
-        std::cout << "  " << tc.name << " (" << tc.timed_steps << " steps)... " << std::flush;
+        std::cout << "  " << tc.name << " (" << tc.timed_iter << " steps)... " << std::flush;
 
         PerfResult r = run_perf_test(tc);
 

@@ -47,7 +47,7 @@ void profile_laminar_poiseuille(int nsteps) {
     config.nu = 0.01;
     config.dp_dx = -0.001;
     config.adaptive_dt = true;
-    config.max_iter = nsteps;  // LIMITED for profiling
+    config.max_steps = nsteps;  // LIMITED for profiling
     config.tol = 1e-8;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = true;  // Show progress
@@ -83,7 +83,7 @@ void profile_divergence_free(int nsteps) {
     config.nu = 0.01;
     config.dp_dx = -0.001;
     config.adaptive_dt = true;
-    config.max_iter = nsteps;  // LIMITED
+    config.max_steps = nsteps;  // LIMITED
     config.tol = 1e-7;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = true;
@@ -121,7 +121,7 @@ void profile_mass_conservation(int nsteps) {
     config.nu = 0.01;
     config.dp_dx = -0.001;
     config.adaptive_dt = true;
-    config.max_iter = nsteps;
+    config.max_steps = nsteps;
     config.tol = 1e-6;
     config.verbose = true;
     config.output_freq = 5;

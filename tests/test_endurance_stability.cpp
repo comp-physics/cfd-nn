@@ -153,7 +153,7 @@ bool run_endurance_test(const EnduranceConfig& cfg) {
     config.y_min = 0.0; config.y_max = cfg.Ly;
     config.z_min = 0.0; config.z_max = cfg.Lz;
     config.dt = cfg.dt;
-    config.max_iter = cfg.nsteps + 100;  // Allow headroom
+    config.max_steps = cfg.nsteps + 100;  // Allow headroom
     config.nu = 0.01;  // Moderate viscosity for stability
     config.poisson_solver = cfg.solver;
 

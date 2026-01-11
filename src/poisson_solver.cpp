@@ -304,7 +304,7 @@ int PoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const PoissonCo
     apply_bc(p);
     
     int iter = 0;
-    for (; iter < cfg.max_iter; ++iter) {
+    for (; iter < cfg.max_vcycles; ++iter) {
         sor_rb_iteration(rhs, p, cfg.omega);
         apply_bc(p);
         

@@ -127,7 +127,7 @@ static void init_poiseuille_3d(RANSSolver& s, const Mesh& m, double dp_dx, doubl
 static Config make_test_config() {
     Config c;
     c.nu = NU; c.dp_dx = DP_DX;
-    c.adaptive_dt = true; c.max_iter = MAX_ITER;
+    c.adaptive_dt = true; c.max_steps = MAX_ITER;
     c.tol = 1e-6; c.turb_model = TurbulenceModelType::None;
     c.verbose = false;
     return c;

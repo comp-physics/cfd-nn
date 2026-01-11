@@ -1,26 +1,35 @@
-# NN-CFD: Neural Network Turbulence Closures for Time-Accurate Incompressible Flow
+# NN-CFD: Neural Network Turbulence Closures for Incompressible Flow
 
 ![CI](https://github.com/comp-physics/cfd-nn/workflows/CI/badge.svg)
 
-A **high-performance C++ solver** for **incompressible turbulence simulations** with **pluggable turbulence closures** ranging from classical algebraic models to advanced transport equations and data-driven neural networks. Features a fractional-step projection method with a multigrid Poisson solver, pure C++ NN inference, and comprehensive GPU acceleration.
-
-The solver supports **10 turbulence closure options**: 3 algebraic (baseline, GEP), 2 transport (SST k-ω, k-ω), 3 EARSM variants (Wallin-Johansson, Gatski-Speziale, Pope), and 2 neural network closures (MLP, TBNN). All models support GPU offload via OpenMP target directives for NVIDIA and AMD GPUs, achieving 10-50x speedup on large grids.
+A **high-performance C++ solver** for **incompressible turbulent flow** with **pluggable turbulence closures** ranging from classical algebraic models to advanced transport equations and data-driven neural networks. Features a fractional-step projection method with multiple Poisson solvers, pure C++ NN inference, and comprehensive GPU acceleration via OpenMP target offload.
 
 ## Features
 
 - **Fractional-step projection method** for incompressible Navier-Stokes
-  - Explicit Euler time integration with adaptive time stepping
-  - **Multigrid Poisson solver** (O(N) complexity, 10-100x faster than SOR)
+  - Explicit Euler time integration with adaptive CFL-based time stepping
+  - Multiple Poisson solvers with automatic selection (FFT, Multigrid, HYPRE)
   - Pressure projection for divergence-free velocity
-- **Pseudo-time marching to steady RANS** for canonical flows (channel, duct)
-- **Multiple turbulence closures**:
-  - **Algebraic models**: Mixing length, GEP symbolic regression
-  - **Transport equation models**: SST k-ω, standard k-ω (Wilcox)
-  - **EARSM models**: Wallin-Johansson, Gatski-Speziale, Pope Quadratic
-  - **Neural networks**: Scalar eddy viscosity (MLP), Tensor Basis NN (TBNN - Ling et al. 2016)
+- **Staggered MAC grid** with second-order central finite differences
+- **10 turbulence closures**: algebraic, transport, EARSM, and neural network models
 - **Pure C++ NN inference** - no Python/TensorFlow at runtime
-- **Complete training pipeline** - train on real DNS/LES data
-- **Performance instrumentation** - detailed timing analysis
+- **GPU acceleration** via OpenMP target directives for NVIDIA and AMD GPUs
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Governing Equations](#governing-equations)
+- [Numerical Methods](#numerical-methods)
+- [Boundary Conditions](#boundary-conditions)
+- [Poisson Solvers](#poisson-solvers)
+- [Turbulence Closures](#turbulence-closures)
+- [Supported Flow Configurations](#supported-flow-configurations)
+- [Command-Line Options](#command-line-options)
+- [GPU Acceleration](#gpu-acceleration)
+- [Validation](#validation)
+- [References](#references)
+
+---
 
 ## Quick Start
 
@@ -35,181 +44,60 @@ make -j4
 ### Run Examples
 
 ```bash
-# Steady-state examples
-# --------------------
-# Laminar channel flow (steady state)
-./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_iter 10000
+# Laminar channel flow (Poiseuille, analytical validation)
+./channel --Nx 32 --Ny 64 --nu 0.01 --adaptive_dt --max_steps 10000
 
-# Same, but using Reynolds number (auto-computes nu)
-./channel --Nx 32 --Ny 64 --Re 2000 --adaptive_dt --max_iter 10000
+# Turbulent channel with SST k-omega
+./channel --Nx 64 --Ny 128 --Re 5000 --model sst --adaptive_dt
 
-# Turbulent with baseline model
-./channel --Nx 64 --Ny 128 --nu 0.001 --model baseline --adaptive_dt
+# Neural network turbulence model
+./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout --adaptive_dt
 
-# GEP algebraic model
-./channel --model gep --adaptive_dt
-
-# SST k-omega transport model
-./channel --model sst --adaptive_dt
-
-# EARSM (Wallin-Johansson)
-./channel --model earsm_wj --adaptive_dt
-
-# Neural network models
-./channel --model nn_mlp --nn_preset mlp_channel_caseholdout --adaptive_dt  # Fast, GPU-optimized
-./channel --model nn_tbnn --nn_preset tbnn_channel_caseholdout --adaptive_dt  # Physically consistent
-
-# Higher Reynolds number turbulent channel
-./channel --Nx 128 --Ny 256 --Re 5000 --model baseline --adaptive_dt
+# 3D Taylor-Green vortex
+./taylor_green_3d --Nx 64 --Ny 64 --Nz 64 --Re 100 --max_steps 1000
 ```
 
-## Training Neural Network Models
+---
 
-Train your own turbulence models on real DNS/LES data:
+## Governing Equations
 
-```bash
-# Setup environment (one-time)
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+The solver implements the **incompressible Reynolds-Averaged Navier-Stokes (RANS) equations**:
 
-# Download dataset (~500 MB)
-bash scripts/download_mcconkey_data.sh
-
-# Train TBNN model (~30 min on CPU)
-python scripts/train_tbnn_mcconkey.py \
-    --data_dir mcconkey_data \
-    --case channel \
-    --output data/models/tbnn_channel \
-    --epochs 100
-
-# Validate against DNS
-python scripts/validate_trained_model.py \
-    --model data/models/tbnn_channel \
-    --test_data mcconkey_data/channel/test/data.npz \
-    --plot
-
-# Use in solver
-cd build
-./channel --model nn_tbnn --nn_preset tbnn_channel
-```
-
-## Command-Line Options
-
-**Grid:**
-- `--Nx N`, `--Ny N` - Grid cells (default: 64 x 64)
-- `--stretch` - Enable y-direction stretching (default: off)
-
-**Physics:**
-- `--Re VALUE` - Reynolds number (default: 1000)
-- `--nu VALUE` - Kinematic viscosity (default: 0.001)
-- `--dp_dx VALUE` - Pressure gradient (driving force, default: -1.0)
-
-Note: Specify ONLY TWO of (Re, nu, dp_dx); the third is computed automatically:
-- `--Re` only → uses default dp_dx, computes nu
-- `--Re --nu` → computes dp_dx to achieve desired Re
-- `--Re --dp_dx` → computes nu to achieve desired Re
-- `--nu --dp_dx` → computes Re from these
-- none specified → uses defaults (Re=1000, nu=0.001, dp_dx=-1.0)
-
-Specifying all three will error unless they are mutually consistent.
-
-**Turbulence Model:**
-- `--model TYPE` - Turbulence closure (default: none)
-  - Algebraic: `none`, `baseline`, `gep`
-  - Transport: `sst`, `komega`
-  - EARSM: `earsm_wj`, `earsm_gs`, `earsm_pope`
-  - Neural: `nn_mlp`, `nn_tbnn`
-- `--nn_preset NAME` - Use NN model from data/models/<NAME>
-
-**Time Stepping:**
-- `--adaptive_dt` - Automatic time step (default: on)
-- `--dt VALUE` - Fixed time step (default: 0.001)
-- `--max_iter N` - Maximum iterations (default: 10000)
-- `--CFL VALUE` - Max CFL number (default: 0.5)
-- `--tol VALUE` - Convergence tolerance (default: 1e-6)
-
-**Output:**
-- `--output DIR` - Output directory (default: ./output)
-- `--num_snapshots N` - Number of VTK snapshots (default: 10)
-- `--verbose` / `--quiet` - Verbosity control (default: verbose)
-
-### VTK Visualization Output
-
-The solver automatically writes VTK files for visualization during the simulation:
-
-```bash
-# Default: 10 snapshots during simulation + final
-./channel --Nx 64 --Ny 128 --nu 0.01 --max_iter 1000
-# Outputs: channel_1.vtk through channel_10.vtk + channel_final.vtk
-
-# More snapshots for detailed time evolution
-./channel --Nx 64 --Ny 128 --nu 0.01 --max_iter 1000 --num_snapshots 20
-# Outputs: 20 intermediate snapshots + final
-
-# Only final state (faster, less disk space)
-./channel --Nx 64 --Ny 128 --nu 0.01 --max_iter 1000 --num_snapshots 0
-# Outputs: only channel_final.vtk
-```
-
-VTK files can be visualized with ParaView, VisIt, or similar tools.
-
-## Available Turbulence Models
-
-| Model | Type | Description | Speed | Accuracy |
-|-------|------|-------------|-------|----------|
-| `none` | Laminar | No turbulence model | ***** | N/A |
-| `baseline` | Algebraic | Mixing length + van Driest damping | ***** | Moderate |
-| `gep` | Algebraic | Gene Expression Programming (symbolic) | ***** | Good |
-| `sst` | Transport (2-eq) | SST k-ω (Menter 1994) | *** | Very good |
-| `komega` | Transport (2-eq) | Standard k-ω (Wilcox 1988) | *** | Good |
-| `earsm_wj` | EARSM | Wallin-Johansson (2000) + SST transport | **** | Excellent |
-| `earsm_gs` | EARSM | Gatski-Speziale (1993) + SST transport | **** | Very good |
-| `earsm_pope` | EARSM | Pope Quadratic (1975) + SST transport | **** | Good |
-| `nn_mlp` | Neural Net | Scalar eddy viscosity (data-driven) | ** | Data-driven |
-| `nn_tbnn` | Neural Net | Anisotropic stress (Ling 2016) | * | Data-driven |
-
-**Notes:**
-- **Algebraic models** are fastest but limited to simple flows
-- **Transport models** solve PDEs for k and ω, capturing history effects  
-- **EARSM models** combine SST k-ω transport with explicit algebraic closures for anisotropic Reynolds stress
-- **Neural models** require training data but can learn complex flow physics from DNS/LES data
-
-## Mathematical Formulation
-
-### Governing Equations
-
-The solver implements the **incompressible Reynolds-Averaged Navier-Stokes (RANS) equations** for turbulent flow:
-
-**Momentum equation:**
+### Momentum Equation
 
 $$\frac{\partial \bar{u}_i}{\partial t} + \bar{u}_j \frac{\partial \bar{u}_i}{\partial x_j} = -\frac{1}{\rho} \frac{\partial \bar{p}}{\partial x_i} + \frac{\partial}{\partial x_j}\left[(\nu + \nu_t) \frac{\partial \bar{u}_i}{\partial x_j}\right] + f_i$$
 
-**Continuity equation (incompressibility):**
+### Continuity Equation (Incompressibility)
 
-$$\frac{\partial \bar{u}_i}{\partial x_i} = 0$$
+$$\nabla \cdot \mathbf{u} = 0$$
 
-where:
-- $\bar{u}_i$ = mean velocity components
-- $\bar{p}$ = mean pressure
-- $\nu$ = kinematic viscosity
-- $\nu_t$ = turbulent eddy viscosity (from turbulence model)
-- $f_i$ = body force (e.g., pressure gradient)
-- $\rho$ = density (constant)
+**Variables:**
+| Symbol | Description |
+|--------|-------------|
+| $\bar{u}_i$ | Mean velocity components (u, v, w) |
+| $\bar{p}$ | Mean pressure |
+| $\nu$ | Kinematic viscosity |
+| $\nu_t$ | Turbulent eddy viscosity (from closure model) |
+| $f_i$ | Body force (e.g., pressure gradient driving force) |
+| $\rho$ | Density (constant for incompressible flow) |
+
+---
+
+## Numerical Methods
 
 ### Fractional-Step Projection Method
 
-The solver uses a **fractional-step method** (Chorin 1968) to decouple pressure and velocity:
+The solver uses a **three-step fractional-step method** (Chorin 1968) to decouple pressure and velocity:
 
-**Step 1: Provisional velocity** (without pressure gradient)
+**Step 1: Provisional Velocity** (explicit momentum without pressure)
 
 $$\frac{\mathbf{u}^* - \mathbf{u}^n}{\Delta t} = -(\mathbf{u}^n \cdot \nabla)\mathbf{u}^n + \nabla \cdot [(\nu + \nu_t) \nabla \mathbf{u}^n] + \mathbf{f}$$
 
-**Step 2: Pressure Poisson equation** (enforce incompressibility)
+**Step 2: Pressure Poisson Equation** (enforce incompressibility)
 
 $$\nabla^2 p' = \frac{1}{\Delta t} \nabla \cdot \mathbf{u}^*$$
 
-**Step 3: Velocity correction** (project onto divergence-free space)
+**Step 3: Velocity Correction** (project onto divergence-free space)
 
 $$\mathbf{u}^{n+1} = \mathbf{u}^* - \Delta t \nabla p'$$
 
@@ -217,675 +105,638 @@ This ensures $\nabla \cdot \mathbf{u}^{n+1} = 0$ to machine precision.
 
 ### Spatial Discretization
 
-All spatial derivatives use **second-order central finite differences** on a staggered Cartesian grid:
+All spatial derivatives use **second-order central finite differences** on a **staggered Marker-and-Cell (MAC) grid**:
+
+| Variable | Grid Location |
+|----------|---------------|
+| u-velocity | x-faces (staggered in x) |
+| v-velocity | y-faces (staggered in y) |
+| w-velocity | z-faces (staggered in z) |
+| Pressure, scalars | Cell centers |
 
 **Gradient (central difference):**
 
 $$\left.\frac{\partial u}{\partial x}\right|_{i,j} = \frac{u_{i+1,j} - u_{i-1,j}}{2\Delta x}$$
 
-**Laplacian (5-point stencil):**
+**Laplacian (5-point stencil in 2D, 7-point in 3D):**
 
 $$\left.\nabla^2 u\right|_{i,j} = \frac{u_{i+1,j} - 2u_{i,j} + u_{i-1,j}}{\Delta x^2} + \frac{u_{i,j+1} - 2u_{i,j} + u_{i,j-1}}{\Delta y^2}$$
 
-**Convective term** (two schemes available):
-- **Central:** $(\mathbf{u} \cdot \nabla)\mathbf{u}$ using central differences (default, more accurate)
-- **Upwind:** First-order upwind for stability at high Reynolds numbers
+**Convective Schemes** (selectable via `convective_scheme` config):
+- **Central differences** (default): Second-order accurate, lower numerical dissipation
+- **First-order upwind**: More stable at high Reynolds numbers, increased numerical dissipation
 
-**Diffusive term with variable viscosity:**
+**Variable Viscosity Diffusion:**
 
-$$\nabla \cdot [(\nu + \nu_t) \nabla u] = \frac{1}{\Delta x^2}\left[\nu_{e}(u_{i+1,j} - u_{i,j}) - \nu_{w}(u_{i,j} - u_{i-1,j})\right] + \frac{1}{\Delta y^2}\left[\nu_{n}(u_{i,j+1} - u_{i,j}) - \nu_{s}(u_{i,j} - u_{i,j-1})\right]$$
+$$\nabla \cdot [(\nu + \nu_t) \nabla u] = \frac{1}{\Delta x^2}\left[\nu_{e}(u_{i+1,j} - u_{i,j}) - \nu_{w}(u_{i,j} - u_{i-1,j})\right] + \ldots$$
 
-where $\nu_e, \nu_w, \nu_n, \nu_s$ are face-averaged effective viscosities (e.g., $\nu_e = \frac{1}{2}(\nu_{i,j} + \nu_{i+1,j})$).
-
-### Pressure Poisson Solver
-
-The pressure equation is solved using one of several methods, automatically selected based on boundary conditions and grid configuration:
-
-**Solver Selection Priority:** FFT (3D) → FFT2D (2D) → FFT1D (3D) → HYPRE → Multigrid
-
-| Solver | Best For | Requirements |
-|--------|----------|--------------|
-| **FFT** | 3D channel flows | Periodic x AND z, uniform dx/dz |
-| **FFT2D** | 2D channel flows | 2D mesh, periodic x |
-| **FFT1D** | 3D duct flows | Periodic x OR z (one only) |
-| **HYPRE** | Stretched grids | `USE_HYPRE` build |
-| **Multigrid** | General fallback | Always available |
-
-See `docs/POISSON_SOLVER_GUIDE.md` for detailed documentation on all solvers.
-
-#### 1. FFT-Based Solvers (Fastest)
-
-For periodic boundary conditions, the FFT solvers use cuFFT + cuSPARSE for direct solves:
-- **FFT**: 2D FFT in x-z + batched tridiagonal in y (3D, periodic x AND z)
-- **FFT2D**: 1D FFT in x + batched tridiagonal in y (2D mesh)
-- **FFT1D**: 1D FFT in periodic direction + 2D Helmholtz per mode (3D duct)
-
-Complexity: $\mathcal{O}(N \log N)$ - near-optimal for periodic problems.
-
-#### 2. Successive Over-Relaxation (SOR) - Testing Only
-
-Red-black Gauss-Seidel with relaxation parameter $\omega \in (1, 2)$:
-
-$$p_{i,j}^{k+1} = (1-\omega) p_{i,j}^k + \omega \frac{\displaystyle\frac{p_{i+1,j}^k + p_{i-1,j}^k}{\Delta x^2} + \frac{p_{i,j+1}^k + p_{i,j-1}^k}{\Delta y^2} - f_{i,j}}{\displaystyle\frac{2}{\Delta x^2} + \frac{2}{\Delta y^2}}$$
-
-- Complexity: $\mathcal{O}(N^2)$ for $N$ grid points
-- Iterations to convergence: 1000-10000
-- Used for small grids or validation
-
-#### 3. Geometric Multigrid (V-Cycle)
-
-**Algorithm:**
-1. **Pre-smooth**: Apply $\nu_1$ SOR iterations on fine grid
-2. **Restrict**: Compute residual $r = f - L_h p_h$ and restrict to coarse grid: $r_{2h} = I_{2h}^h r_h$
-3. **Recurse**: Solve $L_{2h} e_{2h} = r_{2h}$ on coarse grid (recursively)
-4. **Prolongate**: Interpolate correction back to fine grid: $e_h = I_h^{2h} e_{2h}$
-5. **Correct**: $p_h \leftarrow p_h + e_h$
-6. **Post-smooth**: Apply $\nu_2$ SOR iterations
-
-**Restriction operator** (full weighting):
-
-$$r_{2h}^{I,J} = \frac{1}{16}\begin{bmatrix}1 & 2 & 1 \\ 2 & 4 & 2 \\ 1 & 2 & 1\end{bmatrix} * r_h$$
-
-**Prolongation operator** (bilinear interpolation):
-- Coarse grid values copied directly
-- Fine grid values interpolated from surrounding coarse cells
-
-**Performance:**
-- Complexity: $\mathcal{O}(N)$ - optimal!
-- V-cycles to convergence: 5-15 (vs 1000-10000 SOR iterations)
-- Speedup: **10-100x faster** than SOR for large grids
-
-#### 4. HYPRE PFMG (GPU-Accelerated)
-
-For maximum GPU performance, the solver supports [HYPRE](https://github.com/hypre-space/hypre)'s PFMG (Parallel Semicoarsening Multigrid) solver with CUDA backend:
-
-**Performance (NVIDIA H200 GPU):**
-
-| Grid Size | HYPRE PFMG | Built-in Multigrid | Speedup |
-|-----------|------------|-------------------|---------|
-| 32³       | 5.4 ms     | 52 ms             | **9.7x**  |
-| 64³       | 5.4 ms     | 58 ms             | **10.8x** |
-| 128³      | 8.0 ms     | 66 ms             | **8.2x**  |
-
-**Key features:**
-- Entire multigrid solve runs on GPU via CUDA kernels
-- Automatic download and build via CMake FetchContent
-- Unified memory integration with OpenMP target offload
-- Weighted Jacobi smoothing (GPU-parallel)
-
-See `docs/HYPRE_POISSON_SOLVER.md` for detailed documentation.
+where $\nu_e, \nu_w$ are face-averaged effective viscosities.
 
 ### Time Integration
 
 **Explicit Euler** with adaptive time stepping:
 
-$$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delta y}{|v|_{\max}}\right)$$
+$$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delta y}{|v|_{\max}}, \frac{\Delta z}{|w|_{\max}}\right)$$
 
-where CFL $\in (0, 1]$ is the Courant-Friedrichs-Lewy number (default 0.5).
+- **CFL number**: Default 0.5 (configurable via `--CFL`)
+- **Steady-state convergence**: Iterate until $\|\mathbf{u}^{n+1} - \mathbf{u}^n\|_\infty < \text{tol}$
 
-**Pseudo-time marching** to steady state:
-- Iterate until $\|\mathbf{u}^{n+1} - \mathbf{u}^n\| < \text{tol}$
-- Convergence criterion: maximum velocity change per iteration
-- Typical convergence: 1000-10000 iterations for $\text{tol} = 10^{-6}$
+---
 
-### Boundary Conditions
+## Boundary Conditions
 
-**Channel flow (default):**
-- **Streamwise (x):** Periodic
-- **Wall-normal (y):** No-slip walls ($u = v = 0$)
-- **Pressure:** Neumann boundaries ($\partial p/\partial n = 0$)
+### Velocity Boundary Conditions
 
-**Periodic boundaries:**
+| Type | Description | Implementation |
+|------|-------------|----------------|
+| **Periodic** | Flow wraps around at boundaries | Ghost cells copy from opposite boundary |
+| **No-slip (Wall)** | Zero velocity at solid surfaces | $u = v = w = 0$ at wall |
+| **Inflow** | Prescribed velocity profile | User-defined function callbacks |
+| **Outflow** | Convective/zero-gradient outflow | Extrapolation from interior |
 
-$$u(0, y) = u(L_x, y), \quad p(0, y) = p(L_x, y)$$
+**Note:** Inflow/Outflow boundary conditions are defined in the code interface but not yet fully implemented for all solvers.
 
-**No-slip walls:**
+### Pressure (Poisson) Boundary Conditions
 
-$$u(x, 0) = 0, \quad v(x, 0) = 0$$
+The pressure Poisson equation supports three BC types:
+
+| Type | Description | Formula |
+|------|-------------|---------|
+| **Periodic** | Pressure wraps around | $p(\text{ghost}) = p(\text{periodic partner})$ |
+| **Neumann** | Zero normal gradient | $\partial p / \partial n = 0 \Rightarrow p(\text{ghost}) = p(\text{interior})$ |
+| **Dirichlet** | Fixed pressure value | $p(\text{ghost}) = 2 p_{\text{bc}} - p(\text{interior})$ |
+
+**Standard BC Configurations:**
+
+| Configuration | x-direction | y-direction | z-direction | Use Case |
+|---------------|-------------|-------------|-------------|----------|
+| `channel()` | Periodic | Neumann | Periodic | Channel flow |
+| `duct()` | Periodic | Neumann | Neumann | Square duct |
+| `cavity()` | Neumann | Neumann | Neumann | Lid-driven cavity |
+| `all_periodic()` | Periodic | Periodic | Periodic | Periodic box |
+
+### Gauge Fixing
+
+For problems with all Neumann or periodic pressure boundaries (no Dirichlet BC), the pressure is underdetermined up to a constant. The solver automatically:
+1. Detects this condition via `has_nullspace()` check
+2. Subtracts the mean pressure after each solve to fix the gauge
+
+---
+
+## Poisson Solvers
+
+The solver provides **6 Poisson solver options** with automatic selection based on grid configuration and boundary conditions:
+
+### Automatic Solver Selection Priority
+
+```
+FFT (3D) → FFT2D (2D) → FFT1D (3D partial-periodic) → HYPRE → Multigrid
+```
+
+### Available Solvers
+
+| Solver | Complexity | Best For | Requirements |
+|--------|------------|----------|--------------|
+| **FFT** | O(N log N) | 3D channel flows | Periodic x AND z, uniform grid |
+| **FFT2D** | O(N log N) | 2D channel flows | 2D mesh, periodic x |
+| **FFT1D** | O(N log N) + 2D solve | 3D duct flows | Periodic x OR z (one only) |
+| **HYPRE PFMG** | O(N) | Stretched grids, GPU | `USE_HYPRE` build flag |
+| **Multigrid** | O(N) | General fallback | Always available |
+| **SOR** | O(N²) | Testing/debugging | Always available |
+
+### Geometric Multigrid (V-Cycle)
+
+The default solver implements a geometric multigrid V-cycle:
+
+1. **Pre-smooth**: Apply smoothing iterations on fine grid (Chebyshev or Jacobi)
+2. **Restrict**: Compute residual and transfer to coarse grid (full weighting)
+3. **Recurse**: Solve on coarse grid (recursively)
+4. **Prolongate**: Interpolate correction back to fine grid (bilinear)
+5. **Post-smooth**: Apply smoothing iterations
+
+**Features:**
+- O(N) complexity (optimal)
+- 5-15 V-cycles to convergence (vs 1000-10000 SOR iterations)
+- **CUDA Graph optimization**: Entire V-cycle captured as single GPU graph (NVHPC compilers)
+- Chebyshev polynomial smoother (faster than Jacobi)
+
+**Convergence Criteria** (any triggers exit):
+- `tol_rhs`: RHS-relative $\|r\|/\|b\| < \epsilon$ (recommended for projection)
+- `tol_rel`: Initial-residual relative $\|r\|/\|r_0\| < \epsilon$
+- `tol_abs`: Absolute $\|r\|_\infty < \epsilon$
+
+### FFT-Based Solvers
+
+For problems with periodic boundaries, FFT solvers provide spectral accuracy:
+
+- **FFT (3D)**: 2D FFT in x-z + batched tridiagonal solve in y (cuSPARSE)
+- **FFT2D**: 1D FFT in x + batched tridiagonal in y
+- **FFT1D**: 1D FFT in periodic direction + 2D Helmholtz solve per mode
+
+### HYPRE PFMG
+
+GPU-accelerated parallel semicoarsening multigrid from [HYPRE](https://github.com/hypre-space/hypre):
+
+- Supports uniform AND stretched grids
+- Entire solve runs on GPU via CUDA backend
+- Automatic download and build via CMake FetchContent
+
+See `docs/POISSON_SOLVER_GUIDE.md` for detailed documentation.
+
+---
 
 ## Turbulence Closures
 
-The RANS equations require a **turbulence closure** to model the eddy viscosity $\nu_t$ or Reynolds stresses $\tau_{ij}$.
+The solver supports **10 turbulence closure options**:
 
-### 1. Mixing Length Model (Baseline)
+### Summary Table
 
-Classical **algebraic model** with van Driest wall damping:
+| Model | Type | Equations | Anisotropic | GPU |
+|-------|------|-----------|-------------|-----|
+| `none` | Direct | 0 | N/A | Yes |
+| `baseline` | Algebraic | 0 | No | Yes |
+| `gep` | Algebraic | 0 | No | Yes |
+| `komega` | Transport | 2 (k, ω) | No | Yes |
+| `sst` | Transport | 2 (k, ω) | No | Yes |
+| `earsm_wj` | EARSM | 2 (k, ω) | Yes | Yes |
+| `earsm_gs` | EARSM | 2 (k, ω) | Yes | Yes |
+| `earsm_pope` | EARSM | 2 (k, ω) | Yes | Yes |
+| `nn_mlp` | Neural Net | 0 | No | Yes |
+| `nn_tbnn` | Neural Net | 0 | Yes | Yes |
+
+### Algebraic Models (Zero-Equation)
+
+#### 1. Mixing Length Model (`baseline`)
+
+Classical model with van Driest wall damping:
 
 $$\nu_t = (\kappa y)^2 |\mathbf{S}| \left(1 - e^{-y^+/A^+}\right)^2$$
 
-where:
-- $\kappa = 0.41$ = von Kármán constant
-- $y$ = distance from wall
-- $|\mathbf{S}| = \sqrt{2S_{ij}S_{ij}}$ = strain rate magnitude
-- $S_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j} + \frac{\partial u_j}{\partial x_i}\right)$ = strain rate tensor
-- $y^+ = \frac{y u_\tau}{\nu}$ = wall units
-- $A^+ \approx 26$ = van Driest damping constant
+- $\kappa = 0.41$ (von Kármán constant)
+- $A^+ \approx 26$ (van Driest damping constant)
+- $|\mathbf{S}| = \sqrt{2S_{ij}S_{ij}}$ (strain rate magnitude)
 
-**Pros:** Fast, no additional PDEs, physically motivated  
-**Cons:** Struggles with separated flows, adverse pressure gradients
+#### 2. GEP Model (`gep`)
 
-### 2. GEP (Gene Expression Programming)
-
-**Symbolic regression** model learned from DNS/LES data:
+Symbolic regression formula discovered by genetic algorithms (Weatheritt & Sandberg 2016):
 
 $$\nu_t = f_{\text{GEP}}(S_{ij}, \Omega_{ij}, y, \text{Re}_\tau, \ldots)$$
 
-where $\Omega_{ij} = \frac{1}{2}\left(\frac{\partial u_i}{\partial x_j} - \frac{\partial u_j}{\partial x_i}\right)$ is the rotation rate tensor.
+### Transport Equation Models (Two-Equation)
 
-- Algebraic formula discovered by genetic algorithms
-- Interpretable (human-readable equation)
-- Faster than neural networks, more flexible than mixing length
+#### 3. SST k-ω (`sst`)
 
-**Example GEP formula** (Weatheritt & Sandberg 2016):
-
-$$\nu_t = \nu \cdot \text{Re}_\tau \cdot \left[c_1 \frac{|\mathbf{S}|}{|\mathbf{\Omega}|} + c_2 \left(\frac{y}{\delta}\right)^2 + \ldots\right]$$
-
-### 3. SST k-ω (Transport Equation Model)
-
-**Two-equation model** solving transport PDEs for turbulent kinetic energy ($k$) and specific dissipation rate ($\omega$):
+Menter's Shear Stress Transport model (1994):
 
 **k-equation:**
+$$\frac{\partial k}{\partial t} + \bar{u}_j \frac{\partial k}{\partial x_j} = P_k - \beta^* k \omega + \nabla \cdot [(\nu + \sigma_k \nu_t) \nabla k]$$
 
-$$\frac{\partial k}{\partial t} + \bar{u}_j \frac{\partial k}{\partial x_j} = P_k - \beta^* k \omega + \frac{\partial}{\partial x_j}\left[\left(\nu + \sigma_k \nu_t\right) \frac{\partial k}{\partial x_j}\right]$$
-
-**ω-equation (SST form with cross-diffusion):**
-
-$$\frac{\partial \omega}{\partial t} + \bar{u}_j \frac{\partial \omega}{\partial x_j} = \alpha \frac{\omega}{k} P_k - \beta \omega^2 + \frac{\partial}{\partial x_j}\left[\left(\nu + \sigma_\omega \nu_t\right) \frac{\partial \omega}{\partial x_j}\right] + 2(1-F_1)\sigma_{\omega2} \frac{1}{\omega}\frac{\partial k}{\partial x_j}\frac{\partial \omega}{\partial x_j}$$
+**ω-equation (with cross-diffusion):**
+$$\frac{\partial \omega}{\partial t} + \bar{u}_j \frac{\partial \omega}{\partial x_j} = \alpha \frac{\omega}{k} P_k - \beta \omega^2 + \nabla \cdot [(\nu + \sigma_\omega \nu_t) \nabla \omega] + CD_\omega$$
 
 **Eddy viscosity:**
-
 $$\nu_t = \frac{a_1 k}{\max(a_1 \omega, S F_2)}$$
 
-where:
-- $P_k = 2\nu_t S_{ij}S_{ij}$ = production of turbulent kinetic energy
-- $F_1, F_2$ = blending functions (smooth transition between k-ε and k-ω behavior)
-- $\alpha, \beta, \beta^*, \sigma_k, \sigma_\omega, a_1$ = model constants (blended between two sets)
+- Blending functions F₁, F₂ for k-ε/k-ω transition
+- Production limiter for numerical stability
+- Wall boundary conditions: k = 0, ω = ω_wall(y)
 
-**Implementation details:**
-- Explicit Euler time integration for k and ω transport
-- Central differences for diffusion terms
-- Positivity constraints: $k \geq k_{\min}$, $\omega \geq \omega_{\min}$
-- Wall boundary conditions: $k = 0$, $\omega = \omega_{\text{wall}}(y)$
-- GPU-accelerated with OpenMP target offload
+#### 4. Standard k-ω (`komega`)
 
-**Pros:** Captures transport/history effects, excellent for boundary layers and adverse pressure gradients  
-**Cons:** More expensive than algebraic models, requires solving 2 extra PDEs
-
-### 4. Standard k-ω (Wilcox 1988)
-
-Simplified version of SST without blending functions:
-
-**ω-equation (standard form, no cross-diffusion):**
-
-$$\frac{\partial \omega}{\partial t} + \bar{u}_j \frac{\partial \omega}{\partial x_j} = \alpha \frac{\omega}{k} P_k - \beta \omega^2 + \frac{\partial}{\partial x_j}\left[\left(\nu + \sigma_\omega \nu_t\right) \frac{\partial \omega}{\partial x_j}\right]$$
-
-**Eddy viscosity:**
+Wilcox (1988) formulation without blending:
 
 $$\nu_t = \frac{k}{\omega}$$
 
-Uses constant model coefficients (no blending). Simpler than SST but less accurate for complex flows.
+### EARSM Models (Explicit Algebraic Reynolds Stress)
 
-### 5. EARSM (Explicit Algebraic Reynolds Stress Models)
+EARSM models predict the full Reynolds stress anisotropy tensor using a tensor basis expansion:
 
-**Anisotropic closures** that predict the full Reynolds stress tensor using algebraic expressions:
-
-**Tensor basis expansion:**
-
-$$b_{ij} = \sum_{n=1}^{10} G_n(\eta, \xi) \, T_{ij}^{(n)}(\mathbf{S}, \mathbf{\Omega})$$
+$$b_{ij} = \sum_{n=1}^{N} G_n(\eta, \xi) \, T_{ij}^{(n)}(\mathbf{S}, \mathbf{\Omega})$$
 
 where:
-- $b_{ij} = \frac{\langle u_i' u_j' \rangle}{2k} - \frac{1}{3}\delta_{ij}$ = anisotropy tensor
-- $T_{ij}^{(n)}$ = integrity basis tensors (same as TBNN)
-- $G_n$ = algebraic coefficient functions (model-specific)
-- $\eta = \frac{Sk}{\epsilon}$, $\xi = \frac{\Omega k}{\epsilon}$ = strain and rotation time-scale ratios
+- $b_{ij}$ = anisotropy tensor (traceless)
+- $T_{ij}^{(n)}$ = integrity basis tensors
+- $G_n$ = scalar coefficient functions
+- $\eta = Sk/\epsilon$, $\xi = \Omega k/\epsilon$ = normalized invariants
 
-**Combined with transport equations:**
+Combined with SST k-ω transport for k and ω evolution.
 
-EARSM models in this code combine SST k-ω transport equations (for k and ω evolution) with explicit algebraic closures (for anisotropic Reynolds stresses). This gives both temporal accuracy and anisotropic stress predictions.
+#### 5. Wallin-Johansson EARSM (`earsm_wj`)
 
-**Eddy viscosity (for use in momentum equation):**
+Most sophisticated variant with cubic implicit equation for realizability.
 
-$$\nu_t = C_\mu \frac{k^2}{\epsilon}$$
+#### 6. Gatski-Speziale EARSM (`earsm_gs`)
 
-where $\epsilon = \beta^* k \omega$ (computed from k-ω model), and $C_\mu$ may be variable depending on the EARSM variant.
+Quadratic model without implicit solve.
 
-**Three EARSM variants implemented:**
+#### 7. Pope Quadratic EARSM (`earsm_pope`)
 
-#### a) Wallin-Johansson EARSM (2000)
+Classical weak-equilibrium model using first 3 basis tensors.
 
-Most sophisticated model with **cubic implicit equation** for parameter $N$:
+**Re_t-Based Blending:**
 
-$$N^3 + c_2 N^2 + c_1 N + c_0 = 0$$
+EARSM models use smooth blending between linear Boussinesq (laminar) and full nonlinear (turbulent):
 
-where coefficients $c_0, c_1, c_2$ depend on invariants $\eta$ and $\xi$.
+$$\alpha(\text{Re}_t) = \frac{1}{2}\left(1 + \tanh\left(\frac{\text{Re}_t - \text{Re}_{t,\text{center}}}{\text{Re}_{t,\text{width}}}\right)\right)$$
 
-**Coefficient functions:**
+where $\text{Re}_t = k/(\nu\omega)$. Default transition: center at Re_t = 10, width = 5.
 
-$$G_n = f_n(N, \eta, \xi, \beta_1, \ldots, \beta_6)$$
+### Neural Network Models
 
-with model constants $\beta_1 = 0.9$, $\beta_3 = 1.8$, $\beta_4 = 0.625$, $\beta_6 = 0.6$.
+#### 8. MLP (`nn_mlp`)
 
-**Features:**
-- Captures complex 3D turbulence
-- Realizability enforced through cubic solution
-- Variable $C_\mu$ improves accuracy
+Multi-layer perceptron for scalar eddy viscosity:
 
-#### b) Gatski-Speziale EARSM (1993)
+$$\nu_t = \text{NN}_{\text{MLP}}(\lambda_1, \ldots, \lambda_5, y/\delta)$$
 
-Simpler quadratic model:
+**Inputs** (invariants of strain and rotation tensors):
+- $\lambda_1 = S_{ij}S_{ij}$, $\lambda_2 = \Omega_{ij}\Omega_{ij}$, $\lambda_3 = S_{ij}S_{jk}S_{ki}$, ...
+- $y/\delta$ = normalized wall distance
 
-$$G_n = f_n(\eta, \xi, c_1, c_2, c_3, c_4)$$
+**Architecture:** 6 → 32 → 32 → 1 (ReLU activations)
 
-with constants $c_1 = 1.8$, $c_2 = 0.36$, $c_3 = 1.25$, $c_4 = 0.4$.
+#### 9. TBNN (`nn_tbnn`)
 
-No implicit solve required. Good balance between complexity and accuracy.
+Tensor Basis Neural Network (Ling et al. 2016) for anisotropic Reynolds stresses:
 
-#### c) Pope Quadratic EARSM (1975)
+$$b_{ij} = \sum_{n=1}^{10} g_n(\lambda_1, \ldots, \lambda_5) \, T_{ij}^{(n)}$$
 
-Classical weak-equilibrium model:
+**Architecture:** 5 → 64 → 64 → 64 → 10 (outputs one coefficient per basis tensor)
 
-$$G_1 = -\frac{2C_1}{3 + 2C_1 S^2/\Omega^2}, \quad G_2 = -\frac{4C_1^2}{(3 + 2C_1 S^2/\Omega^2)^2}, \quad G_3 = -\frac{2C_1}{3 + 2C_1 S^2/\Omega^2}$$
+**Key Properties:**
+- **Frame invariance**: Guaranteed by using invariant inputs + tensor basis
+- **Realizability**: Enforced during training
+- **Anisotropy**: Captures different normal stresses and off-diagonal components
 
-with $C_1 = 1.8$. Only uses first 3 basis tensors (quadratic in $S_{ij}$, $\Omega_{ij}$).
+---
 
-**EARSM implementation:**
-- Combined with SST k-ω transport for k and ω evolution
-- Explicit algebraic closure for Reynolds stress anisotropy
-- GPU-accelerated tensor computations
-- Automatic realizability enforcement (positive k, bounded eigenvalues)
+## Supported Flow Configurations
 
-**EARSM stability and Re_t-based blending:**
+### 2D Channel Flow
 
-EARSM closures compute nonlinear anisotropy corrections that are only physically meaningful when turbulence is actually present. The solver uses **smooth turbulence Reynolds number (Re_t) blending** to gracefully transition between linear Boussinesq and full nonlinear EARSM:
+Pressure-driven flow between parallel plates.
 
-$$\text{Re}_t = \frac{k}{\nu \omega}$$
+| Configuration | BCs | Use Case |
+|---------------|-----|----------|
+| Poiseuille (laminar) | Periodic x, walls y | Analytical validation |
+| Turbulent RANS | Periodic x, walls y | Model comparison |
 
-**Blending factor:**
-$$\alpha(Re_t) = \frac{1}{2}\left(1 + \tanh\left(\frac{Re_t - Re_{t,\text{center}}}{Re_{t,\text{width}}}\right)\right)$$
+**Analytical solution (Poiseuille):**
+$$u(y) = -\frac{1}{2\nu}\frac{dp}{dx}(H^2/4 - y^2)$$
 
-- **α = 0**: Pure linear Boussinesq (laminar-like, Re_t ≪ 1)
-- **α = 1**: Full nonlinear EARSM (turbulent, Re_t ≫ 1)
-- **Default transition**: Centered at Re_t = 10, width = 5
+### 3D Square Duct Flow
 
-**Physical reasoning:**
-- The linear term (β₁ S*) in EARSM reduces to Boussinesq and is always active
-- The nonlinear terms (commutator [S*, Ω*], quadratic S*²) capture anisotropy and are blended: `β_nonlinear *= α`
-- When Re_t → 0 (laminar), nonlinear corrections vanish smoothly
-- No hard switch → no discontinuities in residuals → better convergence
+Pressure-driven flow in square cross-section.
 
-**Configurable parameters** (via `EARSMThresholds` struct):
-- `Re_t_center = 10.0`: Center of blending transition (α = 0.5)
-- `Re_t_width = 5.0`: Width controlling steepness
-- `k_min = 1e-10`: Floor for k (denominator protection only)
-- `omega_min = 1e-10`: Floor for ω (denominator protection only)
-- `warn_low_turbulence = false`: Print diagnostic if Re_t < 1 globally
+| Configuration | BCs | Use Case |
+|---------------|-----|----------|
+| Laminar duct | Periodic x, walls y and z | 3D solver validation |
+| Turbulent duct | Periodic x, walls y and z | Secondary flow study |
 
-**To properly exercise EARSM (high α):**
-- Use driven flows (non-zero body force) to maintain turbulence
-- Ensure Re_t > 20 in regions of interest (→ α ≈ 0.99)
-- Typical values: Re_t ~ 100-1000 in fully turbulent channel flow
-- For decay tests, initialize with sufficient k and low ν
+### 3D Taylor-Green Vortex
 
-**Pros:** Full anisotropic stress with only algebraic closures, physics-based, more accurate than linear eddy viscosity  
-**Cons:** More computationally expensive than pure algebraic models, slightly more complex than standard Boussinesq
+Classic benchmark for unsteady flow and energy decay.
 
-### 6. MLP (Multi-Layer Perceptron)
+| Configuration | BCs | Use Case |
+|---------------|-----|----------|
+| Taylor-Green | All periodic | DNS verification, energy decay |
 
-**Neural network** for scalar eddy viscosity:
+**Initial condition:**
+$$u = \sin(x)\cos(y)\cos(z), \quad v = -\cos(x)\sin(y)\cos(z), \quad w = 0$$
 
-$$\nu_t = \text{NN}_{\text{MLP}}(\lambda_1, \lambda_2, \lambda_3, \lambda_4, \lambda_5, y/\delta)$$
+**Energy decay (low Re):**
+$$KE(t) = KE(0) \cdot e^{-2\nu t}$$
 
-**Inputs** (invariants of $S_{ij}$ and $\Omega_{ij}$):
-- $\lambda_1 = S_{ij}S_{ij}$ - strain magnitude squared
-- $\lambda_2 = \Omega_{ij}\Omega_{ij}$ - rotation magnitude squared
-- $\lambda_3 = S_{ij}S_{jk}S_{ki}$ - strain triple product
-- $\lambda_4 = \Omega_{ij}\Omega_{jk}S_{ki}$ - mixed invariant
-- $\lambda_5 = \Omega_{ij}\Omega_{jk}\Omega_{kl}S_{li}$ - higher-order invariant
-- $y/\delta$ - normalized wall distance
+---
 
-**Architecture:** 6 → 32 → 32 → 1 (fully connected, ReLU activations)
+## Configuration Reference
 
-**Training:** Supervised learning on DNS/LES data to match $\nu_t = -\langle u'v' \rangle / (\partial \bar{u}/\partial y)$
+All parameters can be set via command-line arguments (`--param value`) or config file (key-value pairs). Command-line arguments override config file values.
 
-### 7. TBNN (Tensor Basis Neural Network)
+### Domain and Mesh
 
-Predicts full **Reynolds stress anisotropy tensor** $b_{ij}$:
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `Nx` | `--Nx` | 64 | Grid cells in x-direction |
+| `Ny` | `--Ny` | 64 | Grid cells in y-direction |
+| `Nz` | `--Nz` | 1 | Grid cells in z-direction (1 = 2D simulation) |
+| `x_min` | - | 0.0 | Domain minimum in x |
+| `x_max` | - | 2π | Domain maximum in x |
+| `y_min` | - | -1.0 | Domain minimum in y |
+| `y_max` | - | 1.0 | Domain maximum in y |
+| `z_min` | `--z_min` | 0.0 | Domain minimum in z |
+| `z_max` | `--z_max` | 1.0 | Domain maximum in z |
+| `stretch_y` | `--stretch` | false | Enable tanh stretching in y (clusters points near walls) |
+| `stretch_beta` | - | 2.0 | Y-stretching parameter (higher = more clustering) |
+| `stretch_z` | `--stretch_z` | false | Enable tanh stretching in z (3D only) |
+| `stretch_beta_z` | `--stretch_beta_z` | 2.0 | Z-stretching parameter |
 
-$$b_{ij} = \frac{\langle u_i' u_j' \rangle}{\langle u_k' u_k' \rangle} - \frac{1}{3}\delta_{ij}$$
+### Physics Parameters
 
-**Tensor basis expansion** (Ling et al. 2016):
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `Re` | `--Re` | 1000.0 | Reynolds number |
+| `nu` | `--nu` | 0.001 | Kinematic viscosity |
+| `dp_dx` | `--dp_dx` | -1.0 | Pressure gradient (body force driving flow) |
+| `rho` | - | 1.0 | Density (constant for incompressible) |
 
-$$b_{ij} = \sum_{n=1}^{10} g_n(\lambda_1, \ldots, \lambda_5) \, T_{ij}^{(n)}(\mathbf{S}, \mathbf{\Omega})$$
+#### Auto-Computation of Physics Parameters
 
-where $T_{ij}^{(n)}$ are the **integrity basis tensors** (symmetric, traceless):
+The solver uses the relationship: $\text{Re} = \frac{-dp/dx \cdot \delta^3}{3\nu^2}$ where $\delta$ is the channel half-height.
 
-$$\begin{aligned}
-T_{ij}^{(1)} &= S_{ij} \\
-T_{ij}^{(2)} &= S_{ik}\Omega_{kj} - \Omega_{ik}S_{kj} \\
-T_{ij}^{(3)} &= S_{ik}S_{kj} - \frac{1}{3}S_{mn}S_{mn}\delta_{ij} \\
-&\vdots \\
-T_{ij}^{(10)} &= \Omega_{ik}\Omega_{kl}S_{lm}S_{mj} - S_{ik}S_{kl}\Omega_{lm}\Omega_{mj}
-\end{aligned}$$
+**You should specify only TWO of (Re, nu, dp_dx)**. The third is computed automatically:
 
-**Neural network:**
+| Specified | Computed | Use Case |
+|-----------|----------|----------|
+| `--Re` only | nu (using default dp_dx=-1) | Quick setup at desired Re |
+| `--Re --nu` | dp_dx | Control both Re and viscosity |
+| `--Re --dp_dx` | nu | Control Re and driving force |
+| `--nu --dp_dx` | Re | Specify physical parameters directly |
+| None | Re (from defaults) | Uses nu=0.001, dp_dx=-1.0 → Re≈1000 |
 
-$$g_n = \text{NN}_{\text{TBNN}}(\lambda_1, \lambda_2, \lambda_3, \lambda_4, \lambda_5) \quad \text{for } n = 1, \ldots, 10$$
+**If all three are specified**, the solver checks consistency and errors if they don't match (within 1% tolerance).
 
-- **Architecture:** 5 → 64 → 64 → 64 → 10 (outputs one coefficient per basis tensor)
-- **Frame invariance:** Guaranteed by using invariant inputs $\lambda_i$ and tensor basis
-- **Realizability:** Enforced during training (positive turbulent kinetic energy, Schwarz inequality)
+### Time Stepping
 
-**Reconstruction of Reynolds stresses:**
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `dt` | `--dt` | 0.001 | Time step size (when not using adaptive) |
+| `adaptive_dt` | `--adaptive_dt` | true | Enable CFL-based adaptive time stepping |
+| `CFL_max` | `--CFL` | 0.5 | Maximum CFL number for adaptive dt |
+| `max_steps` | `--max_steps` | 10000 | Maximum iterations (steady) or time steps (unsteady) |
+| `T_final` | - | -1.0 | Final simulation time (-1 = use max_iter instead) |
+| `tol` | `--tol` | 1e-6 | Convergence tolerance for steady-state |
 
-$$\langle u_i' u_j' \rangle = \frac{2}{3} k \left(\delta_{ij} + b_{ij}\right)$$
+**When adaptive_dt is enabled** (default), the time step is computed each iteration as:
+$$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delta y}{|v|_{\max}}, \frac{\Delta z}{|w|_{\max}}\right)$$
 
-where $k = \frac{1}{2}\langle u_i' u_i' \rangle$ is the turbulent kinetic energy.
+### Simulation Mode
 
-**Key differences from eddy viscosity models:**
-- Captures **anisotropy** (different normal stresses, nonzero shear stresses)
-- Mixing length and MLP assume isotropic eddy viscosity: $\langle u_i' u_j' \rangle = \frac{2}{3}k\delta_{ij} - \nu_t S_{ij}$
-- TBNN allows complex stress distributions learned from DNS/LES
-- **Trade-off:** More expensive to evaluate (210x slower than laminar) but may improve accuracy for complex flows
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `simulation_mode` | `--simulation_mode` | `steady` | `steady` or `unsteady` |
+| `perturbation_amplitude` | `--perturbation_amplitude` | 0.01 | Initial perturbation amplitude for DNS |
 
+- **Steady mode**: Iterates until $\|\mathbf{u}^{n+1} - \mathbf{u}^n\|_\infty < \text{tol}$ or max_iter reached
+- **Unsteady mode**: Runs exactly max_iter time steps (or until T_final)
 
-## McConkey Dataset
+### Numerical Schemes
 
-This project integrates with the **McConkey et al. (2021)** dataset:
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `convective_scheme` | `--scheme` | `central` | `central` (2nd-order) or `upwind` (1st-order, more stable) |
 
-- **Reference**: *Scientific Data* 8, 255 (2021)
-- **Content**: RANS + DNS/LES data for multiple flow cases
-- **Features**: Pre-computed TBNN invariants and tensor basis
-- **Cases**: Channel flow, square duct
-- **Download**: `bash scripts/download_mcconkey_data.sh`
+### Turbulence Model
 
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `turb_model` | `--model` | `none` | Turbulence closure (see table below) |
+| `nu_t_max` | - | 1.0 | Maximum eddy viscosity (clipping) |
+| `nn_preset` | `--nn_preset` | - | NN model preset name (loads from `data/models/<NAME>/`) |
+| `nn_weights_path` | `--weights` | - | Custom NN weights directory |
+| `nn_scaling_path` | `--scaling` | - | Custom NN scaling directory |
+
+**Available turbulence models:**
+
+| `--model` value | Description |
+|-----------------|-------------|
+| `none` | Laminar (no turbulence model) |
+| `baseline` | Algebraic mixing length with van Driest damping |
+| `gep` | Gene Expression Programming (Weatheritt-Sandberg 2016) |
+| `sst` | SST k-ω transport model (Menter 1994) |
+| `komega` | Standard k-ω (Wilcox 1988) |
+| `earsm_wj` | SST k-ω + Wallin-Johansson EARSM |
+| `earsm_gs` | SST k-ω + Gatski-Speziale EARSM |
+| `earsm_pope` | SST k-ω + Pope quadratic EARSM |
+| `nn_mlp` | Neural network scalar eddy viscosity (requires `--nn_preset`) |
+| `nn_tbnn` | Tensor Basis NN anisotropy model (requires `--nn_preset`) |
+
+**For NN models**, you must specify either:
+- `--nn_preset NAME` (loads from `data/models/<NAME>/`), or
+- `--weights DIR --scaling DIR` (explicit paths)
+
+Available presets: `tbnn_channel_caseholdout`, `tbnn_phll_caseholdout`, `example_tbnn`, `example_scalar_nut`
+
+### Poisson Solver
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `poisson_solver` | `--poisson` | `auto` | Solver selection (see table below) |
+| `poisson_tol` | `--poisson_tol` | 1e-6 | Legacy absolute tolerance (deprecated) |
+| `poisson_max_vcycles` | `--poisson_max_vcycles` | 20 | Maximum V-cycles per solve |
+| `poisson_omega` | - | 1.8 | SOR relaxation parameter (1 < ω < 2) |
+| `poisson_abs_tol_floor` | `--poisson_abs_tol_floor` | 1e-8 | Absolute tolerance floor |
+
+**Poisson solver options:**
+
+| `--poisson` value | Description | Requirements |
+|-------------------|-------------|--------------|
+| `auto` | Auto-select best solver | (default) |
+| `fft` | 2D FFT in x-z + tridiagonal in y | 3D, periodic x AND z, uniform grid |
+| `fft2d` | 1D FFT in x + tridiagonal in y | 2D only (Nz=1), periodic x |
+| `fft1d` | 1D FFT + 2D Helmholtz per mode | 3D, periodic x OR z (one only) |
+| `hypre` | HYPRE PFMG GPU-accelerated | Requires `USE_HYPRE` build |
+| `mg` | Native geometric multigrid | Always available |
+
+**Auto-selection priority:** FFT → FFT2D → FFT1D → HYPRE → MG
+
+#### Advanced Multigrid Settings
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `poisson_tol_abs` | - | 0.0 | Absolute tolerance on ‖r‖ (0 = disabled) |
+| `poisson_tol_rhs` | - | 1e-3 | RHS-relative: ‖r‖/‖b‖ (recommended) |
+| `poisson_tol_rel` | - | 1e-3 | Initial-residual relative: ‖r‖/‖r₀‖ |
+| `poisson_check_interval` | - | 1 | Check convergence every N V-cycles |
+| `poisson_use_l2_norm` | - | true | Use L2 norm (smoother than L∞) |
+| `poisson_linf_safety` | - | 10.0 | L∞ safety cap multiplier |
+| `poisson_fixed_cycles` | - | 8 | Fixed V-cycle count (0 = convergence-based) |
+| `poisson_adaptive_cycles` | - | false | Enable adaptive checking in fixed-cycle mode |
+| `poisson_check_after` | - | 4 | Check residual after this many cycles |
+| `poisson_nu1` | - | 0 | Pre-smoothing sweeps (0 = auto: 3 for walls) |
+| `poisson_nu2` | - | 0 | Post-smoothing sweeps (0 = auto: 1) |
+| `poisson_chebyshev_degree` | - | 4 | Chebyshev polynomial degree (3-4 typical) |
+| `poisson_use_vcycle_graph` | - | true | Enable CUDA Graph for V-cycle (GPU only) |
+
+**Convergence criteria** (any triggers exit):
+- `tol_rhs`: ‖r‖/‖b‖ < ε (recommended for projection)
+- `tol_rel`: ‖r‖/‖r₀‖ < ε
+- `tol_abs`: ‖r‖ < ε
+
+### Output
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `output_dir` | `--output` | `output/` | Output directory for VTK files |
+| `output_freq` | - | 100 | Console output frequency (iterations) |
+| `num_snapshots` | `--num_snapshots` | 10 | Number of VTK snapshots during simulation |
+| `verbose` | `--verbose` | true | Enable verbose output |
+| `postprocess` | `--no_postprocess` | true | Enable Poiseuille table + profile output |
+| `write_fields` | `--no_write_fields` | true | Enable VTK/field output |
+
+### Performance and Diagnostics
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `warmup_iter` | `--warmup_iter` | 0 | Iterations to run before timing (excluded from benchmarks) |
+| `turb_guard_enabled` | `--turb_guard_enabled` | true | Enable NaN/Inf guard checks |
+| `turb_guard_interval` | `--turb_guard_interval` | 5 | Check for NaN/Inf every N iterations |
+
+### Benchmark Mode
+
+The `--benchmark` flag configures the solver for performance timing with minimal overhead:
+
+```bash
+# Run benchmark with defaults (192^3 grid, 20 iterations)
+./duct --benchmark
+
+# Override grid size
+./duct --benchmark --Nx 256 --Ny 256 --Nz 256
+
+# Override iteration count
+./duct --benchmark --max_steps 100
+```
+
+**Benchmark mode sets these defaults** (all can be overridden by subsequent flags):
+
+| Setting | Value | Rationale |
+|---------|-------|-----------|
+| Grid size | 192 × 192 × 192 | Large enough for meaningful timing |
+| Domain | 3D duct (periodic x, walls y/z) | Representative wall-bounded flow |
+| `verbose` | false | No console output |
+| `postprocess` | false | No profile analysis |
+| `write_fields` | false | No VTK output |
+| `num_snapshots` | 0 | No intermediate snapshots |
+| `convective_scheme` | upwind | First-order upwind |
+| `poisson_fixed_cycles` | 1 | Single V-cycle per time step |
+| `turb_model` | none | No turbulence model |
+| `max_steps` | 20 | Default iteration count |
+| `adaptive_dt` | false | Fixed time step (dt=0.001) |
+
+### Config File Format
+
+Config files use simple key-value syntax:
+
+```ini
+# Comment lines start with #
+Nx = 128
+Ny = 256
+Re = 5000
+turb_model = sst
+adaptive_dt = true
+```
+
+Load a config file with `--config FILE`. Command-line arguments override config file values.
+
+---
 
 ## GPU Acceleration
 
-All turbulence models support **GPU offload** via OpenMP target directives:
+All solver components support GPU offload via OpenMP target directives.
 
-**Build with GPU support:**
+### Build with GPU Support
+
 ```bash
-mkdir build && cd build
+# NVIDIA GPUs (NVHPC compiler)
 CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON
-make -j8
+
+# With HYPRE PFMG (fastest Poisson solver)
+CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_HYPRE=ON
 ```
 
-**Build with GPU + HYPRE PFMG (fastest Poisson solver):**
-```bash
-mkdir build_hypre && cd build_hypre
-CC=nvc CXX=nvc++ cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DUSE_GPU_OFFLOAD=ON \
-    -DUSE_HYPRE=ON
-make -j8
+### GPU-Accelerated Components
 
-# Run with HYPRE solver
-./channel --poisson_solver hypre --Nx 64 --Ny 128 --Nz 64 --model baseline
-```
-
-HYPRE is automatically downloaded and built by CMake. See `docs/HYPRE_POISSON_SOLVER.md` for details.
-
-**GPU-accelerated components:**
-- Momentum equation (advection, diffusion)
-- Pressure Poisson solver (multigrid V-cycles, or HYPRE PFMG with 8-10x speedup)
+- Momentum equation (convection, diffusion)
+- Pressure Poisson solver (multigrid V-cycles or HYPRE PFMG)
 - Turbulence transport equations (k, ω)
 - EARSM tensor basis computations
-- Feature invariant calculations
+- Neural network inference
 
-### V-cycle CUDA Graph Optimization
+### CUDA Graph Optimization
 
-On NVIDIA GPUs with NVHPC compiler, the native multigrid solver captures the **entire V-cycle kernel sequence as a CUDA Graph**. This eliminates per-kernel launch overhead and synchronization costs:
+On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUDA Graph**:
+- Eliminates per-kernel launch overhead
+- Single `cudaGraphLaunch()` replaces O(levels × kernels) launches
+- Automatically recaptured if boundary conditions change
 
-**How it works:**
-1. On first solve, the V-cycle executes normally while CUDA captures all kernel launches
-2. The captured graph is stored and validated
-3. Subsequent solves replay the graph with a single `cudaGraphLaunch()` call
-4. Graph is automatically recaptured if boundary conditions change
-
-**Performance impact:**
-- Eliminates ~37% of GPU API time spent in `cudaStreamSynchronize` (measured with Nsys)
-- Reduces kernel launch overhead from O(levels × kernels) to O(1)
-- Most beneficial for iterative solves with many V-cycles
-
-**Configuration:**
-```cpp
-// Enabled by default in GPU builds with NVHPC
-config.poisson_use_vcycle_graph = true;   // Enable (default)
-config.poisson_use_vcycle_graph = false;  // Disable for debugging
-```
-
-**Requirements:**
-- NVIDIA GPU with CUDA support
-- NVHPC compiler (uses `ompx_get_cuda_stream()` for stream access)
-- 3D mesh (2D meshes use non-graphed path)
-
-**Fallback behavior:**
-- Non-NVHPC compilers: Automatic fallback to standard OpenMP target path
-- 2D meshes: V-cycle graph disabled (not fully optimized for 2D)
-- Graph capture failure: Falls back to non-graphed path with warning
-
-See `docs/POISSON_SOLVER_GUIDE.md` for detailed Poisson solver documentation.
+---
 
 ## Validation
 
-The solver is validated against both **analytical solutions** and **fundamental physics principles**.
-
-### Physics Conservation Tests
-
-The comprehensive test suite (`tests/test_physics_validation_advanced.cpp`) verifies the solver obeys fundamental conservation laws and produces physically correct results:
-
-**1. Poiseuille Flow (Analytical Comparison):**
-- Tests viscous diffusion and pressure gradient balance
-- Compares to exact parabolic velocity profile
-- Pass criterion: L2 error < 5% on 64×128 grid
-- Result: ~2% error achieved
-
-**2. Divergence-Free Constraint:**
-- Verifies $\nabla \cdot \mathbf{u} = 0$ (incompressibility)
-- Pass criterion: Machine precision (< 1e-10)
-- Result: Maximum divergence ~1e-12
-
-**3. Momentum Balance (Integral Check):**
-- Verifies $\int f_{\text{body}} \, dV = \int \tau_{\text{wall}} \, dA$
-- Checks global momentum conservation
-- Pass criterion: Imbalance < 10%
-- Result: ~5% imbalance
-
-**4. Channel Symmetry:**
-- Verifies $u(y) = u(-y)$ about centerline
-- Tests boundary condition and discretization correctness
-- Pass criterion: Machine precision
-- Result: Perfect symmetry
-
-**5. Cross-Model Consistency:**
-- All turbulence models should agree in laminar limit
-- Pass criterion: < 5% difference between models
-- Result: All models produce consistent laminar results
-
-**6. Sanity Checks:**
-- No NaN/Inf in solution
-- Realizability: $\nu_t \geq 0$, $k \geq 0$, $\omega \geq 0$
-- All checks pass
-
-**Taylor-Green Vortex Test** (`tests/test_taylor_green.cpp`):
-- Exact solution: $u = \sin(x)\cos(y)e^{-2\nu t}$
-- Theory: Kinetic energy decays as $KE(t) = KE(0) \cdot e^{-4\nu t}$
-- Pass criterion: < 5% error in energy decay
-- Result: 0.5% error over 100 time steps (excellent!)
-
 ### Analytical Benchmarks
 
-**Laminar channel flow** (Poiseuille solution):
+| Test Case | Metric | Expected |
+|-----------|--------|----------|
+| Poiseuille flow | L2 error vs analytical | < 5% on 64×128 grid |
+| Taylor-Green energy decay | Energy decay error | < 5% |
 
-$$u(y) = -\frac{1}{2\nu}\frac{dp}{dx}(1 - y^2), \quad v(y) = 0$$
+### Physics Conservation
 
-- **L2 error:** ~2% on 64×128 grid (laminar Re=180)
-- **Maximum error:** < 5% at centerline
-- See `docs/VALIDATION.md` for detailed convergence studies
+| Property | Criterion |
+|----------|-----------|
+| Divergence-free | $\|\nabla \cdot \mathbf{u}\|_\infty < 10^{-10}$ |
+| Momentum balance | Body force = wall shear (< 10% imbalance) |
+| Channel symmetry | $u(y) = u(-y)$ (machine precision) |
 
-### Turbulence Model Validation
+### DNS Benchmarks
 
-**Turbulent flows** compared against:
-- **DNS databases:** Moser et al. channel flow DNS
-  - Channel flow at Re_τ = 180, 395, 590
-  - Mean velocity profiles, Reynolds stresses
-- **McConkey et al. (2021) dataset:**
-  - Periodic hills at Re = 10,595
-  - Multiple flow configurations for training
-- **Published results:** Ling et al. (2016) TBNN methodology
-  - Framework for learning anisotropy from data
-  - Outperforms standard RANS models on test cases
+| Test Case | Reference |
+|-----------|-----------|
+| Channel Re_τ = 180, 395, 590 | Moser, Kim & Mansour (1999) |
+| McConkey et al. dataset | Scientific Data 8, 255 (2021) |
 
-**Example validation metrics (Re_τ = 180):**
-- SST k-ω: Mean velocity profile within 10% of DNS
-- Baseline mixing length: Good agreement in log layer
-- EARSM models: Improved predictions of secondary flows
-- Neural models: Data-driven accuracy depends on training quality
+---
 
-## Code Architecture
+## Training Neural Network Models
 
-The solver is designed with **modularity** and **extensibility** in mind:
+Train custom turbulence models on DNS/LES data:
 
-### Turbulence Model Hierarchy
+```bash
+# Setup environment
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 
-All turbulence models inherit from a common base class:
+# Download dataset (~500 MB)
+bash scripts/download_mcconkey_data.sh
 
-```cpp
-class TurbulenceModel {
-public:
-    // Core interface
-    virtual void update(const Mesh& mesh, const Field& u, const Field& v) = 0;
-    virtual const Field& get_nu_t() const = 0;
-    
-    // For transport models (k-ω, SST)
-    virtual bool uses_transport_equations() const { return false; }
-    virtual void advance_turbulence(...) { }
-    
-    // For anisotropic models (EARSM, TBNN)
-    virtual bool provides_anisotropy() const { return false; }
-    virtual const Field& get_anisotropy_component(int i, int j) const;
-};
+# Train TBNN model
+python scripts/train_tbnn_mcconkey.py \
+    --data_dir mcconkey_data \
+    --case channel \
+    --output data/models/tbnn_channel \
+    --epochs 100
+
+# Use in solver
+./channel --model nn_tbnn --nn_preset tbnn_channel
 ```
 
-**Concrete implementations:**
-- `MixingLengthModel` - Algebraic eddy viscosity
-- `GEPModel` - Symbolic regression
-- `SSTKOmegaTransport` - SST k-ω with transport equations
-- `KOmegaTransport` - Standard k-ω
-- `SSTWithEARSM` - Composite: SST transport + EARSM closure
-- `NNMLPModel` - Neural network (scalar)
-- `NNTBNNModel` - Neural network (tensor)
-
-### Factory Pattern for Model Selection
-
-Models are created via a factory function:
-
-```cpp
-std::unique_ptr<TurbulenceModel> create_turbulence_model(
-    TurbulenceModelType type, const Mesh& mesh, const Config& config);
-```
-
-This allows **easy addition of new models** without modifying the main solver.
-
-### GPU Offload Strategy
-
-GPU acceleration uses **persistent device buffers** to minimize data transfer:
-
-```cpp
-class OmpDeviceBuffer<T> {
-    // RAII wrapper for GPU memory
-    T* device_ptr_;
-    size_t size_;
-public:
-    void allocate();
-    void upload(const T* host_data);
-    void download(T* host_data);
-    T* device_ptr() const;
-};
-```
-
-**Offloaded kernels:**
-- Advection, diffusion operators
-- Turbulence transport step (k, ω)
-- EARSM coefficient computation
-- Feature invariant calculations
-
-Data stays on GPU between time steps; only final results are copied back to CPU.
+---
 
 ## References
 
 ### Numerical Methods
 
-**Fractional-step method:**
-- Chorin, A. J. "Numerical solution of the Navier-Stokes equations." *Mathematics of Computation* 22.104 (1968): 745-762
-
-**Multigrid methods:**
+- Chorin, A. J. "Numerical solution of the Navier-Stokes equations." *Math. Comput.* 22.104 (1968): 745-762
 - Briggs, W. L., Henson, V. E., & McCormick, S. F. *A Multigrid Tutorial*, 2nd ed. SIAM, 2000
 
 ### Turbulence Modeling
 
-**Transport Equation Models:**
-- Menter, F. R. "Two-equation eddy-viscosity turbulence models for engineering applications." *AIAA Journal* 32.8 (1994): 1598-1605 (SST k-ω)
-- Wilcox, D. C. "Reassessment of the scale-determining equation for advanced turbulence models." *AIAA Journal* 26.11 (1988): 1299-1310 (k-ω)
+- Menter, F. R. "Two-equation eddy-viscosity turbulence models for engineering applications." *AIAA J.* 32.8 (1994): 1598-1605
+- Wilcox, D. C. "Reassessment of the scale-determining equation for advanced turbulence models." *AIAA J.* 26.11 (1988): 1299-1310
+- Wallin, S., & Johansson, A. V. "An explicit algebraic Reynolds stress model..." *J. Fluid Mech.* 403 (2000): 89-132
+- Gatski, T. B., & Speziale, C. G. "On explicit algebraic stress models..." *J. Fluid Mech.* 254 (1993): 59-78
+- Pope, S. B. "A more general effective-viscosity hypothesis." *J. Fluid Mech.* 72.2 (1975): 331-340
 
-**EARSM (Explicit Algebraic Reynolds Stress Models):**
-- Wallin, S., & Johansson, A. V. "An explicit algebraic Reynolds stress model for incompressible and compressible turbulent flows." *Journal of Fluid Mechanics* 403 (2000): 89-132 (Wallin-Johansson)
-- Gatski, T. B., & Speziale, C. G. "On explicit algebraic stress models for complex turbulent flows." *Journal of Fluid Mechanics* 254 (1993): 59-78 (Gatski-Speziale)
-- Pope, S. B. "A more general effective-viscosity hypothesis." *Journal of Fluid Mechanics* 72.2 (1975): 331-340 (Pope Quadratic)
+### Neural Network Closures
 
-**Neural Network Closures:**
-- Ling, J., Kurzawski, A., & Templeton, J. "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance." *Journal of Fluid Mechanics* 807 (2016): 155-166 (TBNN)
+- Ling, J., Kurzawski, A., & Templeton, J. "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance." *J. Fluid Mech.* 807 (2016): 155-166
+- Weatheritt, J., & Sandberg, R. D. "A novel evolutionary algorithm applied to algebraic modifications of the RANS stress-strain relationship." *J. Comput. Phys.* 325 (2016): 22-37
 
-**GEP Symbolic Regression:**
-- Weatheritt, J., & Sandberg, R. D. "A novel evolutionary algorithm applied to algebraic modifications of the RANS stress–strain relationship." *Journal of Computational Physics* 325 (2016): 22-37
+### Dataset
 
-**Dataset:**
 - McConkey, R., et al. "A curated dataset for data-driven turbulence modelling." *Scientific Data* 8 (2021): 255
 
-### BibTeX
-
-```bibtex
-@article{chorin1968numerical,
-  title={Numerical solution of the Navier-Stokes equations},
-  author={Chorin, Alexandre Joel},
-  journal={Mathematics of Computation},
-  volume={22},
-  number={104},
-  pages={745--762},
-  year={1968}
-}
-
-@article{ling2016reynolds,
-  title={Reynolds averaged turbulence modelling using deep neural networks with embedded invariance},
-  author={Ling, Julia and Kurzawski, Andrew and Templeton, Jeremy},
-  journal={Journal of Fluid Mechanics},
-  volume={807},
-  pages={155--166},
-  year={2016},
-  publisher={Cambridge University Press}
-}
-
-@article{weatheritt2016novel,
-  title={A novel evolutionary algorithm applied to algebraic modifications of the RANS stress--strain relationship},
-  author={Weatheritt, Jack and Sandberg, Richard D},
-  journal={Journal of Computational Physics},
-  volume={325},
-  pages={22--37},
-  year={2016},
-  publisher={Elsevier}
-}
-
-@article{mcconkey2021curated,
-  title={A curated dataset for data-driven turbulence modelling},
-  author={McConkey, Ryley and Yee, Eugene and Lien, Fue-Sang},
-  journal={Scientific Data},
-  volume={8},
-  number={1},
-  pages={255},
-  year={2021},
-  publisher={Nature Publishing Group}
-}
-```
+---
 
 ## License
 

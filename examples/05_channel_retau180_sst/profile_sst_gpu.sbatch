@@ -15,7 +15,7 @@
 set -euo pipefail
 
 echo "=========================================="
-echo "GPU Profiling: SST Channel (200 steps)"
+echo "GPU Profiling: SST Channel (200 iterations)"
 echo "=========================================="
 echo "Started: $(date)"
 echo "Node: $(hostname)"
@@ -57,9 +57,9 @@ nsys profile \
   ./channel \
     --config "${CASE_DIR}/channel.cfg" \
     --output "${OUT_DIR}/" \
-    --max_iter 200 \
+    --max_steps 200 \
     --tol 1e-4 \
-    --poisson_max_iter 10 \
+    --poisson_max_vcycles 10 \
     --no_postprocess \
     --no_write_fields \
     --verbose

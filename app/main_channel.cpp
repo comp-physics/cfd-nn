@@ -215,7 +215,7 @@ int main(int argc, char** argv) {
     config.dp_dx = -1.0;        // Pressure gradient (body force)
 
     config.dt = 0.001;
-    config.max_iter = 50000;
+    config.max_steps = 50000;
     config.tol = 1e-8;
     config.output_freq = 1000;
     config.verbose = true;
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
     config.turb_model = TurbulenceModelType::None;  // Laminar by default
 
     config.poisson_tol = 1e-8;
-    config.poisson_max_iter = 20;  // V-cycles for multigrid (not SOR iterations)
+    config.poisson_max_vcycles = 20;  // V-cycles for multigrid (not SOR iterations)
     config.poisson_omega = 1.8;
 
     // Parse command line
@@ -334,7 +334,7 @@ int main(int argc, char** argv) {
         // UNSTEADY MODE: Time-accurate integration
         // ============================================================
         std::cout << "\n=== Running in UNSTEADY mode ===\n";
-        std::cout << "Time steps: " << config.max_iter << "\n";
+        std::cout << "Time steps: " << config.max_steps << "\n";
         std::cout << "Initial dt: " << config.dt << "\n\n";
         
         // Force laminar for unsteady developing flow
@@ -350,26 +350,26 @@ int main(int argc, char** argv) {
         
         const std::string prefix = config.write_fields ? (config.output_dir + "developing_channel") : "";
         const int snapshot_freq = (config.num_snapshots > 0) ?
-            std::max(1, config.max_iter / config.num_snapshots) : 0;
+            std::max(1, config.max_steps / config.num_snapshots) : 0;
         
         ScopedTimer total_timer("Total simulation", false);
         
         int snap_count = 0;
         // Progress output interval for CI visibility (always enabled)
-        const int progress_interval = std::max(1, config.max_iter / 10);
+        const int progress_interval = std::max(1, config.max_steps / 10);
 
-        for (int step = 1; step <= config.max_iter; ++step) {
+        for (int step = 1; step <= config.max_steps; ++step) {
             if (config.adaptive_dt) {
                 (void)solver.compute_adaptive_dt();
             }
             double residual = solver.step();
 
-            // Reset timers after warmup steps (excluded from reported timing)
+            // Reset timers after warmup iterations (excluded from reported timing)
             if (config.warmup_steps > 0 && step == config.warmup_steps) {
                 TimingStats::instance().reset();
                 if (config.verbose) {
                     std::cout << "    [Warmup complete: " << config.warmup_steps
-                              << " steps, timers reset]\n";
+                              << " iterations, timers reset]\n";
                 }
             }
 
@@ -380,12 +380,12 @@ int main(int argc, char** argv) {
 
             // Always show progress every ~10% for CI visibility
             if (step % progress_interval == 0 || step == 1) {
-                std::cout << "    Step " << std::setw(6) << step << " / " << config.max_iter
-                          << "  (" << std::setw(3) << (100 * step / config.max_iter) << "%)"
+                std::cout << "    Step " << std::setw(6) << step << " / " << config.max_steps
+                          << "  (" << std::setw(3) << (100 * step / config.max_steps) << "%)"
                           << "  residual = " << std::scientific << std::setprecision(3) << residual
                           << std::fixed << "\n" << std::flush;
             } else if (config.verbose && (step % config.output_freq == 0)) {
-                std::cout << "Step " << step << " / " << config.max_iter
+                std::cout << "Step " << step << " / " << config.max_steps
                           << ", residual = " << std::scientific << residual << "\n";
             }
             
@@ -402,7 +402,7 @@ int main(int argc, char** argv) {
         }
         
         total_timer.stop();
-        total_iterations = config.max_iter;
+        total_iterations = config.max_steps;
         
         std::cout << "\n=== Unsteady simulation complete ===\n";
         
@@ -412,7 +412,7 @@ int main(int argc, char** argv) {
         // ============================================================
         std::cout << "\n=== Running in STEADY mode ===\n";
         std::cout << "Convergence tolerance: " << config.tol << "\n";
-        std::cout << "Max iterations: " << config.max_iter << "\n\n";
+        std::cout << "Max iterations: " << config.max_steps << "\n\n";
         
         // Initialize with small perturbation (w=0 for 3D handled internally)
         solver.initialize_uniform(0.1 * u_max_expected, 0.0);

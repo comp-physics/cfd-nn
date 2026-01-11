@@ -225,7 +225,7 @@ bool run_repeatability_test(const RepeatabilityTestCase& tc) {
     config.y_min = 0.0; config.y_max = tc.Ly;
     config.z_min = 0.0; config.z_max = tc.Lz;
     config.dt = 0.001;
-    config.max_iter = tc.nsteps + 100;
+    config.max_steps = tc.nsteps + 100;
     config.nu = 0.01;
     config.poisson_solver = PoissonSolverType::Auto;
 

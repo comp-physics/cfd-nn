@@ -81,7 +81,7 @@ struct RunResult {
     double final_max_vel;
 };
 
-RunResult run_taylor_green(int N, int num_steps, double dt, bool use_fixed_cycles, int fixed_cycles) {
+RunResult run_taylor_green(int N, int num_iter, double dt, bool use_fixed_cycles, int fixed_cycles) {
     const double L = 2 * M_PI;
     const double Re = 100.0;
     const double V0 = 1.0;
@@ -145,7 +145,7 @@ RunResult run_taylor_green(int N, int num_steps, double dt, bool use_fixed_cycle
 
     RunResult result;
 
-    for (int step = 0; step < num_steps; ++step) {
+    for (int step = 0; step < num_iter; ++step) {
         solver.step();
 
 #ifdef USE_GPU_OFFLOAD
@@ -171,22 +171,22 @@ int main() {
     std::cout << "=== MG Physics Match Verification ===\n\n";
 
     const int N = 64;
-    const int num_steps = 20;
+    const int num_iter = 20;
     const double dt = 0.01;
     const int fixed_cycles = 8;
 
-    std::cout << "Grid: " << N << "^3, Steps: " << num_steps << ", dt: " << dt << "\n\n";
+    std::cout << "Grid: " << N << "^3, Steps: " << num_iter << ", dt: " << dt << "\n\n";
 
     // Run with converged MG
     std::cout << "Running converged MG (tol=1e-6, tol_rhs=1e-4)...\n";
-    auto ref = run_taylor_green(N, num_steps, dt, false, 0);
+    auto ref = run_taylor_green(N, num_iter, dt, false, 0);
     std::cout << "  Final KE: " << std::scientific << ref.final_KE << "\n";
     std::cout << "  Final max|div|: " << ref.final_div << "\n";
     std::cout << "  Final max|u|: " << std::fixed << std::setprecision(6) << ref.final_max_vel << "\n\n";
 
     // Run with fixed-cycle MG
     std::cout << "Running fixed-cycle MG (" << fixed_cycles << " cycles)...\n";
-    auto fixed = run_taylor_green(N, num_steps, dt, true, fixed_cycles);
+    auto fixed = run_taylor_green(N, num_iter, dt, true, fixed_cycles);
     std::cout << "  Final KE: " << std::scientific << fixed.final_KE << "\n";
     std::cout << "  Final max|div|: " << fixed.final_div << "\n";
     std::cout << "  Final max|u|: " << std::fixed << std::setprecision(6) << fixed.final_max_vel << "\n\n";

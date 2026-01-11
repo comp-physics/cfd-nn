@@ -158,7 +158,7 @@ Compare with DNS:
 
 **SST model doesn't converge:**
 - Reduce time step: `dt = 0.0005`
-- Increase max iterations: `max_iter = 100000`
+- Increase max iterations: `max_steps = 100000`
 - Check k/ω initialization (should be small but positive)
 
 **Results don't match DNS:**

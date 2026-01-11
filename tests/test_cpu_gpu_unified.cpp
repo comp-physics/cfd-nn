@@ -466,7 +466,7 @@ void test_time_history() {
 
     Config cfg;
     cfg.nu = 0.001; cfg.dp_dx = -0.0001; cfg.dt = 0.001;
-    cfg.adaptive_dt = false; cfg.max_iter = 50; cfg.tol = 1e-8;
+    cfg.adaptive_dt = false; cfg.max_steps = 50; cfg.tol = 1e-8;
     cfg.turb_model = TurbulenceModelType::Baseline;
     cfg.verbose = false;
 

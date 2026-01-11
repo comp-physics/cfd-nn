@@ -138,7 +138,7 @@ Compare these quantities with DNS:
 
 **Simulation doesn't converge:**
 - Reduce time step: `dt = 0.0005`
-- Increase max iterations: `max_iter = 500000`
+- Increase max iterations: `max_steps = 500000`
 - Check CFL number in output (should be < 0.5)
 
 **Poor agreement with DNS:**
@@ -153,6 +153,6 @@ Compare these quantities with DNS:
 
 **Job times out:**
 - Increase time limit: `#SBATCH --time=04:00:00`
-- Or reduce max_iter to checkpoint intermediate results
+- Or reduce max_steps to checkpoint intermediate results
 
 

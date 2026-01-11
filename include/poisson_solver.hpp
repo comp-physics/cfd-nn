@@ -15,7 +15,7 @@ enum class PoissonBC {
 /// Configuration for Poisson solver
 struct PoissonConfig {
     double tol = 1e-6;       ///< Legacy absolute tolerance (deprecated, use tol_abs)
-    int max_iter = 10000;    ///< Maximum Poisson iterations per solve (per time step).
+    int max_vcycles = 10000; ///< Maximum V-cycles per Poisson solve.
                              ///< For SOR-based PoissonSolver: max SOR sweeps.
                              ///< For MultigridPoissonSolver: max V-cycles.
     double omega = 1.5;      ///< SOR relaxation parameter (1 < omega < 2 for over-relaxation)
