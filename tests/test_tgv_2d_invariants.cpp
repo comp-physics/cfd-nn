@@ -23,11 +23,28 @@
 #include <cmath>
 #include <vector>
 #include <iomanip>
+#include <sstream>
 #include <algorithm>
 
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+
+// Helper to format QoI output: "value=X, threshold=Y"
+static std::string qoi(double value, double threshold) {
+    std::ostringstream ss;
+    ss << std::scientific << std::setprecision(2);
+    ss << "(val=" << value << ", thr=" << threshold << ")";
+    return ss.str();
+}
+
+// Helper for ratio comparisons: "value=X, threshold=Y%"
+static std::string qoi_pct(double value, double threshold_pct) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(1);
+    ss << "(val=" << value * 100 << "%, thr=" << threshold_pct * 100 << "%)";
+    return ss.str();
+}
 
 // ============================================================================
 // Helper: Compute max divergence (L-infinity norm)
@@ -148,11 +165,16 @@ void test_tgv_2d_invariants() {
     }
     std::cout << "\n";
 
-    // Record test results
-    record("Divergence-free (max|div| < 1e-6)", max_div_observed < div_threshold);
-    record("Energy monotonicity (E non-increasing)", energy_monotonic);
-    record("Energy bounded (final KE finite)", std::isfinite(energy_history.back()));
-    record("Energy decaying (final < initial)", energy_history.back() < energy_history.front());
+    // Record test results with QoI values
+    record("Divergence-free (max|div| < 1e-6)", max_div_observed < div_threshold,
+           qoi(max_div_observed, div_threshold));
+    record("Energy monotonicity (E non-increasing)", energy_monotonic,
+           energy_monotonic ? "(no violations)" : "(violation at step " + std::to_string(energy_violation_step) + ")");
+    record("Energy bounded (final KE finite)", std::isfinite(energy_history.back()),
+           "(KE_final=" + std::to_string(energy_history.back()) + ")");
+    double decay_ratio = energy_history.back() / energy_history.front();
+    record("Energy decaying (final < initial)", energy_history.back() < energy_history.front(),
+           "(ratio=" + std::to_string(decay_ratio) + ")");
 }
 
 // ============================================================================
@@ -207,7 +229,8 @@ void test_tgv_2d_decay_rate() {
     std::cout << "  Relative error: " << std::scientific << rel_error * 100 << "%\n\n";
 
     // 30% tolerance accounts for numerical dissipation on coarse grid
-    record("Energy decay rate (within 30% of theory)", rel_error < 0.30);
+    record("Energy decay rate (within 30% of theory)", rel_error < 0.30,
+           qoi_pct(rel_error, 0.30));
 }
 
 // ============================================================================
@@ -248,7 +271,8 @@ void test_tgv_2d_initial_divergence() {
     //   - floating-point roundoff
     // Use 1e-8 threshold: stricter than simulation check (1e-6), but allows for
     // minor discrete/roundoff effects. The "during simulation" check is the key invariant.
-    record("Initial field divergence-free (< 1e-8)", initial_div < 1e-8);
+    record("Initial field divergence-free (< 1e-8)", initial_div < 1e-8,
+           qoi(initial_div, 1e-8));
 }
 
 // ============================================================================

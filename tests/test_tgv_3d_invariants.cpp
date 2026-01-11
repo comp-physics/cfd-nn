@@ -21,11 +21,20 @@
 #include <cmath>
 #include <vector>
 #include <iomanip>
+#include <sstream>
 #include <algorithm>
 
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+
+// Helper to format QoI output: "value=X, threshold=Y"
+static std::string qoi(double value, double threshold) {
+    std::ostringstream ss;
+    ss << std::scientific << std::setprecision(2);
+    ss << "(val=" << value << ", thr=" << threshold << ")";
+    return ss.str();
+}
 
 // ============================================================================
 // Helper: Compute max divergence for 3D (L-infinity norm)
@@ -241,13 +250,19 @@ void test_tgv_3d_invariants() {
     }
     std::cout << "\n";
 
-    // Record test results
-    record("3D Divergence-free (max|div| < 1e-6)", max_div_observed < div_threshold);
-    record("3D Energy monotonicity (E non-increasing)", energy_monotonic);
-    record("3D Energy bounded (final KE finite)", std::isfinite(energy_history.back()));
-    record("3D Symmetry (|mean(u)| < 1e-10)", std::abs(u_mean) < mean_vel_threshold);
-    record("3D Symmetry (|mean(v)| < 1e-10)", std::abs(v_mean) < mean_vel_threshold);
-    record("3D Symmetry (|mean(w)| < 1e-10)", std::abs(w_mean) < mean_vel_threshold);
+    // Record test results with QoI values
+    record("3D Divergence-free (max|div| < 1e-6)", max_div_observed < div_threshold,
+           qoi(max_div_observed, div_threshold));
+    record("3D Energy monotonicity (E non-increasing)", energy_monotonic,
+           energy_monotonic ? "(no violations)" : "(violation at step " + std::to_string(energy_violation_step) + ")");
+    record("3D Energy bounded (final KE finite)", std::isfinite(energy_history.back()),
+           "(KE_final=" + std::to_string(energy_history.back()) + ")");
+    record("3D Symmetry (|mean(u)| < 1e-10)", std::abs(u_mean) < mean_vel_threshold,
+           qoi(std::abs(u_mean), mean_vel_threshold));
+    record("3D Symmetry (|mean(v)| < 1e-10)", std::abs(v_mean) < mean_vel_threshold,
+           qoi(std::abs(v_mean), mean_vel_threshold));
+    record("3D Symmetry (|mean(w)| < 1e-10)", std::abs(w_mean) < mean_vel_threshold,
+           qoi(std::abs(w_mean), mean_vel_threshold));
 }
 
 // ============================================================================
@@ -286,7 +301,8 @@ void test_tgv_3d_initial_divergence() {
 
     // 3D TGV is analytically divergence-free, but discrete divergence can have
     // minor roundoff effects. Use 1e-8 to be robust while still catching real issues.
-    record("3D Initial field divergence-free (< 1e-8)", initial_div < 1e-8);
+    record("3D Initial field divergence-free (< 1e-8)", initial_div < 1e-8,
+           qoi(initial_div, 1e-8));
 }
 
 // ============================================================================
@@ -394,7 +410,8 @@ void test_tgv_3d_stride_verification() {
     // Z-variation should remain small. Allow for numerical effects in 3D
     // (FP accumulation, slight z-coupling through Poisson solver)
     // Threshold 1e-4 catches gross stride/indexing bugs while tolerating FP effects
-    record("3D z-invariance preserved (< 1e-4)", max_z_variation < 1e-4);
+    record("3D z-invariance preserved (< 1e-4)", max_z_variation < 1e-4,
+           qoi(max_z_variation, 1e-4));
 }
 
 // ============================================================================

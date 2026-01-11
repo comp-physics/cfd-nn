@@ -21,11 +21,20 @@
 #include <cmath>
 #include <vector>
 #include <iomanip>
+#include <sstream>
 #include <numeric>
 
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+
+// Helper to format QoI output
+static std::string qoi(double value, double threshold) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2);
+    ss << "(val=" << value << ", thr=" << threshold << ")";
+    return ss.str();
+}
 
 // ============================================================================
 // MMS Solution: Taylor-Green type (divergence-free by construction)
@@ -205,8 +214,10 @@ void test_mms_spatial_convergence() {
               << ", Average rate: " << avg_rate << "\n\n";
 
     // 2nd-order method should achieve rate ~2, but allow margin for pre-asymptotic effects
-    record("MMS min convergence rate >= 1.4", min_rate >= 1.4);
-    record("MMS avg convergence rate >= 1.6", avg_rate >= 1.6);
+    record("MMS min convergence rate >= 1.4", min_rate >= 1.4,
+           qoi(min_rate, 1.4));
+    record("MMS avg convergence rate >= 1.6", avg_rate >= 1.6,
+           qoi(avg_rate, 1.6));
 }
 
 // ============================================================================
@@ -278,7 +289,8 @@ void test_mms_temporal_convergence() {
     std::cout << "\n  Minimum temporal rate: " << std::fixed << std::setprecision(2) << min_rate << "\n\n";
 
     // First-order Euler or second-order expected, allow 0.8 for first order
-    record("MMS temporal convergence rate >= 0.8", min_rate >= 0.8);
+    record("MMS temporal convergence rate >= 0.8", min_rate >= 0.8,
+           qoi(min_rate, 0.8));
 }
 
 // ============================================================================
@@ -341,7 +353,9 @@ void test_poisson_projection_quality() {
 
     std::cout << "\n  Maximum divergence across all grids: " << std::scientific << max_all << "\n\n";
 
-    record("Poisson projection max|div| < 1e-6", max_all < 1e-6);
+    std::ostringstream ss;
+    ss << std::scientific << std::setprecision(2) << "(val=" << max_all << ", thr=1.00e-06)";
+    record("Poisson projection max|div| < 1e-6", max_all < 1e-6, ss.str());
 }
 
 // ============================================================================
@@ -403,7 +417,9 @@ void test_viscous_decay_rate() {
     std::cout << "  KE ratio (theory):      " << ratio_theory << "\n";
     std::cout << "  Relative error:         " << std::scientific << rel_error * 100 << "%\n\n";
 
-    record("Viscous decay within 10% of theory", rel_error < 0.10);
+    std::ostringstream ss2;
+    ss2 << std::fixed << std::setprecision(2) << "(err=" << rel_error*100 << "%, thr=10%)";
+    record("Viscous decay within 10% of theory", rel_error < 0.10, ss2.str());
 }
 
 // ============================================================================

@@ -22,11 +22,24 @@
 #include <cmath>
 #include <vector>
 #include <iomanip>
+#include <sstream>
 #include <numeric>
 
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+
+// Helper to format QoI output
+static std::string qoi(double value, double threshold, bool scientific = true) {
+    std::ostringstream ss;
+    if (scientific) {
+        ss << std::scientific << std::setprecision(2);
+    } else {
+        ss << std::fixed << std::setprecision(4);
+    }
+    ss << "(val=" << value << ", thr=" << threshold << ")";
+    return ss.str();
+}
 
 // ============================================================================
 // Profile shape analysis utilities
@@ -295,16 +308,23 @@ void test_rans_channel_sst() {
               << ", first_cell=" << nu_t_stats.first_cell_nu_t / nu << "\n";
     std::cout << "  tau_w: " << tau_w << " (expected sign: " << (dp_dx < 0 ? "+" : "-") << ")\n\n";
 
-    // Record results
-    record("SST No-slip (|U_wall| < 30% of U_max)", no_slip_ok);
-    record("SST Centerline max (U_center >= 50% of U_max)", centerline_max_ok);
+    // Record results with QoI values
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(1) << "(wall=" << U_wall_max/U_max*100 << "%, thr=30%)";
+    record("SST No-slip (|U_wall| < 30% of U_max)", no_slip_ok, ss.str());
+    ss.str(""); ss << std::fixed << std::setprecision(1) << "(center=" << U_center/U_max*100 << "%, thr=50%)";
+    record("SST Centerline max (U_center >= 50% of U_max)", centerline_max_ok, ss.str());
     record("SST Monotonic wall->center", monotonic_ok);
-    record("SST min(nu_t) >= -1e-12", min_nu_t_ok);
-    record("SST max(nu_t)/nu < 1e6", max_nu_t_ok);
-    record("SST first-cell nu_t/nu < 10", first_cell_ok);
-    record("SST U_bulk > 0", U_bulk > 0);
+    record("SST min(nu_t) >= -1e-12", min_nu_t_ok, qoi(nu_t_stats.min_nu_t, -1e-12));
+    ss.str(""); ss << std::scientific << std::setprecision(2) << "(val=" << nu_t_stats.max_nu_t/nu << ", thr=1e6)";
+    record("SST max(nu_t)/nu < 1e6", max_nu_t_ok, ss.str());
+    ss.str(""); ss << std::fixed << std::setprecision(2) << "(val=" << nu_t_stats.first_cell_nu_t/nu << ", thr=10)";
+    record("SST first-cell nu_t/nu < 10", first_cell_ok, ss.str());
+    ss.str(""); ss << std::scientific << std::setprecision(2) << "(val=" << U_bulk << ")";
+    record("SST U_bulk > 0", U_bulk > 0, ss.str());
     record("SST U_bulk stable (< 5% change)", U_bulk_stable);
-    record("SST Wall shear sign correct", shear_sign_ok && shear_nonzero);
+    ss.str(""); ss << std::scientific << std::setprecision(2) << "(tau_w=" << tau_w << ")";
+    record("SST Wall shear sign correct", shear_sign_ok && shear_nonzero, ss.str());
 }
 
 // ============================================================================
@@ -387,14 +407,22 @@ void test_rans_channel_komega() {
               << ", first_cell=" << nu_t_stats.first_cell_nu_t / nu << "\n";
     std::cout << "  tau_w: " << tau_w << "\n\n";
 
-    record("k-omega No-slip (|U_wall| < 30% of U_max)", no_slip_ok);
-    record("k-omega Centerline max (U_center >= 50% of U_max)", centerline_max_ok);
+    // Record results with QoI values
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(1) << "(wall=" << U_wall_max/U_max*100 << "%, thr=30%)";
+    record("k-omega No-slip (|U_wall| < 30% of U_max)", no_slip_ok, ss.str());
+    ss.str(""); ss << std::fixed << std::setprecision(1) << "(center=" << U_center/U_max*100 << "%, thr=50%)";
+    record("k-omega Centerline max (U_center >= 50% of U_max)", centerline_max_ok, ss.str());
     record("k-omega Monotonic", monotonic_ok);
-    record("k-omega min(nu_t) >= -1e-12", min_nu_t_ok);
-    record("k-omega max(nu_t)/nu < 1e6", max_nu_t_ok);
-    record("k-omega first-cell nu_t/nu < 10", first_cell_ok);
-    record("k-omega U_bulk > 0", U_bulk > 0);
-    record("k-omega Wall shear correct", shear_ok && std::abs(tau_w) > 1e-10);
+    record("k-omega min(nu_t) >= -1e-12", min_nu_t_ok, qoi(nu_t_stats.min_nu_t, -1e-12));
+    ss.str(""); ss << std::scientific << std::setprecision(2) << "(val=" << nu_t_stats.max_nu_t/nu << ", thr=1e6)";
+    record("k-omega max(nu_t)/nu < 1e6", max_nu_t_ok, ss.str());
+    ss.str(""); ss << std::fixed << std::setprecision(2) << "(val=" << nu_t_stats.first_cell_nu_t/nu << ", thr=10)";
+    record("k-omega first-cell nu_t/nu < 10", first_cell_ok, ss.str());
+    ss.str(""); ss << std::scientific << std::setprecision(2) << "(val=" << U_bulk << ")";
+    record("k-omega U_bulk > 0", U_bulk > 0, ss.str());
+    ss.str(""); ss << std::scientific << std::setprecision(2) << "(tau_w=" << tau_w << ")";
+    record("k-omega Wall shear correct", shear_ok && std::abs(tau_w) > 1e-10, ss.str());
 }
 
 // ============================================================================
