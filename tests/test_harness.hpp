@@ -310,19 +310,21 @@ inline void reset_diagnostics() {
 /// This is more robust than regex-parsing human-readable output.
 
 /// Helper to emit a double in scientific notation for JSON
+/// Uses 15 significant digits to preserve full double precision for trend analysis
 inline std::string json_double(double val) {
     if (!std::isfinite(val)) return "null";
     std::ostringstream ss;
-    ss << std::scientific << std::setprecision(6) << val;
+    ss << std::scientific << std::setprecision(15) << val;
     return ss.str();
 }
 
 /// Emit QOI JSON for TGV 2D invariants
+/// Keys use nondimensional names (ke_final not ke_final_J) since tests use nondim values
 inline void emit_qoi_tgv_2d(double div_Linf, double ke_final, double ke_ratio,
                              double const_vel_Linf = -1.0) {
     std::cout << "QOI_JSON: {\"test\":\"tgv_2d\""
               << ",\"div_Linf\":" << json_double(div_Linf)
-              << ",\"ke_final_J\":" << json_double(ke_final)
+              << ",\"ke_final\":" << json_double(ke_final)
               << ",\"ke_ratio\":" << json_double(ke_ratio);
     if (const_vel_Linf >= 0.0) {
         std::cout << ",\"const_vel_Linf\":" << json_double(const_vel_Linf);
@@ -335,7 +337,7 @@ inline void emit_qoi_tgv_3d(double div_Linf, double ke_final = -1.0) {
     std::cout << "QOI_JSON: {\"test\":\"tgv_3d\""
               << ",\"div_Linf\":" << json_double(div_Linf);
     if (ke_final >= 0.0) {
-        std::cout << ",\"ke_final_J\":" << json_double(ke_final);
+        std::cout << ",\"ke_final\":" << json_double(ke_final);
     }
     std::cout << "}\n";
 }
@@ -383,7 +385,7 @@ inline void emit_qoi_mms(double spatial_order, double u_L2_error = -1.0) {
 inline void emit_qoi_rans_channel(double u_bulk, double nut_ratio_max,
                                    double k_min = -1.0, double omega_min = -1.0) {
     std::cout << "QOI_JSON: {\"test\":\"rans_channel\""
-              << ",\"u_bulk_m_s\":" << json_double(u_bulk)
+              << ",\"u_bulk\":" << json_double(u_bulk)
               << ",\"nut_ratio_max\":" << json_double(nut_ratio_max);
     if (k_min >= 0.0) {
         std::cout << ",\"k_min\":" << json_double(k_min);
@@ -394,11 +396,20 @@ inline void emit_qoi_rans_channel(double u_bulk, double nut_ratio_max,
     std::cout << "}\n";
 }
 
-/// Emit QOI JSON for performance gates (called from perf suite)
+/// Emit QOI JSON for Fourier mode invariance test
+inline void emit_qoi_fourier_mode(double ke_ratio, double max_v_over_max_u) {
+    std::cout << "QOI_JSON: {\"test\":\"fourier_mode\""
+              << ",\"ke_ratio\":" << json_double(ke_ratio)
+              << ",\"max_v_over_max_u\":" << json_double(max_v_over_max_u)
+              << "}\n";
+}
+
+/// Emit QOI JSON for performance gates
+/// Each gate emits its own line; ci.sh aggregates into perf_gates array
 inline void emit_qoi_perf(const std::string& gate_name, double ms_per_step,
                            double threshold_ms) {
-    std::cout << "QOI_JSON: {\"test\":\"perf\""
-              << ",\"gate\":\"" << gate_name << "\""
+    std::cout << "QOI_JSON: {\"test\":\"perf_gate\""
+              << ",\"case\":\"" << gate_name << "\""
               << ",\"ms_per_step\":" << json_double(ms_per_step)
               << ",\"threshold_ms\":" << json_double(threshold_ms)
               << "}\n";

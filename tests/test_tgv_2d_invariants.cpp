@@ -419,30 +419,42 @@ void test_fourier_mode_invariance() {
 
     // Check final state
     double E_final = compute_kinetic_energy(mesh, solver.velocity());
+    double max_u_final = 0.0;
     double max_v_final = 0.0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            max_u_final = std::max(max_u_final, std::abs(solver.velocity().u(i, j)));
+        }
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             max_v_final = std::max(max_v_final, std::abs(solver.velocity().v(i, j)));
         }
     }
 
+    // Normalize spurious v by max|u| for amplitude-independent check
+    double v_over_u = max_v_final / (max_u_final + 1e-30);
+    double ke_ratio = E_final / E0;
+
     std::cout << "  Initial: E=" << std::scientific << E0 << ", max|v|=" << max_v0 << "\n";
-    std::cout << "  Final:   E=" << E_final << ", max|v|=" << max_v_final << "\n";
-    std::cout << "  Energy ratio: " << std::fixed << std::setprecision(4) << E_final/E0 << "\n\n";
+    std::cout << "  Final:   E=" << E_final << ", max|u|=" << max_u_final
+              << ", max|v|=" << max_v_final << "\n";
+    std::cout << "  Energy ratio: " << std::fixed << std::setprecision(4) << ke_ratio << "\n";
+    std::cout << "  max|v|/max|u|: " << std::scientific << v_over_u << "\n\n";
 
     // Check invariants:
     // 1. Energy should not grow (viscous decay only)
-    bool energy_ok = (E_final <= E0 * 1.01);  // 1% tolerance for numerical drift
-    record("Fourier mode energy stable (E_f <= 1.01*E_0)", energy_ok,
-           qoi(E_final/E0, 1.01));
+    bool energy_ok = (ke_ratio <= 1.01);  // 1% tolerance for numerical drift
+    record("Fourier mode energy stable (E_f/E_0 <= 1.01)", energy_ok,
+           qoi(ke_ratio, 1.01));
 
-    // 2. No large spurious v-component should appear
+    // 2. No large spurious v-component should appear (normalized by max|u|)
     // Some small v is expected due to numerical discretization effects
-    // on coarse grids (pressure oscillations, truncation error)
     // Threshold 1e-2 catches indexing bugs; observed values ~1e-3
-    bool no_spurious = (max_v_final < 1e-2);
-    record("No spurious v-component (max|v| < 1e-2)", no_spurious,
-           qoi(max_v_final, 1e-2));
+    bool no_spurious = (v_over_u < 1e-2);
+    record("No spurious v-component (max|v|/max|u| < 1e-2)", no_spurious,
+           qoi(v_over_u, 1e-2));
+
+    // Emit machine-readable QoI for CI metrics
+    harness::emit_qoi_fourier_mode(ke_ratio, v_over_u);
 }
 
 // ============================================================================

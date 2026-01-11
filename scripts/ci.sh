@@ -257,6 +257,7 @@ extract_qoi_metrics() {
     [ ! -f "$output_file" ] && return
 
     # Mark that we expected QoI from this test
+    # These are the tests that MUST emit QOI_JSON lines
     case "$test_name" in
         "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity")
             QOI_EXPECTED["$test_name"]=1
@@ -293,6 +294,7 @@ extract_qoi_metrics() {
     fi
 
     # Fallback: legacy regex parsing for tests not yet updated
+    # NOTE: These should match the key names in emit_qoi_* functions
     local metrics=""
 
     case "$test_name" in
@@ -302,7 +304,7 @@ extract_qoi_metrics() {
             local e_ratio=$(grep -oP 'ratio=\K[0-9.]+' "$output_file" 2>/dev/null | head -1)
             local const_vel=$(grep -oP 'Constant velocity.*val=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
             if [ -n "$div_max" ] || [ -n "$e_final" ]; then
-                metrics="\"tgv_2d\": {\"div_Linf\": ${div_max:-null}, \"ke_final_J\": ${e_final:-null}, \"ke_ratio\": ${e_ratio:-null}, \"const_vel_Linf\": ${const_vel:-null}}"
+                metrics="\"tgv_2d\": {\"div_Linf\": ${div_max:-null}, \"ke_final\": ${e_final:-null}, \"ke_ratio\": ${e_ratio:-null}, \"const_vel_Linf\": ${const_vel:-null}}"
                 QOI_EXTRACTED["$test_name"]=1
             fi
             ;;
@@ -346,7 +348,7 @@ extract_qoi_metrics() {
             local u_bulk=$(grep -oP 'U_bulk=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
             local max_nut=$(grep -oP 'max_nut_ratio=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
             if [ -n "$u_bulk" ] || [ -n "$max_nut" ]; then
-                metrics="\"rans_channel\": {\"u_bulk_m_s\": ${u_bulk:-null}, \"nut_ratio_max\": ${max_nut:-null}}"
+                metrics="\"rans_channel\": {\"u_bulk\": ${u_bulk:-null}, \"nut_ratio_max\": ${max_nut:-null}}"
                 QOI_EXTRACTED["$test_name"]=1
             fi
             ;;
@@ -362,17 +364,24 @@ extract_qoi_metrics() {
     fi
 }
 
-# Parser health check: warn if expected QoIs weren't extracted
+# Parser health check: FAIL if expected QoIs weren't extracted
+# This catches output format changes or binary mismatches early
 check_qoi_health() {
     local missing=0
+    local missing_tests=""
     for test_name in "${!QOI_EXPECTED[@]}"; do
         if [ -z "${QOI_EXTRACTED[$test_name]:-}" ]; then
-            log_warning "Ran $test_name but extracted 0 QoI fields. Output format changed?"
+            log_failure "Ran $test_name but extracted 0 QoI fields. Output format changed?"
             missing=$((missing + 1))
+            missing_tests="${missing_tests}\n  - $test_name"
         fi
     done
     if [ $missing -gt 0 ]; then
-        log_warning "$missing test(s) missing QoI extraction - check output format"
+        log_failure "$missing test(s) missing QoI extraction - trend analysis will be incomplete"
+        echo -e "Missing QoI from:${missing_tests}"
+        # Count as failures so CI fails
+        FAILED=$((FAILED + missing))
+        FAILED_TESTS="${FAILED_TESTS}${missing_tests} (QoI extraction failed)"
     fi
 }
 
@@ -913,15 +922,20 @@ if [ $QOI_COUNT -gt 0 ]; then
     QOI_CONTENT=$(sed '1d;$d' "$QOI_METRICS_FILE")
 fi
 
-# Write JSON metrics with stable schema (v1.0)
-# Schema:
+# Write JSON metrics with stable schema (v2)
+# Schema v2 changes from v1:
+#   - ke_final_J -> ke_final (nondimensional)
+#   - u_bulk_m_s -> u_bulk (nondimensional)
+#   - Added fourier_mode and perf_gate QoIs
+#   - QoI extraction failures now cause CI to fail
+# Naming conventions:
 #   - All keys use snake_case
-#   - Units in key names: _s (seconds), _ms (milliseconds), _J (joules), _m_s (m/s)
 #   - Norms: _Linf (L-infinity), _L2 (L2 norm)
 #   - Relative values: _rel_ prefix
+#   - Only add unit suffix when value is dimensional (rare)
 cat > "$METRICS_FILE" << EOF
 {
-  "schema_version": "1.0",
+  "schema_version": "2",
   "metadata": {
     "git_sha": "$GIT_SHA",
     "branch": "$GIT_BRANCH",
