@@ -162,6 +162,7 @@ void test_fft1d_vs_mg_channel() {
     vel.fill(1.0, 0.0, 0.0);
     solver_mg.initialize(vel);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     ScalarField p_mg(mesh);
     FOR_INTERIOR_3D(mesh, i, j, k) { p_mg(i, j, k) = solver_mg.pressure()(i, j, k); }
@@ -224,6 +225,7 @@ void test_fft1d_vs_mg_duct() {
     vel.fill(1.0, 0.0, 0.0);
     solver_mg.initialize(vel);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     ScalarField p_mg(mesh);
     FOR_INTERIOR_3D(mesh, i, j, k) { p_mg(i, j, k) = solver_mg.pressure()(i, j, k); }
@@ -295,6 +297,7 @@ void test_fft2d_vs_mg_channel() {
     init_velocity(vel);
     solver_mg.initialize(vel);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     double mg_max = linf_norm(solver_mg.pressure(), mesh);
 
