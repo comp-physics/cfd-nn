@@ -427,6 +427,10 @@ if(BUILD_TESTS)
     add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
     add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
     add_nncfd_test(test_rans_channel_sanity TEST_NAME_SUFFIX RANSChannelSanityTest LABELS fast)
+    add_nncfd_test(test_poiseuille_steady TEST_NAME_SUFFIX PoiseuilleTest LABELS fast)
+    add_nncfd_test(test_energy_budget_channel TEST_NAME_SUFFIX EnergyBudgetTest LABELS fast)
+    add_nncfd_test(test_operator_consistency TEST_NAME_SUFFIX OperatorConsistencyTest LABELS fast)
+    add_nncfd_test(test_advection_rotation TEST_NAME_SUFFIX AdvectionRotationTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s)

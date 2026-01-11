@@ -259,7 +259,7 @@ extract_qoi_metrics() {
     # Mark that we expected QoI from this test
     # These are the tests that MUST emit QOI_JSON lines
     case "$test_name" in
-        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection"|"Stability Sentinel")
+        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection"|"Stability Sentinel"|"Poiseuille Steady"|"Energy Budget"|"Operator Consistency"|"Advection Rotation")
             QOI_EXPECTED["$test_name"]=1
             ;;
     esac
@@ -753,6 +753,12 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "TGV 3D Invariants" "$BUILD_DIR/test_tgv_3d_invariants" 300
     run_test "MMS Convergence" "$BUILD_DIR/test_mms_convergence" 300
     run_test "RANS Channel Sanity" "$BUILD_DIR/test_rans_channel_sanity" 600
+
+    # High-trust physics validation tests
+    run_test "Poiseuille Steady" "$BUILD_DIR/test_poiseuille_steady" 600
+    run_test "Energy Budget" "$BUILD_DIR/test_energy_budget_channel" 120
+    run_test "Operator Consistency" "$BUILD_DIR/test_operator_consistency" 120
+    run_test "Advection Rotation" "$BUILD_DIR/test_advection_rotation" 60
 
     # Solver selection matrix test (verifies auto-selection logic)
     run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120

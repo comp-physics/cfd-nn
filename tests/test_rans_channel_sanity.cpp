@@ -157,6 +157,153 @@ static NuTStats compute_nu_t_stats(const RANSSolver& solver, const Mesh& mesh, d
 }
 
 // ============================================================================
+// Physics directionality checks: production, dissipation, growth rates
+// ============================================================================
+
+/// Compute TKE production: P_k = nu_t * S^2 where S = |du/dy| for channel
+/// Returns {min, max, avg} in shear regions (away from centerline)
+struct ProductionStats {
+    double min_production;   // Min P_k in shear region
+    double max_production;   // Max P_k
+    double avg_production;   // Average P_k
+    double negative_count;   // Number of cells with P_k < 0
+    double total_cells;      // Total cells in shear region
+    bool valid;
+};
+
+static ProductionStats compute_production_stats(const RANSSolver& solver, const Mesh& mesh) {
+    ProductionStats stats;
+    stats.min_production = 1e100;
+    stats.max_production = -1e100;
+    stats.avg_production = 0.0;
+    stats.negative_count = 0;
+    stats.total_cells = 0;
+    stats.valid = true;
+
+    const ScalarField& nu_t = solver.nu_t();
+    const VectorField& vel = solver.velocity();
+
+    // Shear region: exclude centerline region (middle 20%)
+    int j_lo = mesh.j_begin() + mesh.Ny / 10;  // Skip 10% near walls (boundary effects)
+    int j_hi = mesh.j_end() - mesh.Ny / 10;
+    int j_mid_lo = mesh.j_begin() + 2 * mesh.Ny / 5;  // Middle 20% is centerline
+    int j_mid_hi = mesh.j_begin() + 3 * mesh.Ny / 5;
+
+    for (int j = j_lo; j < j_hi; ++j) {
+        // Skip centerline region where shear is near zero
+        if (j >= j_mid_lo && j < j_mid_hi) continue;
+
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Compute shear: du/dy at cell center
+            double u_hi = 0.5 * (vel.u(i, j+1) + vel.u(i+1, j+1));
+            double u_lo = 0.5 * (vel.u(i, j-1) + vel.u(i+1, j-1));
+            double dudy = (u_hi - u_lo) / (2.0 * mesh.dy);
+
+            // Production: P_k = nu_t * (du/dy)^2
+            // (Simplified for channel - full form would include all strain components)
+            double P_k = nu_t(i, j) * dudy * dudy;
+
+            stats.min_production = std::min(stats.min_production, P_k);
+            stats.max_production = std::max(stats.max_production, P_k);
+            stats.avg_production += P_k;
+            if (P_k < 0) stats.negative_count++;
+            stats.total_cells++;
+        }
+    }
+
+    if (stats.total_cells > 0) {
+        stats.avg_production /= stats.total_cells;
+    }
+
+    return stats;
+}
+
+/// Compute TKE dissipation stats: epsilon = beta_star * k * omega for k-omega models
+/// For sanity checking: dissipation should always be positive
+struct DissipationStats {
+    double min_dissipation;  // Should be >= 0
+    double max_dissipation;
+    double avg_dissipation;
+    double negative_count;   // Should be 0
+    double total_cells;
+    bool valid;
+};
+
+static DissipationStats compute_dissipation_stats(const RANSSolver& solver, const Mesh& mesh) {
+    DissipationStats stats;
+    stats.min_dissipation = 1e100;
+    stats.max_dissipation = -1e100;
+    stats.avg_dissipation = 0.0;
+    stats.negative_count = 0;
+    stats.total_cells = 0;
+    stats.valid = true;
+
+    // Access k and omega fields
+    const ScalarField& k = solver.k();
+    const ScalarField& omega = solver.omega();
+    const double beta_star = 0.09;  // Standard k-omega constant
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Dissipation: epsilon = beta_star * k * omega
+            double eps = beta_star * k(i, j) * omega(i, j);
+
+            stats.min_dissipation = std::min(stats.min_dissipation, eps);
+            stats.max_dissipation = std::max(stats.max_dissipation, eps);
+            stats.avg_dissipation += eps;
+            if (eps < 0) stats.negative_count++;
+            stats.total_cells++;
+        }
+    }
+
+    if (stats.total_cells > 0) {
+        stats.avg_dissipation /= stats.total_cells;
+    }
+
+    return stats;
+}
+
+/// Compute TKE statistics for growth rate checks
+struct TKEStats {
+    double min_k;
+    double max_k;
+    double avg_k;
+    double negative_count;
+    double total_cells;
+    bool valid;
+};
+
+static TKEStats compute_tke_stats(const RANSSolver& solver, const Mesh& mesh) {
+    TKEStats stats;
+    stats.min_k = 1e100;
+    stats.max_k = -1e100;
+    stats.avg_k = 0.0;
+    stats.negative_count = 0;
+    stats.total_cells = 0;
+    stats.valid = true;
+
+    // Access k field
+    const ScalarField& k = solver.k();
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double k_val = k(i, j);
+            stats.min_k = std::min(stats.min_k, k_val);
+            stats.max_k = std::max(stats.max_k, k_val);
+            stats.avg_k += k_val;
+            if (k_val < 0) stats.negative_count++;
+            stats.total_cells++;
+        }
+    }
+
+    if (stats.total_cells > 0) {
+        stats.avg_k /= stats.total_cells;
+    }
+
+    return stats;
+}
+
+// ============================================================================
 // Wall shear computation
 // ============================================================================
 
@@ -298,6 +445,39 @@ void test_rans_channel_sst() {
     bool shear_sign_ok = (dp_dx < 0) ? (tau_w > 0) : (tau_w < 0);
     bool shear_nonzero = (std::abs(tau_w) > 1e-10);
 
+    // ========== Physics Directionality Checks ==========
+
+    // Production in shear regions should be positive (P_k = nu_t * S^2 >= 0)
+    ProductionStats prod_stats = compute_production_stats(solver, mesh);
+    bool production_positive = prod_stats.valid && (prod_stats.negative_count == 0);
+
+    // Dissipation should be positive everywhere (eps = beta* * k * omega >= 0)
+    DissipationStats diss_stats = compute_dissipation_stats(solver, mesh);
+    bool dissipation_positive = diss_stats.valid && (diss_stats.negative_count == 0);
+
+    // TKE should be non-negative everywhere
+    TKEStats tke_stats = compute_tke_stats(solver, mesh);
+    bool tke_nonnegative = tke_stats.valid && (tke_stats.negative_count == 0);
+
+    // U_bulk growth: should be growing in early phase (first half of history)
+    // Check that later samples are larger than earlier samples
+    bool u_bulk_growing = true;
+    if (U_bulk_history.size() >= 4) {
+        // Compare first quarter to last quarter average
+        int quarter = U_bulk_history.size() / 4;
+        double early_avg = 0.0, late_avg = 0.0;
+        for (int i = 0; i < quarter; ++i) {
+            early_avg += U_bulk_history[i];
+        }
+        for (int i = U_bulk_history.size() - quarter; i < (int)U_bulk_history.size(); ++i) {
+            late_avg += U_bulk_history[i];
+        }
+        early_avg /= quarter;
+        late_avg /= quarter;
+        // Later should be >= early (flow is accelerating toward steady state)
+        u_bulk_growing = (late_avg >= early_avg * 0.95);  // Allow 5% tolerance
+    }
+
     // Print diagnostics
     std::cout << "  Grid: " << Nx << "x" << Ny << ", iters: " << max_iters << "\n";
     std::cout << "  U_bulk: " << std::scientific << std::setprecision(4) << U_bulk << "\n";
@@ -308,7 +488,24 @@ void test_rans_channel_sst() {
               << ", first_cell=" << nu_t_stats.first_cell_nu_t << "\n";
     std::cout << "  nu_t/nu: max=" << nu_t_stats.max_nu_t / nu
               << ", first_cell=" << nu_t_stats.first_cell_nu_t / nu << "\n";
-    std::cout << "  tau_w: " << tau_w << " (expected sign: " << (dp_dx < 0 ? "+" : "-") << ")\n\n";
+    std::cout << "  tau_w: " << tau_w << " (expected sign: " << (dp_dx < 0 ? "+" : "-") << ")\n";
+
+    // Physics directionality diagnostics
+    if (prod_stats.valid) {
+        std::cout << "  Production: min=" << prod_stats.min_production
+                  << ", max=" << prod_stats.max_production
+                  << ", neg_cells=" << (int)prod_stats.negative_count << "/" << (int)prod_stats.total_cells << "\n";
+    }
+    if (diss_stats.valid) {
+        std::cout << "  Dissipation: min=" << diss_stats.min_dissipation
+                  << ", max=" << diss_stats.max_dissipation
+                  << ", neg_cells=" << (int)diss_stats.negative_count << "/" << (int)diss_stats.total_cells << "\n";
+    }
+    if (tke_stats.valid) {
+        std::cout << "  TKE: min=" << tke_stats.min_k << ", max=" << tke_stats.max_k
+                  << ", neg_cells=" << (int)tke_stats.negative_count << "/" << (int)tke_stats.total_cells << "\n";
+    }
+    std::cout << "\n";
 
     // Record results with QoI values
     std::ostringstream ss;
@@ -327,6 +524,12 @@ void test_rans_channel_sst() {
     record("SST U_bulk stable (< 5% change)", U_bulk_stable);
     ss.str(""); ss << std::scientific << std::setprecision(2) << "(tau_w=" << tau_w << ")";
     record("SST Wall shear sign correct", shear_sign_ok && shear_nonzero, ss.str());
+
+    // Physics directionality checks
+    record("SST Production >= 0 in shear regions", production_positive);
+    record("SST Dissipation >= 0 everywhere", dissipation_positive);
+    record("SST TKE >= 0 everywhere", tke_nonnegative);
+    record("SST U_bulk growing toward steady", u_bulk_growing);
 
     // Emit machine-readable QoI for CI metrics
     harness::emit_qoi_rans_channel(U_bulk, nu_t_stats.max_nu_t / nu);
@@ -409,10 +612,33 @@ void test_rans_channel_komega() {
     double tau_w = compute_wall_shear_bottom(solver, mesh, nu);
     bool shear_ok = (dp_dx < 0) ? (tau_w > 0) : (tau_w < 0);
 
+    // Physics directionality checks
+    ProductionStats prod_stats = compute_production_stats(solver, mesh);
+    bool production_positive = prod_stats.valid && (prod_stats.negative_count == 0);
+
+    DissipationStats diss_stats = compute_dissipation_stats(solver, mesh);
+    bool dissipation_positive = diss_stats.valid && (diss_stats.negative_count == 0);
+
+    TKEStats tke_stats = compute_tke_stats(solver, mesh);
+    bool tke_nonnegative = tke_stats.valid && (tke_stats.negative_count == 0);
+
     std::cout << "  U_bulk: " << std::scientific << U_bulk << "\n";
     std::cout << "  nu_t/nu: max=" << nu_t_stats.max_nu_t / nu
               << ", first_cell=" << nu_t_stats.first_cell_nu_t / nu << "\n";
-    std::cout << "  tau_w: " << tau_w << "\n\n";
+    std::cout << "  tau_w: " << tau_w << "\n";
+    if (prod_stats.valid) {
+        std::cout << "  Production: min=" << prod_stats.min_production
+                  << ", neg_cells=" << (int)prod_stats.negative_count << "\n";
+    }
+    if (diss_stats.valid) {
+        std::cout << "  Dissipation: min=" << diss_stats.min_dissipation
+                  << ", neg_cells=" << (int)diss_stats.negative_count << "\n";
+    }
+    if (tke_stats.valid) {
+        std::cout << "  TKE: min=" << tke_stats.min_k
+                  << ", neg_cells=" << (int)tke_stats.negative_count << "\n";
+    }
+    std::cout << "\n";
 
     // Record results with QoI values
     std::ostringstream ss;
@@ -430,6 +656,11 @@ void test_rans_channel_komega() {
     record("k-omega U_bulk > 0", U_bulk > 0, ss.str());
     ss.str(""); ss << std::scientific << std::setprecision(2) << "(tau_w=" << tau_w << ")";
     record("k-omega Wall shear correct", shear_ok && std::abs(tau_w) > 1e-10, ss.str());
+
+    // Physics directionality checks
+    record("k-omega Production >= 0 in shear regions", production_positive);
+    record("k-omega Dissipation >= 0 everywhere", dissipation_positive);
+    record("k-omega TKE >= 0 everywhere", tke_nonnegative);
 }
 
 // ============================================================================

@@ -374,13 +374,19 @@ inline void emit_qoi_cpu_gpu(double u_rel_L2, double p_rel_L2) {
 }
 
 /// Emit QOI JSON for HYPRE vs MG comparison
+/// Primary metrics: div_mg/div_hypre (incompressibility), gradp_relL2 (pressure gradient match)
+/// Secondary metrics: u_rel_L2 (velocity), p_prime_rel_L2 (mean-removed pressure)
 inline void emit_qoi_hypre(double p_prime_rel_L2, double u_rel_L2,
-                            double mean_p_mg = 0.0, double mean_p_hypre = 0.0) {
+                            double mean_p_mg, double mean_p_hypre,
+                            double div_mg, double div_hypre, double gradp_relL2) {
     std::cout << "QOI_JSON: {\"test\":\"hypre_vs_mg\""
               << ",\"p_prime_rel_L2\":" << json_double(p_prime_rel_L2)
               << ",\"u_rel_L2\":" << json_double(u_rel_L2)
               << ",\"mean_p_mg\":" << json_double(mean_p_mg)
               << ",\"mean_p_hypre\":" << json_double(mean_p_hypre)
+              << ",\"div_mg\":" << json_double(div_mg)
+              << ",\"div_hypre\":" << json_double(div_hypre)
+              << ",\"gradp_relL2\":" << json_double(gradp_relL2)
               << "}\n" << std::flush;
 }
 

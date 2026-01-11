@@ -43,6 +43,10 @@ constexpr double VELOCITY_TOLERANCE = 1e-5;
 constexpr double PRESSURE_TOLERANCE = 1e-3;
 // Tolerance for mean-removed pressure (more meaningful for solver equivalence)
 constexpr double PRESSURE_PRIME_TOLERANCE = 1e-6;
+// Tolerance for divergence (should be essentially zero for incompressible)
+constexpr double DIVERGENCE_TOLERANCE = 1e-6;
+// Tolerance for pressure gradient (drives velocity correction)
+constexpr double GRADP_TOLERANCE = 1e-5;
 
 // Tolerance for cross-build comparison (CPU vs GPU HYPRE)
 constexpr double CROSS_BUILD_TOLERANCE = 1e-10;
@@ -183,6 +187,53 @@ void set_taylor_green_initial_velocity(RANSSolver& solver, const Mesh& mesh) {
     }
 
     // w = 0 (already initialized to zero)
+}
+
+// Compute max divergence of velocity field (3D)
+double compute_max_divergence_3d(const VectorField& vel, const Mesh& mesh) {
+    double max_div = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
+                double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
+                double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
+                double div = dudx + dvdy + dwdz;
+                max_div = std::max(max_div, std::abs(div));
+            }
+        }
+    }
+    return max_div;
+}
+
+// Compute relative L2 norm of pressure gradient difference (3D)
+// grad(p) at cell centers, then compare
+double compute_gradp_relL2_3d(const ScalarField& p1, const ScalarField& p2, const Mesh& mesh) {
+    double diff_sq = 0.0;
+    double norm_sq = 0.0;
+
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                // Pressure gradient at cell center using central differences
+                double dpdx_1 = (p1(i+1, j, k) - p1(i-1, j, k)) / (2.0 * mesh.dx);
+                double dpdy_1 = (p1(i, j+1, k) - p1(i, j-1, k)) / (2.0 * mesh.dy);
+                double dpdz_1 = (p1(i, j, k+1) - p1(i, j, k-1)) / (2.0 * mesh.dz);
+
+                double dpdx_2 = (p2(i+1, j, k) - p2(i-1, j, k)) / (2.0 * mesh.dx);
+                double dpdy_2 = (p2(i, j+1, k) - p2(i, j-1, k)) / (2.0 * mesh.dy);
+                double dpdz_2 = (p2(i, j, k+1) - p2(i, j, k-1)) / (2.0 * mesh.dz);
+
+                diff_sq += (dpdx_1 - dpdx_2) * (dpdx_1 - dpdx_2);
+                diff_sq += (dpdy_1 - dpdy_2) * (dpdy_1 - dpdy_2);
+                diff_sq += (dpdz_1 - dpdz_2) * (dpdz_1 - dpdz_2);
+
+                norm_sq += dpdx_1 * dpdx_1 + dpdy_1 * dpdy_1 + dpdz_1 * dpdz_1;
+            }
+        }
+    }
+
+    return (norm_sq > 1e-30) ? std::sqrt(diff_sq / norm_sq) : std::sqrt(diff_sq);
 }
 
 bool test_hypre_vs_multigrid_3d_channel() {
@@ -347,15 +398,25 @@ bool test_hypre_vs_multigrid_3d_channel() {
     }
     u_result.finalize();
 
+    // Compute divergence for both solutions (primary metric for incompressibility)
+    double div_mg = compute_max_divergence_3d(solver_mg.velocity(), mesh);
+    double div_hypre = compute_max_divergence_3d(solver_hypre.velocity(), mesh);
+
+    // Compute pressure gradient comparison (what actually drives velocity correction)
+    double gradp_relL2 = compute_gradp_relL2_3d(solver_mg.pressure(), solver_hypre.pressure(), mesh);
+
     // Print diagnostics
     std::cout << "  Solution statistics:\n";
     std::cout << "    MG pressure range:    [" << p_mg_min << ", " << p_mg_max << "] (mean=" << p_mg_mean << ")\n";
     std::cout << "    HYPRE pressure range: [" << p_hypre_min << ", " << p_hypre_max << "] (mean=" << p_hypre_mean << ")\n";
     std::cout << "    MG max |u|:    " << u_mg_max << "\n";
     std::cout << "    HYPRE max |u|: " << u_hypre_max << "\n";
+    std::cout << "    MG max |div(u)|:    " << std::scientific << div_mg << "\n";
+    std::cout << "    HYPRE max |div(u)|: " << std::scientific << div_hypre << "\n";
+    std::cout << "    grad(p) relL2 diff: " << std::scientific << gradp_relL2 << "\n";
 
     p_result.print("Pressure diff (raw)");
-    p_prime_result.print("Pressure diff (mean-removed)");  // More meaningful for solver equivalence
+    p_prime_result.print("Pressure diff (mean-removed)");
     u_result.print("U-velocity diff");
 
     // Sanity check: solutions should be non-trivial
@@ -366,37 +427,56 @@ bool test_hypre_vs_multigrid_3d_channel() {
     }
 
     // Sanity check: solutions should differ slightly (different solvers)
-    // If max_abs_diff is exactly 0, both solvers might be using the same path
     bool solvers_differ = (p_result.max_abs_diff > 1e-15) || (u_result.max_abs_diff > 1e-15);
     if (!solvers_differ) {
         std::cerr << "  WARNING: Solutions are bitwise identical - solvers may be the same!\n";
-        // This is suspicious but we'll still pass if within tolerance
     }
 
-    // Check tolerances:
-    // - Velocity should match closely (it determines whether physics is correct)
-    // - Mean-removed pressure is the key pressure check (accounts for gauge/mean offset)
+    // PRIMARY pass/fail criteria (what actually matters for correctness):
+    // 1. Divergence must be small for both solvers (incompressibility)
+    // 2. Pressure gradients must match (drives velocity correction)
+    // 3. Velocity must match (physical result)
+    bool div_mg_ok = div_mg < DIVERGENCE_TOLERANCE;
+    bool div_hypre_ok = div_hypre < DIVERGENCE_TOLERANCE;
+    bool gradp_ok = gradp_relL2 < GRADP_TOLERANCE;
     bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
+
+    // Secondary: mean-removed pressure (for QoI tracking, not pass/fail)
     bool pressure_prime_ok = p_prime_result.within_tolerance(PRESSURE_PRIME_TOLERANCE);
 
-    if (!velocity_ok) {
-        std::cerr << "  ERROR: Velocity difference exceeds tolerance " << VELOCITY_TOLERANCE << "\n";
+    std::cout << "\n  Pass/fail checks:\n";
+    std::cout << "    MG divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_mg_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    HYPRE divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    Pressure gradient match < " << GRADP_TOLERANCE << ": " << (gradp_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    Velocity match < " << VELOCITY_TOLERANCE << ": " << (velocity_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    Mean-removed pressure < " << PRESSURE_PRIME_TOLERANCE << ": " << (pressure_prime_ok ? "[OK]" : "[WARN]") << " (secondary)\n";
+
+    if (!div_mg_ok) {
+        std::cerr << "  ERROR: MG divergence " << div_mg << " exceeds tolerance\n";
     }
-    if (!pressure_prime_ok) {
-        std::cerr << "  WARNING: Mean-removed pressure difference exceeds tolerance " << PRESSURE_PRIME_TOLERANCE << "\n";
-        std::cerr << "          This suggests solvers are producing different pressure gradients.\n";
+    if (!div_hypre_ok) {
+        std::cerr << "  ERROR: HYPRE divergence " << div_hypre << " exceeds tolerance\n";
+    }
+    if (!gradp_ok) {
+        std::cerr << "  ERROR: Pressure gradient difference exceeds tolerance\n";
+    }
+    if (!velocity_ok) {
+        std::cerr << "  ERROR: Velocity difference exceeds tolerance\n";
     }
 
-    // Pass if velocity matches (pressure gradients drive velocity correction)
-    bool passed = velocity_ok;
-    std::cout << "  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
+    // Pass if all primary criteria are met
+    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok;
+    std::cout << "\n  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
 
     // Emit machine-readable QoI for CI metrics
     nncfd::test::harness::emit_qoi_hypre(
         p_prime_result.rel_l2(),
         u_result.rel_l2(),
         p_mg_mean,
-        p_hypre_mean
+        p_hypre_mean,
+        div_mg,
+        div_hypre,
+        gradp_relL2
     );
 
     return passed;
