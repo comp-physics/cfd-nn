@@ -17,6 +17,10 @@ module load nvhpc
 
 cd "__WORKDIR__"
 
+# Create separate log files for build and test output
+BUILD_LOG="__WORKDIR__/gpu_ci_build.log"
+TEST_LOG="__WORKDIR__/gpu_ci_test.log"
+
 echo "==================================================================="
 echo "  GPU CI Correctness Suite"
 echo "==================================================================="
@@ -74,39 +78,92 @@ echo "[PASS] CPU sanity suite completed - proceeding to GPU build"
 echo ""
 
 # ===================================================================
-# Phase 2: CPU Reference + GPU Comparison
+# Phase 2: Build CPU and GPU versions (output to BUILD_LOG)
 # ===================================================================
+echo ""
+echo "==================================================================="
+echo "  Phase 2: Building CPU and GPU versions"
+echo "==================================================================="
+echo ""
+echo "Build output will be saved to: $BUILD_LOG"
+echo ""
 
-# Hard-require OpenMP target offload (fail if it falls back to CPU)
-export OMP_TARGET_OFFLOAD=MANDATORY
+{
+    echo "==================================================================="
+    echo "  GPU CI Build Log"
+    echo "==================================================================="
+    echo ""
+    echo "Host: $(hostname)"
+    echo "Date: $(date)"
+    echo "Compiler: $CXX"
+    $CXX --version | head -1
+    echo ""
 
-# Build CPU reference version (needed for CPU/GPU comparison tests)
-echo "Building CPU reference version..."
-mkdir -p build_cpu
-cd build_cpu
-# Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
-rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
-cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF -DBUILD_TESTS=ON
-make -j8
-cd ..
+    # Hard-require OpenMP target offload (fail if it falls back to CPU)
+    export OMP_TARGET_OFFLOAD=MANDATORY
 
-# Build GPU version
-# Note: H200 requires cc90 (Hopper architecture)
-echo "Building GPU version..."
-mkdir -p build_gpu
-cd build_gpu
-# Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
-rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
-cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON -DGPU_CC=90
-make -j8
-cd ..
+    # Build CPU reference version (needed for CPU/GPU comparison tests)
+    echo "==================================================================="
+    echo "Building CPU reference version..."
+    echo "==================================================================="
+    mkdir -p build_cpu
+    cd build_cpu
+    # Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
+    rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF -DBUILD_TESTS=ON
+    make -j8
+    cd ..
 
-# Make scripts executable
-chmod +x scripts/ci.sh
-chmod +x scripts/check_code_sharing.sh
+    echo ""
+    echo "==================================================================="
+    echo "Building GPU version..."
+    echo "==================================================================="
+    # Build GPU version
+    # Note: H200 requires cc90 (Hopper architecture)
+    mkdir -p build_gpu
+    cd build_gpu
+    # Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
+    rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON -DGPU_CC=90
+    make -j8
+    cd ..
 
-# Run the full CI test suite (GPU mode is default)
-./scripts/ci.sh full
+    echo ""
+    echo "==================================================================="
+    echo "  Build Complete"
+    echo "==================================================================="
+    echo ""
+    echo "CPU build: $(ls -lh build_cpu/libnn_cfd_core.a 2>/dev/null || echo 'FAILED')"
+    echo "GPU build: $(ls -lh build_gpu/libnn_cfd_core.a 2>/dev/null || echo 'FAILED')"
+} 2>&1 | tee "$BUILD_LOG"
+
+# ===================================================================
+# Phase 3: Run Tests (output to TEST_LOG)
+# ===================================================================
+echo ""
+echo "==================================================================="
+echo "  Phase 3: Running CI Test Suite"
+echo "==================================================================="
+echo ""
+echo "Test output will be saved to: $TEST_LOG"
+echo ""
+
+{
+    echo "==================================================================="
+    echo "  GPU CI Test Log"
+    echo "==================================================================="
+    echo ""
+    echo "Host: $(hostname)"
+    echo "Date: $(date)"
+    echo ""
+
+    # Make scripts executable
+    chmod +x scripts/ci.sh
+    chmod +x scripts/check_code_sharing.sh
+
+    # Run the full CI test suite (GPU mode is default)
+    ./scripts/ci.sh full
+} 2>&1 | tee "$TEST_LOG"
 
 echo ""
 echo "[PASS] GPU Correctness Suite completed successfully"
