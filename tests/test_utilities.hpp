@@ -23,7 +23,7 @@ namespace test {
 //=============================================================================
 
 /// Unified field comparison result structure
-/// Tracks max/RMS differences and location of worst error
+/// Tracks max/RMS differences, location of worst error, and normalized norms
 struct FieldComparison {
     double max_abs_diff = 0.0;
     double max_rel_diff = 0.0;
@@ -33,12 +33,20 @@ struct FieldComparison {
     double test_at_worst = 0.0;
     int count = 0;
 
+    // For normalized L2/Linf norms
+    double sum_sq_diff_ = 0.0;   // Sum of (ref - test)^2
+    double sum_sq_ref_ = 0.0;    // Sum of ref^2
+    double max_abs_ref_ = 0.0;   // max|ref| for Linf normalization
+
     /// Update comparison with a new point (3D version)
     void update(int i, int j, int k, double ref_val, double test_val) {
         double abs_diff = std::abs(ref_val - test_val);
         double rel_diff = abs_diff / (std::abs(ref_val) + 1e-15);
 
-        rms_diff += abs_diff * abs_diff;
+        sum_sq_diff_ += abs_diff * abs_diff;
+        sum_sq_ref_ += ref_val * ref_val;
+        max_abs_ref_ = std::max(max_abs_ref_, std::abs(ref_val));
+        rms_diff += abs_diff * abs_diff;  // Will be sqrt'd in finalize()
         count++;
 
         if (abs_diff > max_abs_diff) {
@@ -67,6 +75,19 @@ struct FieldComparison {
         }
     }
 
+    /// Compute normalized L2 norm: ||test - ref||_2 / (||ref||_2 + eps)
+    /// More stable than max relative diff for comparing fields
+    double rel_l2(double eps = 1e-30) const {
+        double l2_diff = std::sqrt(sum_sq_diff_);
+        double l2_ref = std::sqrt(sum_sq_ref_);
+        return l2_diff / (l2_ref + eps);
+    }
+
+    /// Compute normalized L-infinity norm: ||test - ref||_inf / (||ref||_inf + eps)
+    double rel_linf(double eps = 1e-30) const {
+        return max_abs_diff / (max_abs_ref_ + eps);
+    }
+
     /// Print comparison results with optional field name
     void print(const std::string& name = "") const {
         if (!name.empty()) {
@@ -74,6 +95,8 @@ struct FieldComparison {
             std::cout << "    Max abs diff: " << std::scientific << max_abs_diff << "\n";
             std::cout << "    Max rel diff: " << max_rel_diff << "\n";
             std::cout << "    RMS diff:     " << rms_diff << "\n";
+            std::cout << "    Rel L2 norm:  " << rel_l2() << "\n";
+            std::cout << "    Rel Linf:     " << rel_linf() << "\n";
             if (max_abs_diff > 0) {
                 std::cout << "    Worst at (" << worst_i << "," << worst_j << "," << worst_k << "): "
                           << "ref=" << ref_at_worst << ", test=" << test_at_worst << "\n";
@@ -83,6 +106,8 @@ struct FieldComparison {
             std::cout << "  Max absolute difference: " << max_abs_diff << "\n";
             std::cout << "  Max relative difference: " << max_rel_diff << "\n";
             std::cout << "  RMS difference:          " << rms_diff << "\n";
+            std::cout << "  Rel L2 norm:             " << rel_l2() << "\n";
+            std::cout << "  Rel Linf norm:           " << rel_linf() << "\n";
             if (max_abs_diff > 0) {
                 std::cout << "  Worst at (" << worst_i << "," << worst_j << "," << worst_k << "): "
                           << "ref=" << ref_at_worst << ", test=" << test_at_worst << "\n";
@@ -95,6 +120,11 @@ struct FieldComparison {
         return max_abs_diff < tol;
     }
 
+    /// Check if normalized L2 norm is within tolerance (more robust for CI)
+    bool within_rel_l2_tolerance(double tol) const {
+        return rel_l2() < tol;
+    }
+
     /// Reset comparison state
     void reset() {
         max_abs_diff = 0.0;
@@ -103,6 +133,9 @@ struct FieldComparison {
         worst_i = worst_j = worst_k = 0;
         ref_at_worst = test_at_worst = 0.0;
         count = 0;
+        sum_sq_diff_ = 0.0;
+        sum_sq_ref_ = 0.0;
+        max_abs_ref_ = 0.0;
     }
 };
 
@@ -1071,6 +1104,148 @@ inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
         }
     }
     return KE;
+}
+
+//=============================================================================
+// CI Metrics and JSON Artifact Support
+//=============================================================================
+
+/// Metrics collected for CI artifact output
+/// Designed to be minimal and stable (avoid frequent schema changes)
+struct CIMetrics {
+    // Build info
+    std::string git_sha;
+    std::string build_type;
+    std::string gpu_name;
+    int compute_capability = 0;
+
+    // Test identification
+    std::string test_name;
+
+    // TGV invariants
+    double tgv_2d_div_max = 0.0;
+    double tgv_2d_E_final = 0.0;
+    double tgv_3d_div_max = 0.0;
+    double tgv_3d_E_final = 0.0;
+
+    // CPU/GPU comparison (per-field)
+    double u_rel_l2 = 0.0;
+    double u_rel_linf = 0.0;
+    double v_rel_l2 = 0.0;
+    double v_rel_linf = 0.0;
+    double p_rel_l2 = 0.0;
+    double p_rel_linf = 0.0;
+
+    // Optional turbulence fields
+    double k_rel_l2 = 0.0;
+    double omega_rel_l2 = 0.0;
+    double nu_t_rel_l2 = 0.0;
+
+    /// Write metrics to JSON file
+    /// @param filename Path to output JSON file (e.g., "artifacts/metrics.json")
+    void write_json(const std::string& filename) const {
+        std::ofstream ofs(filename);
+        if (!ofs) {
+            std::cerr << "[CIMetrics] Warning: Could not open " << filename << " for writing\n";
+            return;
+        }
+
+        ofs << std::scientific << std::setprecision(12);
+        ofs << "{\n";
+        ofs << "  \"git_sha\": \"" << git_sha << "\",\n";
+        ofs << "  \"build_type\": \"" << build_type << "\",\n";
+        ofs << "  \"gpu_name\": \"" << gpu_name << "\",\n";
+        ofs << "  \"compute_capability\": " << compute_capability << ",\n";
+        ofs << "  \"test_name\": \"" << test_name << "\",\n";
+        ofs << "  \"tgv_2d\": {\n";
+        ofs << "    \"div_max\": " << tgv_2d_div_max << ",\n";
+        ofs << "    \"E_final\": " << tgv_2d_E_final << "\n";
+        ofs << "  },\n";
+        ofs << "  \"tgv_3d\": {\n";
+        ofs << "    \"div_max\": " << tgv_3d_div_max << ",\n";
+        ofs << "    \"E_final\": " << tgv_3d_E_final << "\n";
+        ofs << "  },\n";
+        ofs << "  \"cpu_gpu_diff\": {\n";
+        ofs << "    \"u_rel_l2\": " << u_rel_l2 << ",\n";
+        ofs << "    \"u_rel_linf\": " << u_rel_linf << ",\n";
+        ofs << "    \"v_rel_l2\": " << v_rel_l2 << ",\n";
+        ofs << "    \"v_rel_linf\": " << v_rel_linf << ",\n";
+        ofs << "    \"p_rel_l2\": " << p_rel_l2 << ",\n";
+        ofs << "    \"p_rel_linf\": " << p_rel_linf << ",\n";
+        ofs << "    \"k_rel_l2\": " << k_rel_l2 << ",\n";
+        ofs << "    \"omega_rel_l2\": " << omega_rel_l2 << ",\n";
+        ofs << "    \"nu_t_rel_l2\": " << nu_t_rel_l2 << "\n";
+        ofs << "  }\n";
+        ofs << "}\n";
+
+        ofs.close();
+        std::cout << "[CIMetrics] Wrote metrics to " << filename << "\n";
+    }
+
+    /// Print metrics summary to stdout
+    void print_summary() const {
+        std::cout << "\n--- CI Metrics Summary ---\n";
+        std::cout << "  Build: " << build_type;
+        if (!gpu_name.empty()) {
+            std::cout << " (GPU: " << gpu_name << ", CC " << compute_capability << ")";
+        }
+        std::cout << "\n";
+        if (!git_sha.empty()) {
+            std::cout << "  Git SHA: " << git_sha << "\n";
+        }
+        std::cout << std::scientific << std::setprecision(2);
+        if (tgv_2d_div_max > 0 || tgv_2d_E_final > 0) {
+            std::cout << "  TGV 2D: div_max=" << tgv_2d_div_max << ", E_final=" << tgv_2d_E_final << "\n";
+        }
+        if (tgv_3d_div_max > 0 || tgv_3d_E_final > 0) {
+            std::cout << "  TGV 3D: div_max=" << tgv_3d_div_max << ", E_final=" << tgv_3d_E_final << "\n";
+        }
+        if (u_rel_l2 > 0) {
+            std::cout << "  CPU/GPU u: rel_l2=" << u_rel_l2 << ", rel_linf=" << u_rel_linf << "\n";
+        }
+        if (v_rel_l2 > 0) {
+            std::cout << "  CPU/GPU v: rel_l2=" << v_rel_l2 << ", rel_linf=" << v_rel_linf << "\n";
+        }
+        if (p_rel_l2 > 0) {
+            std::cout << "  CPU/GPU p: rel_l2=" << p_rel_l2 << ", rel_linf=" << p_rel_linf << "\n";
+        }
+        std::cout << "\n";
+    }
+};
+
+/// Get git SHA from environment or .git directory
+/// Returns empty string if not available
+inline std::string get_git_sha() {
+    // Try environment variable first (set by CI)
+    const char* sha = std::getenv("GIT_SHA");
+    if (sha) return std::string(sha);
+
+    // Try GITHUB_SHA (GitHub Actions)
+    sha = std::getenv("GITHUB_SHA");
+    if (sha) return std::string(sha);
+
+    return "";
+}
+
+/// Get build type string
+inline std::string get_build_type_string() {
+#ifdef USE_GPU_OFFLOAD
+    return "GPU";
+#else
+    return "CPU";
+#endif
+}
+
+/// Get GPU name if available
+inline std::string get_gpu_name() {
+#ifdef USE_GPU_OFFLOAD
+    // On NVIDIA, could use nvidia-smi or CUDA API
+    // For now, return generic
+    if (gpu::available()) {
+        return "GPU_" + std::to_string(gpu::device_count()) + "_devices";
+    }
+#endif
+    return "";
 }
 
 } // namespace test

@@ -424,10 +424,15 @@ if(BUILD_TESTS)
     add_nncfd_test(test_adaptive_dt LABELS fast)
     add_nncfd_test(test_numerics LABELS fast)
     add_nncfd_test(test_gpu_buffer TEST_NAME_SUFFIX GPUBufferTest LABELS fast)
+    add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
+    add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
+    add_nncfd_test(test_rans_channel_sanity TEST_NAME_SUFFIX RANSChannelSanityTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s)
     # =========================================================================
+    add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest)
+    add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest)
     add_nncfd_test(test_poisson_unified)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
     add_nncfd_test(test_turbulence_unified)
