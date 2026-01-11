@@ -263,6 +263,9 @@ void test_tgv_3d_invariants() {
            qoi(std::abs(v_mean), mean_vel_threshold));
     record("3D Symmetry (|mean(w)| < 1e-10)", std::abs(w_mean) < mean_vel_threshold,
            qoi(std::abs(w_mean), mean_vel_threshold));
+
+    // Emit machine-readable QoI for CI metrics
+    harness::emit_qoi_tgv_3d(max_div_observed, energy_history.back());
 }
 
 // ============================================================================
