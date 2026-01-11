@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "build_type": "gpu+hypre",
+  "created": "2026-01-11",
+  "commit": "d12bf22",
+  "tgv_2d": {
+    "div_Linf": 1.501454516272815e-11,
+    "ke_final": 9.696523576012330e+00,
+    "ke_ratio": 9.919936861984372e-01
+  },
+  "fourier_mode": {
+    "ke_ratio": 9.900011319619022e-01,
+    "max_v_over_max_u": 1.252296637961006e-03
+  },
+  "repeatability": {
+    "ke_rel_diff": 1.821028403922927e-16,
+    "u_rel_L2": 2.412013125453000e-16
+  },
+  "tgv_3d": {
+    "div_Linf": 4.874572967494828e-16,
+    "ke_final": 2.975084913762213e+01
+  },
+  "mms": {
+    "spatial_order": 1.741363902768455e+00,
+    "u_L2_error": 2.437186505973357e-03
+  },
+  "rans_channel": {
+    "u_bulk": 9.079978667973132e-02,
+    "nut_ratio_max": 7.850787295608979e+00
+  },
+  "stability_sentinel": {
+    "ke_ratio": 9.959568601212676e-01,
+    "div_Linf": 1.496103241294122e-11,
+    "dt_min": 1.000000000000000e-02,
+    "dt_max": 1.000000000000000e-02,
+    "dt_final": 1.000000000000000e-02,
+    "has_nan": false
+  },
+  "hypre_vs_mg": {
+    "p_prime_rel_L2": 1.381065644969913e-01,
+    "u_rel_L2": 5.816859034306728e-06,
+    "mean_p_mg": -7.373487980297689e-21,
+    "mean_p_hypre": -1.856502816249265e-05
+  },
+  "solver_select": {
+    "2D_channel_auto": {"selected": "FFT2D", "expected": "FFT2D|MG"},
+    "2D_box_auto": {"selected": "MG", "expected": "MG"},
+    "3D_channel_auto": {"selected": "FFT", "expected": "FFT|FFT1D|MG"},
+    "3D_duct_auto": {"selected": "FFT1D", "expected": "FFT1D|MG"},
+    "3D_box_auto": {"selected": "MG", "expected": "MG|HYPRE"},
+    "3D_periodic_auto": {"selected": "FFT", "expected": "FFT|MG"},
+    "3D_channel_force_MG": {"selected": "MG", "expected": "MG"},
+    "3D_channel_force_HYPRE": {"selected": "HYPRE", "expected": "HYPRE"}
+  }
+}
