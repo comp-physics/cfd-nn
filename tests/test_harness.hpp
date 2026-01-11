@@ -342,7 +342,7 @@ inline void emit_qoi_tgv_2d(double div_Linf, double ke_final, double ke_ratio,
     if (const_vel_Linf >= 0.0) {
         std::cout << ",\"const_vel_Linf\":" << json_double(const_vel_Linf);
     }
-    std::cout << "}\n";
+    std::cout << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for TGV 3D invariants
@@ -352,7 +352,7 @@ inline void emit_qoi_tgv_3d(double div_Linf, double ke_final = -1.0) {
     if (ke_final >= 0.0) {
         std::cout << ",\"ke_final\":" << json_double(ke_final);
     }
-    std::cout << "}\n";
+    std::cout << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for repeatability test
@@ -362,7 +362,7 @@ inline void emit_qoi_repeatability(double ke_rel_diff, double u_rel_L2 = -1.0) {
     if (u_rel_L2 >= 0.0) {
         std::cout << ",\"u_rel_L2\":" << json_double(u_rel_L2);
     }
-    std::cout << "}\n";
+    std::cout << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for CPU/GPU bitwise comparison
@@ -370,7 +370,7 @@ inline void emit_qoi_cpu_gpu(double u_rel_L2, double p_rel_L2) {
     std::cout << "QOI_JSON: {\"test\":\"cpu_gpu\""
               << ",\"u_rel_L2\":" << json_double(u_rel_L2)
               << ",\"p_rel_L2\":" << json_double(p_rel_L2)
-              << "}\n";
+              << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for HYPRE vs MG comparison
@@ -381,7 +381,7 @@ inline void emit_qoi_hypre(double p_prime_rel_L2, double u_rel_L2,
               << ",\"u_rel_L2\":" << json_double(u_rel_L2)
               << ",\"mean_p_mg\":" << json_double(mean_p_mg)
               << ",\"mean_p_hypre\":" << json_double(mean_p_hypre)
-              << "}\n";
+              << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for MMS convergence test
@@ -391,7 +391,7 @@ inline void emit_qoi_mms(double spatial_order, double u_L2_error = -1.0) {
     if (u_L2_error >= 0.0) {
         std::cout << ",\"u_L2_error\":" << json_double(u_L2_error);
     }
-    std::cout << "}\n";
+    std::cout << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for RANS channel sanity
@@ -406,7 +406,7 @@ inline void emit_qoi_rans_channel(double u_bulk, double nut_ratio_max,
     if (omega_min >= 0.0) {
         std::cout << ",\"omega_min\":" << json_double(omega_min);
     }
-    std::cout << "}\n";
+    std::cout << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for Fourier mode invariance test
@@ -414,7 +414,7 @@ inline void emit_qoi_fourier_mode(double ke_ratio, double max_v_over_max_u) {
     std::cout << "QOI_JSON: {\"test\":\"fourier_mode\""
               << ",\"ke_ratio\":" << json_double(ke_ratio)
               << ",\"max_v_over_max_u\":" << json_double(max_v_over_max_u)
-              << "}\n";
+              << "}\n" << std::flush;
 }
 
 /// Emit QOI JSON for performance gates
@@ -432,7 +432,7 @@ inline void emit_qoi_perf(const std::string& case_name, double ms_per_step,
     if (timed_steps > 0) {
         std::cout << ",\"timed_steps\":" << timed_steps;
     }
-    std::cout << "}\n";
+    std::cout << "}\n" << std::flush;
 }
 
 //=============================================================================
