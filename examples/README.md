@@ -365,7 +365,7 @@ pip install numpy matplotlib scipy
 ### Simulation Doesn't Converge
 
 **Check**:
-1. Is `max_iter` large enough? (Try 50000)
+1. Is `max_steps` large enough? (Try 50000)
 2. Is `CFL_max` too large? (Reduce to 0.3)
 3. Is grid stretched too aggressively? (Reduce `beta_y`)
 

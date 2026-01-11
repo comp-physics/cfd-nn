@@ -153,6 +153,6 @@ Compare these quantities with DNS:
 
 **Job times out:**
 - Increase time limit: `#SBATCH --time=04:00:00`
-- Or reduce max_iter to checkpoint intermediate results
+- Or reduce max_steps to checkpoint intermediate results
 
 

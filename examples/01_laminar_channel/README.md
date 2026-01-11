@@ -138,7 +138,7 @@ The `analyze.py` script generates:
 
 ### Simulation doesn't converge
 - **Check**: Is `tol` too strict? Try `tol = 1e-8`
-- **Check**: Increase `max_iter` to 20000
+- **Check**: Increase `max_steps` to 20000
 - **Check**: Reduce `dt` to 0.005
 
 ### Error is too large (> 5%)

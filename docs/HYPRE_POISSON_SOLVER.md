@@ -283,7 +283,7 @@ This usually indicates a mismatch between OMP-mapped and managed memory. Ensure:
    [HyprePoissonSolver] CUDA backend enabled (unified memory)
    ```
 2. Verify GPU is being used: `nvidia-smi` should show GPU utilization
-3. For ill-conditioned problems, increase `max_iter` in Poisson config
+3. For ill-conditioned problems, increase `max_vcycles` in Poisson config
 
 ### Debugging
 
