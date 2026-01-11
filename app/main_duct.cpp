@@ -240,10 +240,13 @@ int main(int argc, char** argv) {
     // Print configuration
     config.print();
 
-    // Compute expected values
+    // Compute expected values (only used for steady-state validation)
     double a = (config.y_max - config.y_min) / 2.0;
     double u_center_approx = duct_velocity_analytical(0.0, 0.0, a, config.dp_dx, config.nu);
-    std::cout << "Expected centerline velocity (approx): " << u_center_approx << "\n\n";
+    // Only print expected velocities for steady mode - these are meaningless for short unsteady runs
+    if (config.simulation_mode == SimulationMode::Steady) {
+        std::cout << "Expected centerline velocity (approx): " << u_center_approx << "\n\n";
+    }
 
     // Create 3D mesh
     Mesh mesh;
@@ -411,9 +414,10 @@ int main(int argc, char** argv) {
 
     std::cout << "Max velocity: " << std::fixed << std::setprecision(6) << max_u << "\n";
     std::cout << "Bulk velocity: " << bulk_u << "\n";
-    std::cout << "Expected centerline (approx): " << u_center_approx << "\n";
 
-    if (config.turb_model == TurbulenceModelType::None) {
+    // Only compare against analytical solution for steady-state runs
+    if (!is_unsteady && config.turb_model == TurbulenceModelType::None) {
+        std::cout << "Expected centerline (approx): " << u_center_approx << "\n";
         double error = std::abs(max_u - u_center_approx) / std::abs(u_center_approx);
         std::cout << "Centerline error: " << error * 100.0 << "%\n";
 
