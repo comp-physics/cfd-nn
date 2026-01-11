@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cmath>
+#include <cstdlib>
+#include <ctime>
 #include <string>
 #include <iostream>
 #include <iomanip>
@@ -1110,17 +1112,28 @@ inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
 // CI Metrics and JSON Artifact Support
 //=============================================================================
 
+// Forward declarations for helper functions used by CIMetrics
+inline std::string get_git_sha();
+inline std::string get_build_type_string();
+inline std::string get_gpu_name();
+
 /// Metrics collected for CI artifact output
 /// Designed to be minimal and stable (avoid frequent schema changes)
 struct CIMetrics {
     // Build info
     std::string git_sha;
-    std::string build_type;
+    std::string build_type;       // "CPU" or "GPU"
+    std::string precision;        // "double" or "float"
     std::string gpu_name;
     int compute_capability = 0;
 
     // Test identification
     std::string test_name;
+    std::string timestamp;        // ISO 8601 format
+
+    // Timing
+    double wall_time_seconds = 0.0;
+    int num_iterations = 0;
 
     // TGV invariants
     double tgv_2d_div_max = 0.0;
@@ -1141,6 +1154,23 @@ struct CIMetrics {
     double omega_rel_l2 = 0.0;
     double nu_t_rel_l2 = 0.0;
 
+    /// Populate build info from environment
+    void populate_from_environment() {
+        git_sha = get_git_sha();
+        build_type = get_build_type_string();
+        gpu_name = get_gpu_name();
+#ifdef NNCFD_USE_FLOAT
+        precision = "float";
+#else
+        precision = "double";
+#endif
+        // Timestamp in ISO 8601 format
+        std::time_t now = std::time(nullptr);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+        timestamp = buf;
+    }
+
     /// Write metrics to JSON file
     /// @param filename Path to output JSON file (e.g., "artifacts/metrics.json")
     void write_json(const std::string& filename) const {
@@ -1154,9 +1184,13 @@ struct CIMetrics {
         ofs << "{\n";
         ofs << "  \"git_sha\": \"" << git_sha << "\",\n";
         ofs << "  \"build_type\": \"" << build_type << "\",\n";
+        ofs << "  \"precision\": \"" << precision << "\",\n";
         ofs << "  \"gpu_name\": \"" << gpu_name << "\",\n";
         ofs << "  \"compute_capability\": " << compute_capability << ",\n";
         ofs << "  \"test_name\": \"" << test_name << "\",\n";
+        ofs << "  \"timestamp\": \"" << timestamp << "\",\n";
+        ofs << "  \"wall_time_seconds\": " << wall_time_seconds << ",\n";
+        ofs << "  \"num_iterations\": " << num_iterations << ",\n";
         ofs << "  \"tgv_2d\": {\n";
         ofs << "    \"div_max\": " << tgv_2d_div_max << ",\n";
         ofs << "    \"E_final\": " << tgv_2d_E_final << "\n";
@@ -1185,13 +1219,24 @@ struct CIMetrics {
     /// Print metrics summary to stdout
     void print_summary() const {
         std::cout << "\n--- CI Metrics Summary ---\n";
-        std::cout << "  Build: " << build_type;
+        std::cout << "  Build: " << build_type << " (" << precision << ")";
         if (!gpu_name.empty()) {
-            std::cout << " (GPU: " << gpu_name << ", CC " << compute_capability << ")";
+            std::cout << " GPU: " << gpu_name << ", CC " << compute_capability;
         }
         std::cout << "\n";
         if (!git_sha.empty()) {
             std::cout << "  Git SHA: " << git_sha << "\n";
+        }
+        if (!timestamp.empty()) {
+            std::cout << "  Timestamp: " << timestamp << "\n";
+        }
+        if (wall_time_seconds > 0) {
+            std::cout << std::fixed << std::setprecision(2);
+            std::cout << "  Wall time: " << wall_time_seconds << "s";
+            if (num_iterations > 0) {
+                std::cout << " (" << num_iterations << " iters)";
+            }
+            std::cout << "\n";
         }
         std::cout << std::scientific << std::setprecision(2);
         if (tgv_2d_div_max > 0 || tgv_2d_E_final > 0) {

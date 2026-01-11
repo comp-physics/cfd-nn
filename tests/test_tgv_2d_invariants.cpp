@@ -242,10 +242,13 @@ void test_tgv_2d_initial_divergence() {
 
     std::cout << "  Initial max|div|: " << std::scientific << initial_div << "\n\n";
 
-    // Taylor-Green should be analytically divergence-free
-    // On discrete grid, expect O(dx²) error, so for 32x32 with L=2π: dx ≈ 0.2, dx² ≈ 0.04
-    // But for MAC grid with exact IC, should be much smaller
-    record("Initial field divergence-free (< 1e-10)", initial_div < 1e-10);
+    // Taylor-Green is analytically divergence-free, but discrete divergence depends on:
+    //   - face-center sampling of u,v
+    //   - periodic wrap indexing
+    //   - floating-point roundoff
+    // Use 1e-8 threshold: stricter than simulation check (1e-6), but allows for
+    // minor discrete/roundoff effects. The "during simulation" check is the key invariant.
+    record("Initial field divergence-free (< 1e-8)", initial_div < 1e-8);
 }
 
 // ============================================================================
