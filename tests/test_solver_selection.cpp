@@ -176,14 +176,15 @@ void test_solver_selection_matrix() {
         "MG"
     });
 
-    // 3D channel: periodic x/z, wall y -> FFT1D on GPU, MG on CPU
+    // 3D channel: periodic x/z, wall y -> FFT (2D FFT in x-z) on GPU, MG on CPU
+    // Note: FFT (not FFT1D) is used when BOTH x AND z are periodic
     cases.push_back({
         "3D_channel_auto",
         32, 32, 32,
         VelocityBC::Periodic, VelocityBC::NoSlip, VelocityBC::Periodic,
         PoissonSolverType::Auto,
-        "MG|HYPRE",    // CPU: MG or HYPRE
-        "FFT1D|MG"     // GPU: FFT1D if available, else MG
+        "MG|HYPRE",        // CPU: MG or HYPRE
+        "FFT|FFT1D|MG"     // GPU: FFT (2D) if x+z periodic, else FFT1D, else MG
     });
 
     // 3D duct: periodic x, wall y/z -> FFT1D on GPU, MG on CPU
