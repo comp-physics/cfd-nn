@@ -161,6 +161,10 @@ log_info() {
     echo -e "${YELLOW}[INFO]${NC} $1"
 }
 
+log_warning() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
 # Check if GPU is available (for GPU builds)
 check_gpu_available() {
     # Check if nvidia-smi exists and reports a GPU
@@ -232,6 +236,145 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 FAILED_TESTS=""
+
+# QoI metrics aggregation file (JSON fragments)
+QOI_METRICS_FILE="/tmp/ci_qoi_metrics_$$.json"
+echo "{" > "$QOI_METRICS_FILE"
+QOI_COUNT=0
+
+# Track which tests should have QoI (for parser health check)
+declare -A QOI_EXPECTED
+declare -A QOI_EXTRACTED
+
+# Function to extract QoI values from test output
+# Parses QOI_JSON: lines emitted by tests (robust, machine-readable)
+# Falls back to regex parsing for legacy tests
+extract_qoi_metrics() {
+    local test_name=$1
+    local output_file=$2
+
+    # Skip if no output
+    [ ! -f "$output_file" ] && return
+
+    # Mark that we expected QoI from this test
+    case "$test_name" in
+        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity")
+            QOI_EXPECTED["$test_name"]=1
+            ;;
+    esac
+
+    # Try to extract QOI_JSON lines first (preferred, robust method)
+    local qoi_lines
+    qoi_lines=$(grep '^QOI_JSON: ' "$output_file" 2>/dev/null || true)
+
+    if [ -n "$qoi_lines" ]; then
+        # Parse QOI_JSON lines and merge into metrics
+        while IFS= read -r line; do
+            # Extract JSON after "QOI_JSON: "
+            local json="${line#QOI_JSON: }"
+            # Extract test name from JSON
+            local test_id
+            test_id=$(echo "$json" | grep -oP '"test":"\K[^"]+' || true)
+
+            if [ -n "$test_id" ]; then
+                # Remove "test" key from JSON for embedding
+                local metrics
+                metrics=$(echo "$json" | sed 's/"test":"[^"]*",//' | sed 's/^{//' | sed 's/}$//')
+
+                if [ $QOI_COUNT -gt 0 ]; then
+                    echo "," >> "$QOI_METRICS_FILE"
+                fi
+                echo "    \"$test_id\": {$metrics}" >> "$QOI_METRICS_FILE"
+                QOI_COUNT=$((QOI_COUNT + 1))
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+        done <<< "$qoi_lines"
+        return
+    fi
+
+    # Fallback: legacy regex parsing for tests not yet updated
+    local metrics=""
+
+    case "$test_name" in
+        "TGV 2D Invariants")
+            local div_max=$(grep -oP 'Divergence-free.*val=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            local e_final=$(grep -oP 'KE_final=\K[0-9.]+' "$output_file" 2>/dev/null | head -1)
+            local e_ratio=$(grep -oP 'ratio=\K[0-9.]+' "$output_file" 2>/dev/null | head -1)
+            local const_vel=$(grep -oP 'Constant velocity.*val=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            if [ -n "$div_max" ] || [ -n "$e_final" ]; then
+                metrics="\"tgv_2d\": {\"div_Linf\": ${div_max:-null}, \"ke_final_J\": ${e_final:-null}, \"ke_ratio\": ${e_ratio:-null}, \"const_vel_Linf\": ${const_vel:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+        "TGV 3D Invariants")
+            local div_max=$(grep -oP '3D Divergence-free.*val=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            if [ -n "$div_max" ]; then
+                metrics="\"tgv_3d\": {\"div_Linf\": ${div_max:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+        "TGV Repeatability")
+            local rel_e=$(grep -oP 'relE = \|E1-E2\|/E1 = \K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            if [ -n "$rel_e" ]; then
+                metrics="\"repeatability\": {\"ke_rel_diff\": ${rel_e:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+        "CPU/GPU Bitwise")
+            local u_rel=$(grep -oP 'U-velocity.*Rel L2:\s*\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            local p_rel=$(grep -oP 'Pressure.*Rel L2:\s*\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            if [ -n "$u_rel" ] || [ -n "$p_rel" ]; then
+                metrics="\"cpu_gpu\": {\"u_rel_L2\": ${u_rel:-null}, \"p_rel_L2\": ${p_rel:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+        "HYPRE Validation")
+            local p_rel=$(grep -oP 'Pressure.*Rel L2:\s*\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            if [ -n "$p_rel" ]; then
+                metrics="\"hypre_vs_mg\": {\"p_prime_rel_L2\": ${p_rel:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+        "MMS Convergence")
+            local rate=$(grep -oP 'rate=\K[0-9.]+' "$output_file" 2>/dev/null | tail -1)
+            if [ -n "$rate" ]; then
+                metrics="\"mms\": {\"spatial_order\": ${rate:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+        "RANS Channel Sanity")
+            local u_bulk=$(grep -oP 'U_bulk=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            local max_nut=$(grep -oP 'max_nut_ratio=\K[0-9.e+-]+' "$output_file" 2>/dev/null | head -1)
+            if [ -n "$u_bulk" ] || [ -n "$max_nut" ]; then
+                metrics="\"rans_channel\": {\"u_bulk_m_s\": ${u_bulk:-null}, \"nut_ratio_max\": ${max_nut:-null}}"
+                QOI_EXTRACTED["$test_name"]=1
+            fi
+            ;;
+    esac
+
+    # Append to QoI file if we extracted any metrics
+    if [ -n "$metrics" ]; then
+        if [ $QOI_COUNT -gt 0 ]; then
+            echo "," >> "$QOI_METRICS_FILE"
+        fi
+        echo "    $metrics" >> "$QOI_METRICS_FILE"
+        QOI_COUNT=$((QOI_COUNT + 1))
+    fi
+}
+
+# Parser health check: warn if expected QoIs weren't extracted
+check_qoi_health() {
+    local missing=0
+    for test_name in "${!QOI_EXPECTED[@]}"; do
+        if [ -z "${QOI_EXTRACTED[$test_name]:-}" ]; then
+            log_warning "Ran $test_name but extracted 0 QoI fields. Output format changed?"
+            missing=$((missing + 1))
+        fi
+    done
+    if [ $missing -gt 0 ]; then
+        log_warning "$missing test(s) missing QoI extraction - check output format"
+    fi
+}
 
 # Track build status to avoid redundant ensure_build calls
 CPU_BUILD_ENSURED=0
@@ -318,6 +461,9 @@ run_test() {
         FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
     fi
+
+    # Extract QoI metrics before deleting output
+    extract_qoi_metrics "$test_name" "$output_file"
     rm -f "$output_file"
 }
 
@@ -725,7 +871,7 @@ mkdir -p "$METRICS_DIR"
 # Get git SHA (short form)
 GIT_SHA=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# Get build type
+# Get build type and metadata
 if [[ "$USE_GPU" == "ON" ]]; then
     if [[ "$USE_HYPRE" == "ON" ]]; then
         BUILD_TYPE="gpu+hypre"
@@ -740,24 +886,66 @@ else
     fi
 fi
 
-# Write JSON metrics
+# Get git branch
+GIT_BRANCH=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+# Get GPU info if available
+GPU_NAME="null"
+GPU_CC="null"
+if command -v nvidia-smi &>/dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | sed 's/^/"/;s/$/"/' || echo "null")
+    GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | sed 's/\.//;s/^/"/;s/$/"/' || echo "null")
+fi
+
+# Get OMP offload mode
+OFFLOAD_MODE="${OMP_TARGET_OFFLOAD:-default}"
+
+# Run parser health check
+check_qoi_health
+
+# Finalize QoI metrics file
+echo "}" >> "$QOI_METRICS_FILE"
+
+# Read QoI metrics content (remove outer braces for embedding)
+QOI_CONTENT=""
+if [ $QOI_COUNT -gt 0 ]; then
+    # Extract content between braces
+    QOI_CONTENT=$(sed '1d;$d' "$QOI_METRICS_FILE")
+fi
+
+# Write JSON metrics with stable schema (v1.0)
+# Schema:
+#   - All keys use snake_case
+#   - Units in key names: _s (seconds), _ms (milliseconds), _J (joules), _m_s (m/s)
+#   - Norms: _Linf (L-infinity), _L2 (L2 norm)
+#   - Relative values: _rel_ prefix
 cat > "$METRICS_FILE" << EOF
 {
+  "schema_version": "1.0",
   "metadata": {
     "git_sha": "$GIT_SHA",
+    "branch": "$GIT_BRANCH",
     "build_type": "$BUILD_TYPE",
     "test_suite": "$TEST_SUITE",
-    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "elapsed_seconds": $ELAPSED
+    "timestamp_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "elapsed_s": $ELAPSED,
+    "offload": "$OFFLOAD_MODE",
+    "gpu_name": $GPU_NAME,
+    "gpu_cc": $GPU_CC
   },
   "summary": {
     "passed": $PASSED,
     "failed": $FAILED,
-    "skipped": $SKIPPED,
-    "total": $((PASSED + FAILED + SKIPPED))
+    "skipped": $SKIPPED
+  },
+  "qoi": {
+$QOI_CONTENT
   }
 }
 EOF
+
+# Cleanup temp file
+rm -f "$QOI_METRICS_FILE"
 
 log_info "Metrics written to: $METRICS_FILE"
 

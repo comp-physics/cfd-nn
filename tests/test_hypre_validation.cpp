@@ -17,6 +17,7 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_utilities.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -40,6 +41,8 @@ constexpr double VELOCITY_TOLERANCE = 1e-5;
 // Pressure tolerance can be looser since pressure is defined up to an additive constant
 // What matters is that pressure gradients match (which they do if velocity matches)
 constexpr double PRESSURE_TOLERANCE = 1e-3;
+// Tolerance for mean-removed pressure (more meaningful for solver equivalence)
+constexpr double PRESSURE_PRIME_TOLERANCE = 1e-6;
 
 // Tolerance for cross-build comparison (CPU vs GPU HYPRE)
 constexpr double CROSS_BUILD_TOLERANCE = 1e-10;
@@ -289,14 +292,36 @@ bool test_hypre_vs_multigrid_3d_channel() {
     double p_hypre_min = 1e30, p_hypre_max = -1e30;
     double u_mg_max = 0, u_hypre_max = 0;
 
-    // Compare pressure fields
+    // Compute mean pressure for both solvers (for mean-removed comparison)
+    double p_mg_sum = 0.0, p_hypre_sum = 0.0;
+    int p_count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                p_mg_sum += solver_mg.pressure()(i, j, k);
+                p_hypre_sum += solver_hypre.pressure()(i, j, k);
+                ++p_count;
+            }
+        }
+    }
+    double p_mg_mean = p_mg_sum / p_count;
+    double p_hypre_mean = p_hypre_sum / p_count;
+
+    // Compare pressure fields (raw and mean-removed)
     FieldComparison p_result;
+    FieldComparison p_prime_result;  // Mean-removed pressure (more physically meaningful)
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double p_mg = solver_mg.pressure()(i, j, k);
                 double p_hypre = solver_hypre.pressure()(i, j, k);
                 p_result.update(p_mg, p_hypre);
+
+                // Mean-removed pressure: p' = p - mean(p)
+                double p_mg_prime = p_mg - p_mg_mean;
+                double p_hypre_prime = p_hypre - p_hypre_mean;
+                p_prime_result.update(p_mg_prime, p_hypre_prime);
+
                 p_mg_min = std::min(p_mg_min, p_mg);
                 p_mg_max = std::max(p_mg_max, p_mg);
                 p_hypre_min = std::min(p_hypre_min, p_hypre);
@@ -305,6 +330,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
         }
     }
     p_result.finalize();
+    p_prime_result.finalize();
 
     // Compare velocity fields
     FieldComparison u_result;
@@ -323,12 +349,13 @@ bool test_hypre_vs_multigrid_3d_channel() {
 
     // Print diagnostics
     std::cout << "  Solution statistics:\n";
-    std::cout << "    MG pressure range:    [" << p_mg_min << ", " << p_mg_max << "]\n";
-    std::cout << "    HYPRE pressure range: [" << p_hypre_min << ", " << p_hypre_max << "]\n";
+    std::cout << "    MG pressure range:    [" << p_mg_min << ", " << p_mg_max << "] (mean=" << p_mg_mean << ")\n";
+    std::cout << "    HYPRE pressure range: [" << p_hypre_min << ", " << p_hypre_max << "] (mean=" << p_hypre_mean << ")\n";
     std::cout << "    MG max |u|:    " << u_mg_max << "\n";
     std::cout << "    HYPRE max |u|: " << u_hypre_max << "\n";
 
-    p_result.print("Pressure diff");
+    p_result.print("Pressure diff (raw)");
+    p_prime_result.print("Pressure diff (mean-removed)");  // More meaningful for solver equivalence
     u_result.print("U-velocity diff");
 
     // Sanity check: solutions should be non-trivial
@@ -348,20 +375,30 @@ bool test_hypre_vs_multigrid_3d_channel() {
 
     // Check tolerances:
     // - Velocity should match closely (it determines whether physics is correct)
-    // - Pressure can differ by a constant (it's only defined up to an additive constant)
+    // - Mean-removed pressure is the key pressure check (accounts for gauge/mean offset)
     bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
-    bool pressure_ok = p_result.within_tolerance(PRESSURE_TOLERANCE);
+    bool pressure_prime_ok = p_prime_result.within_tolerance(PRESSURE_PRIME_TOLERANCE);
 
     if (!velocity_ok) {
         std::cerr << "  ERROR: Velocity difference exceeds tolerance " << VELOCITY_TOLERANCE << "\n";
     }
-    if (!pressure_ok) {
-        std::cerr << "  WARNING: Pressure difference exceeds tolerance " << PRESSURE_TOLERANCE << "\n";
-        std::cerr << "          (May be acceptable if pressure differs by constant offset)\n";
+    if (!pressure_prime_ok) {
+        std::cerr << "  WARNING: Mean-removed pressure difference exceeds tolerance " << PRESSURE_PRIME_TOLERANCE << "\n";
+        std::cerr << "          This suggests solvers are producing different pressure gradients.\n";
     }
 
-    bool passed = velocity_ok;  // Velocity match is the key criterion
+    // Pass if velocity matches (pressure gradients drive velocity correction)
+    bool passed = velocity_ok;
     std::cout << "  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
+
+    // Emit machine-readable QoI for CI metrics
+    nncfd::test::harness::emit_qoi_hypre(
+        p_prime_result.rel_l2(),
+        u_result.rel_l2(),
+        p_mg_mean,
+        p_hypre_mean
+    );
+
     return passed;
 }
 
