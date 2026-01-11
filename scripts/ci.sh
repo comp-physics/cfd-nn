@@ -259,7 +259,7 @@ extract_qoi_metrics() {
     # Mark that we expected QoI from this test
     # These are the tests that MUST emit QOI_JSON lines
     case "$test_name" in
-        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel")
+        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection")
             QOI_EXPECTED["$test_name"]=1
             ;;
     esac
@@ -278,20 +278,21 @@ extract_qoi_metrics() {
             test_id=$(echo "$json" | grep -oP '"test":"\K[^"]+' || true)
 
             if [ -n "$test_id" ]; then
-                # Handle perf_gate specially: nest by case name
-                # {"test":"perf_gate","case":"foo",...} -> "perf_gate": {"foo": {...}}
-                if [ "$test_id" = "perf_gate" ]; then
+                # Handle tests with case IDs: use composite keys (test_id.$case_id)
+                # {"test":"perf_gate","case":"foo",...} -> "perf_gate.foo": {...}
+                # {"test":"solver_select","case":"2D_channel_auto",...} -> "solver_select.2D_channel_auto": {...}
+                if [ "$test_id" = "perf_gate" ] || [ "$test_id" = "solver_select" ]; then
                     local case_id
                     case_id=$(echo "$json" | grep -oP '"case":"\K[^"]+' || true)
                     if [ -n "$case_id" ]; then
                         # Remove test and case keys, keep the rest
                         local metrics
                         metrics=$(echo "$json" | sed 's/"test":"[^"]*",//' | sed 's/"case":"[^"]*",//' | sed 's/^{//' | sed 's/}$//')
-                        # Use composite key: perf_gate.$case_id
+                        # Use composite key: $test_id.$case_id
                         if [ $QOI_COUNT -gt 0 ]; then
                             echo "," >> "$QOI_METRICS_FILE"
                         fi
-                        echo "    \"perf_gate.$case_id\": {$metrics}" >> "$QOI_METRICS_FILE"
+                        echo "    \"$test_id.$case_id\": {$metrics}" >> "$QOI_METRICS_FILE"
                         QOI_COUNT=$((QOI_COUNT + 1))
                     fi
                 else
@@ -752,6 +753,9 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "TGV 3D Invariants" "$BUILD_DIR/test_tgv_3d_invariants" 300
     run_test "MMS Convergence" "$BUILD_DIR/test_mms_convergence" 300
     run_test "RANS Channel Sanity" "$BUILD_DIR/test_rans_channel_sanity" 600
+
+    # Solver selection matrix test (verifies auto-selection logic)
+    run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120
 fi
 
 # GPU-specific tests
@@ -980,6 +984,109 @@ EOF
 rm -f "$QOI_METRICS_FILE"
 
 log_info "Metrics written to: $METRICS_FILE"
+
+# ============================================================================
+# Baseline trend comparison (warning-only)
+# Compares extracted QoI against stored baseline to catch regressions early
+# ============================================================================
+
+BASELINE_FILE="${PROJECT_DIR}/tests/baseline_qoi.json"
+
+compare_to_baseline() {
+    # Skip if no baseline file exists
+    if [ ! -f "$BASELINE_FILE" ]; then
+        log_info "No baseline file found at $BASELINE_FILE - skipping trend comparison"
+        log_info "To create baseline: cp $METRICS_FILE $BASELINE_FILE"
+        return 0
+    fi
+
+    log_info "Comparing QoI against baseline..."
+
+    local warnings=0
+
+    # Threshold multipliers for different metric types
+    # perf: 1.25x slower is a warning
+    # convergence_rate: 0.9x (10% lower rate) is a warning
+    # divergence/error: 2.0x worse is a warning (allow FP variability)
+
+    # Extract QoI values from current run using grep/awk
+    # Use METRICS_FILE (the finalized JSON) instead of temp file
+
+    # Performance gate metrics (warn if >1.25x baseline)
+    for key in "3D_channel_MG" "2D_channel_MG" "3D_channel_HYPRE" "3D_channel_FFT" "3D_duct_FFT1D"; do
+        local current_val
+        local baseline_val
+        current_val=$(grep -oP "\"perf_gate\.$key\".*?\"ms_per_step\":\s*\K[0-9.e+-]+" "$METRICS_FILE" 2>/dev/null | head -1 || true)
+        baseline_val=$(grep -oP "\"perf_gate\.$key\".*?\"ms_per_step\":\s*\K[0-9.e+-]+" "$BASELINE_FILE" 2>/dev/null | head -1 || true)
+
+        if [ -n "$current_val" ] && [ -n "$baseline_val" ]; then
+            # Compare: warn if current > 1.25 * baseline
+            local ratio
+            ratio=$(echo "$current_val $baseline_val" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
+            if [ "$(echo "$ratio > 1.25" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+                log_warning "Perf regression: perf_gate.$key = ${current_val}ms (${ratio}x baseline ${baseline_val}ms)"
+                warnings=$((warnings + 1))
+            fi
+        fi
+    done
+
+    # MMS convergence rate (warn if rate drops significantly)
+    local current_rate
+    local baseline_rate
+    current_rate=$(grep -oP '"mms".*?"spatial_order":\s*\K[0-9.e+-]+' "$METRICS_FILE" 2>/dev/null | head -1 || true)
+    baseline_rate=$(grep -oP '"mms".*?"spatial_order":\s*\K[0-9.e+-]+' "$BASELINE_FILE" 2>/dev/null | head -1 || true)
+
+    if [ -n "$current_rate" ] && [ -n "$baseline_rate" ]; then
+        local ratio
+        ratio=$(echo "$current_rate $baseline_rate" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
+        if [ "$(echo "$ratio < 0.9" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+            log_warning "MMS rate regression: spatial_order = $current_rate (${ratio}x baseline $baseline_rate)"
+            warnings=$((warnings + 1))
+        fi
+    fi
+
+    # Divergence metrics (warn if >2x worse)
+    for key in "tgv_2d" "tgv_3d"; do
+        local current_div
+        local baseline_div
+        current_div=$(grep -oP "\"$key\".*?\"div_Linf\":\s*\K[0-9.e+-]+" "$METRICS_FILE" 2>/dev/null | head -1 || true)
+        baseline_div=$(grep -oP "\"$key\".*?\"div_Linf\":\s*\K[0-9.e+-]+" "$BASELINE_FILE" 2>/dev/null | head -1 || true)
+
+        if [ -n "$current_div" ] && [ -n "$baseline_div" ]; then
+            local ratio
+            ratio=$(echo "$current_div $baseline_div" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
+            if [ "$(echo "$ratio > 2.0" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+                log_warning "Divergence degradation: $key.div_Linf = $current_div (${ratio}x baseline $baseline_div)"
+                warnings=$((warnings + 1))
+            fi
+        fi
+    done
+
+    # Repeatability (warn if >10x worse)
+    local current_rep
+    local baseline_rep
+    current_rep=$(grep -oP '"repeatability".*?"ke_rel_diff":\s*\K[0-9.e+-]+' "$METRICS_FILE" 2>/dev/null | head -1 || true)
+    baseline_rep=$(grep -oP '"repeatability".*?"ke_rel_diff":\s*\K[0-9.e+-]+' "$BASELINE_FILE" 2>/dev/null | head -1 || true)
+
+    if [ -n "$current_rep" ] && [ -n "$baseline_rep" ]; then
+        local ratio
+        ratio=$(echo "$current_rep $baseline_rep" | awk '{if($2>1e-20) printf "%.3f", $1/$2; else print "0"}')
+        if [ "$(echo "$ratio > 10.0" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+            log_warning "Repeatability degradation: ke_rel_diff = $current_rep (${ratio}x baseline $baseline_rep)"
+            warnings=$((warnings + 1))
+        fi
+    fi
+
+    if [ $warnings -gt 0 ]; then
+        log_warning "$warnings QoI trend warning(s) detected (see above)"
+        log_warning "This is informational only - CI will not fail for trend regressions"
+    else
+        log_success "All QoI within expected ranges vs baseline"
+    fi
+}
+
+# Run baseline comparison (warning-only, never fails CI)
+compare_to_baseline || true
 
 if [ $FAILED -gt 0 ]; then
     echo -e "${RED}FAILED TESTS:${NC}"
