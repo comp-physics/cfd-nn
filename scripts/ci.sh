@@ -489,6 +489,36 @@ if [[ "$USE_GPU" == "ON" ]]; then
 fi
 echo ""
 
+# ============================================================================
+# Discovery check: Print what test suites will run
+# This makes it immediately obvious if a suite is missing from the runner
+# ============================================================================
+echo "Test suites to run:"
+if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = "full" ]; then
+    echo "  [FAST] 3D-Quick, 3D-Gradients, 3D-W, 3D-BC, Mesh, Features, NN-Core,"
+    echo "         Data-Driven, Config, TGV-2D-Invariants, TGV-Repeatability"
+fi
+if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
+    echo "  [MEDIUM] 3D-Poiseuille, Poisson, Stability, Turbulence, Error-Recovery,"
+    echo "           Adaptive-Dt, Mesh-Edge, 3D-BC-Corners, VTK, TGV-3D-Invariants,"
+    echo "           MMS-Convergence, RANS-Channel-Sanity"
+fi
+if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "full" ]; then
+    echo "  [GPU] CPU/GPU-Bitwise, Backend-Unified, GPU-Utilization, V-cycle-Graph"
+fi
+if [[ "$USE_HYPRE" == "ON" ]]; then
+    if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "hypre" ] || [ "$TEST_SUITE" = "full" ]; then
+        echo "  [HYPRE] HYPRE-All-BCs, HYPRE-Validation, HYPRE-Cross-Build"
+    fi
+fi
+if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
+    echo "  [LONG] 2D/3D-Comparison, Solver, Divergence-All-BCs, Physics-Validation, NN-Integration"
+fi
+if [ "$TEST_SUITE" = "full" ]; then
+    echo "  [SLOW] Perturbed-Channel"
+fi
+echo ""
+
 # Run paradigm check first (always)
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "paradigm" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Code Sharing Paradigm Check"
@@ -684,6 +714,52 @@ echo "  Skipped: $SKIPPED"
 echo ""
 echo "Total time: ${MINUTES}m ${SECONDS_REMAINING}s"
 echo ""
+
+# ============================================================================
+# Write CI metrics JSON artifact
+# ============================================================================
+METRICS_DIR="${PROJECT_DIR}/artifacts"
+METRICS_FILE="${METRICS_DIR}/ci_metrics.json"
+mkdir -p "$METRICS_DIR"
+
+# Get git SHA (short form)
+GIT_SHA=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Get build type
+if [[ "$USE_GPU" == "ON" ]]; then
+    if [[ "$USE_HYPRE" == "ON" ]]; then
+        BUILD_TYPE="gpu+hypre"
+    else
+        BUILD_TYPE="gpu"
+    fi
+else
+    if [[ "$USE_HYPRE" == "ON" ]]; then
+        BUILD_TYPE="cpu+hypre"
+    else
+        BUILD_TYPE="cpu"
+    fi
+fi
+
+# Write JSON metrics
+cat > "$METRICS_FILE" << EOF
+{
+  "metadata": {
+    "git_sha": "$GIT_SHA",
+    "build_type": "$BUILD_TYPE",
+    "test_suite": "$TEST_SUITE",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "elapsed_seconds": $ELAPSED
+  },
+  "summary": {
+    "passed": $PASSED,
+    "failed": $FAILED,
+    "skipped": $SKIPPED,
+    "total": $((PASSED + FAILED + SKIPPED))
+  }
+}
+EOF
+
+log_info "Metrics written to: $METRICS_FILE"
 
 if [ $FAILED -gt 0 ]; then
     echo -e "${RED}FAILED TESTS:${NC}"

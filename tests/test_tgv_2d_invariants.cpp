@@ -276,6 +276,81 @@ void test_tgv_2d_initial_divergence() {
 }
 
 // ============================================================================
+// Test: Constant velocity advection invariance
+// A constant velocity field should remain constant under advection (periodic BC)
+// This catches indexing mistakes, BC bugs, and convective operator errors
+// ============================================================================
+void test_constant_velocity_invariance() {
+    std::cout << "\n--- Constant Velocity Invariance ---\n\n";
+
+    const int N = 32;
+    const double L = 2.0 * M_PI;
+    const double u_const = 1.5;  // Constant velocity
+    const double v_const = 0.75;
+    const int nsteps = 20;
+
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+
+    Config config;
+    config.nu = 0.01;  // Small viscosity (shouldn't affect constant field much)
+    config.dt = 0.01;
+    config.adaptive_dt = false;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
+
+    RANSSolver solver(mesh, config);
+
+    // Fully periodic BCs
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::Periodic;
+    bc.y_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+
+    // Initialize with constant velocity everywhere
+    for (int j = 0; j <= mesh.Ny + 1; ++j) {
+        for (int i = 0; i <= mesh.Nx + 1; ++i) {
+            solver.velocity().u(i, j) = u_const;
+            solver.velocity().v(i, j) = v_const;
+        }
+    }
+    solver.sync_to_gpu();
+
+    // Run a few steps
+    for (int step = 0; step < nsteps; ++step) {
+        solver.step();
+    }
+    solver.sync_from_gpu();
+
+    // Check that velocity is still constant (within tolerance)
+    double max_u_diff = 0.0;
+    double max_v_diff = 0.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            max_u_diff = std::max(max_u_diff, std::abs(solver.velocity().u(i, j) - u_const));
+        }
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            max_v_diff = std::max(max_v_diff, std::abs(solver.velocity().v(i, j) - v_const));
+        }
+    }
+
+    double max_diff = std::max(max_u_diff, max_v_diff);
+    std::cout << "  max|u - u_const|: " << std::scientific << max_u_diff << "\n";
+    std::cout << "  max|v - v_const|: " << std::scientific << max_v_diff << "\n\n";
+
+    // Threshold: constant field should stay close to constant
+    // Note: Some drift is expected due to pressure projection numerical precision
+    // and iterative solver tolerances. The key check is that drift is bounded
+    // and doesn't grow catastrophically (which would indicate indexing bugs).
+    // 1e-2 catches gross errors; typical observed values are O(1e-3).
+    const double threshold = 1e-2;
+    record("Constant velocity preserved (< 1e-2)", max_diff < threshold,
+           qoi(max_diff, threshold));
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 int main() {
@@ -283,5 +358,6 @@ int main() {
         test_tgv_2d_initial_divergence();
         test_tgv_2d_invariants();
         test_tgv_2d_decay_rate();
+        test_constant_velocity_invariance();
     });
 }

@@ -135,11 +135,13 @@ void test_poiseuille_flow() {
 }
 
 // ============================================================================
-// Test 2: Spatial Convergence Rate
+// Test 2: Grid Consistency (error stays bounded across resolutions)
+// Note: This is NOT a convergence rate test - see test_mms_convergence.cpp
+// for actual rate verification. This test validates error is reasonable.
 // ============================================================================
-void test_spatial_convergence() {
+void test_grid_consistency() {
     std::cout << "\n========================================\n";
-    std::cout << "Test 2: Spatial Convergence Rate\n";
+    std::cout << "Test 2: Grid Consistency\n";
     std::cout << "========================================\n";
 
     std::vector<int> Ns = {16, 32, 64};
@@ -196,7 +198,7 @@ void test_spatial_convergence() {
     if (errors.back() > 0.10) {
         throw std::runtime_error("Error too large on finest grid");
     }
-    std::cout << "[PASS] Discretization error is reasonable\n";
+    std::cout << "[PASS] Discretization error bounded across grids\n";
 }
 
 // ============================================================================
@@ -675,7 +677,7 @@ int main() {
     };
 
     run_test("Poiseuille Flow", test_poiseuille_flow);
-    run_test("Spatial Convergence", test_spatial_convergence);
+    run_test("Grid Consistency", test_grid_consistency);
     run_test("Vortex Decay", test_vortex_decay);
     run_test("MMS Navier-Stokes", test_mms_navier_stokes);
     run_test("Energy Dissipation", test_energy_dissipation_rate);
