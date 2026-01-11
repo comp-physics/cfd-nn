@@ -259,7 +259,7 @@ extract_qoi_metrics() {
     # Mark that we expected QoI from this test
     # These are the tests that MUST emit QOI_JSON lines
     case "$test_name" in
-        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection")
+        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection"|"Stability Sentinel")
             QOI_EXPECTED["$test_name"]=1
             ;;
     esac
@@ -756,6 +756,9 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
 
     # Solver selection matrix test (verifies auto-selection logic)
     run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120
+
+    # Stability sentinel test (aggressive CFL, verifies dt limiter works)
+    run_test "Stability Sentinel" "$BUILD_DIR/test_stability_sentinel" 120
 fi
 
 # GPU-specific tests
@@ -988,9 +991,56 @@ log_info "Metrics written to: $METRICS_FILE"
 # ============================================================================
 # Baseline trend comparison (warning-only)
 # Compares extracted QoI against stored baseline to catch regressions early
+# Uses build-specific baselines: tests/baselines/baseline_${BUILD_TYPE}.json
 # ============================================================================
 
-BASELINE_FILE="${PROJECT_DIR}/tests/baseline_qoi.json"
+BASELINE_DIR="${PROJECT_DIR}/tests/baselines"
+BASELINE_FILE="${BASELINE_DIR}/baseline_${BUILD_TYPE}.json"
+
+# Helper: compare value against ratio threshold AND absolute ceiling
+# Usage: check_threshold <name> <current> <baseline> <ratio_thresh> <abs_ceiling> <higher_is_worse>
+check_threshold() {
+    local name=$1
+    local current=$2
+    local baseline=$3
+    local ratio_thresh=$4
+    local abs_ceiling=$5
+    local higher_is_worse=${6:-1}  # 1 = higher is bad (default), 0 = lower is bad
+
+    [ -z "$current" ] && return 0
+
+    local warned=0
+
+    # Absolute ceiling check (catches bad baselines)
+    if [ -n "$abs_ceiling" ]; then
+        local exceeds
+        exceeds=$(echo "$current $abs_ceiling" | awk '{if($1>$2) print 1; else print 0}')
+        if [ "$exceeds" = "1" ]; then
+            log_warning "$name = $current exceeds absolute ceiling $abs_ceiling"
+            warned=1
+        fi
+    fi
+
+    # Ratio comparison (if baseline exists)
+    if [ -n "$baseline" ]; then
+        local ratio
+        ratio=$(echo "$current $baseline" | awk '{if($2>1e-30) printf "%.3f", $1/$2; else print "0"}')
+
+        local bad_ratio=0
+        if [ "$higher_is_worse" = "1" ]; then
+            bad_ratio=$(echo "$ratio $ratio_thresh" | awk '{if($1>$2) print 1; else print 0}')
+        else
+            bad_ratio=$(echo "$ratio $ratio_thresh" | awk '{if($1<$2) print 1; else print 0}')
+        fi
+
+        if [ "$bad_ratio" = "1" ]; then
+            log_warning "$name = $current (${ratio}x baseline $baseline, threshold ${ratio_thresh}x)"
+            warned=1
+        fi
+    fi
+
+    return $warned
+}
 
 compare_to_baseline() {
     # Skip if no baseline file exists
@@ -1000,82 +1050,74 @@ compare_to_baseline() {
         return 0
     fi
 
-    log_info "Comparing QoI against baseline..."
+    log_info "Comparing QoI against baseline ($BUILD_TYPE)..."
+
+    # Verify schema version matches
+    local current_schema
+    local baseline_schema
+    current_schema=$(grep -oP '"schema_version":\s*"\K[^"]+' "$METRICS_FILE" 2>/dev/null | head -1 || echo "unknown")
+    baseline_schema=$(grep -oP '"schema_version":\s*"\K[^"]+' "$BASELINE_FILE" 2>/dev/null | head -1 || echo "unknown")
+    if [ "$current_schema" != "$baseline_schema" ]; then
+        log_warning "Schema version mismatch: current=$current_schema, baseline=$baseline_schema"
+        log_warning "Baseline may need regeneration after schema changes"
+    fi
 
     local warnings=0
 
-    # Threshold multipliers for different metric types
-    # perf: 1.25x slower is a warning
-    # convergence_rate: 0.9x (10% lower rate) is a warning
-    # divergence/error: 2.0x worse is a warning (allow FP variability)
+    # Thresholds: ratio + absolute ceiling (catches bad baselines)
+    # Format: check_threshold <name> <current> <baseline> <ratio_thresh> <abs_ceiling> <higher_is_worse>
 
-    # Extract QoI values from current run using grep/awk
-    # Use METRICS_FILE (the finalized JSON) instead of temp file
-
-    # Performance gate metrics (warn if >1.25x baseline)
+    # Performance gate metrics (warn if >1.25x baseline OR >500ms absolute)
     for key in "3D_channel_MG" "2D_channel_MG" "3D_channel_HYPRE" "3D_channel_FFT" "3D_duct_FFT1D"; do
-        local current_val
-        local baseline_val
+        local current_val baseline_val
         current_val=$(grep -oP "\"perf_gate\.$key\".*?\"ms_per_step\":\s*\K[0-9.e+-]+" "$METRICS_FILE" 2>/dev/null | head -1 || true)
         baseline_val=$(grep -oP "\"perf_gate\.$key\".*?\"ms_per_step\":\s*\K[0-9.e+-]+" "$BASELINE_FILE" 2>/dev/null | head -1 || true)
-
-        if [ -n "$current_val" ] && [ -n "$baseline_val" ]; then
-            # Compare: warn if current > 1.25 * baseline
-            local ratio
-            ratio=$(echo "$current_val $baseline_val" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
-            if [ "$(echo "$ratio > 1.25" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
-                log_warning "Perf regression: perf_gate.$key = ${current_val}ms (${ratio}x baseline ${baseline_val}ms)"
-                warnings=$((warnings + 1))
-            fi
-        fi
+        check_threshold "perf_gate.$key" "$current_val" "$baseline_val" 1.25 500 1 || warnings=$((warnings + 1))
     done
 
-    # MMS convergence rate (warn if rate drops significantly)
-    local current_rate
-    local baseline_rate
+    # MMS convergence rate (warn if <0.9x baseline OR <1.5 absolute - should be ~2)
+    local current_rate baseline_rate
     current_rate=$(grep -oP '"mms".*?"spatial_order":\s*\K[0-9.e+-]+' "$METRICS_FILE" 2>/dev/null | head -1 || true)
     baseline_rate=$(grep -oP '"mms".*?"spatial_order":\s*\K[0-9.e+-]+' "$BASELINE_FILE" 2>/dev/null | head -1 || true)
-
-    if [ -n "$current_rate" ] && [ -n "$baseline_rate" ]; then
-        local ratio
-        ratio=$(echo "$current_rate $baseline_rate" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
-        if [ "$(echo "$ratio < 0.9" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
-            log_warning "MMS rate regression: spatial_order = $current_rate (${ratio}x baseline $baseline_rate)"
+    # For "lower is worse", we check if ratio < threshold
+    if [ -n "$current_rate" ]; then
+        # Absolute floor check
+        local below_floor
+        below_floor=$(echo "$current_rate" | awk '{if($1<1.5) print 1; else print 0}')
+        if [ "$below_floor" = "1" ]; then
+            log_warning "mms.spatial_order = $current_rate below floor 1.5 (expected ~2.0)"
             warnings=$((warnings + 1))
-        fi
-    fi
-
-    # Divergence metrics (warn if >2x worse)
-    for key in "tgv_2d" "tgv_3d"; do
-        local current_div
-        local baseline_div
-        current_div=$(grep -oP "\"$key\".*?\"div_Linf\":\s*\K[0-9.e+-]+" "$METRICS_FILE" 2>/dev/null | head -1 || true)
-        baseline_div=$(grep -oP "\"$key\".*?\"div_Linf\":\s*\K[0-9.e+-]+" "$BASELINE_FILE" 2>/dev/null | head -1 || true)
-
-        if [ -n "$current_div" ] && [ -n "$baseline_div" ]; then
+        elif [ -n "$baseline_rate" ]; then
             local ratio
-            ratio=$(echo "$current_div $baseline_div" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
-            if [ "$(echo "$ratio > 2.0" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
-                log_warning "Divergence degradation: $key.div_Linf = $current_div (${ratio}x baseline $baseline_div)"
+            ratio=$(echo "$current_rate $baseline_rate" | awk '{if($2>0) printf "%.3f", $1/$2; else print "0"}')
+            local bad_ratio
+            bad_ratio=$(echo "$ratio" | awk '{if($1<0.9) print 1; else print 0}')
+            if [ "$bad_ratio" = "1" ]; then
+                log_warning "mms.spatial_order = $current_rate (${ratio}x baseline $baseline_rate)"
                 warnings=$((warnings + 1))
             fi
         fi
+    fi
+
+    # Divergence metrics (warn if >10x baseline OR >1e-5 absolute)
+    for key in "tgv_2d" "tgv_3d"; do
+        local current_div baseline_div
+        current_div=$(grep -oP "\"$key\".*?\"div_Linf\":\s*\K[0-9.e+-]+" "$METRICS_FILE" 2>/dev/null | head -1 || true)
+        baseline_div=$(grep -oP "\"$key\".*?\"div_Linf\":\s*\K[0-9.e+-]+" "$BASELINE_FILE" 2>/dev/null | head -1 || true)
+        check_threshold "$key.div_Linf" "$current_div" "$baseline_div" 10.0 1e-5 1 || warnings=$((warnings + 1))
     done
 
-    # Repeatability (warn if >10x worse)
-    local current_rep
-    local baseline_rep
+    # CPU/GPU norms (warn if >10x baseline OR >1e-8 absolute)
+    local current_u_rel baseline_u_rel
+    current_u_rel=$(grep -oP '"cpu_gpu".*?"u_rel_L2":\s*\K[0-9.e+-]+' "$METRICS_FILE" 2>/dev/null | head -1 || true)
+    baseline_u_rel=$(grep -oP '"cpu_gpu".*?"u_rel_L2":\s*\K[0-9.e+-]+' "$BASELINE_FILE" 2>/dev/null | head -1 || true)
+    check_threshold "cpu_gpu.u_rel_L2" "$current_u_rel" "$baseline_u_rel" 10.0 1e-8 1 || warnings=$((warnings + 1))
+
+    # Repeatability (warn if >10x baseline OR >1e-10 absolute)
+    local current_rep baseline_rep
     current_rep=$(grep -oP '"repeatability".*?"ke_rel_diff":\s*\K[0-9.e+-]+' "$METRICS_FILE" 2>/dev/null | head -1 || true)
     baseline_rep=$(grep -oP '"repeatability".*?"ke_rel_diff":\s*\K[0-9.e+-]+' "$BASELINE_FILE" 2>/dev/null | head -1 || true)
-
-    if [ -n "$current_rep" ] && [ -n "$baseline_rep" ]; then
-        local ratio
-        ratio=$(echo "$current_rep $baseline_rep" | awk '{if($2>1e-20) printf "%.3f", $1/$2; else print "0"}')
-        if [ "$(echo "$ratio > 10.0" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
-            log_warning "Repeatability degradation: ke_rel_diff = $current_rep (${ratio}x baseline $baseline_rep)"
-            warnings=$((warnings + 1))
-        fi
-    fi
+    check_threshold "repeatability.ke_rel_diff" "$current_rep" "$baseline_rep" 10.0 1e-10 1 || warnings=$((warnings + 1))
 
     if [ $warnings -gt 0 ]; then
         log_warning "$warnings QoI trend warning(s) detected (see above)"

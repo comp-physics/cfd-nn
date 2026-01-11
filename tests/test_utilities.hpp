@@ -548,6 +548,44 @@ inline void print_config() {
 #endif
 }
 
+/// Check if OMP_TARGET_OFFLOAD is set to MANDATORY
+inline bool is_mandatory_offload() {
+    const char* env = std::getenv("OMP_TARGET_OFFLOAD");
+    return env && std::string(env) == "MANDATORY";
+}
+
+/// GPU canary check: verifies GPU is available when expected
+/// Returns true if check passes, false if it fails
+/// Call this in GPU tests to catch "running on CPU when expecting GPU" issues
+inline bool canary_check() {
+#ifdef USE_GPU_OFFLOAD
+    const int num_dev = device_count();
+    const bool mandatory = is_mandatory_offload();
+
+    if (mandatory && num_dev == 0) {
+        std::cerr << "\n========================================\n";
+        std::cerr << "GPU CANARY FAILURE\n";
+        std::cerr << "========================================\n";
+        std::cerr << "OMP_TARGET_OFFLOAD=MANDATORY but no GPU devices available!\n";
+        std::cerr << "This means we would silently fall back to CPU.\n";
+        std::cerr << "Devices reported by omp_get_num_devices(): " << num_dev << "\n";
+        std::cerr << "========================================\n\n";
+        return false;
+    }
+
+    if (num_dev == 0) {
+        std::cout << "[GPU Canary] No devices available (GPU build but CPU execution)\n";
+    } else if (!verify_execution()) {
+        std::cout << "[GPU Canary] WARNING: Devices reported but verify_execution() failed\n";
+    }
+
+    return true;
+#else
+    // CPU build - always passes
+    return true;
+#endif
+}
+
 } // namespace gpu
 
 /// Test case configuration for turbulence model tests

@@ -139,7 +139,7 @@ inline int print_summary() {
     return c.failed > 0 ? 1 : 0;
 }
 
-/// Run a test suite with automatic header, GPU config, and summary
+/// Run a test suite with automatic header, GPU config, canary check, and summary
 /// @param suite_name  Name of the test suite
 /// @param test_fn     Function containing all tests (calls record() internally)
 /// @return Exit code (0 = all passed, 1 = failures)
@@ -147,6 +147,13 @@ inline int run(const char* suite_name, std::function<void()> test_fn) {
     counters().reset();
     print_header(suite_name);
     print_gpu_config();
+
+    // GPU canary: fail fast if MANDATORY but no devices
+    if (!gpu::canary_check()) {
+        std::cerr << "GPU canary check failed - aborting test suite\n";
+        return 1;
+    }
+
     test_fn();
     return print_summary();
 }
@@ -157,6 +164,12 @@ inline int run_sections(const char* suite_name,
     counters().reset();
     print_header(suite_name);
     print_gpu_config();
+
+    // GPU canary: fail fast if MANDATORY but no devices
+    if (!gpu::canary_check()) {
+        std::cerr << "GPU canary check failed - aborting test suite\n";
+        return 1;
+    }
 
     for (const auto& [section_name, section_fn] : sections) {
         std::cout << "\n--- " << section_name << " ---\n\n";

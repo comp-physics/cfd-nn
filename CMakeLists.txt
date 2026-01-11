@@ -439,6 +439,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_projection_invariants)
     add_nncfd_test(test_perf_sentinel)
     add_nncfd_test(test_solver_selection)
+    add_nncfd_test(test_stability_sentinel)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
