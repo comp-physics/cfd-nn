@@ -259,7 +259,7 @@ extract_qoi_metrics() {
     # Mark that we expected QoI from this test
     # These are the tests that MUST emit QOI_JSON lines
     case "$test_name" in
-        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection"|"Stability Sentinel"|"Poiseuille Steady"|"Energy Budget"|"Operator Consistency"|"Advection Rotation")
+        "TGV 2D Invariants"|"TGV 3D Invariants"|"TGV Repeatability"|"CPU/GPU Bitwise"|"HYPRE Validation"|"MMS Convergence"|"RANS Channel Sanity"|"Perf Sentinel"|"Solver Selection"|"Stability Sentinel"|"Poiseuille Steady"|"Energy Budget"|"Operator Consistency"|"Advection Rotation"|"Projection Effectiveness"|"Poiseuille Refinement")
             QOI_EXPECTED["$test_name"]=1
             ;;
     esac
@@ -759,6 +759,8 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
     run_test "Energy Budget" "$BUILD_DIR/test_energy_budget_channel" 120
     run_test "Operator Consistency" "$BUILD_DIR/test_operator_consistency" 120
     run_test "Advection Rotation" "$BUILD_DIR/test_advection_rotation" 60
+    run_test "Projection Effectiveness" "$BUILD_DIR/test_projection_effectiveness" 60
+    run_test "Poiseuille Refinement" "$BUILD_DIR/test_poiseuille_refinement" 300
 
     # Solver selection matrix test (verifies auto-selection logic)
     run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120

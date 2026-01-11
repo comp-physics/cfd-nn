@@ -1,8 +1,8 @@
 /// @file test_poiseuille_steady.cpp
-/// @brief Decisive analytic steady-state Poiseuille flow test
+/// @brief Decisive analytic steady-state Poiseuille flow test with momentum balance
 ///
 /// PURPOSE: Nails BCs, forcing sign, nu, diffusion stencil, projection coupling
-/// with interpretable exact-solution comparison.
+/// with interpretable exact-solution comparison AND momentum/force balance.
 ///
 /// SETUP:
 ///   - 2D channel, periodic x, no-slip walls y
@@ -10,18 +10,25 @@
 ///   - Fixed dp/dx body force
 ///   - Run until truly steady: relL2(u^{n+1}-u^n) < 1e-10 for 50 consecutive steps
 ///
-/// VALIDATES THREE INDEPENDENT THINGS:
+/// VALIDATES FIVE INDEPENDENT THINGS:
 ///   1. relL2(u(y) - u_exact(y)) < 1e-3 (profile accuracy)
 ///   2. |U_bulk - U_bulk_exact| / U_bulk_exact < 1e-3 (integrated quantity)
 ///   3. |tau_w - tau_w_exact| / |tau_w_exact| < 1e-2 (derivative - noisier)
+///   4. |tau_top + tau_bot| / max(|tau|) < 1e-2 (wall shear symmetry)
+///   5. |(tau_bot - tau_top) - (-dp_dx*H)| / |-dp_dx*H| < 1e-2 (force balance)
 ///
 /// EXACT SOLUTION (Poiseuille flow between parallel plates):
 ///   u(y) = (dp/dx) / (2*nu) * y * (H - y)  [for y in [0, H]]
 ///   U_bulk = (dp/dx) * H^2 / (12*nu)
 ///   tau_w = nu * du/dy|_wall = (dp/dx) * H / 2
 ///
+/// MOMENTUM BALANCE:
+///   Integrated x-momentum over channel height: (tau_bot - tau_top) = -dp_dx * H
+///   For symmetric channel: tau_bot = -tau_top (opposite signs, equal magnitude)
+///
 /// EMITS QOI:
-///   poiseuille_steady: relL2_profile, U_bulk_err, tau_w_err, iters_to_steady
+///   poiseuille_steady: relL2_profile, U_bulk_err, tau_w_err, tau_bot, tau_top,
+///                      shear_symmetry_err, momentum_balance_err, iters_to_steady
 
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
@@ -127,7 +134,7 @@ static double compute_bulk_velocity(const VectorField& vel, const Mesh& mesh) {
 // ============================================================================
 // Compute wall shear stress (nu * du/dy at walls)
 // ============================================================================
-static double compute_wall_shear(const VectorField& vel, const Mesh& mesh, double nu) {
+static double compute_wall_shear_lower(const VectorField& vel, const Mesh& mesh, double nu) {
     // Compute du/dy at lower wall using one-sided difference
     // At j = j_begin (first interior cell), wall is at j_begin - 0.5
     // u_wall = 0 (no-slip), so du/dy ≈ (u_cell - 0) / (dy/2)
@@ -140,6 +147,27 @@ static double compute_wall_shear(const VectorField& vel, const Mesh& mesh, doubl
         double u_cell = 0.5 * (vel.u(i, j_lo) + vel.u(i+1, j_lo));
         // Distance from wall to cell center is dy/2
         double dudy = u_cell / (mesh.dy / 2.0);
+        tau_sum += nu * dudy;
+        count++;
+    }
+
+    return tau_sum / count;
+}
+
+static double compute_wall_shear_upper(const VectorField& vel, const Mesh& mesh, double nu) {
+    // Compute du/dy at upper wall using one-sided difference
+    // At j = j_end-1 (last interior cell), wall is at j_end - 0.5
+    // u_wall = 0 (no-slip), so du/dy ≈ (0 - u_cell) / (dy/2)
+
+    double tau_sum = 0.0;
+    int count = 0;
+
+    int j_hi = mesh.j_end() - 1;
+    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+        double u_cell = 0.5 * (vel.u(i, j_hi) + vel.u(i+1, j_hi));
+        // Distance from cell center to wall is dy/2
+        // du/dy = (u_wall - u_cell) / (dy/2) = -u_cell / (dy/2)
+        double dudy = -u_cell / (mesh.dy / 2.0);
         tau_sum += nu * dudy;
         count++;
     }
@@ -192,9 +220,17 @@ struct PoiseuilleResult {
     double tau_w_num;
     double tau_w_exact;
     double tau_w_err;
+    // Momentum balance fields
+    double tau_bot;              // Wall shear at lower wall (should be positive for +x flow)
+    double tau_top;              // Wall shear at upper wall (should be negative for +x flow)
+    double shear_symmetry_err;   // |tau_top + tau_bot| / max(|tau_top|,|tau_bot|)
+    double momentum_balance_err; // |(tau_bot - tau_top) - (-dp_dx*H)| / |-dp_dx*H|
+    // Pass/fail flags
     bool profile_ok;
     bool bulk_ok;
     bool shear_ok;
+    bool symmetry_ok;
+    bool momentum_ok;
 };
 
 // ============================================================================
@@ -306,14 +342,30 @@ PoiseuilleResult run_poiseuille_steady() {
     result.U_bulk_exact = exact.U_bulk();
     result.U_bulk_err = std::abs(result.U_bulk_num - result.U_bulk_exact) / result.U_bulk_exact;
 
-    result.tau_w_num = compute_wall_shear(solver.velocity(), mesh, nu);
+    // Wall shear at both walls
+    result.tau_bot = compute_wall_shear_lower(solver.velocity(), mesh, nu);
+    result.tau_top = compute_wall_shear_upper(solver.velocity(), mesh, nu);
+    result.tau_w_num = result.tau_bot;  // Use lower wall for backward compatibility
     result.tau_w_exact = exact.tau_w();
     result.tau_w_err = std::abs(result.tau_w_num - result.tau_w_exact) / std::abs(result.tau_w_exact);
+
+    // Wall shear symmetry: |tau_top + tau_bot| / max(|tau_top|,|tau_bot|)
+    // For symmetric channel, tau_top = -tau_bot, so sum should be ~0
+    double max_tau = std::max(std::abs(result.tau_top), std::abs(result.tau_bot));
+    result.shear_symmetry_err = std::abs(result.tau_top + result.tau_bot) / (max_tau + 1e-30);
+
+    // Momentum/force balance: (tau_bot - tau_top) = -dp_dx * H
+    // This is the integrated momentum equation for a channel strip
+    double expected_force = -dp_dx * Ly;  // = -dp_dx * H
+    double actual_force = result.tau_bot - result.tau_top;
+    result.momentum_balance_err = std::abs(actual_force - expected_force) / std::abs(expected_force);
 
     // Pass/fail criteria - strict for a proper physics validation
     result.profile_ok = result.relL2_profile < 1e-3;  // 0.1% profile error
     result.bulk_ok = result.U_bulk_err < 1e-3;        // 0.1% bulk velocity error
     result.shear_ok = result.tau_w_err < 1e-2;        // 1% wall shear (derivative is noisier)
+    result.symmetry_ok = result.shear_symmetry_err < 1e-2;  // 1% symmetry error
+    result.momentum_ok = result.momentum_balance_err < 1e-2; // 1% force balance error
 
     return result;
 }
@@ -326,6 +378,10 @@ static void emit_qoi_poiseuille(const PoiseuilleResult& r) {
               << ",\"relL2_profile\":" << harness::json_double(r.relL2_profile)
               << ",\"U_bulk_err\":" << harness::json_double(r.U_bulk_err)
               << ",\"tau_w_err\":" << harness::json_double(r.tau_w_err)
+              << ",\"tau_bot\":" << harness::json_double(r.tau_bot)
+              << ",\"tau_top\":" << harness::json_double(r.tau_top)
+              << ",\"shear_symmetry_err\":" << harness::json_double(r.shear_symmetry_err)
+              << ",\"momentum_balance_err\":" << harness::json_double(r.momentum_balance_err)
               << ",\"iters_to_steady\":" << r.iters_to_steady
               << ",\"converged\":" << (r.converged ? "true" : "false")
               << "}\n" << std::flush;
@@ -360,7 +416,15 @@ void test_poiseuille_steady() {
     std::cout << "    tau_w (numerical):  " << std::scientific << r.tau_w_num << "\n";
     std::cout << "    tau_w (exact):      " << r.tau_w_exact << "\n";
     std::cout << "    Relative error:     " << r.tau_w_err
-              << " (limit: 1e-2) " << (r.shear_ok ? "[OK]" : "[FAIL]") << "\n\n";
+              << " (limit: 1e-2) " << (r.shear_ok ? "[OK]" : "[FAIL]") << "\n";
+
+    std::cout << "\n  Momentum balance (force equilibrium):\n";
+    std::cout << "    tau_bot (lower wall): " << std::scientific << r.tau_bot << "\n";
+    std::cout << "    tau_top (upper wall): " << r.tau_top << "\n";
+    std::cout << "    Shear symmetry err:   " << r.shear_symmetry_err
+              << " (limit: 1e-2) " << (r.symmetry_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    Force balance err:    " << r.momentum_balance_err
+              << " (limit: 1e-2) " << (r.momentum_ok ? "[OK]" : "[FAIL]") << "\n\n";
 
     // Emit QoI
     emit_qoi_poiseuille(r);
@@ -370,6 +434,8 @@ void test_poiseuille_steady() {
     record("Profile accuracy (relL2 < 1e-3)", r.profile_ok);
     record("Bulk velocity accuracy (err < 1e-3)", r.bulk_ok);
     record("Wall shear accuracy (err < 1e-2)", r.shear_ok);
+    record("Wall shear symmetry (err < 1e-2)", r.symmetry_ok);
+    record("Momentum force balance (err < 1e-2)", r.momentum_ok);
 }
 
 // ============================================================================

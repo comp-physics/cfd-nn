@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "build_type": "cpu",
+  "created": "2026-01-11",
+  "commit": "155f5b8",
+  "poiseuille_steady": {
+    "relL2_profile": 3.342165159278704e-04,
+    "U_bulk_err": 4.881861688944000e-04,
+    "tau_w_err": 7.818537386961033e-08,
+    "tau_bot": 4.999999609073131e-02,
+    "tau_top": -4.999999609073131e-02,
+    "shear_symmetry_err": 0.000000000000000e+00,
+    "momentum_balance_err": 7.818537386961033e-08,
+    "iters_to_steady": 15661,
+    "converged": true
+  },
+  "energy_budget": {
+    "budget_err": 3.050716312393284e-02,
+    "budget_err_grad": 4.936076045389968e-03,
+    "power_in": 3.004979148554582e-04,
+    "dissipation_op": 6.086098869311036e-03,
+    "dissipation_grad": 5.871447347711773e-03,
+    "dissipation_mismatch": 3.526914797287260e-02,
+    "dKEdt": -5.599931343461123e-03
+  },
+  "projection_effectiveness": {
+    "div_before_max": 1.977604917762072e+00,
+    "div_before_L2": 6.273096981091879e+00,
+    "div_after_max": 1.385641223277128e-05,
+    "div_after_L2": 4.394042837545629e-05,
+    "reduction_ratio_max": 7.006663519249175e-06,
+    "reduction_ratio_L2": 7.004582984752155e-06
+  },
+  "op_adjoint": {
+    "rel_mismatch": 4.397948701899174e-02,
+    "gradp_u": -2.467192705992518e+01,
+    "p_divu": 2.580690134251889e+01
+  },
+  "projection_divfree": {
+    "div_before": 1.402137629505409e+00,
+    "div_after": 7.237313247354660e-05
+  },
+  "divergence_reduction": {
+    "div_before": 9.983943930356202e-02,
+    "div_after": 6.996390212107850e-07,
+    "reduction_factor": 7.007641730474178e-06
+  },
+  "advection_rotation": {
+    "relL2_error": 7.994069219889774e-01,
+    "centroid_error_dx": 1.618322497167318e-01,
+    "steps": 671
+  },
+  "poiseuille_refine": {
+    "err32": 1.328255529230736e-03,
+    "err64": 2.984935557860541e-04,
+    "rate": 2.153761028021379e+00
+  }
+}

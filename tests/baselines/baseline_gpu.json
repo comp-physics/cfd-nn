@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "build_type": "gpu",
+  "created": "TODO: populate from GPU build",
+  "commit": "TODO",
+  "_note": "This baseline should be populated by running CI with USE_GPU_OFFLOAD=ON but WITHOUT HYPRE. Values may differ slightly from CPU due to floating-point order differences in GPU kernels.",
+  "poiseuille_steady": {
+    "relL2_profile": "TODO",
+    "U_bulk_err": "TODO",
+    "tau_w_err": "TODO",
+    "converged": true
+  },
+  "energy_budget": {
+    "budget_err_grad": "TODO",
+    "power_in": "TODO",
+    "dissipation_grad": "TODO",
+    "dKEdt": "TODO"
+  },
+  "projection_effectiveness": {
+    "div_before_max": "TODO",
+    "div_after_max": "TODO",
+    "reduction_ratio_max": "TODO"
+  },
+  "op_adjoint": {
+    "rel_mismatch": "TODO"
+  },
+  "projection_divfree": {
+    "div_before": "TODO",
+    "div_after": "TODO"
+  },
+  "divergence_reduction": {
+    "reduction_factor": "TODO"
+  },
+  "advection_rotation": {
+    "relL2_error": "TODO",
+    "centroid_error_dx": "TODO"
+  },
+  "poiseuille_refine": {
+    "err32": "TODO",
+    "err64": "TODO",
+    "rate": "TODO"
+  }
+}
