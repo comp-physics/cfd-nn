@@ -98,6 +98,7 @@ void test_fft_vs_mg_periodic() {
     init_velocity(vel_mg);
     solver_mg.initialize(vel_mg);
     solver_mg.step();
+    solver_mg.sync_from_gpu();
 
     ScalarField p_mg(mesh);
     FOR_INTERIOR_3D(mesh, i, j, k) { p_mg(i, j, k) = solver_mg.pressure()(i, j, k); }
@@ -385,16 +386,23 @@ void test_fft1d_grid_convergence() {
 
         Config cfg;
         cfg.Nx = N; cfg.Ny = N; cfg.Nz = N;
-        cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 1.0;
+        cfg.dt = 0.001; cfg.max_steps = 1; cfg.nu = 0.01;
         cfg.poisson_solver = PoissonSolverType::FFT1D;
+        cfg.dp_dx = -1.0;  // Add pressure gradient to drive flow
 
         RANSSolver solver(mesh, cfg);
         solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
 
         if (solver.poisson_solver_type() != PoissonSolverType::FFT1D) continue;
 
+        // Use non-uniform velocity to create non-zero divergence
         VectorField vel(mesh);
-        vel.fill(1.0, 0.0, 0.0);
+        FOR_INTERIOR_3D(mesh, i, j, k) {
+            double y = mesh.y(j);
+            double z = mesh.z(k);
+            // Parabolic profile in y and z (duct flow approximation)
+            vel.u(i, j, k) = (1.0 - (y - 1.0)*(y - 1.0)) * (1.0 - (z - 1.0)*(z - 1.0));
+        }
         solver.initialize(vel);
 
         for (int step = 0; step < 5; ++step) solver.step();
