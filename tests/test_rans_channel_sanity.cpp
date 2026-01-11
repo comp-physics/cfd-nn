@@ -55,7 +55,7 @@ static std::vector<double> compute_u_profile(const RANSSolver& solver, const Mes
 }
 
 /// Compute bulk velocity: U_bulk = integral(U(y)) / height
-static double compute_bulk_velocity(const std::vector<double>& U_profile, double Ly) {
+static double compute_bulk_velocity(const std::vector<double>& U_profile, double /*Ly*/) {
     if (U_profile.empty()) return 0.0;
     double sum = 0.0;
     for (double u : U_profile) {
