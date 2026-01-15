@@ -39,5 +39,28 @@
     "err32": "TODO",
     "err64": "TODO",
     "rate": "TODO"
+  },
+  "rans_frame_invariance": {
+    "max_scalar_err": "TODO",
+    "max_tensor_err": "TODO",
+    "max_aniso_err": "TODO"
+  },
+  "galilean_invariance": {
+    "ke_rel_diff": "TODO",
+    "u_rel_L2": "TODO"
+  },
+  "projection_galilean": {
+    "div_A_max": "TODO",
+    "div_B_max": "TODO",
+    "mean_err": "TODO",
+    "u_rel_L2": "TODO"
+  },
+  "galilean_breakdown": {
+    "div_initial_rest": "TODO",
+    "div_initial_offset": "TODO",
+    "div_adv_rest": "TODO",
+    "div_adv_offset": "TODO",
+    "div_step_rest": "TODO",
+    "div_step_offset": "TODO"
   }
 }

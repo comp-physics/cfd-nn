@@ -433,6 +433,10 @@ if(BUILD_TESTS)
     add_nncfd_test(test_advection_rotation TEST_NAME_SUFFIX AdvectionRotationTest LABELS fast)
     add_nncfd_test(test_projection_effectiveness TEST_NAME_SUFFIX ProjectionEffectivenessTest LABELS fast)
     add_nncfd_test(test_poiseuille_refinement TEST_NAME_SUFFIX PoiseuilleRefinementTest LABELS medium)
+    add_nncfd_test(test_rans_frame_invariance TEST_NAME_SUFFIX RANSFrameInvarianceTest LABELS fast)
+    add_nncfd_test(test_galilean_invariance TEST_NAME_SUFFIX GalileanInvarianceTest LABELS fast)
+    add_nncfd_test(test_projection_galilean TEST_NAME_SUFFIX ProjectionGalileanTest LABELS fast)
+    add_nncfd_test(test_galilean_stage_breakdown TEST_NAME_SUFFIX GalileanStageBreakdownTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s)

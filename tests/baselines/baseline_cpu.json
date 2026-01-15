@@ -54,5 +54,31 @@
     "err32": 1.328255529230736e-03,
     "err64": 2.984935557860541e-04,
     "rate": 2.153761028021379e+00
+  },
+  "rans_frame_invariance": {
+    "max_scalar_err": 6.797283824235653e-16,
+    "max_tensor_err": 5.628436663465912e-16,
+    "max_aniso_err": 8.103047683173726e-16
+  },
+  "galilean_invariance": {
+    "ke_rel_diff": 6.794184784284718e-02,
+    "u_rel_L2": 1.502662061516368e+00,
+    "_note": "Non-zero values are expected due to velocity-dependent numerical dissipation"
+  },
+  "projection_galilean": {
+    "div_A_max": 1.386133466776317e-05,
+    "div_B_max": 1.401332385069682e-05,
+    "mean_err": 6.152104627696357e-10,
+    "u_rel_L2": 5.948696029982835e+00,
+    "_note": "Tests projection-only frame invariance. Large u_rel_L2 indicates advection-induced divergence."
+  },
+  "galilean_breakdown": {
+    "div_initial_rest": 4.107825191113079e-15,
+    "div_initial_offset": 5.551115123125783e-15,
+    "div_adv_rest": 1.936312808415352e-02,
+    "div_adv_offset": 1.430192861124531e+00,
+    "div_step_rest": 1.500577440083362e-11,
+    "div_step_offset": 1.706933843141689e-03,
+    "_note": "Stage-by-stage breakdown showing advection creates 74x more divergence in offset frame"
   }
 }
