@@ -543,30 +543,14 @@ void test_constant_field_invariance() {
     solver.set_velocity_bc(bc);
     solver.set_body_force(0.0, 0.0, 0.0);  // No forcing
 
-    // Initialize constant velocity field
-    auto& vel = solver.velocity();
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i <= mesh.i_end() + 1; ++i) {
-                vel.u(i,j,k) = U0;
-            }
-        }
-    }
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j <= mesh.j_end() + 1; ++j) {
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                vel.v(i,j,k) = V0;
-            }
-        }
-    }
-    for (int k = mesh.k_begin(); k <= mesh.k_end() + 1; ++k) {
-        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                vel.w(i,j,k) = W0;
-            }
-        }
-    }
+    // Initialize constant velocity field using fill() which sets ALL cells including ghost
+    // CRITICAL: Manual loops only fill interior; fill() fills entire array
+    solver.velocity().fill(U0, V0, W0);
 
+    // Print effective config to verify no hidden forcing
+    std::cout << "  Config: nu=" << config.nu << ", dt=" << config.dt
+              << ", turb_model=" << (config.turb_model == TurbulenceModelType::None ? "None" : "other")
+              << ", body_force=(0,0,0)\n";
     std::cout << "  Initial: u=" << U0 << ", v=" << V0 << ", w=" << W0 << "\n";
 
     // Run one solver step
@@ -610,27 +594,21 @@ void test_constant_field_invariance() {
     std::cout << "  Max |w - W0|: " << max_w_diff << "\n";
     std::cout << "  Max overall:  " << max_diff << "\n";
 
-    // Analysis: A constant field should be an exact invariant:
+    // A constant field is an EXACT invariant for any correct NS solver:
     // - Advection: (u·∇)u = 0 for constant u
     // - Diffusion: ∇²u = 0 for constant u
     // - Projection: div(u) = 0, so no correction
     //
-    // If we see deviation, possible causes:
-    // 1. Ghost cell / periodic BC fill issue
-    // 2. Advection stencil not returning zero for constant
-    // 3. Pressure field initialization affecting velocity
-    // 4. Solver internal state not matching IC
-    //
-    // Current behavior shows ~6% deviation - this is a KNOWN ISSUE
-    // that needs investigation. Using regression cap for now.
+    // This should be preserved to machine precision.
+    // CRITICAL: Must use velocity().fill() to fill ALL cells including ghost.
+    //           Manual interior-only loops leave ghost cells uninitialized.
 
-    // Ideal physics gate (what we WANT)
-    constexpr double IDEAL_TOL = 1e-10;
-    // Regression cap (prevent things from getting WORSE)
-    constexpr double REGRESSION_CAP = 0.1;  // 10% - current baseline is ~6-7%
+    // Hard physics gate - constant field MUST be preserved
+    constexpr double CONST_FIELD_TOL = 1e-10;  // Allow for GPU reduction noise
 
-    bool ideal_preserved = max_diff < IDEAL_TOL;
-    bool no_regression = max_diff < REGRESSION_CAP;
+    bool u_preserved = max_u_diff < CONST_FIELD_TOL;
+    bool v_preserved = max_v_diff < CONST_FIELD_TOL;
+    bool w_preserved = max_w_diff < CONST_FIELD_TOL;
 
     // Emit QoI
     std::cout << "\nQOI_JSON: {\"test\":\"constant_field_invariance\""
@@ -642,12 +620,10 @@ void test_constant_field_invariance() {
               << ",\"max_w_diff\":" << harness::json_double(max_w_diff)
               << "}\n";
 
-    // CI gates
-    // Diagnostic: track ideal physics (informational)
-    record("[ConstField] Ideal: preserved < 1e-10 (diagnostic)", true,
-           ideal_preserved ? "PASS" : ("max_diff=" + std::to_string(max_diff)));
-    // Regression cap: don't let things get worse (CI gate)
-    record("[ConstField] Regression cap < 10%", no_regression);
+    // CI gates - these are NON-NEGOTIABLE physics invariants
+    record("[ConstField] u preserved < 1e-10", u_preserved);
+    record("[ConstField] v preserved < 1e-10", v_preserved);
+    record("[ConstField] w preserved < 1e-10", w_preserved);
 }
 
 // ============================================================================
