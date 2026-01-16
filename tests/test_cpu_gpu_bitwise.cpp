@@ -13,6 +13,7 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_utilities.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -386,6 +387,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     std::cout << "Loading CPU reference and comparing...\n\n";
 
     bool all_passed = true;
+    double u_rel_l2 = 0.0;
+    double p_rel_l2 = 0.0;
 
     // Compare u-velocity
     {
@@ -400,6 +403,7 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         }
         result.finalize();
         result.print("u-velocity");
+        u_rel_l2 = result.rel_l2();
 
         if (!result.within_tolerance(BITWISE_TOLERANCE)) {
             std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
@@ -478,6 +482,7 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         }
         result.finalize();
         result.print("pressure");
+        p_rel_l2 = result.rel_l2();
 
         if (!result.within_tolerance(BITWISE_TOLERANCE)) {
             std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
@@ -490,6 +495,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
             std::cout << "    [PASS]\n";
         }
     }
+
+    // Emit machine-readable QoI for CI metrics
+    nncfd::test::harness::emit_qoi_cpu_gpu(u_rel_l2, p_rel_l2);
 
     std::cout << "\n";
     if (all_passed) {

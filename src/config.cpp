@@ -127,6 +127,10 @@ void Config::load(const std::string& filename) {
     auto scheme_str = get_string("convective_scheme", "central");
     if (scheme_str == "upwind") {
         convective_scheme = ConvectiveScheme::Upwind;
+    } else if (scheme_str == "skew" || scheme_str == "skew_symmetric" || scheme_str == "skewsymmetric") {
+        convective_scheme = ConvectiveScheme::SkewSymmetric;
+    } else if (scheme_str == "conservative" || scheme_str == "cons") {
+        convective_scheme = ConvectiveScheme::Conservative;
     } else {
         convective_scheme = ConvectiveScheme::Central;
     }
@@ -370,6 +374,10 @@ void Config::parse_args(int argc, char** argv) {
         } else if ((val = get_value(i, arg, "--scheme")) != "") {
             if (val == "upwind") {
                 convective_scheme = ConvectiveScheme::Upwind;
+            } else if (val == "skew" || val == "skew_symmetric" || val == "skewsymmetric") {
+                convective_scheme = ConvectiveScheme::SkewSymmetric;
+            } else if (val == "conservative" || val == "cons") {
+                convective_scheme = ConvectiveScheme::Conservative;
             } else {
                 convective_scheme = ConvectiveScheme::Central;
             }
@@ -891,8 +899,14 @@ void Config::print() const {
         case PoissonSolverType::MG: std::cout << "Multigrid"; break;
     }
     std::cout << "\n"
-              << "Convective scheme: "
-              << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
+              << "Convective scheme: ";
+    switch (convective_scheme) {
+        case ConvectiveScheme::Upwind: std::cout << "Upwind"; break;
+        case ConvectiveScheme::SkewSymmetric: std::cout << "SkewSymmetric"; break;
+        case ConvectiveScheme::Conservative: std::cout << "Conservative"; break;
+        default: std::cout << "Central"; break;
+    }
+    std::cout << "\n"
               << "dt: " << dt << ", max_steps: " << max_steps << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     

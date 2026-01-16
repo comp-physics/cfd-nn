@@ -73,17 +73,18 @@ void test_fft_vs_mg_periodic() {
     auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
 
     auto init_velocity = [&](VectorField& vel) {
+        // Use staggered coordinates: u at x-faces (xf), cell-center in y/z
         FOR_INTERIOR_3D(mesh, i, j, k) {
-            vel.u(i, j, k) = std::sin(2*M_PI*mesh.x(i)/L) *
-                            std::cos(2*M_PI*mesh.y(j)/L) *
-                            std::cos(2*M_PI*mesh.z(k)/L);
+            vel.u(i, j, k) = std::sin(2*M_PI*mesh.xf[i]/L) *
+                            std::cos(2*M_PI*mesh.yc[j]/L) *
+                            std::cos(2*M_PI*mesh.zc[k]/L);
         }
         // u at i_end
         for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
             for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
-                vel.u(mesh.i_end(), j, k) = std::sin(2*M_PI*mesh.x(mesh.i_end())/L) *
-                                            std::cos(2*M_PI*mesh.y(j)/L) *
-                                            std::cos(2*M_PI*mesh.z(k)/L);
+                vel.u(mesh.i_end(), j, k) = std::sin(2*M_PI*mesh.xf[mesh.i_end()]/L) *
+                                            std::cos(2*M_PI*mesh.yc[j]/L) *
+                                            std::cos(2*M_PI*mesh.zc[k]/L);
     };
 
     // MG reference
@@ -110,8 +111,11 @@ void test_fft_vs_mg_periodic() {
     RANSSolver solver_fft(mesh, cfg_fft);
     solver_fft.set_velocity_bc(bc);
 
-    if (solver_fft.poisson_solver_type() != PoissonSolverType::FFT) {
-        record("FFT vs MG (3D periodic)", true, true);
+    // Assert solver selection - catches drift in selection logic
+    bool fft_selected = (solver_fft.poisson_solver_type() == PoissonSolverType::FFT);
+    record("[FFT] Solver selected for 3D periodic", fft_selected);
+    if (!fft_selected) {
+        record("FFT vs MG (3D periodic)", true, true);  // Skip comparison
         return;
     }
 
@@ -236,8 +240,11 @@ void test_fft1d_vs_mg_duct() {
     RANSSolver solver_fft(mesh, cfg_fft);
     solver_fft.set_velocity_bc(bc);
 
-    if (solver_fft.poisson_solver_type() != PoissonSolverType::FFT1D) {
-        record("FFT1D vs MG (3D duct)", true, true);
+    // Assert solver selection - catches drift in selection logic
+    bool fft1d_selected = (solver_fft.poisson_solver_type() == PoissonSolverType::FFT1D);
+    record("[FFT1D] Solver selected for 3D duct", fft1d_selected);
+    if (!fft1d_selected) {
+        record("FFT1D vs MG (3D duct)", true, true);  // Skip comparison
         return;
     }
 
@@ -278,11 +285,12 @@ void test_fft2d_vs_mg_channel() {
     auto bc = create_velocity_bc(BCPattern::Channel2D);
 
     auto init_velocity = [&](VectorField& vel) {
+        // Use staggered coordinates: u at x-faces (xf), cell-center in y
         FOR_INTERIOR_2D(mesh, i, j) {
-            vel.u(i, j) = std::sin(mesh.x(i)) * std::cos(M_PI * mesh.y(j) / Ly);
+            vel.u(i, j) = std::sin(mesh.xf[i]) * std::cos(M_PI * mesh.yc[j] / Ly);
         }
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
-            vel.u(mesh.i_end(), j) = std::sin(mesh.x(mesh.i_end())) * std::cos(M_PI * mesh.y(j) / Ly);
+            vel.u(mesh.i_end(), j) = std::sin(mesh.xf[mesh.i_end()]) * std::cos(M_PI * mesh.yc[j] / Ly);
     };
 
     // MG reference
@@ -301,14 +309,15 @@ void test_fft2d_vs_mg_channel() {
 
     double mg_max = linf_norm(solver_mg.pressure(), mesh);
 
-    // FFT
+    // FFT2D - explicitly request FFT2D for 2D mesh (not generic FFT which expects 3D)
     Config cfg_fft = cfg_mg;
-    cfg_fft.poisson_solver = PoissonSolverType::FFT;
+    cfg_fft.poisson_solver = PoissonSolverType::FFT2D;
 
     RANSSolver solver_fft(mesh, cfg_fft);
     solver_fft.set_velocity_bc(bc);
 
-    if (solver_fft.poisson_solver_type() == PoissonSolverType::MG) {
+    // Skip if FFT2D not available (fell back to something else)
+    if (solver_fft.poisson_solver_type() != PoissonSolverType::FFT2D) {
         record("FFT2D vs MG (2D channel)", true, true);
         return;
     }

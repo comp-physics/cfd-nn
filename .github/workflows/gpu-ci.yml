@@ -3,12 +3,6 @@ name: GPU CI
 on:
   push:
 
-# Prevent concurrent runs on the same branch to avoid cache save race conditions
-# New pushes cancel in-progress runs (no point testing outdated commits)
-concurrency:
-  group: gpu-ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   gpu-tests:
     runs-on: self-hosted
@@ -31,6 +25,9 @@ jobs:
         done
         rm -rf "${GITHUB_WORKSPACE}/CMakeCache.txt"
         rm -rf "${GITHUB_WORKSPACE}/CMakeFiles"
+        # Clean up previous log files
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
         echo "Workspace cleaned (HYPRE cache preserved if present)"
 
     - uses: actions/checkout@v4
@@ -87,6 +84,34 @@ jobs:
           "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" \
           "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch"
 
+    - name: Show Build Output
+      if: always()
+      run: |
+        echo "==================================================================="
+        echo "  GPU CI Build Log"
+        echo "==================================================================="
+        echo ""
+        if [ -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" ]; then
+          cat "${GITHUB_WORKSPACE}/gpu_ci_build.log"
+        else
+          echo "Build log not found (build may have failed early)"
+          echo "Check the Slurm output for details."
+        fi
+
+    - name: Show Test Output
+      if: always()
+      run: |
+        echo "==================================================================="
+        echo "  GPU CI Test Log"
+        echo "==================================================================="
+        echo ""
+        if [ -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" ]; then
+          cat "${GITHUB_WORKSPACE}/gpu_ci_test.log"
+        else
+          echo "Test log not found (tests may not have run)"
+          echo "Check the build log and Slurm output for details."
+        fi
+
     - name: Submit GPU performance suite to Slurm (H200, 1 GPU)
       run: |
         ./.github/scripts/submit_and_monitor_slurm.sh \
@@ -137,6 +162,8 @@ jobs:
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch" || true
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" || true
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
+        rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
         # Clean build artifacts but keep _deps for cache
         # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
         for dir in build_gpu build_cpu build_gpu_hypre build_cpu_hypre; do

@@ -424,15 +424,33 @@ if(BUILD_TESTS)
     add_nncfd_test(test_adaptive_dt LABELS fast)
     add_nncfd_test(test_numerics LABELS fast)
     add_nncfd_test(test_gpu_buffer TEST_NAME_SUFFIX GPUBufferTest LABELS fast)
+    add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
+    add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
+    add_nncfd_test(test_rans_channel_sanity TEST_NAME_SUFFIX RANSChannelSanityTest LABELS fast)
+    add_nncfd_test(test_poiseuille_steady TEST_NAME_SUFFIX PoiseuilleTest LABELS fast)
+    add_nncfd_test(test_energy_budget_channel TEST_NAME_SUFFIX EnergyBudgetTest LABELS fast)
+    add_nncfd_test(test_operator_consistency TEST_NAME_SUFFIX OperatorConsistencyTest LABELS fast)
+    add_nncfd_test(test_advection_rotation TEST_NAME_SUFFIX AdvectionRotationTest LABELS fast)
+    add_nncfd_test(test_projection_effectiveness TEST_NAME_SUFFIX ProjectionEffectivenessTest LABELS fast)
+    add_nncfd_test(test_poiseuille_refinement TEST_NAME_SUFFIX PoiseuilleRefinementTest LABELS medium)
+    add_nncfd_test(test_rans_frame_invariance TEST_NAME_SUFFIX RANSFrameInvarianceTest LABELS fast)
+    add_nncfd_test(test_galilean_invariance TEST_NAME_SUFFIX GalileanInvarianceTest LABELS fast)
+    add_nncfd_test(test_projection_galilean TEST_NAME_SUFFIX ProjectionGalileanTest LABELS fast)
+    add_nncfd_test(test_galilean_stage_breakdown TEST_NAME_SUFFIX GalileanStageBreakdownTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s)
     # =========================================================================
+    add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest)
+    add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest)
+    add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest)
     add_nncfd_test(test_poisson_unified)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
     add_nncfd_test(test_turbulence_unified)
     add_nncfd_test(test_projection_invariants)
     add_nncfd_test(test_perf_sentinel)
+    add_nncfd_test(test_solver_selection)
+    add_nncfd_test(test_stability_sentinel)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
