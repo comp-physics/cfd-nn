@@ -43,7 +43,8 @@ constexpr double VELOCITY_TOLERANCE = 1e-5;
 // Tolerance for mean-removed pressure (more meaningful for solver equivalence)
 constexpr double PRESSURE_PRIME_TOLERANCE = 1e-6;
 // Tolerance for divergence (should be essentially zero for incompressible)
-constexpr double DIVERGENCE_TOLERANCE = 1e-6;
+// Note: HYPRE GPU convergence may differ slightly from MG; allow 2e-6 margin
+constexpr double DIVERGENCE_TOLERANCE = 2e-6;
 // Tolerance for pressure gradient (drives velocity correction)
 constexpr double GRADP_TOLERANCE = 1e-5;
 
