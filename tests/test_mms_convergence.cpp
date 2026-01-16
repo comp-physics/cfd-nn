@@ -240,9 +240,11 @@ void test_mms_temporal_convergence() {
 
     for (double dt : dts) {
         MMSSolution mms_init{k, nu, 0.0};
-        MMSSolution mms_final{k, nu, T};
 
-        int nsteps = static_cast<int>(T / dt);
+        // Use lround to avoid truncation from floating-point division
+        int nsteps = static_cast<int>(std::lround(T / dt));
+        double T_actual = nsteps * dt;  // Actual integration time
+        MMSSolution mms_final{k, nu, T_actual};
 
         Mesh mesh;
         mesh.init_uniform(N, N, 0.0, 1.0, 0.0, 1.0);
@@ -400,7 +402,9 @@ void test_viscous_decay_rate() {
     double KE0 = compute_kinetic_energy(mesh, solver.velocity());
 
     double T = 0.5;
-    int nsteps = static_cast<int>(T / config.dt);
+    // Use lround to avoid truncation from floating-point division
+    int nsteps = static_cast<int>(std::lround(T / config.dt));
+    double T_actual = nsteps * config.dt;  // Actual integration time
 
     for (int step = 0; step < nsteps; ++step) {
         solver.step();
@@ -411,7 +415,8 @@ void test_viscous_decay_rate() {
 
     // Theory: KE decays as exp(-4*nu*k^2*t) for Taylor-Green
     // Since amplitude decays as exp(-2*nu*k^2*t), energy = amplitude^2 decays at 2x rate
-    double KE_theory = KE0 * std::exp(-4.0 * nu * k * k * T);
+    // Use T_actual to match integration time exactly
+    double KE_theory = KE0 * std::exp(-4.0 * nu * k * k * T_actual);
 
     double ratio_num = KE_final / KE0;
     double ratio_theory = KE_theory / KE0;

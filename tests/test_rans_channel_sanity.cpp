@@ -548,8 +548,6 @@ void test_rans_channel_komega() {
     const double nu = 0.01;
     const double dp_dx = -0.001;
     const int max_iters = 800;
-    const int warmup_iters = 200;  // Skip first 200 iterations for profile checks
-    (void)warmup_iters;  // Used implicitly via similar logic as SST
 
     Mesh mesh;
     mesh.init_uniform(Nx, Ny, 0.0, Lx, -Ly/2, Ly/2);

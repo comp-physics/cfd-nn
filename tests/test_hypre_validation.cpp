@@ -41,25 +41,25 @@ constexpr double VELOCITY_TOLERANCE = 1e-5;
 // Note: Raw pressure tolerance removed - pressure is gauge-dependent.
 // We use physics-first metrics: divergence, pressure gradient, velocity, Poisson residual.
 // Tolerance for mean-removed pressure (more meaningful for solver equivalence)
-constexpr double PRESSURE_PRIME_TOLERANCE = 1e-6;
+[[maybe_unused]] constexpr double PRESSURE_PRIME_TOLERANCE = 1e-6;
 // Tolerance for divergence (should be essentially zero for incompressible)
 // Note: HYPRE GPU convergence may differ slightly from MG; allow 2e-6 margin
 constexpr double DIVERGENCE_TOLERANCE = 2e-6;
 // Tolerance for pressure gradient (drives velocity correction)
-constexpr double GRADP_TOLERANCE = 1e-5;
+[[maybe_unused]] constexpr double GRADP_TOLERANCE = 1e-5;
 
 // Tolerance for cross-build comparison (CPU vs GPU HYPRE)
 constexpr double CROSS_BUILD_TOLERANCE = 1e-10;
 
 // Tolerance for Poisson residual identity ||Lap(p) - rhs|| / ||rhs||
-constexpr double POISSON_RESIDUAL_TOLERANCE = 1e-3;
+[[maybe_unused]] constexpr double POISSON_RESIDUAL_TOLERANCE = 1e-3;
 
 // ============================================================================
 // Compute Poisson residual identity: ||Lap(p) - rhs||_2 / ||rhs||_2
 // This verifies the solver actually solved its equation, independent of
 // whether two solvers match each other.
 // ============================================================================
-static double compute_poisson_residual_3d(const ScalarField& p, const ScalarField& rhs,
+[[maybe_unused]] static double compute_poisson_residual_3d(const ScalarField& p, const ScalarField& rhs,
                                           const Mesh& mesh) {
     const double dx2 = mesh.dx * mesh.dx;
     const double dy2 = mesh.dy * mesh.dy;
@@ -577,9 +577,10 @@ bool test_hypre_vs_multigrid_3d_duct() {
     double div_hypre = compute_max_divergence_3d(u_hypre, mesh);
 
     // Compute pressure gradient difference using helper function
+    // Note: On GPU builds, pressure may not be reliably synced, so this is diagnostic only
     const auto& p_mg = solver_mg.pressure();
     const auto& p_hypre = solver_hypre.pressure();
-    double gradp_relL2 = compute_gradp_relL2_3d(p_mg, p_hypre, mesh);
+    [[maybe_unused]] double gradp_relL2 = compute_gradp_relL2_3d(p_mg, p_hypre, mesh);
 
     // Compare velocity fields
     FieldComparison u_result;

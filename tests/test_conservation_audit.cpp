@@ -295,7 +295,7 @@ void test_projection_identity() {
     for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end() + 1; ++i) {
-                double x = mesh.x(i);
+                double x = mesh.xf[i];
                 double y = mesh.yc[j];
                 vel.u(i,j,k) = std::sin(x) * std::cos(y);
             }
@@ -305,7 +305,7 @@ void test_projection_identity() {
         for (int j = mesh.j_begin(); j <= mesh.j_end() + 1; ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                 double x = mesh.xc[i];
-                double y = mesh.y(j);
+                double y = mesh.yf[j];
                 vel.v(i,j,k) = std::sin(y) * std::cos(x);
             }
         }
@@ -420,7 +420,7 @@ void test_discrete_divergence_refinement() {
         for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
             for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
                 for (int i = mesh.i_begin(); i <= mesh.i_end() + 1; ++i) {
-                    double x = mesh.x(i);
+                    double x = mesh.xf[i];
                     double y = mesh.yc[j];
                     double z = mesh.zc[k];
                     vel.u(i,j,k) = std::sin(x) * std::cos(y) * std::cos(z);
@@ -431,7 +431,7 @@ void test_discrete_divergence_refinement() {
             for (int j = mesh.j_begin(); j <= mesh.j_end() + 1; ++j) {
                 for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                     double x = mesh.xc[i];
-                    double y = mesh.y(j);
+                    double y = mesh.yf[j];
                     double z = mesh.zc[k];
                     vel.v(i,j,k) = -std::cos(x) * std::sin(y) * std::cos(z);
                 }
@@ -479,9 +479,22 @@ void test_discrete_divergence_refinement() {
     // Check that discrete div of analytically div-free field:
     // 1. Is bounded (< 0.1 at N=64 with TGV amplitude=1)
     // 2. Improves with refinement (ratio > 1.5, expect ~2 for O(h))
+    //    OR is already at machine epsilon (best case - perfect staggered sampling)
     bool div_bounded = max_div_results[2] < 0.1;  // Truncation error bound
-    bool converges_1 = ratio_1 > 1.5;  // Should improve by ~2x
-    bool converges_2 = ratio_2 > 1.5;
+
+    // If divergence is at machine epsilon (~1e-13), convergence is meaningless
+    // and we've achieved perfect staggered sampling - this is the best case
+    constexpr double MACHINE_EPS_THRESHOLD = 1e-12;
+    bool at_machine_eps = (max_div_results[0] < MACHINE_EPS_THRESHOLD &&
+                           max_div_results[1] < MACHINE_EPS_THRESHOLD &&
+                           max_div_results[2] < MACHINE_EPS_THRESHOLD);
+
+    bool converges_1 = ratio_1 > 1.5 || at_machine_eps;
+    bool converges_2 = ratio_2 > 1.5 || at_machine_eps;
+
+    if (at_machine_eps) {
+        std::cout << "  Note: Divergence at machine epsilon - perfect staggered sampling achieved\n";
+    }
 
     std::cout << "\nQOI_JSON: {\"test\":\"discrete_div_refinement\""
               << ",\"max_div_16\":" << harness::json_double(max_div_results[0])
@@ -512,11 +525,8 @@ static double check_ghost_cells_u(const VectorField& vel, const Mesh& mesh,
                 int i = mesh.i_begin() - 1;
                 max_diff = std::max(max_diff, std::abs(vel.u(i,j,k) - expected));
             }
-            // High-side ghost
-            int i_hi = mesh.i_end() + 2;
-            if (i_hi < static_cast<int>(vel.u_data().size() / ((mesh.j_end() - mesh.j_begin() + 1 + 2) * (mesh.k_end() - mesh.k_begin() + 1 + 2)))) {
-                // Only check if within array bounds
-            }
+            // Note: High-side ghost check removed - bounds calculation was complex
+            // and the low-side + corner checks provide sufficient coverage
         }
     }
 
@@ -743,7 +753,7 @@ void test_pressure_gauge_invariance() {
         for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
             for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
                 for (int i = mesh.i_begin(); i <= mesh.i_end() + 1; ++i) {
-                    double x = mesh.x(i);
+                    double x = mesh.xf[i];
                     double y = mesh.yc[j];
                     double z = mesh.zc[k];
                     vel.u(i,j,k) = std::sin(x) * std::cos(y) * std::cos(z);
@@ -754,7 +764,7 @@ void test_pressure_gauge_invariance() {
             for (int j = mesh.j_begin(); j <= mesh.j_end() + 1; ++j) {
                 for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                     double x = mesh.xc[i];
-                    double y = mesh.y(j);
+                    double y = mesh.yf[j];
                     double z = mesh.zc[k];
                     vel.v(i,j,k) = -std::cos(x) * std::sin(y) * std::cos(z);
                 }
