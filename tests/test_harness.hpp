@@ -29,6 +29,7 @@
 #include <string>
 #include <sstream>
 #include <functional>
+#include <vector>
 
 namespace nncfd {
 namespace test {
@@ -43,8 +44,12 @@ struct TestCounters {
     int passed = 0;
     int failed = 0;
     int skipped = 0;
+    std::vector<std::string> failed_names;  // Track which tests failed
 
-    void reset() { passed = failed = skipped = 0; }
+    void reset() {
+        passed = failed = skipped = 0;
+        failed_names.clear();
+    }
 
     int total() const { return passed + failed + skipped; }
 
@@ -77,6 +82,7 @@ inline void record(const char* name, bool pass, bool skip = false, int width = 5
     } else {
         std::cout << "[FAIL]\n";
         ++counters().failed;
+        counters().failed_names.push_back(name);
     }
 }
 
@@ -92,6 +98,7 @@ inline void record(const char* name, bool pass, const std::string& msg, bool ski
     } else {
         std::cout << "[FAIL]";
         ++counters().failed;
+        counters().failed_names.push_back(name);
     }
     if (!msg.empty()) {
         std::cout << " " << msg;
@@ -129,12 +136,22 @@ inline void print_gpu_config() {
 /// Print test summary and return exit code
 inline int print_summary() {
     const auto& c = counters();
+
     std::cout << "\n================================================================\n";
     std::cout << "Summary: " << c.passed << " passed, " << c.failed << " failed";
     if (c.skipped > 0) {
         std::cout << ", " << c.skipped << " skipped";
     }
     std::cout << "\n================================================================\n";
+
+    // Print failures LAST so they're guaranteed visible even in truncated CI logs
+    if (!c.failed_names.empty()) {
+        std::cout << "\nFAILURES (" << c.failed_names.size() << "):\n";
+        for (const auto& name : c.failed_names) {
+            std::cout << "  - " << name << "\n";
+        }
+        std::cout << std::flush;
+    }
 
     return c.failed > 0 ? 1 : 0;
 }
