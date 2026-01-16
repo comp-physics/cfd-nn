@@ -7,26 +7,32 @@ jobs:
   gpu-tests:
     runs-on: self-hosted
     timeout-minutes: 150
-    # Prevent concurrent cache saves from colliding (prefix-match restores set cache-hit=false)
+    # Serialize per branch + architecture (keeps parallelism across branches)
     concurrency:
-      group: gpu-ci-cache-${{ github.ref }}
+      group: gpu-ci-cache-${{ github.workflow }}-${{ runner.arch }}-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
     - uses: actions/checkout@v4
 
     # Extract HYPRE version from CMakeLists.txt to ensure cache key stays in sync
+    # Uses python for portability (grep -P isn't guaranteed on all distros)
     - name: Extract HYPRE version
       id: hypre_version
       run: |
-        HYPRE_VERSION=$(grep -oP 'GIT_TAG v\K[\d.]+' CMakeLists.txt)
-        if [ -z "$HYPRE_VERSION" ]; then
-          echo "ERROR: Could not extract HYPRE version from CMakeLists.txt"
-          echo "Expected pattern: GIT_TAG v<version>"
-          exit 1
-        fi
-        echo "version=${HYPRE_VERSION}" >> $GITHUB_OUTPUT
-        echo "Detected HYPRE version: ${HYPRE_VERSION}"
+        python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
+        import re, pathlib
+        text = pathlib.Path("CMakeLists.txt").read_text()
+        m = re.search(r"GIT_TAG\s+v(\d+(?:\.\d+)*)", text)
+        if not m:
+            raise SystemExit("ERROR: Could not extract HYPRE version from CMakeLists.txt")
+        print(f"version={m.group(1)}")
+        print(f"Detected HYPRE version: {m.group(1)}", file=__import__('sys').stderr)
+        PY
+
+    # Ensure cache directories exist (avoids warnings on cold start)
+    - name: Ensure cache directories exist
+      run: mkdir -p build_cpu_hypre/_deps build_gpu_hypre/_deps
 
     # Restore HYPRE cache (slow to compile, rarely changes)
     # Key includes HYPRE version and hash of build config files
@@ -101,6 +107,21 @@ jobs:
           "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" \
           "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch"
 
+    - name: Show Slurm Output (on failure)
+      if: failure()
+      run: |
+        echo "==================================================================="
+        echo "  Slurm Job Output (last 200 lines each)"
+        echo "==================================================================="
+        for f in gpu_ci_correctness_${GITHUB_RUN_ID}.out gpu_ci_correctness_${GITHUB_RUN_ID}.err \
+                 gpu_ci_perf_${GITHUB_RUN_ID}.out gpu_ci_perf_${GITHUB_RUN_ID}.err; do
+          if [ -f "$f" ]; then
+            echo ""
+            echo "===== $f ====="
+            tail -n 200 "$f"
+          fi
+        done
+
     - name: Debug info on failure
       if: failure()
       run: |
@@ -121,8 +142,9 @@ jobs:
 
     # Save HYPRE cache only on cache miss (HYPRE builds are expensive)
     # Skip if cache was restored with exact key match (cache-hit=true)
-    # Concurrency group above prevents parallel saves from colliding
+    # continue-on-error: cache save failures shouldn't red-mark CI
     - name: Save HYPRE cache
+      continue-on-error: true
       if: always() && steps.hypre_cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
