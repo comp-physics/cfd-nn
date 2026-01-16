@@ -466,34 +466,41 @@ void test_discrete_divergence_refinement() {
                   << ", max|div|=" << max_div << "\n";
     }
 
-    // Check convergence rate: div should decrease by ~2x when h halves (O(h))
-    // Note: O(h) convergence is expected because we sample u(x_face, y_cc, z_cc)
-    // and v(x_cc, y_face, z_cc), so the cancellation in div-free has O(h) error.
-    double ratio_1 = max_div_results[0] / max_div_results[1];  // 16→32
-    double ratio_2 = max_div_results[1] / max_div_results[2];  // 32→64
+    // Threshold for "roundoff regime" - below this, ratio checks are meaningless
+    // and we just verify absolute smallness (perfect staggered sampling achieved)
+    constexpr double ROUNDOFF_THRESHOLD = 1e-12;
 
-    std::cout << "\n  Convergence ratios (expect ~2 for O(h) due to staggered sampling):\n";
-    std::cout << "    div(16)/div(32) = " << std::fixed << std::setprecision(2) << ratio_1 << "\n";
-    std::cout << "    div(32)/div(64) = " << ratio_2 << "\n";
-
-    // Check that discrete div of analytically div-free field:
-    // 1. Is bounded (< 0.1 at N=64 with TGV amplitude=1)
-    // 2. Improves with refinement (ratio > 1.5, expect ~2 for O(h))
-    //    OR is already at machine epsilon (best case - perfect staggered sampling)
+    // Check that discrete div of analytically div-free field is bounded
     bool div_bounded = max_div_results[2] < 0.1;  // Truncation error bound
 
-    // If divergence is at machine epsilon (~1e-13), convergence is meaningless
-    // and we've achieved perfect staggered sampling - this is the best case
-    constexpr double MACHINE_EPS_THRESHOLD = 1e-12;
-    bool at_machine_eps = (max_div_results[0] < MACHINE_EPS_THRESHOLD &&
-                           max_div_results[1] < MACHINE_EPS_THRESHOLD &&
-                           max_div_results[2] < MACHINE_EPS_THRESHOLD);
+    // Determine if we're in roundoff regime (denominators too small for meaningful ratios)
+    bool in_roundoff_regime = (max_div_results[1] < ROUNDOFF_THRESHOLD ||
+                               max_div_results[2] < ROUNDOFF_THRESHOLD);
 
-    bool converges_1 = ratio_1 > 1.5 || at_machine_eps;
-    bool converges_2 = ratio_2 > 1.5 || at_machine_eps;
+    bool converges_1, converges_2;
+    double ratio_1 = 0.0, ratio_2 = 0.0;
 
-    if (at_machine_eps) {
-        std::cout << "  Note: Divergence at machine epsilon - perfect staggered sampling achieved\n";
+    if (in_roundoff_regime) {
+        // In roundoff regime: skip ratio checks, just verify absolute smallness
+        // If max_div_64 < 1e-10, we've achieved "perfect" discrete div-free IC
+        constexpr double ROUNDOFF_ABSOLUTE_PASS = 1e-10;
+        converges_1 = max_div_results[2] < ROUNDOFF_ABSOLUTE_PASS;
+        converges_2 = max_div_results[2] < ROUNDOFF_ABSOLUTE_PASS;
+
+        std::cout << "\n  Divergence at roundoff level - ratio checks skipped\n";
+        std::cout << "  Verifying absolute smallness: max|div| < 1e-10\n";
+        std::cout << "    max|div(64)| = " << std::scientific << max_div_results[2]
+                  << (converges_1 ? " [OK]" : " [TOO LARGE]") << "\n";
+    } else {
+        // Normal regime: check convergence ratios (expect ~2 for O(h))
+        ratio_1 = max_div_results[0] / max_div_results[1];  // 16→32
+        ratio_2 = max_div_results[1] / max_div_results[2];  // 32→64
+        converges_1 = ratio_1 > 1.5;
+        converges_2 = ratio_2 > 1.5;
+
+        std::cout << "\n  Convergence ratios (expect ~2 for O(h)):\n";
+        std::cout << "    div(16)/div(32) = " << std::fixed << std::setprecision(2) << ratio_1 << "\n";
+        std::cout << "    div(32)/div(64) = " << ratio_2 << "\n";
     }
 
     std::cout << "\nQOI_JSON: {\"test\":\"discrete_div_refinement\""
@@ -502,6 +509,7 @@ void test_discrete_divergence_refinement() {
               << ",\"max_div_64\":" << harness::json_double(max_div_results[2])
               << ",\"ratio_16_32\":" << harness::json_double(ratio_1)
               << ",\"ratio_32_64\":" << harness::json_double(ratio_2)
+              << ",\"in_roundoff_regime\":" << (in_roundoff_regime ? "true" : "false")
               << "}\n";
 
     record("[Refinement] Discrete div of TGV IC < 0.1 at N=64", div_bounded);
