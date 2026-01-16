@@ -431,7 +431,7 @@ void test_rans_channel_sst() {
 
     // U_bulk stability: check that U_bulk is not wildly oscillating
     // For short runs, allow up to 5% change between samples
-    double U_bulk_stable = true;
+    bool U_bulk_stable = true;
     if (U_bulk_history.size() >= 3) {
         double U_last = U_bulk_history.back();
         double U_prev = U_bulk_history[U_bulk_history.size() - 2];

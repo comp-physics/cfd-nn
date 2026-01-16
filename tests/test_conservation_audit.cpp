@@ -159,11 +159,12 @@ void test_conservation_periodic_3d() {
     solver.set_body_force(0.0, 0.0, 0.0);  // No body force for conservation test
 
     // Taylor-Green initial condition
+    // Use correct staggered grid locations: u at x-faces, v at y-faces, w at z-faces
     auto& vel = solver.velocity();
     for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end() + 1; ++i) {
-                double x = mesh.x(i);
+                double x = mesh.xf[i];  // u at x-face
                 double y = mesh.yc[j];
                 double z = mesh.zc[k];
                 vel.u(i,j,k) = std::sin(x) * std::cos(y) * std::cos(z);
@@ -174,7 +175,7 @@ void test_conservation_periodic_3d() {
         for (int j = mesh.j_begin(); j <= mesh.j_end() + 1; ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                 double x = mesh.xc[i];
-                double y = mesh.y(j);
+                double y = mesh.yf[j];  // v at y-face
                 double z = mesh.zc[k];
                 vel.v(i,j,k) = -std::cos(x) * std::sin(y) * std::cos(z);
             }

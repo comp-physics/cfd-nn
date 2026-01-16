@@ -122,20 +122,20 @@ static double compute_velocity_l2_error(const VectorField& vel, const Mesh& mesh
 // Initialize with MMS solution
 // ============================================================================
 static void init_mms(RANSSolver& solver, const Mesh& mesh, const MMSSolution& mms) {
-    // Initialize u at u-faces
+    // Initialize u at u-faces (use mesh.xf for x-face coordinates)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double x = mesh.x(i) - mesh.dx / 2.0;  // u-face location
-            double y = mesh.y(j);
+            double x = mesh.xf[i];  // u at x-face
+            double y = mesh.yc[j];  // cell center in y
             solver.velocity().u(i, j) = mms.u(x, y);
         }
     }
 
-    // Initialize v at v-faces
+    // Initialize v at v-faces (use mesh.yf for y-face coordinates)
     for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double x = mesh.x(i);
-            double y = mesh.y(j) - mesh.dy / 2.0;  // v-face location
+            double x = mesh.xc[i];  // cell center in x
+            double y = mesh.yf[j];  // v at y-face
             solver.velocity().v(i, j) = mms.v(x, y);
         }
     }

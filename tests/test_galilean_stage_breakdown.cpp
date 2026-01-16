@@ -1091,7 +1091,7 @@ void test_convergence_quality() {
     constexpr double QUALITY_BASELINE = 1.54e6;   // Known baseline value
     constexpr double QUALITY_MARGIN = 2.0;        // Allow 2x variation from baseline
     constexpr double QUALITY_ABS_CAP = 1e7;       // Hard ceiling for catastrophic regression
-    double quality_threshold = std::max(QUALITY_ABS_CAP, QUALITY_MARGIN * QUALITY_BASELINE);
+    double quality_threshold = std::min(QUALITY_ABS_CAP, QUALITY_MARGIN * QUALITY_BASELINE);
     bool quality_no_regress = proj_quality_ratio < quality_threshold;
 
     std::cout << "  [Non-regression] quality_ratio=" << std::scientific << proj_quality_ratio

@@ -570,48 +570,16 @@ bool test_hypre_vs_multigrid_3d_duct() {
     // 2. Pressure gradients (drives velocity correction)
     // 3. Velocity (physical result)
 
-    // Compute divergence for both solvers
-    double div_mg = 0.0, div_hypre = 0.0;
+    // Compute divergence for both solvers using helper function
     const auto& u_mg = solver_mg.velocity();
     const auto& u_hypre = solver_hypre.velocity();
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx_mg = (u_mg.u(i+1,j,k) - u_mg.u(i,j,k)) / mesh.dx;
-                double dvdy_mg = (u_mg.v(i,j+1,k) - u_mg.v(i,j,k)) / mesh.dy;
-                double dwdz_mg = (u_mg.w(i,j,k+1) - u_mg.w(i,j,k)) / mesh.dz;
-                div_mg = std::max(div_mg, std::abs(dudx_mg + dvdy_mg + dwdz_mg));
+    double div_mg = compute_max_divergence_3d(u_mg, mesh);
+    double div_hypre = compute_max_divergence_3d(u_hypre, mesh);
 
-                double dudx_h = (u_hypre.u(i+1,j,k) - u_hypre.u(i,j,k)) / mesh.dx;
-                double dvdy_h = (u_hypre.v(i,j+1,k) - u_hypre.v(i,j,k)) / mesh.dy;
-                double dwdz_h = (u_hypre.w(i,j,k+1) - u_hypre.w(i,j,k)) / mesh.dz;
-                div_hypre = std::max(div_hypre, std::abs(dudx_h + dvdy_h + dwdz_h));
-            }
-        }
-    }
-
-    // Compute pressure gradient difference
+    // Compute pressure gradient difference using helper function
     const auto& p_mg = solver_mg.pressure();
     const auto& p_hypre = solver_hypre.pressure();
-    double gradp_sum_sq = 0.0, gradp_ref_sq = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dpdx_mg = (p_mg(i+1,j,k) - p_mg(i,j,k)) / mesh.dx;
-                double dpdy_mg = (p_mg(i,j+1,k) - p_mg(i,j,k)) / mesh.dy;
-                double dpdz_mg = (p_mg(i,j,k+1) - p_mg(i,j,k)) / mesh.dz;
-                double dpdx_h = (p_hypre(i+1,j,k) - p_hypre(i,j,k)) / mesh.dx;
-                double dpdy_h = (p_hypre(i,j+1,k) - p_hypre(i,j,k)) / mesh.dy;
-                double dpdz_h = (p_hypre(i,j,k+1) - p_hypre(i,j,k)) / mesh.dz;
-
-                gradp_sum_sq += (dpdx_mg - dpdx_h)*(dpdx_mg - dpdx_h)
-                              + (dpdy_mg - dpdy_h)*(dpdy_mg - dpdy_h)
-                              + (dpdz_mg - dpdz_h)*(dpdz_mg - dpdz_h);
-                gradp_ref_sq += dpdx_mg*dpdx_mg + dpdy_mg*dpdy_mg + dpdz_mg*dpdz_mg;
-            }
-        }
-    }
-    double gradp_relL2 = std::sqrt(gradp_sum_sq) / (std::sqrt(gradp_ref_sq) + 1e-30);
+    double gradp_relL2 = compute_gradp_relL2_3d(p_mg, p_hypre, mesh);
 
     // Compare velocity fields
     FieldComparison u_result;
