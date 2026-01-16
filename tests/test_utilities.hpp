@@ -668,9 +668,9 @@ inline bool assert_synced(int min_calls, const char* context = "") {
 ///     double div = compute_max_div(solver.velocity(), mesh);
 ///
 ///     // GOOD: Syncs automatically before reading
-///     double div = qoi::max_divergence_3d(solver, mesh);
+///     double div = solver_qoi::max_divergence_3d(solver, mesh);
 ///
-namespace qoi {
+namespace solver_qoi {
 
 /// Compute max |div(u)| over interior cells (3D)
 /// Automatically syncs from GPU before reading velocity field.
@@ -784,7 +784,7 @@ inline double mean_pressure_2d(Solver& solver, const MeshT& mesh) {
     return count > 0 ? sum / count : 0.0;
 }
 
-} // namespace qoi
+} // namespace solver_qoi
 
 /// Test case configuration for turbulence model tests
 struct TurbulenceTestCase {
