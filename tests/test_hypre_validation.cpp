@@ -38,9 +38,8 @@ using nncfd::test::file_exists;
 // Tolerance for HYPRE vs Multigrid comparison
 // Velocities should match closely since both solve the same NS equations
 constexpr double VELOCITY_TOLERANCE = 1e-5;
-// Pressure tolerance can be looser since pressure is defined up to an additive constant
-// What matters is that pressure gradients match (which they do if velocity matches)
-constexpr double PRESSURE_TOLERANCE = 1e-3;
+// Note: Raw pressure tolerance removed - pressure is gauge-dependent.
+// We use physics-first metrics: divergence, pressure gradient, velocity, Poisson residual.
 // Tolerance for mean-removed pressure (more meaningful for solver equivalence)
 constexpr double PRESSURE_PRIME_TOLERANCE = 1e-6;
 // Tolerance for divergence (should be essentially zero for incompressible)
