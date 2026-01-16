@@ -2549,11 +2549,18 @@ void test_conservative_galilean() {
     // We have 2 schemes * 2 frames = 4 solver runs, so expect >= 4 syncs
     bool sync_ok = test::gpu::assert_synced(4, "conservative_galilean divergence computation");
 
-    // Note: Galilean invariance checks are recorded as diagnostics (always pass CI)
-    // The physics violation is a known limitation of current discretization.
-    // See test_frame_invariance_poisson_hardness() for the CI-gated Galilean check.
-    record("[Galilean] Both schemes achieve excellent ratio (< 2x)", true, both_excellent ? "PASS" : "expected violation");
-    record("[Galilean] Conservative ratio < 5x", true, conservative_acceptable ? "PASS" : "expected violation");
+    // Non-regression gate: Known physics violation, but cap to prevent silent degradation.
+    // Current baseline ~1163x, so cap at 2000x to catch regressions without flaky ideal gates.
+    constexpr double REGRESSION_CAP = 2000.0;
+    bool no_regression = conservative_ratio < REGRESSION_CAP;
+
+    // Diagnostic: ideal physics gates (informational only, not CI-blocking)
+    record("[Galilean] Both schemes achieve excellent ratio (< 2x)", true,
+           both_excellent ? "PASS" : ("diagnostic: " + std::to_string(conservative_ratio) + "x"));
+    record("[Galilean] Conservative ratio < 5x (ideal)", true,
+           conservative_acceptable ? "PASS" : ("diagnostic: " + std::to_string(conservative_ratio) + "x"));
+    // CI gate: non-regression cap (blocks CI if physics gets WORSE)
+    record("[Galilean] Conservative ratio < 2000x (regression cap)", no_regression);
     record("[GPU Canary] Sync calls verified", sync_ok);
 }
 

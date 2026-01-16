@@ -330,9 +330,8 @@ bool test_hypre_vs_multigrid_3d_channel() {
     for (int step = 0; step < NUM_STEPS; ++step) {
         solver_mg.step();
     }
-#ifdef USE_GPU_OFFLOAD
-    solver_mg.sync_solution_from_gpu();
-#endif
+    // GPU sync guard: ensure fields are on host before QoI computation
+    test::gpu::ensure_synced(solver_mg);
 
     // Run with HYPRE - same initial condition
     std::cout << "  Running with HYPRE...\n";
@@ -373,10 +372,8 @@ bool test_hypre_vs_multigrid_3d_channel() {
         std::cerr << "  ERROR: HYPRE solver failed during time stepping\n";
         return false;
     }
-
-#ifdef USE_GPU_OFFLOAD
-    solver_hypre.sync_solution_from_gpu();
-#endif
+    // GPU sync guard: ensure fields are on host before QoI computation
+    test::gpu::ensure_synced(solver_hypre);
 
     // Compute solution statistics to verify non-trivial results
     double p_mg_min = 1e30, p_mg_max = -1e30;
@@ -547,14 +544,14 @@ bool test_hypre_vs_multigrid_3d_duct() {
     std::cout << "\n=== Test: HYPRE vs Multigrid (3D Duct) ===\n";
 
     const int NX = 32, NY = 32, NZ = 32;
-    const int NUM_STEPS = 10;  // Fewer steps for stability
+    const int NUM_STEPS = 50;  // Enough steps to develop nontrivial flow
 
     Mesh mesh;
     mesh.init_uniform(NX, NY, NZ, 0.0, 4.0, 0.0, 2.0, 0.0, 2.0);
 
     Config config;
     config.nu = 0.01;
-    config.dt = 0.0001;  // Small time step for stability
+    config.dt = 0.001;  // Reasonable dt for duct flow
     config.adaptive_dt = false;
     config.max_steps = NUM_STEPS;
     config.turb_model = TurbulenceModelType::None;
@@ -579,10 +576,8 @@ bool test_hypre_vs_multigrid_3d_duct() {
     // Verify solver selection
     std::cout << "    Solver: Multigrid (using_hypre=" << solver_mg.using_hypre() << ")\n";
 
-    // DON'T set divergent IC - was causing instability
-
-    // Use small body force for stability
-    solver_mg.set_body_force(0.01, 0.0, 0.0);
+    // Use meaningful body force to develop nontrivial flow
+    solver_mg.set_body_force(1.0, 0.0, 0.0);
     solver_mg.set_velocity_bc(bc);
 
 #ifdef USE_GPU_OFFLOAD
@@ -591,9 +586,8 @@ bool test_hypre_vs_multigrid_3d_duct() {
     for (int step = 0; step < NUM_STEPS; ++step) {
         solver_mg.step();
     }
-#ifdef USE_GPU_OFFLOAD
-    solver_mg.sync_solution_from_gpu();
-#endif
+    // GPU sync guard: ensure fields are on host before QoI computation
+    test::gpu::ensure_synced(solver_mg);
 
     // Run with HYPRE
     std::cout << "  Running with HYPRE...\n";
@@ -603,10 +597,8 @@ bool test_hypre_vs_multigrid_3d_duct() {
     // Verify solver selection
     std::cout << "    Solver: HYPRE (using_hypre=" << solver_hypre.using_hypre() << ")\n";
 
-    // Same as MG: no divergent IC
-
-    // Use same small body force
-    solver_hypre.set_body_force(0.01, 0.0, 0.0);
+    // Same body force as MG
+    solver_hypre.set_body_force(1.0, 0.0, 0.0);
     solver_hypre.set_velocity_bc(bc);
 
 #ifdef USE_GPU_OFFLOAD
@@ -615,9 +607,8 @@ bool test_hypre_vs_multigrid_3d_duct() {
     for (int step = 0; step < NUM_STEPS; ++step) {
         solver_hypre.step();
     }
-#ifdef USE_GPU_OFFLOAD
-    solver_hypre.sync_solution_from_gpu();
-#endif
+    // GPU sync guard: ensure fields are on host before QoI computation
+    test::gpu::ensure_synced(solver_hypre);
 
     // Compute PHYSICS-FIRST metrics (same as channel test)
     // These are what actually matter for solver equivalence:
@@ -681,6 +672,31 @@ bool test_hypre_vs_multigrid_3d_duct() {
     }
     u_result.finalize();
 
+    // Compute nontriviality metrics (to ensure test is meaningful)
+    double u_mg_l2 = 0.0, rhs_mg_l2 = 0.0, gradp_mg_l2 = 0.0;
+    const auto& rhs_mg_field = solver_mg.rhs_poisson();
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                u_mg_l2 += u_mg.u(i,j,k)*u_mg.u(i,j,k) + u_mg.v(i,j,k)*u_mg.v(i,j,k) + u_mg.w(i,j,k)*u_mg.w(i,j,k);
+                rhs_mg_l2 += rhs_mg_field(i,j,k) * rhs_mg_field(i,j,k);
+                double dpdx = (p_mg(i+1,j,k) - p_mg(i,j,k)) / mesh.dx;
+                double dpdy = (p_mg(i,j+1,k) - p_mg(i,j,k)) / mesh.dy;
+                double dpdz = (p_mg(i,j,k+1) - p_mg(i,j,k)) / mesh.dz;
+                gradp_mg_l2 += dpdx*dpdx + dpdy*dpdy + dpdz*dpdz;
+            }
+        }
+    }
+    u_mg_l2 = std::sqrt(u_mg_l2);
+    rhs_mg_l2 = std::sqrt(rhs_mg_l2);
+    gradp_mg_l2 = std::sqrt(gradp_mg_l2);
+
+    // Nontriviality gates: fail if fields are essentially zero
+    constexpr double NONTRIVIAL_EPS = 1e-10;
+    bool u_nontrivial = u_mg_l2 > NONTRIVIAL_EPS;
+    bool rhs_nontrivial = rhs_mg_l2 > NONTRIVIAL_EPS;
+    bool gradp_nontrivial = gradp_mg_l2 > NONTRIVIAL_EPS;
+
     // Compute Poisson residual identity for each solver
     // This verifies each solver actually solved its equation correctly
     double res_mg = compute_poisson_residual_3d(solver_mg.pressure(),
@@ -690,6 +706,10 @@ bool test_hypre_vs_multigrid_3d_duct() {
 
     // Print physics-first diagnostics
     std::cout << std::scientific << std::setprecision(4);
+    std::cout << "  Nontriviality (must be > " << NONTRIVIAL_EPS << "):\n";
+    std::cout << "    ||u||_L2:     " << u_mg_l2 << (u_nontrivial ? " [OK]" : " [TRIVIAL!]") << "\n";
+    std::cout << "    ||rhs||_L2:   " << rhs_mg_l2 << (rhs_nontrivial ? " [OK]" : " [TRIVIAL!]") << "\n";
+    std::cout << "    ||gradp||_L2: " << gradp_mg_l2 << (gradp_nontrivial ? " [OK]" : " [TRIVIAL!]") << "\n";
     std::cout << "  Divergence:\n";
     std::cout << "    MG:    " << div_mg << "\n";
     std::cout << "    HYPRE: " << div_hypre << "\n";
@@ -707,7 +727,10 @@ bool test_hypre_vs_multigrid_3d_duct() {
     bool res_mg_ok = res_mg < POISSON_RESIDUAL_TOLERANCE;
     bool res_hypre_ok = res_hypre < POISSON_RESIDUAL_TOLERANCE;
 
-    std::cout << "\n  Pass/fail checks (physics-first):\n";
+    std::cout << "\n  Pass/fail checks:\n";
+    std::cout << "    Nontrivial velocity:  " << (u_nontrivial ? "[OK]" : "[FAIL - test invalid]") << "\n";
+    std::cout << "    Nontrivial RHS:       " << (rhs_nontrivial ? "[OK]" : "[FAIL - test invalid]") << "\n";
+    std::cout << "    Nontrivial gradp:     " << (gradp_nontrivial ? "[OK]" : "[FAIL - test invalid]") << "\n";
     std::cout << "    MG divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_mg_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    HYPRE divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    Pressure gradient match < " << GRADP_TOLERANCE << ": " << (gradp_ok ? "[OK]" : "[FAIL]") << "\n";
@@ -715,8 +738,9 @@ bool test_hypre_vs_multigrid_3d_duct() {
     std::cout << "    MG Poisson residual < " << POISSON_RESIDUAL_TOLERANCE << ": " << (res_mg_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    HYPRE Poisson residual < " << POISSON_RESIDUAL_TOLERANCE << ": " << (res_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
 
-    // Pass if all primary criteria are met
-    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok && res_mg_ok && res_hypre_ok;
+    // Pass requires nontriviality AND all physics checks
+    bool passed = u_nontrivial && rhs_nontrivial && gradp_nontrivial &&
+                  div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok && res_mg_ok && res_hypre_ok;
     std::cout << "\n  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
     return passed;
 }
