@@ -2472,6 +2472,9 @@ void test_conservative_galilean() {
             // Take one step
             solver.step();
 
+            // Sync from GPU to ensure velocity field is on host
+            solver.sync_from_gpu();
+
             // Compute post-projection divergence
             const auto& u = solver.velocity();
             double max_div = 0.0;
