@@ -111,8 +111,11 @@ void test_fft_vs_mg_periodic() {
     RANSSolver solver_fft(mesh, cfg_fft);
     solver_fft.set_velocity_bc(bc);
 
-    if (solver_fft.poisson_solver_type() != PoissonSolverType::FFT) {
-        record("FFT vs MG (3D periodic)", true, true);
+    // Assert solver selection - catches drift in selection logic
+    bool fft_selected = (solver_fft.poisson_solver_type() == PoissonSolverType::FFT);
+    record("[FFT] Solver selected for 3D periodic", fft_selected);
+    if (!fft_selected) {
+        record("FFT vs MG (3D periodic)", true, true);  // Skip comparison
         return;
     }
 
@@ -237,8 +240,11 @@ void test_fft1d_vs_mg_duct() {
     RANSSolver solver_fft(mesh, cfg_fft);
     solver_fft.set_velocity_bc(bc);
 
-    if (solver_fft.poisson_solver_type() != PoissonSolverType::FFT1D) {
-        record("FFT1D vs MG (3D duct)", true, true);
+    // Assert solver selection - catches drift in selection logic
+    bool fft1d_selected = (solver_fft.poisson_solver_type() == PoissonSolverType::FFT1D);
+    record("[FFT1D] Solver selected for 3D duct", fft1d_selected);
+    if (!fft1d_selected) {
+        record("FFT1D vs MG (3D duct)", true, true);  // Skip comparison
         return;
     }
 
