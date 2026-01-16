@@ -7,29 +7,12 @@ jobs:
   gpu-tests:
     runs-on: self-hosted
     timeout-minutes: 150
+    # Prevent concurrent cache saves from colliding (prefix-match restores set cache-hit=false)
+    concurrency:
+      group: gpu-ci-cache-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
-    - name: Clean workspace (preserve HYPRE cache)
-      run: |
-        echo "Cleaning workspace (preserving HYPRE cache)..."
-        # Remove build artifacts but preserve _deps (HYPRE builds)
-        # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
-        for dir in build_gpu build_cpu build_gpu_hypre build_cpu_hypre; do
-          if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
-            # Keep _deps, remove everything else
-            find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
-            # Clean hypre-subbuild which contains CMakeCache.txt with absolute paths
-            # This prevents "different directory" errors when runner path changes
-            rm -rf "${GITHUB_WORKSPACE}/${dir}/_deps/hypre-subbuild" 2>/dev/null || true
-          fi
-        done
-        rm -rf "${GITHUB_WORKSPACE}/CMakeCache.txt"
-        rm -rf "${GITHUB_WORKSPACE}/CMakeFiles"
-        # Clean up previous log files
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
-        echo "Workspace cleaned (HYPRE cache preserved if present)"
-
     - uses: actions/checkout@v4
 
     # Extract HYPRE version from CMakeLists.txt to ensure cache key stays in sync
@@ -46,19 +29,16 @@ jobs:
         echo "Detected HYPRE version: ${HYPRE_VERSION}"
 
     # Restore HYPRE cache (slow to compile, rarely changes)
-    # Key includes HYPRE version extracted from CMakeLists.txt and GPU architecture
-    # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
-    # Using separate restore/save steps as save-always is deprecated
+    # Key includes HYPRE version and hash of build config files
+    # Only cache *_hypre directories - ci.sh uses these when HYPRE is enabled
     - name: Restore HYPRE cache
       id: hypre_cache
       uses: actions/cache/restore@v4
       with:
         path: |
-          build_cpu/_deps
-          build_gpu/_deps
           build_cpu_hypre/_deps
           build_gpu_hypre/_deps
-        key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
+        key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt', 'cmake/**', '.github/scripts/**') }}
         restore-keys: |
           hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-
 
@@ -67,7 +47,7 @@ jobs:
     - name: Clean HYPRE subbuild cache (path-sensitive)
       run: |
         echo "Cleaning hypre-subbuild directories (contain absolute paths)..."
-        for dir in build_cpu/_deps build_gpu/_deps build_cpu_hypre/_deps build_gpu_hypre/_deps; do
+        for dir in build_cpu_hypre/_deps build_gpu_hypre/_deps; do
           if [ -d "${dir}/hypre-subbuild" ]; then
             echo "  Removing ${dir}/hypre-subbuild"
             rm -rf "${dir}/hypre-subbuild"
@@ -88,11 +68,11 @@ jobs:
       if: always()
       run: |
         echo "==================================================================="
-        echo "  GPU CI Build Log"
+        echo "  GPU CI Build Log (last 300 lines)"
         echo "==================================================================="
         echo ""
         if [ -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" ]; then
-          cat "${GITHUB_WORKSPACE}/gpu_ci_build.log"
+          tail -n 300 "${GITHUB_WORKSPACE}/gpu_ci_build.log"
         else
           echo "Build log not found (build may have failed early)"
           echo "Check the Slurm output for details."
@@ -102,11 +82,11 @@ jobs:
       if: always()
       run: |
         echo "==================================================================="
-        echo "  GPU CI Test Log"
+        echo "  GPU CI Test Log (last 300 lines)"
         echo "==================================================================="
         echo ""
         if [ -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" ]; then
-          cat "${GITHUB_WORKSPACE}/gpu_ci_test.log"
+          tail -n 300 "${GITHUB_WORKSPACE}/gpu_ci_test.log"
         else
           echo "Test log not found (tests may not have run)"
           echo "Check the build log and Slurm output for details."
@@ -129,33 +109,32 @@ jobs:
         echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
         echo ""
         echo "=== Build directories ==="
-        ls -la build_gpu 2>/dev/null || echo "No build_gpu directory"
-        ls -la build_cpu 2>/dev/null || echo "No build_cpu directory"
+        ls -la build_gpu_hypre 2>/dev/null || echo "No build_gpu_hypre directory"
+        ls -la build_cpu_hypre 2>/dev/null || echo "No build_cpu_hypre directory"
         echo ""
         echo "=== HYPRE cache status ==="
-        ls -la build_gpu/_deps 2>/dev/null || echo "No GPU HYPRE cache"
-        ls -la build_cpu/_deps 2>/dev/null || echo "No CPU HYPRE cache"
+        ls -la build_gpu_hypre/_deps 2>/dev/null || echo "No GPU HYPRE cache"
+        ls -la build_cpu_hypre/_deps 2>/dev/null || echo "No CPU HYPRE cache"
         echo ""
         echo "=== Test binaries ==="
-        ls -lh build_gpu/test_* 2>/dev/null || echo "No test binaries found"
+        ls -lh build_gpu_hypre/test_* 2>/dev/null || echo "No test binaries found"
 
     # Save HYPRE cache only on cache miss (HYPRE builds are expensive)
-    # Skip if cache was restored with exact key match (cache-hit=true) to avoid
-    # "another job may be creating this cache" errors from concurrent runs
+    # Skip if cache was restored with exact key match (cache-hit=true)
+    # Concurrency group above prevents parallel saves from colliding
     - name: Save HYPRE cache
       if: always() && steps.hypre_cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: |
-          build_cpu/_deps
-          build_gpu/_deps
           build_cpu_hypre/_deps
           build_gpu_hypre/_deps
-        key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt') }}
+        key: hypre-v${{ steps.hypre_version.outputs.version }}-h200-cc90-${{ hashFiles('CMakeLists.txt', 'cmake/**', '.github/scripts/**') }}
 
-    - name: Cleanup (preserve HYPRE cache)
+    - name: Cleanup
       if: always()
       run: |
+        # Clean up Slurm artifacts and logs
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch" || true
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" || true
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" || true
@@ -164,10 +143,11 @@ jobs:
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" || true
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
         rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
-        # Clean build artifacts but keep _deps for cache
-        # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
-        for dir in build_gpu build_cpu build_gpu_hypre build_cpu_hypre; do
+        # Clean build artifacts but keep _deps for cache (only *_hypre dirs are cached)
+        for dir in build_gpu_hypre build_cpu_hypre; do
           if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then
             find "${GITHUB_WORKSPACE}/${dir}" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
           fi
         done
+        # Fully remove non-hypre build dirs (not cached)
+        rm -rf "${GITHUB_WORKSPACE}/build_gpu" "${GITHUB_WORKSPACE}/build_cpu" || true
