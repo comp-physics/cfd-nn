@@ -51,6 +51,47 @@ constexpr double GRADP_TOLERANCE = 1e-5;
 // Tolerance for cross-build comparison (CPU vs GPU HYPRE)
 constexpr double CROSS_BUILD_TOLERANCE = 1e-10;
 
+// Tolerance for Poisson residual identity ||Lap(p) - rhs|| / ||rhs||
+constexpr double POISSON_RESIDUAL_TOLERANCE = 1e-3;
+
+// ============================================================================
+// Compute Poisson residual identity: ||Lap(p) - rhs||_2 / ||rhs||_2
+// This verifies the solver actually solved its equation, independent of
+// whether two solvers match each other.
+// ============================================================================
+static double compute_poisson_residual_3d(const ScalarField& p, const ScalarField& rhs,
+                                          const Mesh& mesh) {
+    const double dx2 = mesh.dx * mesh.dx;
+    const double dy2 = mesh.dy * mesh.dy;
+    const double dz2 = mesh.dz * mesh.dz;
+
+    double diff_sum_sq = 0.0;  // ||Lap(p) - rhs||_2^2
+    double rhs_sum_sq = 0.0;   // ||rhs||_2^2
+
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                // 7-point discrete Laplacian (same stencil as MG solver)
+                double laplacian = (p(i+1,j,k) - 2.0*p(i,j,k) + p(i-1,j,k)) / dx2
+                                 + (p(i,j+1,k) - 2.0*p(i,j,k) + p(i,j-1,k)) / dy2
+                                 + (p(i,j,k+1) - 2.0*p(i,j,k) + p(i,j,k-1)) / dz2;
+
+                double diff = laplacian - rhs(i, j, k);
+                diff_sum_sq += diff * diff;
+                rhs_sum_sq += rhs(i, j, k) * rhs(i, j, k);
+            }
+        }
+    }
+
+    double rhs_l2 = std::sqrt(rhs_sum_sq);
+    double diff_l2 = std::sqrt(diff_sum_sq);
+
+    if (rhs_l2 < 1e-30) {
+        return diff_l2;  // Return absolute residual if RHS is zero
+    }
+    return diff_l2 / rhs_l2;
+}
+
 void write_field_data(const std::string& filename, const ScalarField& field,
                       const Mesh& mesh) {
     std::ofstream file(filename);
@@ -405,6 +446,13 @@ bool test_hypre_vs_multigrid_3d_channel() {
     // Compute pressure gradient comparison (what actually drives velocity correction)
     double gradp_relL2 = compute_gradp_relL2_3d(solver_mg.pressure(), solver_hypre.pressure(), mesh);
 
+    // Compute Poisson residual identity for each solver
+    // This verifies each solver actually solved its equation correctly
+    double res_mg = compute_poisson_residual_3d(solver_mg.pressure(),
+                                                 solver_mg.rhs_poisson(), mesh);
+    double res_hypre = compute_poisson_residual_3d(solver_hypre.pressure(),
+                                                    solver_hypre.rhs_poisson(), mesh);
+
     // Print diagnostics
     std::cout << "  Solution statistics:\n";
     std::cout << "    MG pressure range:    [" << p_mg_min << ", " << p_mg_max << "] (mean=" << p_mg_mean << ")\n";
@@ -414,6 +462,9 @@ bool test_hypre_vs_multigrid_3d_channel() {
     std::cout << "    MG max |div(u)|:    " << std::scientific << div_mg << "\n";
     std::cout << "    HYPRE max |div(u)|: " << std::scientific << div_hypre << "\n";
     std::cout << "    grad(p) relL2 diff: " << std::scientific << gradp_relL2 << "\n";
+    std::cout << "    Poisson residual ||Lap(p)-rhs||/||rhs||:\n";
+    std::cout << "      MG:    " << std::scientific << res_mg << "\n";
+    std::cout << "      HYPRE: " << std::scientific << res_hypre << "\n";
 
     p_result.print("Pressure diff (raw)");
     p_prime_result.print("Pressure diff (mean-removed)");
@@ -436,10 +487,13 @@ bool test_hypre_vs_multigrid_3d_channel() {
     // 1. Divergence must be small for both solvers (incompressibility)
     // 2. Pressure gradients must match (drives velocity correction)
     // 3. Velocity must match (physical result)
+    // 4. Poisson residual must be small (solver actually solved its equation)
     bool div_mg_ok = div_mg < DIVERGENCE_TOLERANCE;
     bool div_hypre_ok = div_hypre < DIVERGENCE_TOLERANCE;
     bool gradp_ok = gradp_relL2 < GRADP_TOLERANCE;
     bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
+    bool res_mg_ok = res_mg < POISSON_RESIDUAL_TOLERANCE;
+    bool res_hypre_ok = res_hypre < POISSON_RESIDUAL_TOLERANCE;
 
     // Secondary: mean-removed pressure (for QoI tracking, not pass/fail)
     bool pressure_prime_ok = p_prime_result.within_tolerance(PRESSURE_PRIME_TOLERANCE);
@@ -449,6 +503,8 @@ bool test_hypre_vs_multigrid_3d_channel() {
     std::cout << "    HYPRE divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    Pressure gradient match < " << GRADP_TOLERANCE << ": " << (gradp_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    Velocity match < " << VELOCITY_TOLERANCE << ": " << (velocity_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    MG Poisson residual < " << POISSON_RESIDUAL_TOLERANCE << ": " << (res_mg_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    HYPRE Poisson residual < " << POISSON_RESIDUAL_TOLERANCE << ": " << (res_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    Mean-removed pressure < " << PRESSURE_PRIME_TOLERANCE << ": " << (pressure_prime_ok ? "[OK]" : "[WARN]") << " (secondary)\n";
 
     if (!div_mg_ok) {
@@ -463,9 +519,15 @@ bool test_hypre_vs_multigrid_3d_channel() {
     if (!velocity_ok) {
         std::cerr << "  ERROR: Velocity difference exceeds tolerance\n";
     }
+    if (!res_mg_ok) {
+        std::cerr << "  ERROR: MG Poisson residual " << res_mg << " exceeds tolerance\n";
+    }
+    if (!res_hypre_ok) {
+        std::cerr << "  ERROR: HYPRE Poisson residual " << res_hypre << " exceeds tolerance\n";
+    }
 
     // Pass if all primary criteria are met
-    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok;
+    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok && res_mg_ok && res_hypre_ok;
     std::cout << "\n  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
 
     // Emit machine-readable QoI for CI metrics
@@ -620,6 +682,13 @@ bool test_hypre_vs_multigrid_3d_duct() {
     }
     u_result.finalize();
 
+    // Compute Poisson residual identity for each solver
+    // This verifies each solver actually solved its equation correctly
+    double res_mg = compute_poisson_residual_3d(solver_mg.pressure(),
+                                                 solver_mg.rhs_poisson(), mesh);
+    double res_hypre = compute_poisson_residual_3d(solver_hypre.pressure(),
+                                                    solver_hypre.rhs_poisson(), mesh);
+
     // Print physics-first diagnostics
     std::cout << std::scientific << std::setprecision(4);
     std::cout << "  Divergence:\n";
@@ -627,21 +696,28 @@ bool test_hypre_vs_multigrid_3d_duct() {
     std::cout << "    HYPRE: " << div_hypre << "\n";
     std::cout << "  Pressure gradient relL2 diff: " << gradp_relL2 << "\n";
     std::cout << "  Velocity relL2 diff: " << u_result.rel_l2() << "\n";
+    std::cout << "  Poisson residual ||Lap(p)-rhs||/||rhs||:\n";
+    std::cout << "    MG:    " << res_mg << "\n";
+    std::cout << "    HYPRE: " << res_hypre << "\n";
 
     // PRIMARY pass/fail criteria (physics-first):
     bool div_mg_ok = div_mg < DIVERGENCE_TOLERANCE;
     bool div_hypre_ok = div_hypre < DIVERGENCE_TOLERANCE;
     bool gradp_ok = gradp_relL2 < GRADP_TOLERANCE;
     bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
+    bool res_mg_ok = res_mg < POISSON_RESIDUAL_TOLERANCE;
+    bool res_hypre_ok = res_hypre < POISSON_RESIDUAL_TOLERANCE;
 
     std::cout << "\n  Pass/fail checks (physics-first):\n";
     std::cout << "    MG divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_mg_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    HYPRE divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    Pressure gradient match < " << GRADP_TOLERANCE << ": " << (gradp_ok ? "[OK]" : "[FAIL]") << "\n";
     std::cout << "    Velocity match < " << VELOCITY_TOLERANCE << ": " << (velocity_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    MG Poisson residual < " << POISSON_RESIDUAL_TOLERANCE << ": " << (res_mg_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    HYPRE Poisson residual < " << POISSON_RESIDUAL_TOLERANCE << ": " << (res_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
 
     // Pass if all primary criteria are met
-    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok;
+    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok && res_mg_ok && res_hypre_ok;
     std::cout << "\n  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
     return passed;
 }

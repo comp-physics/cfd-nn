@@ -656,6 +656,136 @@ inline bool assert_synced(int min_calls, const char* context = "") {
 
 } // namespace gpu
 
+//=============================================================================
+// Solver-Aware QoI Helpers (Auto-Sync from GPU)
+//=============================================================================
+
+/// These helpers automatically call ensure_synced() before reading solver fields.
+/// Use these instead of field-level helpers to prevent stale-host read bugs on GPU.
+///
+/// Example:
+///     // BAD: Forgot to sync, will read stale data on GPU
+///     double div = compute_max_div(solver.velocity(), mesh);
+///
+///     // GOOD: Syncs automatically before reading
+///     double div = qoi::max_divergence_3d(solver, mesh);
+///
+namespace qoi {
+
+/// Compute max |div(u)| over interior cells (3D)
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double max_divergence_3d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double max_div = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1,j,k) - vel.u(i,j,k)) / mesh.dx;
+                double dvdy = (vel.v(i,j+1,k) - vel.v(i,j,k)) / mesh.dy;
+                double dwdz = (vel.w(i,j,k+1) - vel.w(i,j,k)) / mesh.dz;
+                max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
+            }
+        }
+    }
+    return max_div;
+}
+
+/// Compute max |div(u)| over interior cells (2D)
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double max_divergence_2d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double max_div = 0.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double dudx = (vel.u(i+1,j) - vel.u(i,j)) / mesh.dx;
+            double dvdy = (vel.v(i,j+1) - vel.v(i,j)) / mesh.dy;
+            max_div = std::max(max_div, std::abs(dudx + dvdy));
+        }
+    }
+    return max_div;
+}
+
+/// Compute total kinetic energy (3D): sum of 0.5 * (u^2 + v^2 + w^2) * cell_volume
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double kinetic_energy_3d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double ke = 0.0;
+    const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i,j,k) + vel.u(i+1,j,k));
+                double v = 0.5 * (vel.v(i,j,k) + vel.v(i,j+1,k));
+                double w = 0.5 * (vel.w(i,j,k) + vel.w(i,j,k+1));
+                ke += 0.5 * (u*u + v*v + w*w) * cell_vol;
+            }
+        }
+    }
+    return ke;
+}
+
+/// Compute total kinetic energy (2D): sum of 0.5 * (u^2 + v^2) * cell_area
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double kinetic_energy_2d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double ke = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u = 0.5 * (vel.u(i,j) + vel.u(i+1,j));
+            double v = 0.5 * (vel.v(i,j) + vel.v(i,j+1));
+            ke += 0.5 * (u*u + v*v) * cell_area;
+        }
+    }
+    return ke;
+}
+
+/// Compute mean pressure over interior cells (3D)
+/// Automatically syncs from GPU before reading pressure field.
+template<typename Solver, typename MeshT>
+inline double mean_pressure_3d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& p = solver.pressure();
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += p(i, j, k);
+                ++count;
+            }
+        }
+    }
+    return count > 0 ? sum / count : 0.0;
+}
+
+/// Compute mean pressure over interior cells (2D)
+/// Automatically syncs from GPU before reading pressure field.
+template<typename Solver, typename MeshT>
+inline double mean_pressure_2d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& p = solver.pressure();
+    double sum = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            sum += p(i, j);
+            ++count;
+        }
+    }
+    return count > 0 ? sum / count : 0.0;
+}
+
+} // namespace qoi
+
 /// Test case configuration for turbulence model tests
 struct TurbulenceTestCase {
     int nx, ny;
