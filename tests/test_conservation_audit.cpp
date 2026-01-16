@@ -798,17 +798,26 @@ void test_pressure_gauge_invariance() {
 #endif
     solver_b.step();  // Step 1
 
-    // Add constant offset to pressure
+    // CRITICAL: Sync pressure FROM GPU before modifying on host!
+    // After step(), pressure is updated on GPU but host copy is stale.
+    // Modifying stale host copy and syncing back would corrupt pressure.
+#ifdef USE_GPU_OFFLOAD
+    solver_b.sync_from_gpu();
+#endif
+
+    // Add constant offset to pressure - MUST include ghost cells!
+    // If we only modify interior, we create an O(OFFSET/dx) gradient at boundaries
+    // which violates gauge invariance and causes O(1e-3) velocity differences.
     auto& p_b = solver_b.pressure();
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        for (int j = 0; j < mesh.total_Ny(); ++j) {
+            for (int i = 0; i < mesh.total_Nx(); ++i) {
                 p_b(i,j,k) += PRESSURE_OFFSET;
             }
         }
     }
 #ifdef USE_GPU_OFFLOAD
-    solver_b.sync_to_gpu();  // Re-sync modified pressure
+    solver_b.sync_to_gpu();  // Re-sync modified pressure (including ghosts)
 #endif
 
     solver_b.step();  // Step 2 (should be unaffected by pressure offset)
@@ -846,10 +855,33 @@ void test_pressure_gauge_invariance() {
 
     double max_diff = std::max({max_u_diff, max_v_diff, max_w_diff});
 
+    // Diagnostic: Compare pressure gradients (should match if gauge-invariant)
+    // If ∇p matches but velocity doesn't → p is used directly somewhere (real bug)
+    // If ∇p differs → numerical/solver convergence issue
+    const auto& pres_a = solver_a.pressure();
+    const auto& pres_b = solver_b.pressure();
+    double max_gradp_diff = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dpdx_a = (pres_a(i+1,j,k) - pres_a(i-1,j,k)) / (2.0 * mesh.dx);
+                double dpdy_a = (pres_a(i,j+1,k) - pres_a(i,j-1,k)) / (2.0 * mesh.dy);
+                double dpdz_a = (pres_a(i,j,k+1) - pres_a(i,j,k-1)) / (2.0 * mesh.dz);
+                double dpdx_b = (pres_b(i+1,j,k) - pres_b(i-1,j,k)) / (2.0 * mesh.dx);
+                double dpdy_b = (pres_b(i,j+1,k) - pres_b(i,j-1,k)) / (2.0 * mesh.dy);
+                double dpdz_b = (pres_b(i,j,k+1) - pres_b(i,j,k-1)) / (2.0 * mesh.dz);
+                max_gradp_diff = std::max(max_gradp_diff, std::abs(dpdx_a - dpdx_b));
+                max_gradp_diff = std::max(max_gradp_diff, std::abs(dpdy_a - dpdy_b));
+                max_gradp_diff = std::max(max_gradp_diff, std::abs(dpdz_a - dpdz_b));
+            }
+        }
+    }
+
     std::cout << "  Pressure offset applied: " << PRESSURE_OFFSET << "\n";
     std::cout << "  Max |u_ref - u_offset|: " << std::scientific << max_u_diff << "\n";
     std::cout << "  Max |v_ref - v_offset|: " << max_v_diff << "\n";
     std::cout << "  Max |w_ref - w_offset|: " << max_w_diff << "\n";
+    std::cout << "  Max |∇p_ref - ∇p_offset|: " << max_gradp_diff << "\n";
     std::cout << "  Max overall diff:       " << max_diff << "\n";
 
     // Gauge invariance means velocity should be IDENTICAL

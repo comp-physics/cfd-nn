@@ -303,14 +303,15 @@ void test_fft2d_vs_mg_channel() {
 
     double mg_max = linf_norm(solver_mg.pressure(), mesh);
 
-    // FFT
+    // FFT2D - explicitly request FFT2D for 2D mesh (not generic FFT which expects 3D)
     Config cfg_fft = cfg_mg;
-    cfg_fft.poisson_solver = PoissonSolverType::FFT;
+    cfg_fft.poisson_solver = PoissonSolverType::FFT2D;
 
     RANSSolver solver_fft(mesh, cfg_fft);
     solver_fft.set_velocity_bc(bc);
 
-    if (solver_fft.poisson_solver_type() == PoissonSolverType::MG) {
+    // Skip if FFT2D not available (fell back to something else)
+    if (solver_fft.poisson_solver_type() != PoissonSolverType::FFT2D) {
         record("FFT2D vs MG (2D channel)", true, true);
         return;
     }
