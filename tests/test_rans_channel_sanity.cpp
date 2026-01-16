@@ -166,8 +166,8 @@ struct ProductionStats {
     double min_production;   // Min P_k in shear region
     double max_production;   // Max P_k
     double avg_production;   // Average P_k
-    double negative_count;   // Number of cells with P_k < 0
-    double total_cells;      // Total cells in shear region
+    int negative_count;      // Number of cells with P_k < 0
+    int total_cells;         // Total cells in shear region
     bool valid;
 };
 
@@ -224,8 +224,8 @@ struct DissipationStats {
     double min_dissipation;  // Should be >= 0
     double max_dissipation;
     double avg_dissipation;
-    double negative_count;   // Should be 0
-    double total_cells;
+    int negative_count;      // Should be 0
+    int total_cells;
     bool valid;
 };
 
@@ -268,8 +268,8 @@ struct TKEStats {
     double min_k;
     double max_k;
     double avg_k;
-    double negative_count;
-    double total_cells;
+    int negative_count;
+    int total_cells;
     bool valid;
 };
 
@@ -686,6 +686,10 @@ void test_rans_models_smoke() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
+
+        // Explicitly set turbulence model (required - config.turb_model is not auto-instantiated)
+        auto turb_model = create_turbulence_model(model_type, "", "");
+        solver.set_turbulence_model(std::move(turb_model));
 
         VelocityBC bc;
         bc.x_lo = VelocityBC::Periodic;

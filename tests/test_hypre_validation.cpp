@@ -411,20 +411,37 @@ bool test_hypre_vs_multigrid_3d_channel() {
     p_result.finalize();
     p_prime_result.finalize();
 
-    // Compare velocity fields
-    FieldComparison u_result;
+    // Compare velocity fields (all components: u, v, w)
+    FieldComparison vel_result;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            // u-component (x-faces)
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                 double u_mg = solver_mg.velocity().u(i, j, k);
                 double u_hypre = solver_hypre.velocity().u(i, j, k);
-                u_result.update(u_mg, u_hypre);
+                vel_result.update(u_mg, u_hypre);
                 u_mg_max = std::max(u_mg_max, std::abs(u_mg));
                 u_hypre_max = std::max(u_hypre_max, std::abs(u_hypre));
             }
+            // v-component (y-faces)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double v_mg = solver_mg.velocity().v(i, j, k);
+                double v_hypre = solver_hypre.velocity().v(i, j, k);
+                vel_result.update(v_mg, v_hypre);
+                u_mg_max = std::max(u_mg_max, std::abs(v_mg));
+                u_hypre_max = std::max(u_hypre_max, std::abs(v_hypre));
+            }
+            // w-component (z-faces)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double w_mg = solver_mg.velocity().w(i, j, k);
+                double w_hypre = solver_hypre.velocity().w(i, j, k);
+                vel_result.update(w_mg, w_hypre);
+                u_mg_max = std::max(u_mg_max, std::abs(w_mg));
+                u_hypre_max = std::max(u_hypre_max, std::abs(w_hypre));
+            }
         }
     }
-    u_result.finalize();
+    vel_result.finalize();
 
     // Compute divergence for both solutions (primary metric for incompressibility)
     double div_mg = compute_max_divergence_3d(solver_mg.velocity(), mesh);
@@ -442,7 +459,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     std::cout << "  Divergence:\n";
     std::cout << "    MG:    " << div_mg << "\n";
     std::cout << "    HYPRE: " << div_hypre << "\n";
-    std::cout << "  Velocity relL2 diff: " << u_result.rel_l2() << "\n";
+    std::cout << "  Velocity relL2 diff: " << vel_result.rel_l2() << "\n";
 
     // Sanity check: velocity should be non-trivial
     bool u_nontrivial = (u_mg_max > 1e-10);
@@ -458,7 +475,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     // The divergence gate validates the same physics (projection worked).
     bool div_mg_ok = div_mg < DIVERGENCE_TOLERANCE;
     bool div_hypre_ok = div_hypre < DIVERGENCE_TOLERANCE;
-    bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
+    bool velocity_ok = vel_result.within_tolerance(VELOCITY_TOLERANCE);
 
     std::cout << "\n  Pass/fail checks:\n";
     std::cout << "    Nontrivial velocity:  " << (u_nontrivial ? "[OK]" : "[FAIL - test invalid]") << "\n";
@@ -483,7 +500,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     // Emit machine-readable QoI for CI metrics (pressure values may be stale on GPU)
     nncfd::test::harness::emit_qoi_hypre(
         p_prime_result.rel_l2(),  // May be stale on GPU
-        u_result.rel_l2(),
+        vel_result.rel_l2(),
         p_mg_mean,  // May be stale on GPU
         p_hypre_mean,  // May be stale on GPU
         div_mg,
@@ -582,18 +599,18 @@ bool test_hypre_vs_multigrid_3d_duct() {
     const auto& p_hypre = solver_hypre.pressure();
     [[maybe_unused]] double gradp_relL2 = compute_gradp_relL2_3d(p_mg, p_hypre, mesh);
 
-    // Compare velocity fields
-    FieldComparison u_result;
+    // Compare velocity fields (all components: u, v, w)
+    FieldComparison vel_result;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                u_result.update(u_mg.u(i,j,k), u_hypre.u(i,j,k));
-                u_result.update(u_mg.v(i,j,k), u_hypre.v(i,j,k));
-                u_result.update(u_mg.w(i,j,k), u_hypre.w(i,j,k));
+                vel_result.update(u_mg.u(i,j,k), u_hypre.u(i,j,k));
+                vel_result.update(u_mg.v(i,j,k), u_hypre.v(i,j,k));
+                vel_result.update(u_mg.w(i,j,k), u_hypre.w(i,j,k));
             }
         }
     }
-    u_result.finalize();
+    vel_result.finalize();
 
     // Compute nontriviality from VELOCITY ONLY (reliably synced)
     // Note: Scalar fields (pressure, rhs_poisson) are NOT reliably synced from GPU
@@ -620,13 +637,13 @@ bool test_hypre_vs_multigrid_3d_duct() {
     std::cout << "  Divergence:\n";
     std::cout << "    MG:    " << div_mg << "\n";
     std::cout << "    HYPRE: " << div_hypre << "\n";
-    std::cout << "  Velocity relL2 diff: " << u_result.rel_l2() << "\n";
+    std::cout << "  Velocity relL2 diff: " << vel_result.rel_l2() << "\n";
 
     // PRIMARY pass/fail criteria (physics-first, velocity-based):
     // If velocity is nonzero, divergence is small, and solvers match -> physics correct
     bool div_mg_ok = div_mg < DIVERGENCE_TOLERANCE;
     bool div_hypre_ok = div_hypre < DIVERGENCE_TOLERANCE;
-    bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
+    bool velocity_ok = vel_result.within_tolerance(VELOCITY_TOLERANCE);
 
     std::cout << "\n  Pass/fail checks:\n";
     std::cout << "    Nontrivial velocity:  " << (u_nontrivial ? "[OK]" : "[FAIL - test invalid]") << "\n";
