@@ -441,6 +441,7 @@ if(BUILD_TESTS)
     # =========================================================================
     # Medium tests (30-120s)
     # =========================================================================
+    add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest)
     add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest)
     add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest)
     add_nncfd_test(test_poisson_unified)
