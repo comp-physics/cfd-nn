@@ -38,11 +38,11 @@ struct SolidBodyRotation {
     double x_center;  // Rotation center x
     double y_center;  // Rotation center y
 
-    double u(double x, double y) const {
+    double u(double /*x*/, double y) const {
         return -Omega * (y - y_center);
     }
 
-    double v(double x, double y) const {
+    double v(double x, double /*y*/) const {
         return Omega * (x - x_center);
     }
 
