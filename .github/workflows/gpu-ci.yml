@@ -7,9 +7,9 @@ jobs:
   gpu-tests:
     runs-on: self-hosted
     timeout-minutes: 150
-    # Serialize per branch + architecture (keeps parallelism across branches)
+    # Serialize per branch (keeps parallelism across branches)
     concurrency:
-      group: gpu-ci-cache-${{ github.workflow }}-${{ runner.arch }}-${{ github.ref }}
+      group: gpu-ci-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
