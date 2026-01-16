@@ -558,43 +558,91 @@ bool test_hypre_vs_multigrid_3d_duct() {
     solver_hypre.sync_solution_from_gpu();
 #endif
 
-    // Compute solution statistics
-    double p_mg_min = 1e30, p_mg_max = -1e30;
-    double p_hypre_min = 1e30, p_hypre_max = -1e30;
+    // Compute PHYSICS-FIRST metrics (same as channel test)
+    // These are what actually matter for solver equivalence:
+    // 1. Divergence (incompressibility)
+    // 2. Pressure gradients (drives velocity correction)
+    // 3. Velocity (physical result)
 
-    // Compare pressure fields
-    FieldComparison p_result;
+    // Compute divergence for both solvers
+    double div_mg = 0.0, div_hypre = 0.0;
+    const auto& u_mg = solver_mg.velocity();
+    const auto& u_hypre = solver_hypre.velocity();
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double p_mg = solver_mg.pressure()(i, j, k);
-                double p_hypre = solver_hypre.pressure()(i, j, k);
-                p_result.update(p_mg, p_hypre);
-                p_mg_min = std::min(p_mg_min, p_mg);
-                p_mg_max = std::max(p_mg_max, p_mg);
-                p_hypre_min = std::min(p_hypre_min, p_hypre);
-                p_hypre_max = std::max(p_hypre_max, p_hypre);
+                double dudx_mg = (u_mg.u(i+1,j,k) - u_mg.u(i,j,k)) / mesh.dx;
+                double dvdy_mg = (u_mg.v(i,j+1,k) - u_mg.v(i,j,k)) / mesh.dy;
+                double dwdz_mg = (u_mg.w(i,j,k+1) - u_mg.w(i,j,k)) / mesh.dz;
+                div_mg = std::max(div_mg, std::abs(dudx_mg + dvdy_mg + dwdz_mg));
+
+                double dudx_h = (u_hypre.u(i+1,j,k) - u_hypre.u(i,j,k)) / mesh.dx;
+                double dvdy_h = (u_hypre.v(i,j+1,k) - u_hypre.v(i,j,k)) / mesh.dy;
+                double dwdz_h = (u_hypre.w(i,j,k+1) - u_hypre.w(i,j,k)) / mesh.dz;
+                div_hypre = std::max(div_hypre, std::abs(dudx_h + dvdy_h + dwdz_h));
             }
         }
     }
-    p_result.finalize();
 
-    // Print diagnostics
-    std::cout << "  Solution statistics:\n";
-    std::cout << "    MG pressure range:    [" << std::scientific << p_mg_min << ", " << p_mg_max << "]\n";
-    std::cout << "    HYPRE pressure range: [" << p_hypre_min << ", " << p_hypre_max << "]\n";
+    // Compute pressure gradient difference
+    const auto& p_mg = solver_mg.pressure();
+    const auto& p_hypre = solver_hypre.pressure();
+    double gradp_sum_sq = 0.0, gradp_ref_sq = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dpdx_mg = (p_mg(i+1,j,k) - p_mg(i,j,k)) / mesh.dx;
+                double dpdy_mg = (p_mg(i,j+1,k) - p_mg(i,j,k)) / mesh.dy;
+                double dpdz_mg = (p_mg(i,j,k+1) - p_mg(i,j,k)) / mesh.dz;
+                double dpdx_h = (p_hypre(i+1,j,k) - p_hypre(i,j,k)) / mesh.dx;
+                double dpdy_h = (p_hypre(i,j+1,k) - p_hypre(i,j,k)) / mesh.dy;
+                double dpdz_h = (p_hypre(i,j,k+1) - p_hypre(i,j,k)) / mesh.dz;
 
-    p_result.print("Pressure diff");
-
-    // Sanity check - pressure should be non-zero after projection
-    bool solutions_nontrivial = (p_mg_max - p_mg_min > 1e-15);
-    if (!solutions_nontrivial) {
-        std::cerr << "  WARNING: Pressure is still near-zero\n";
-        // Don't fail - this might be physically correct for certain flows
+                gradp_sum_sq += (dpdx_mg - dpdx_h)*(dpdx_mg - dpdx_h)
+                              + (dpdy_mg - dpdy_h)*(dpdy_mg - dpdy_h)
+                              + (dpdz_mg - dpdz_h)*(dpdz_mg - dpdz_h);
+                gradp_ref_sq += dpdx_mg*dpdx_mg + dpdy_mg*dpdy_mg + dpdz_mg*dpdz_mg;
+            }
+        }
     }
+    double gradp_relL2 = std::sqrt(gradp_sum_sq) / (std::sqrt(gradp_ref_sq) + 1e-30);
 
-    bool passed = p_result.within_tolerance(PRESSURE_TOLERANCE);
-    std::cout << "  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
+    // Compare velocity fields
+    FieldComparison u_result;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                u_result.update(u_mg.u(i,j,k), u_hypre.u(i,j,k));
+                u_result.update(u_mg.v(i,j,k), u_hypre.v(i,j,k));
+                u_result.update(u_mg.w(i,j,k), u_hypre.w(i,j,k));
+            }
+        }
+    }
+    u_result.finalize();
+
+    // Print physics-first diagnostics
+    std::cout << std::scientific << std::setprecision(4);
+    std::cout << "  Divergence:\n";
+    std::cout << "    MG:    " << div_mg << "\n";
+    std::cout << "    HYPRE: " << div_hypre << "\n";
+    std::cout << "  Pressure gradient relL2 diff: " << gradp_relL2 << "\n";
+    std::cout << "  Velocity relL2 diff: " << u_result.rel_l2() << "\n";
+
+    // PRIMARY pass/fail criteria (physics-first):
+    bool div_mg_ok = div_mg < DIVERGENCE_TOLERANCE;
+    bool div_hypre_ok = div_hypre < DIVERGENCE_TOLERANCE;
+    bool gradp_ok = gradp_relL2 < GRADP_TOLERANCE;
+    bool velocity_ok = u_result.within_tolerance(VELOCITY_TOLERANCE);
+
+    std::cout << "\n  Pass/fail checks (physics-first):\n";
+    std::cout << "    MG divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_mg_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    HYPRE divergence < " << DIVERGENCE_TOLERANCE << ": " << (div_hypre_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    Pressure gradient match < " << GRADP_TOLERANCE << ": " << (gradp_ok ? "[OK]" : "[FAIL]") << "\n";
+    std::cout << "    Velocity match < " << VELOCITY_TOLERANCE << ": " << (velocity_ok ? "[OK]" : "[FAIL]") << "\n";
+
+    // Pass if all primary criteria are met
+    bool passed = div_mg_ok && div_hypre_ok && gradp_ok && velocity_ok;
+    std::cout << "\n  Result: " << (passed ? "[PASS]" : "[FAIL]") << "\n";
     return passed;
 }
 #endif  // USE_HYPRE

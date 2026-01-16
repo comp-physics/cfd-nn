@@ -2219,6 +2219,9 @@ void test_skew_symmetric_galilean() {
 void test_frame_invariance_poisson_hardness() {
     std::cout << "\n=== Frame-Invariance Poisson-Hardness Test (CI Gate) ===\n";
 
+    // Reset GPU sync counter for canary check
+    test::gpu::reset_sync_count();
+
     const int N = 64;
     const double L = 2.0 * M_PI;
     const double div_gate = 1e-4;   // Convergence gate (allows for discretization error)
@@ -2285,7 +2288,7 @@ void test_frame_invariance_poisson_hardness() {
         solver.step();
 
         // Sync from GPU to ensure fields are on host for verification
-        solver.sync_from_gpu();
+        test::gpu::ensure_synced(solver);
 
         // Get Poisson solve statistics
         const auto& ps = solver.poisson_stats();
@@ -2381,9 +2384,14 @@ void test_frame_invariance_poisson_hardness() {
               << ",\"all_proj_res_pass\":" << (all_proj_ok ? "true" : "false")
               << "}\n" << std::flush;
 
+    // GPU sync canary: verify that sync_from_gpu was called for each offset
+    // We test 6 offsets, so expect >= 6 syncs
+    bool sync_ok = test::gpu::assert_synced(6, "frame_invariance divergence computation");
+
     record("[CI] All frames div < 1e-4 (default config)", all_div_ok);
     record("[CI] All frame ratios < 3x (Galilean invariance)", all_ratio_ok);
     record("[CI] All projection residuals < 1e-3 (Poisson solve quality)", all_proj_ok);
+    record("[GPU Canary] Sync calls verified", sync_ok);
 }
 
 // ============================================================================
@@ -2399,6 +2407,9 @@ void test_frame_invariance_poisson_hardness() {
 /// This should result in frame-independent truncation errors.
 void test_conservative_galilean() {
     std::cout << "\n=== Conservative Advection Galilean Test ===\n";
+
+    // Reset GPU sync counter for canary check
+    test::gpu::reset_sync_count();
 
     // Moderate grid for reasonable projection accuracy
     const int N = 64;
@@ -2473,7 +2484,8 @@ void test_conservative_galilean() {
             solver.step();
 
             // Sync from GPU to ensure velocity field is on host
-            solver.sync_from_gpu();
+            // Using test::gpu::ensure_synced() to track sync calls for canary check
+            test::gpu::ensure_synced(solver);
 
             // Compute post-projection divergence
             const auto& u = solver.velocity();
@@ -2533,8 +2545,13 @@ void test_conservative_galilean() {
               << ",\"conservative_better\":" << (conservative_better ? "true" : "false")
               << "}\n" << std::flush;
 
+    // GPU sync canary: verify that sync_from_gpu was called for each solver step
+    // We have 2 schemes * 2 frames = 4 solver runs, so expect >= 4 syncs
+    bool sync_ok = test::gpu::assert_synced(4, "conservative_galilean divergence computation");
+
     record("[Galilean] Both schemes achieve excellent ratio (< 2x)", both_excellent);
     record("[Galilean] Conservative ratio < 5x", conservative_acceptable);
+    record("[GPU Canary] Sync calls verified", sync_ok);
 }
 
 // ============================================================================

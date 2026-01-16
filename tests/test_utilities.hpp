@@ -586,6 +586,74 @@ inline bool canary_check() {
 #endif
 }
 
+//=============================================================================
+// GPU Sync Guard for Tests
+//=============================================================================
+
+/// Global counter for sync_from_gpu calls (for debugging sync issues)
+inline int& sync_call_count() {
+    static int count = 0;
+    return count;
+}
+
+/// Reset sync call counter (call at start of test)
+inline void reset_sync_count() {
+    sync_call_count() = 0;
+}
+
+/// Get number of sync_from_gpu calls since last reset
+inline int get_sync_count() {
+    return sync_call_count();
+}
+
+/// Ensure solver data is on host before reading fields
+/// This prevents the common bug of reading stale host data after GPU computation.
+/// On CPU builds, this is a no-op.
+///
+/// Usage:
+///     solver.step();
+///     gpu::ensure_synced(solver);  // Safe to read solver.velocity() now
+///     double div = compute_div(solver.velocity(), mesh);
+///
+/// @param solver  Any solver object with sync_from_gpu() method
+template<typename Solver>
+inline void ensure_synced(Solver& solver) {
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_from_gpu();
+    ++sync_call_count();
+#else
+    (void)solver;  // Suppress unused warning on CPU builds
+#endif
+}
+
+/// Assert that at least N sync calls were made (for test canaries)
+/// Use this to verify that tests properly sync before host reads.
+///
+/// Usage:
+///     gpu::reset_sync_count();
+///     // ... test code that should call ensure_synced() ...
+///     gpu::assert_synced(1, "divergence computation");  // Fails if no sync
+///
+inline bool assert_synced(int min_calls, const char* context = "") {
+#ifdef USE_GPU_OFFLOAD
+    if (sync_call_count() < min_calls) {
+        std::cerr << "[GPU Sync Guard] FAILURE: Expected at least " << min_calls
+                  << " sync_from_gpu() call(s)";
+        if (context && context[0]) {
+            std::cerr << " for " << context;
+        }
+        std::cerr << ", but got " << sync_call_count() << "\n";
+        std::cerr << "[GPU Sync Guard] This may cause stale host data to be read!\n";
+        return false;
+    }
+    return true;
+#else
+    (void)min_calls;
+    (void)context;
+    return true;  // CPU build - always passes
+#endif
+}
+
 } // namespace gpu
 
 /// Test case configuration for turbulence model tests
