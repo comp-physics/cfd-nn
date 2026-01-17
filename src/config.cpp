@@ -131,7 +131,15 @@ void Config::load(const std::string& filename) {
         convective_scheme = ConvectiveScheme::Skew;
     } else if (scheme_str == "upwind2") {
         convective_scheme = ConvectiveScheme::Upwind2;
+    } else if (scheme_str == "conservative" || scheme_str == "cons") {
+        std::cerr << "Warning: 'conservative' scheme was removed. Using 'skew' (energy-conserving, Galilean invariant) instead.\n";
+        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
+        convective_scheme = ConvectiveScheme::Skew;
+    } else if (scheme_str == "central") {
+        convective_scheme = ConvectiveScheme::Central;
     } else {
+        std::cerr << "Warning: Unknown convective_scheme '" << scheme_str << "'. Using 'central'.\n";
+        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
         convective_scheme = ConvectiveScheme::Central;
     }
 
@@ -395,7 +403,13 @@ void Config::parse_args(int argc, char** argv) {
                 convective_scheme = ConvectiveScheme::Skew;
             } else if (val == "upwind2") {
                 convective_scheme = ConvectiveScheme::Upwind2;
+            } else if (val == "conservative" || val == "cons") {
+                std::cerr << "Warning: 'conservative' scheme was removed. Using 'skew' instead.\n";
+                convective_scheme = ConvectiveScheme::Skew;
+            } else if (val == "central") {
+                convective_scheme = ConvectiveScheme::Central;
             } else {
+                std::cerr << "Warning: Unknown --scheme '" << val << "'. Using 'central'.\n";
                 convective_scheme = ConvectiveScheme::Central;
             }
         } else if ((val = get_value(i, arg, "--space-order")) != "") {
