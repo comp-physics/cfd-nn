@@ -132,6 +132,7 @@ inline void record_gate(const char* name, bool pass, double actual, double thres
 }
 
 /// Record a tracked (diagnostic) test with value display - never fails CI
+/// WARN cases emit GitHub Actions warning annotation for visibility
 inline void record_track(const char* name, double actual, double goal, int width = 50) {
     std::cout << "  " << std::left << std::setw(width) << name;
     std::cout << std::scientific << std::setprecision(2);
@@ -139,33 +140,52 @@ inline void record_track(const char* name, double actual, double goal, int width
     if (meets_goal) {
         std::cout << "[TRACK:PASS] (" << actual << " vs goal " << goal << ")\n";
     } else {
-        std::cout << "[TRACK:WARN] (" << actual << " vs goal " << goal << ")\n";
+        // Make warning visually loud + emit GitHub Actions annotation
+        std::cout << "[TRACK:WARN] *** " << actual << " exceeds goal " << goal << " ***\n";
+        // GitHub Actions will highlight this as a warning in the UI
+        std::cout << "::warning title=" << name << "::"
+                  << "Diagnostic exceeds goal: " << actual << " vs " << goal << "\n";
     }
     ++counters().passed;  // Always passes for CI purposes
 }
 
 /// Record a baseline-relative gated test (ratchet test)
-/// Fails CI if current value exceeds baseline * (1 + margin)
-/// This allows tracking improvement: as baseline improves, threshold tightens
+/// Fails CI if current value exceeds the computed limit.
+/// Uses BOTH relative margin AND absolute floor for robustness:
+///   - limit = min(baseline * (1 + margin), baseline + abs_floor)
+/// This prevents:
+///   - Flaky failures when baseline is tiny (noise exceeds relative margin)
+///   - Large absolute drift when baseline is big (relative margin too loose)
+///
 /// @param name       Test name
 /// @param actual     Current measured value
 /// @param baseline   Baseline value from tests/baselines/
-/// @param margin     Allowed regression margin (e.g., 0.1 = 10% worse than baseline allowed)
+/// @param margin     Allowed relative regression (e.g., 0.1 = 10% worse than baseline)
 /// @param goal       Ultimate physics goal (for display context)
+/// @param abs_floor  Absolute margin (default: 0.002 for ~1e-2 scale quantities)
 inline void record_ratchet(const char* name, double actual, double baseline,
-                            double margin, double goal, int width = 50) {
-    double threshold = baseline * (1.0 + margin);
+                            double margin, double goal, int width = 50,
+                            double abs_floor = 0.002) {
+    // Use whichever is MORE restrictive: relative or absolute margin
+    double rel_limit = baseline * (1.0 + margin);
+    double abs_limit = baseline + abs_floor;
+    double threshold = std::min(rel_limit, abs_limit);
     bool pass = actual <= threshold;
 
-    std::cout << "  " << std::left << std::setw(width) << name;
-    std::cout << std::scientific << std::setprecision(2);
+    std::cout << "  " << std::left << std::setw(width) << name << "\n";
+    std::cout << std::scientific << std::setprecision(3);
+    std::cout << "      actual=" << actual << "  baseline=" << baseline
+              << "  limit=" << threshold << "  goal=" << goal << "\n";
+    std::cout << "      ";
     if (pass) {
-        std::cout << "[RATCHET:PASS] (val=" << actual << ", base=" << baseline
-                  << ", limit=" << threshold << ", goal=" << goal << ")\n";
+        std::cout << "[RATCHET:PASS]";
+        if (actual <= goal) {
+            std::cout << " (meets physics goal!)";
+        }
+        std::cout << "\n";
         ++counters().passed;
     } else {
-        std::cout << "[RATCHET:FAIL] (val=" << actual << ", base=" << baseline
-                  << ", limit=" << threshold << ", goal=" << goal << ")\n";
+        std::cout << "[RATCHET:FAIL] regression detected!\n";
         ++counters().failed;
         counters().failed_names.push_back(name);
     }

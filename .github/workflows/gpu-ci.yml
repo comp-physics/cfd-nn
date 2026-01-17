@@ -140,12 +140,36 @@ jobs:
         echo "=== Test binaries ==="
         ls -lh build_gpu_hypre/test_* 2>/dev/null || echo "No test binaries found"
 
-    # Save HYPRE cache only on SUCCESS and cache miss (HYPRE builds are expensive)
-    # Using success() instead of always() to avoid caching corrupted builds
-    # continue-on-error: cache save failures shouldn't red-mark CI
+    # Save HYPRE cache if build succeeded (even if tests failed)
+    # HYPRE cache is independent of test results - only corrupted if build was interrupted
+    # Check for HYPRE library artifacts to verify build completed successfully
     - name: Save HYPRE cache
       continue-on-error: true
-      if: success() && steps.hypre_cache.outputs.cache-hit != 'true'
+      if: always() && steps.hypre_cache.outputs.cache-hit != 'true'
+      run: |
+        # Only save if HYPRE build artifacts exist (proof that build completed)
+        HYPRE_OK=true
+        for dir in build_cpu_hypre build_gpu_hypre; do
+          if [ -d "${dir}/_deps/hypre-build" ]; then
+            # Check for libHYPRE (the key artifact)
+            if ! ls ${dir}/_deps/hypre-build/src/libHYPRE* 2>/dev/null | head -1 > /dev/null; then
+              echo "WARNING: ${dir} HYPRE build incomplete (no libHYPRE found)"
+              HYPRE_OK=false
+            fi
+          fi
+        done
+        if [ "$HYPRE_OK" = "true" ]; then
+          echo "HYPRE builds complete - proceeding with cache save"
+          echo "save_cache=true" >> $GITHUB_OUTPUT
+        else
+          echo "HYPRE builds incomplete - skipping cache save to avoid corruption"
+          echo "save_cache=false" >> $GITHUB_OUTPUT
+        fi
+      id: check_hypre
+
+    - name: Actually save HYPRE cache
+      continue-on-error: true
+      if: always() && steps.hypre_cache.outputs.cache-hit != 'true' && steps.check_hypre.outputs.save_cache == 'true'
       uses: actions/cache/save@v4
       with:
         path: |
