@@ -33,7 +33,6 @@
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
 using nncfd::test::CROSS_BACKEND_TOLERANCE;
-using nncfd::test::CROSS_BACKEND_TOLERANCE;
 using nncfd::test::MIN_EXPECTED_DIFF;
 
 // OpenMP headers - needed for both CPU and GPU builds for backend verification

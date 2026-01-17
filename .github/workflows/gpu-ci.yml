@@ -150,21 +150,26 @@ jobs:
       if: always() && steps.hypre_cache.outputs.cache-hit != 'true'
       run: |
         # Only save if HYPRE build artifacts exist (proof that build completed)
+        # Require at least one libHYPRE to be found (prevents empty cache on cold start)
         HYPRE_OK=true
+        FOUND_LIB=false
         for dir in build_cpu_hypre build_gpu_hypre; do
           if [ -d "${dir}/_deps/hypre-build" ]; then
             # Check for libHYPRE (the key artifact)
-            if ! ls ${dir}/_deps/hypre-build/src/libHYPRE* 2>/dev/null | head -1 > /dev/null; then
+            if ls ${dir}/_deps/hypre-build/src/libHYPRE* 2>/dev/null | head -1 > /dev/null; then
+              FOUND_LIB=true
+            else
               echo "WARNING: ${dir} HYPRE build incomplete (no libHYPRE found)"
               HYPRE_OK=false
             fi
           fi
         done
-        if [ "$HYPRE_OK" = "true" ]; then
+        # Must find at least one lib AND no incomplete builds
+        if [ "$HYPRE_OK" = "true" ] && [ "$FOUND_LIB" = "true" ]; then
           echo "HYPRE builds complete - proceeding with cache save"
           echo "save_cache=true" >> $GITHUB_OUTPUT
         else
-          echo "HYPRE builds incomplete - skipping cache save to avoid corruption"
+          echo "HYPRE builds incomplete or missing - skipping cache save"
           echo "save_cache=false" >> $GITHUB_OUTPUT
         fi
       id: check_hypre
