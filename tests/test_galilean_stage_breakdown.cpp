@@ -2112,7 +2112,7 @@ void test_skew_symmetric_galilean() {
     for (auto scheme_pair : {
         std::make_pair("Central", ConvectiveScheme::Central),
         std::make_pair("Upwind", ConvectiveScheme::Upwind),
-        std::make_pair("Skew-Symmetric", ConvectiveScheme::SkewSymmetric)
+        std::make_pair("Skew-Symmetric", ConvectiveScheme::Skew)
     }) {
         // Run rest frame
         Mesh mesh_rest;
@@ -2434,18 +2434,17 @@ void test_frame_invariance_poisson_hardness() {
 }
 
 // ============================================================================
-// Test: Conservative advection scheme for Galilean invariance
+// Test: Skew-symmetric advection scheme for Galilean invariance
 // ============================================================================
-/// Tests that the conservative flux form ∇·(u⊗u) provides better discrete
-/// Galilean invariance than the advective form (u·∇)u.
+/// Tests that the skew-symmetric form ½[(u·∇)u + ∇·(u⊗u)] provides better
+/// discrete Galilean invariance than the pure advective form (u·∇)u.
 ///
-/// The conservative form uses flux differencing:
-///   - F_{i+1/2} = u_{i+1/2}^2 for self-advection
-///   - When adding uniform offset U₀, the flux differences cancel the U₀ terms
+/// The skew-symmetric form is energy-conserving and provides improved
+/// Galilean invariance properties for DNS/LES applications.
 ///
 /// This should result in frame-independent truncation errors.
-void test_conservative_galilean() {
-    std::cout << "\n=== Conservative Advection Galilean Test ===\n";
+void test_skew_galilean() {
+    std::cout << "\n=== Skew-Symmetric Advection Galilean Test ===\n";
 
     // Reset GPU sync counter for canary check
     test::gpu::reset_sync_count();
@@ -2464,10 +2463,10 @@ void test_conservative_galilean() {
     };
     std::vector<SchemeResult> results;
 
-    // Test Central and Conservative schemes
+    // Test Central and Skew schemes (Skew is energy-conserving and Galilean invariant)
     std::vector<std::pair<std::string, ConvectiveScheme>> schemes = {
         {"Central", ConvectiveScheme::Central},
-        {"Conservative", ConvectiveScheme::Conservative}
+        {"Skew", ConvectiveScheme::Skew}
     };
 
     for (const auto& [name, scheme] : schemes) {
@@ -2558,48 +2557,48 @@ void test_conservative_galilean() {
 
     // Get results for comparison
     double central_ratio = results[0].ratio;
-    double conservative_ratio = results[1].ratio;
+    double skew_ratio = results[1].ratio;
 
     std::cout << "\n  Central ratio:      " << std::fixed << std::setprecision(1) << central_ratio << "x\n";
-    std::cout << "  Conservative ratio: " << conservative_ratio << "x\n";
+    std::cout << "  Skew ratio:         " << skew_ratio << "x\n";
 
     // CI gate: Both schemes should achieve good Galilean invariance with proper Poisson convergence
     // If both achieve ratio < 2x, that's excellent (projection dominates)
-    // If Conservative is better than Central, that's also good (advection form matters)
-    bool both_excellent = (conservative_ratio < 2.0) && (central_ratio < 2.0);
-    bool conservative_better = conservative_ratio < central_ratio;
-    bool conservative_acceptable = conservative_ratio < 5.0;  // Target: < 5x ratio (tight for Galilean invariance)
+    // If Skew is better than Central, that's also good (advection form matters)
+    bool both_excellent = (skew_ratio < 2.0) && (central_ratio < 2.0);
+    bool skew_better = skew_ratio < central_ratio;
+    bool skew_acceptable = skew_ratio < 5.0;  // Target: < 5x ratio (tight for Galilean invariance)
 
     std::cout << "\n  [CI Gate] Both schemes achieve ratio < 2x:  "
               << (both_excellent ? "PASS" : "-") << "\n";
-    std::cout << "  [CI Gate] Conservative better than Central: "
-              << (conservative_better ? "PASS" : (both_excellent ? "N/A (both excellent)" : "FAIL")) << "\n";
-    std::cout << "  [CI Gate] Conservative ratio < 5x:          "
-              << (conservative_acceptable ? "PASS" : "FAIL") << "\n";
+    std::cout << "  [CI Gate] Skew better than Central:         "
+              << (skew_better ? "PASS" : (both_excellent ? "N/A (both excellent)" : "FAIL")) << "\n";
+    std::cout << "  [CI Gate] Skew ratio < 5x:                  "
+              << (skew_acceptable ? "PASS" : "FAIL") << "\n";
 
     // Emit QOI JSON
-    std::cout << "\nQOI_JSON: {\"test\":\"conservative_galilean\""
+    std::cout << "\nQOI_JSON: {\"test\":\"skew_galilean\""
               << ",\"central_ratio\":" << harness::json_double(central_ratio)
-              << ",\"conservative_ratio\":" << harness::json_double(conservative_ratio)
-              << ",\"conservative_better\":" << (conservative_better ? "true" : "false")
+              << ",\"skew_ratio\":" << harness::json_double(skew_ratio)
+              << ",\"skew_better\":" << (skew_better ? "true" : "false")
               << "}\n" << std::flush;
 
     // GPU sync canary: verify that sync_from_gpu was called for each solver step
     // We have 2 schemes * 2 frames = 4 solver runs, so expect >= 4 syncs
-    bool sync_ok = test::gpu::assert_synced(4, "conservative_galilean divergence computation");
+    bool sync_ok = test::gpu::assert_synced(4, "skew_galilean divergence computation");
 
     // Non-regression gate: Known physics violation, but cap to prevent silent degradation.
     // Current baseline ~1163x, so cap at 2000x to catch regressions without flaky ideal gates.
     constexpr double REGRESSION_CAP = 2000.0;
-    bool no_regression = conservative_ratio < REGRESSION_CAP;
+    bool no_regression = skew_ratio < REGRESSION_CAP;
 
     // Diagnostic: ideal physics gates (informational only, not CI-blocking)
     record("[Galilean] Both schemes achieve excellent ratio (< 2x)", true,
-           both_excellent ? "PASS" : ("diagnostic: " + std::to_string(conservative_ratio) + "x"));
-    record("[Galilean] Conservative ratio < 5x (ideal)", true,
-           conservative_acceptable ? "PASS" : ("diagnostic: " + std::to_string(conservative_ratio) + "x"));
+           both_excellent ? "PASS" : ("diagnostic: " + std::to_string(skew_ratio) + "x"));
+    record("[Galilean] Skew ratio < 5x (ideal)", true,
+           skew_acceptable ? "PASS" : ("diagnostic: " + std::to_string(skew_ratio) + "x"));
     // CI gate: non-regression cap (blocks CI if physics gets WORSE)
-    record("[Galilean] Conservative ratio < 2000x (regression cap)", no_regression);
+    record("[Galilean] Skew ratio < 2000x (regression cap)", no_regression);
     record("[GPU Canary] Sync calls verified", sync_ok);
 }
 
@@ -2622,6 +2621,6 @@ int main() {
         test_projection_diagnostics();  // Detailed diagnostic before skew test
         test_skew_symmetric_galilean();
         test_frame_invariance_poisson_hardness();  // CI gate for projection quality
-        test_conservative_galilean();   // Conservative advection test
+        test_skew_galilean();   // Skew-symmetric advection test
     });
 }
