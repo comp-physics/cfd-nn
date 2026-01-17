@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cmath>
+#include <cstdlib>
+#include <ctime>
 #include <string>
 #include <iostream>
 #include <iomanip>
@@ -23,7 +25,7 @@ namespace test {
 //=============================================================================
 
 /// Unified field comparison result structure
-/// Tracks max/RMS differences and location of worst error
+/// Tracks max/RMS differences, location of worst error, and normalized norms
 struct FieldComparison {
     double max_abs_diff = 0.0;
     double max_rel_diff = 0.0;
@@ -33,12 +35,20 @@ struct FieldComparison {
     double test_at_worst = 0.0;
     int count = 0;
 
+    // For normalized L2/Linf norms
+    double sum_sq_diff_ = 0.0;   // Sum of (ref - test)^2
+    double sum_sq_ref_ = 0.0;    // Sum of ref^2
+    double max_abs_ref_ = 0.0;   // max|ref| for Linf normalization
+
     /// Update comparison with a new point (3D version)
     void update(int i, int j, int k, double ref_val, double test_val) {
         double abs_diff = std::abs(ref_val - test_val);
         double rel_diff = abs_diff / (std::abs(ref_val) + 1e-15);
 
-        rms_diff += abs_diff * abs_diff;
+        sum_sq_diff_ += abs_diff * abs_diff;
+        sum_sq_ref_ += ref_val * ref_val;
+        max_abs_ref_ = std::max(max_abs_ref_, std::abs(ref_val));
+        rms_diff += abs_diff * abs_diff;  // Will be sqrt'd in finalize()
         count++;
 
         if (abs_diff > max_abs_diff) {
@@ -67,6 +77,19 @@ struct FieldComparison {
         }
     }
 
+    /// Compute normalized L2 norm: ||test - ref||_2 / (||ref||_2 + eps)
+    /// More stable than max relative diff for comparing fields
+    double rel_l2(double eps = 1e-30) const {
+        double l2_diff = std::sqrt(sum_sq_diff_);
+        double l2_ref = std::sqrt(sum_sq_ref_);
+        return l2_diff / (l2_ref + eps);
+    }
+
+    /// Compute normalized L-infinity norm: ||test - ref||_inf / (||ref||_inf + eps)
+    double rel_linf(double eps = 1e-30) const {
+        return max_abs_diff / (max_abs_ref_ + eps);
+    }
+
     /// Print comparison results with optional field name
     void print(const std::string& name = "") const {
         if (!name.empty()) {
@@ -74,6 +97,8 @@ struct FieldComparison {
             std::cout << "    Max abs diff: " << std::scientific << max_abs_diff << "\n";
             std::cout << "    Max rel diff: " << max_rel_diff << "\n";
             std::cout << "    RMS diff:     " << rms_diff << "\n";
+            std::cout << "    Rel L2 norm:  " << rel_l2() << "\n";
+            std::cout << "    Rel Linf:     " << rel_linf() << "\n";
             if (max_abs_diff > 0) {
                 std::cout << "    Worst at (" << worst_i << "," << worst_j << "," << worst_k << "): "
                           << "ref=" << ref_at_worst << ", test=" << test_at_worst << "\n";
@@ -83,6 +108,8 @@ struct FieldComparison {
             std::cout << "  Max absolute difference: " << max_abs_diff << "\n";
             std::cout << "  Max relative difference: " << max_rel_diff << "\n";
             std::cout << "  RMS difference:          " << rms_diff << "\n";
+            std::cout << "  Rel L2 norm:             " << rel_l2() << "\n";
+            std::cout << "  Rel Linf norm:           " << rel_linf() << "\n";
             if (max_abs_diff > 0) {
                 std::cout << "  Worst at (" << worst_i << "," << worst_j << "," << worst_k << "): "
                           << "ref=" << ref_at_worst << ", test=" << test_at_worst << "\n";
@@ -95,6 +122,11 @@ struct FieldComparison {
         return max_abs_diff < tol;
     }
 
+    /// Check if normalized L2 norm is within tolerance (more robust for CI)
+    bool within_rel_l2_tolerance(double tol) const {
+        return rel_l2() < tol;
+    }
+
     /// Reset comparison state
     void reset() {
         max_abs_diff = 0.0;
@@ -103,6 +135,9 @@ struct FieldComparison {
         worst_i = worst_j = worst_k = 0;
         ref_at_worst = test_at_worst = 0.0;
         count = 0;
+        sum_sq_diff_ = 0.0;
+        sum_sq_ref_ = 0.0;
+        max_abs_ref_ = 0.0;
     }
 };
 
@@ -110,8 +145,12 @@ struct FieldComparison {
 // Tolerance Constants
 //=============================================================================
 
-/// CPU/GPU bitwise comparison tolerance
+/// CPU/GPU cross-backend consistency tolerance
+/// NOTE: Named "BITWISE" for historical reasons, but results are NOT bit-identical.
+/// This tolerance (1e-10) allows for expected FP rounding differences between
+/// CPU and GPU backends while catching significant algorithmic divergence.
 constexpr double BITWISE_TOLERANCE = 1e-10;
+constexpr double CROSS_BACKEND_TOLERANCE = BITWISE_TOLERANCE;  // Preferred name
 
 /// Minimum expected FP difference (to verify different backends executed)
 constexpr double MIN_EXPECTED_DIFF = 1e-14;
@@ -513,7 +552,243 @@ inline void print_config() {
 #endif
 }
 
+/// Check if OMP_TARGET_OFFLOAD is set to MANDATORY
+inline bool is_mandatory_offload() {
+    const char* env = std::getenv("OMP_TARGET_OFFLOAD");
+    return env && std::string(env) == "MANDATORY";
+}
+
+/// GPU canary check: verifies GPU is available when expected
+/// Returns true if check passes, false if it fails
+/// Call this in GPU tests to catch "running on CPU when expecting GPU" issues
+inline bool canary_check() {
+#ifdef USE_GPU_OFFLOAD
+    const int num_dev = device_count();
+    const bool mandatory = is_mandatory_offload();
+
+    if (mandatory && num_dev == 0) {
+        std::cerr << "\n========================================\n";
+        std::cerr << "GPU CANARY FAILURE\n";
+        std::cerr << "========================================\n";
+        std::cerr << "OMP_TARGET_OFFLOAD=MANDATORY but no GPU devices available!\n";
+        std::cerr << "This means we would silently fall back to CPU.\n";
+        std::cerr << "Devices reported by omp_get_num_devices(): " << num_dev << "\n";
+        std::cerr << "========================================\n\n";
+        return false;
+    }
+
+    if (num_dev == 0) {
+        std::cout << "[GPU Canary] No devices available (GPU build but CPU execution)\n";
+    } else if (!verify_execution()) {
+        std::cout << "[GPU Canary] WARNING: Devices reported but verify_execution() failed\n";
+    }
+
+    return true;
+#else
+    // CPU build - always passes
+    return true;
+#endif
+}
+
+//=============================================================================
+// GPU Sync Guard for Tests
+//=============================================================================
+
+/// Global counter for sync_from_gpu calls (for debugging sync issues)
+inline int& sync_call_count() {
+    static int count = 0;
+    return count;
+}
+
+/// Reset sync call counter (call at start of test)
+inline void reset_sync_count() {
+    sync_call_count() = 0;
+}
+
+/// Get number of sync_from_gpu calls since last reset
+inline int get_sync_count() {
+    return sync_call_count();
+}
+
+/// Ensure solver data is on host before reading fields
+/// This prevents the common bug of reading stale host data after GPU computation.
+/// On CPU builds, this is a no-op.
+///
+/// Usage:
+///     solver.step();
+///     gpu::ensure_synced(solver);  // Safe to read solver.velocity() now
+///     double div = compute_div(solver.velocity(), mesh);
+///
+/// @param solver  Any solver object with sync_from_gpu() method
+template<typename Solver>
+inline void ensure_synced(Solver& solver) {
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_from_gpu();
+    ++sync_call_count();
+#else
+    (void)solver;  // Suppress unused warning on CPU builds
+#endif
+}
+
+/// Assert that at least N sync calls were made (for test canaries)
+/// Use this to verify that tests properly sync before host reads.
+///
+/// Usage:
+///     gpu::reset_sync_count();
+///     // ... test code that should call ensure_synced() ...
+///     gpu::assert_synced(1, "divergence computation");  // Fails if no sync
+///
+inline bool assert_synced(int min_calls, const char* context = "") {
+#ifdef USE_GPU_OFFLOAD
+    if (sync_call_count() < min_calls) {
+        std::cerr << "[GPU Sync Guard] FAILURE: Expected at least " << min_calls
+                  << " sync_from_gpu() call(s)";
+        if (context && context[0]) {
+            std::cerr << " for " << context;
+        }
+        std::cerr << ", but got " << sync_call_count() << "\n";
+        std::cerr << "[GPU Sync Guard] This may cause stale host data to be read!\n";
+        return false;
+    }
+    return true;
+#else
+    (void)min_calls;
+    (void)context;
+    return true;  // CPU build - always passes
+#endif
+}
+
 } // namespace gpu
+
+//=============================================================================
+// Solver-Aware QoI Helpers (Auto-Sync from GPU)
+//=============================================================================
+
+/// These helpers automatically call ensure_synced() before reading solver fields.
+/// Use these instead of field-level helpers to prevent stale-host read bugs on GPU.
+///
+/// Example:
+///     // BAD: Forgot to sync, will read stale data on GPU
+///     double div = compute_max_div(solver.velocity(), mesh);
+///
+///     // GOOD: Syncs automatically before reading
+///     double div = solver_qoi::max_divergence_3d(solver, mesh);
+///
+namespace solver_qoi {
+
+/// Compute max |div(u)| over interior cells (3D)
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double max_divergence_3d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double max_div = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1,j,k) - vel.u(i,j,k)) / mesh.dx;
+                double dvdy = (vel.v(i,j+1,k) - vel.v(i,j,k)) / mesh.dy;
+                double dwdz = (vel.w(i,j,k+1) - vel.w(i,j,k)) / mesh.dz;
+                max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
+            }
+        }
+    }
+    return max_div;
+}
+
+/// Compute max |div(u)| over interior cells (2D)
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double max_divergence_2d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double max_div = 0.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double dudx = (vel.u(i+1,j) - vel.u(i,j)) / mesh.dx;
+            double dvdy = (vel.v(i,j+1) - vel.v(i,j)) / mesh.dy;
+            max_div = std::max(max_div, std::abs(dudx + dvdy));
+        }
+    }
+    return max_div;
+}
+
+/// Compute total kinetic energy (3D): sum of 0.5 * (u^2 + v^2 + w^2) * cell_volume
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double kinetic_energy_3d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double ke = 0.0;
+    const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i,j,k) + vel.u(i+1,j,k));
+                double v = 0.5 * (vel.v(i,j,k) + vel.v(i,j+1,k));
+                double w = 0.5 * (vel.w(i,j,k) + vel.w(i,j,k+1));
+                ke += 0.5 * (u*u + v*v + w*w) * cell_vol;
+            }
+        }
+    }
+    return ke;
+}
+
+/// Compute total kinetic energy (2D): sum of 0.5 * (u^2 + v^2) * cell_area
+/// Automatically syncs from GPU before reading velocity field.
+template<typename Solver, typename MeshT>
+inline double kinetic_energy_2d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& vel = solver.velocity();
+    double ke = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u = 0.5 * (vel.u(i,j) + vel.u(i+1,j));
+            double v = 0.5 * (vel.v(i,j) + vel.v(i,j+1));
+            ke += 0.5 * (u*u + v*v) * cell_area;
+        }
+    }
+    return ke;
+}
+
+/// Compute mean pressure over interior cells (3D)
+/// Automatically syncs from GPU before reading pressure field.
+template<typename Solver, typename MeshT>
+inline double mean_pressure_3d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& p = solver.pressure();
+    double sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += p(i, j, k);
+                ++count;
+            }
+        }
+    }
+    return count > 0 ? sum / count : 0.0;
+}
+
+/// Compute mean pressure over interior cells (2D)
+/// Automatically syncs from GPU before reading pressure field.
+template<typename Solver, typename MeshT>
+inline double mean_pressure_2d(Solver& solver, const MeshT& mesh) {
+    gpu::ensure_synced(solver);
+    const auto& p = solver.pressure();
+    double sum = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            sum += p(i, j);
+            ++count;
+        }
+    }
+    return count > 0 ? sum / count : 0.0;
+}
+
+} // namespace solver_qoi
 
 /// Test case configuration for turbulence model tests
 struct TurbulenceTestCase {
@@ -1071,6 +1346,191 @@ inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
         }
     }
     return KE;
+}
+
+//=============================================================================
+// CI Metrics and JSON Artifact Support
+//=============================================================================
+
+// Forward declarations for helper functions used by CIMetrics
+inline std::string get_git_sha();
+inline std::string get_build_type_string();
+inline std::string get_gpu_name();
+
+/// Metrics collected for CI artifact output
+/// Designed to be minimal and stable (avoid frequent schema changes)
+struct CIMetrics {
+    // Build info
+    std::string git_sha;
+    std::string build_type;       // "CPU" or "GPU"
+    std::string precision;        // "double" or "float"
+    std::string gpu_name;
+    int compute_capability = 0;
+
+    // Test identification
+    std::string test_name;
+    std::string timestamp;        // ISO 8601 format
+
+    // Timing
+    double wall_time_seconds = 0.0;
+    int num_iterations = 0;
+
+    // TGV invariants
+    double tgv_2d_div_max = 0.0;
+    double tgv_2d_E_final = 0.0;
+    double tgv_3d_div_max = 0.0;
+    double tgv_3d_E_final = 0.0;
+
+    // CPU/GPU comparison (per-field)
+    double u_rel_l2 = 0.0;
+    double u_rel_linf = 0.0;
+    double v_rel_l2 = 0.0;
+    double v_rel_linf = 0.0;
+    double p_rel_l2 = 0.0;
+    double p_rel_linf = 0.0;
+
+    // Optional turbulence fields
+    double k_rel_l2 = 0.0;
+    double omega_rel_l2 = 0.0;
+    double nu_t_rel_l2 = 0.0;
+
+    /// Populate build info from environment
+    void populate_from_environment() {
+        git_sha = get_git_sha();
+        build_type = get_build_type_string();
+        gpu_name = get_gpu_name();
+#ifdef NNCFD_USE_FLOAT
+        precision = "float";
+#else
+        precision = "double";
+#endif
+        // Timestamp in ISO 8601 format
+        std::time_t now = std::time(nullptr);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+        timestamp = buf;
+    }
+
+    /// Write metrics to JSON file
+    /// @param filename Path to output JSON file (e.g., "artifacts/metrics.json")
+    void write_json(const std::string& filename) const {
+        std::ofstream ofs(filename);
+        if (!ofs) {
+            std::cerr << "[CIMetrics] Warning: Could not open " << filename << " for writing\n";
+            return;
+        }
+
+        ofs << std::scientific << std::setprecision(12);
+        ofs << "{\n";
+        ofs << "  \"git_sha\": \"" << git_sha << "\",\n";
+        ofs << "  \"build_type\": \"" << build_type << "\",\n";
+        ofs << "  \"precision\": \"" << precision << "\",\n";
+        ofs << "  \"gpu_name\": \"" << gpu_name << "\",\n";
+        ofs << "  \"compute_capability\": " << compute_capability << ",\n";
+        ofs << "  \"test_name\": \"" << test_name << "\",\n";
+        ofs << "  \"timestamp\": \"" << timestamp << "\",\n";
+        ofs << "  \"wall_time_seconds\": " << wall_time_seconds << ",\n";
+        ofs << "  \"num_iterations\": " << num_iterations << ",\n";
+        ofs << "  \"tgv_2d\": {\n";
+        ofs << "    \"div_max\": " << tgv_2d_div_max << ",\n";
+        ofs << "    \"E_final\": " << tgv_2d_E_final << "\n";
+        ofs << "  },\n";
+        ofs << "  \"tgv_3d\": {\n";
+        ofs << "    \"div_max\": " << tgv_3d_div_max << ",\n";
+        ofs << "    \"E_final\": " << tgv_3d_E_final << "\n";
+        ofs << "  },\n";
+        ofs << "  \"cpu_gpu_diff\": {\n";
+        ofs << "    \"u_rel_l2\": " << u_rel_l2 << ",\n";
+        ofs << "    \"u_rel_linf\": " << u_rel_linf << ",\n";
+        ofs << "    \"v_rel_l2\": " << v_rel_l2 << ",\n";
+        ofs << "    \"v_rel_linf\": " << v_rel_linf << ",\n";
+        ofs << "    \"p_rel_l2\": " << p_rel_l2 << ",\n";
+        ofs << "    \"p_rel_linf\": " << p_rel_linf << ",\n";
+        ofs << "    \"k_rel_l2\": " << k_rel_l2 << ",\n";
+        ofs << "    \"omega_rel_l2\": " << omega_rel_l2 << ",\n";
+        ofs << "    \"nu_t_rel_l2\": " << nu_t_rel_l2 << "\n";
+        ofs << "  }\n";
+        ofs << "}\n";
+
+        ofs.close();
+        std::cout << "[CIMetrics] Wrote metrics to " << filename << "\n";
+    }
+
+    /// Print metrics summary to stdout
+    void print_summary() const {
+        std::cout << "\n--- CI Metrics Summary ---\n";
+        std::cout << "  Build: " << build_type << " (" << precision << ")";
+        if (!gpu_name.empty()) {
+            std::cout << " GPU: " << gpu_name << ", CC " << compute_capability;
+        }
+        std::cout << "\n";
+        if (!git_sha.empty()) {
+            std::cout << "  Git SHA: " << git_sha << "\n";
+        }
+        if (!timestamp.empty()) {
+            std::cout << "  Timestamp: " << timestamp << "\n";
+        }
+        if (wall_time_seconds > 0) {
+            std::cout << std::fixed << std::setprecision(2);
+            std::cout << "  Wall time: " << wall_time_seconds << "s";
+            if (num_iterations > 0) {
+                std::cout << " (" << num_iterations << " iters)";
+            }
+            std::cout << "\n";
+        }
+        std::cout << std::scientific << std::setprecision(2);
+        if (tgv_2d_div_max > 0 || tgv_2d_E_final > 0) {
+            std::cout << "  TGV 2D: div_max=" << tgv_2d_div_max << ", E_final=" << tgv_2d_E_final << "\n";
+        }
+        if (tgv_3d_div_max > 0 || tgv_3d_E_final > 0) {
+            std::cout << "  TGV 3D: div_max=" << tgv_3d_div_max << ", E_final=" << tgv_3d_E_final << "\n";
+        }
+        if (u_rel_l2 > 0) {
+            std::cout << "  CPU/GPU u: rel_l2=" << u_rel_l2 << ", rel_linf=" << u_rel_linf << "\n";
+        }
+        if (v_rel_l2 > 0) {
+            std::cout << "  CPU/GPU v: rel_l2=" << v_rel_l2 << ", rel_linf=" << v_rel_linf << "\n";
+        }
+        if (p_rel_l2 > 0) {
+            std::cout << "  CPU/GPU p: rel_l2=" << p_rel_l2 << ", rel_linf=" << p_rel_linf << "\n";
+        }
+        std::cout << "\n";
+    }
+};
+
+/// Get git SHA from environment or .git directory
+/// Returns empty string if not available
+inline std::string get_git_sha() {
+    // Try environment variable first (set by CI)
+    const char* sha = std::getenv("GIT_SHA");
+    if (sha) return std::string(sha);
+
+    // Try GITHUB_SHA (GitHub Actions)
+    sha = std::getenv("GITHUB_SHA");
+    if (sha) return std::string(sha);
+
+    return "";
+}
+
+/// Get build type string
+inline std::string get_build_type_string() {
+#ifdef USE_GPU_OFFLOAD
+    return "GPU";
+#else
+    return "CPU";
+#endif
+}
+
+/// Get GPU name if available
+inline std::string get_gpu_name() {
+#ifdef USE_GPU_OFFLOAD
+    // On NVIDIA, could use nvidia-smi or CUDA API
+    // For now, return generic
+    if (gpu::available()) {
+        return "GPU_" + std::to_string(gpu::device_count()) + "_devices";
+    }
+#endif
+    return "";
 }
 
 } // namespace test

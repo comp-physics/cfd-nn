@@ -20,30 +20,40 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake build-essential
 
-    - name: Build and Test (CPU-only)
+    - name: Build (CPU-only)
       run: |
         echo "========================================="
-        echo "Building and testing CPU-only version"
+        echo "Building CPU-only version (${{ matrix.build_type }})"
         echo "========================================="
         echo ""
         echo "Note: This CI workflow tests CPU-only builds."
         echo "GPU offload is tested separately in gpu-ci.yml workflow."
         echo ""
 
-        # Build with specified build type
         mkdir -p build_cpu
         cd build_cpu
         # Suppress unused variable warnings (common in GPU-only code paths)
         export CXXFLAGS="-Wno-unused-variable -Wno-unused-but-set-variable"
         cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DUSE_GPU_OFFLOAD=OFF -DBUILD_TESTS=ON
-        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-        cd ..
+        make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | tee build.log
 
-        # Run the CI test suite
-        # Debug builds run only fast tests with 4x timeout multiplier
-        # Release builds run all tests with normal timeouts
+        echo ""
+        echo "========================================="
+        echo "Build complete"
+        echo "========================================="
+
+    - name: Test (CPU-only)
+      run: |
+        echo "========================================="
+        echo "Running tests (${{ matrix.build_type }})"
+        echo "========================================="
+        echo ""
+
         chmod +x scripts/ci.sh
         chmod +x scripts/check_code_sharing.sh
+
+        # Debug builds run only fast tests with 4x timeout multiplier
+        # Release builds run all tests with normal timeouts
         if [[ "${{ matrix.build_type }}" == "Debug" ]]; then
           echo "Running fast tests only (Debug build with 4x timeouts)"
           ./scripts/ci.sh --cpu --debug fast

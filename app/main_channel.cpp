@@ -245,8 +245,11 @@ int main(int argc, char** argv) {
     // Compute expected max velocity for Poiseuille flow
     double H = (config.y_max - config.y_min) / 2.0;
     double u_max_expected = -config.dp_dx * H * H / (2.0 * config.nu);
-    std::cout << "Expected centerline velocity (Poiseuille): " << u_max_expected << "\n";
-    std::cout << "Expected bulk velocity: " << (2.0/3.0) * u_max_expected << "\n\n";
+    // Only print expected velocities for steady mode - these are meaningless for short unsteady runs
+    if (config.simulation_mode == SimulationMode::Steady) {
+        std::cout << "Expected centerline velocity (Poiseuille): " << u_max_expected << "\n";
+        std::cout << "Expected bulk velocity: " << (2.0/3.0) * u_max_expected << "\n\n";
+    }
 
     // Determine required ghost cells based on scheme requirements
     // O4 spatial operators and Upwind2 both need 5-point stencils (i±2), requiring Nghost >= 2

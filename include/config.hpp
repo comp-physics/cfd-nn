@@ -136,7 +136,7 @@ struct Config {
 
     // Robust MG convergence criteria (recommended for projection)
     double poisson_tol_abs = 0.0;    ///< Absolute tolerance on ||r||_∞ (0 = disabled)
-    double poisson_tol_rhs = 1e-3;   ///< RHS-relative: ||r||/||b|| (recommended for projection)
+    double poisson_tol_rhs = 1e-6;   ///< RHS-relative: ||r||/||b|| (tight for Galilean invariance)
     double poisson_tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0||
     int poisson_check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap)
     bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
@@ -144,7 +144,9 @@ struct Config {
     int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
 
     // Adaptive fixed-cycle mode: run check_after cycles, check residual, add 2 more if needed
-    bool poisson_adaptive_cycles = false;  ///< Enable adaptive checking within fixed-cycle mode
+    // DEFAULT ON: ensures Galilean invariance by checking convergence, adds ~1% overhead
+    // The solver runs check_after cycles fast, then checks ||r||/||b|| < tol_rhs, adds more if needed
+    bool poisson_adaptive_cycles = true;   ///< Enable adaptive checking within fixed-cycle mode (default: ON for robustness)
     int poisson_check_after = 4;           ///< Check residual after this many cycles
 
     // MG smoother tuning parameters

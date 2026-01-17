@@ -127,7 +127,7 @@ void Config::load(const std::string& filename) {
     auto scheme_str = get_string("convective_scheme", "central");
     if (scheme_str == "upwind") {
         convective_scheme = ConvectiveScheme::Upwind;
-    } else if (scheme_str == "skew") {
+    } else if (scheme_str == "skew" || scheme_str == "skew_symmetric" || scheme_str == "skewsymmetric") {
         convective_scheme = ConvectiveScheme::Skew;
     } else if (scheme_str == "upwind2") {
         convective_scheme = ConvectiveScheme::Upwind2;
@@ -391,7 +391,7 @@ void Config::parse_args(int argc, char** argv) {
         } else if ((val = get_value(i, arg, "--scheme")) != "") {
             if (val == "upwind") {
                 convective_scheme = ConvectiveScheme::Upwind;
-            } else if (val == "skew") {
+            } else if (val == "skew" || val == "skew_symmetric" || val == "skewsymmetric") {
                 convective_scheme = ConvectiveScheme::Skew;
             } else if (val == "upwind2") {
                 convective_scheme = ConvectiveScheme::Upwind2;

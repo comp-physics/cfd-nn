@@ -24,6 +24,7 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -249,6 +250,12 @@ int main() {
         std::cout << "  " << tc.name << " (" << tc.timed_iter << " steps)... " << std::flush;
 
         PerfResult r = run_perf_test(tc);
+
+        // Emit machine-readable QoI for CI metrics (even on failure)
+        nncfd::test::harness::emit_qoi_perf(
+            tc.name, r.time_per_step_ms, r.baseline_ms,
+            tc.warmup_steps, tc.timed_iter
+        );
 
         if (r.passed) {
             std::cout << "[PASS] " << std::fixed << std::setprecision(2)

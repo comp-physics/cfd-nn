@@ -97,6 +97,19 @@ public:
     /// Returns a human-readable string explaining why the solver was chosen
     const std::string& selection_reason() const { return selection_reason_; }
 
+    /// Poisson solve statistics from last step (for testing/diagnostics)
+    struct PoissonStats {
+        int cycles = 0;           ///< V-cycles (or iterations) performed
+        double rhs_norm_l2 = 0.0; ///< ||b||_L2 at start of solve
+        double rhs_norm_inf = 0.0;///< ||b||_∞ at start of solve
+        double res_norm_l2 = 0.0; ///< ||r||_L2 after solve
+        double res_norm_inf = 0.0;///< ||r||_∞ after solve
+        double res_over_rhs = 0.0;///< ||r||/||b|| (relative residual)
+    };
+
+    /// Get statistics from last Poisson solve (updated after each step())
+    const PoissonStats& poisson_stats() const { return poisson_stats_; }
+
     /// Print solver configuration (call after set_velocity_bc() for final info)
     /// Prints: selected solver, selection reason, solver parameters, build info
     void print_solver_info() const;
@@ -148,7 +161,10 @@ public:
     const ScalarField& k() const { return k_; }
     const ScalarField& omega() const { return omega_; }
     const ScalarField& nu_eff() const { return nu_eff_; }
-    
+    const ScalarField& div_velocity() const { return div_velocity_; }  ///< For diagnostics
+    const ScalarField& rhs_poisson() const { return rhs_poisson_; }    ///< For diagnostics
+    const ScalarField& pressure_correction() const { return pressure_correction_; }  ///< For Poisson residual checks
+
     VectorField& velocity() { return velocity_; }
     ScalarField& pressure() { return pressure_; }
     
@@ -235,6 +251,7 @@ private:
 #endif
     PoissonSolverType selected_solver_ = PoissonSolverType::MG;  // Actually selected solver (after auto)
     std::string selection_reason_;  // Human-readable reason for solver selection (observability)
+    PoissonStats poisson_stats_;    // Statistics from last Poisson solve (for testing/diagnostics)
     std::unique_ptr<TurbulenceModel> turb_model_;
     bool use_multigrid_ = true;  // Use multigrid by default for speed
     

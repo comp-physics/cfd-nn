@@ -1,4 +1,4 @@
-/// CPU/GPU Bitwise Comparison Test
+/// CPU/GPU Cross-Backend Consistency Test
 /// Compares CPU-built and GPU-built solver outputs to verify code sharing paradigm.
 ///
 /// This test REQUIRES two separate builds:
@@ -7,12 +7,18 @@
 ///
 /// Expected result: Small differences (1e-12 to 1e-10) due to FP operation ordering,
 /// but not exact zeros (which would indicate both runs used the same backend).
+///
+/// NOTE: The name "bitwise" is historical - results are NOT bit-identical due to
+/// floating-point operation ordering differences between CPU and GPU backends.
+/// The tolerance (1e-10) catches significant algorithmic divergence while allowing
+/// expected FP rounding differences.
 
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_utilities.hpp"
+#include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -26,7 +32,7 @@
 
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
-using nncfd::test::BITWISE_TOLERANCE;
+using nncfd::test::CROSS_BACKEND_TOLERANCE;
 using nncfd::test::MIN_EXPECTED_DIFF;
 
 // OpenMP headers - needed for both CPU and GPU builds for backend verification
@@ -122,7 +128,7 @@ bool verify_gpu_backend() {
 }
 
 // Tolerance constants imported from test_utilities.hpp:
-// - BITWISE_TOLERANCE = 1e-10 (CPU vs GPU comparison)
+// - CROSS_BACKEND_TOLERANCE = 1e-10 (CPU vs GPU comparison)
 // - MIN_EXPECTED_DIFF = 1e-14 (minimum to verify different backends)
 
 //=============================================================================
@@ -386,6 +392,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     std::cout << "Loading CPU reference and comparing...\n\n";
 
     bool all_passed = true;
+    double u_rel_l2 = 0.0;
+    double p_rel_l2 = 0.0;
 
     // Compare u-velocity
     {
@@ -400,9 +408,10 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         }
         result.finalize();
         result.print("u-velocity");
+        u_rel_l2 = result.rel_l2();
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -427,8 +436,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         result.finalize();
         result.print("v-velocity");
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -453,8 +462,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         result.finalize();
         result.print("w-velocity");
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -478,9 +487,10 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         }
         result.finalize();
         result.print("pressure");
+        p_rel_l2 = result.rel_l2();
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -490,6 +500,9 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
             std::cout << "    [PASS]\n";
         }
     }
+
+    // Emit machine-readable QoI for CI metrics
+    nncfd::test::harness::emit_qoi_cpu_gpu(u_rel_l2, p_rel_l2);
 
     std::cout << "\n";
     if (all_passed) {
@@ -541,13 +554,13 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "=== CPU/GPU Bitwise Comparison Test ===\n";
+        std::cout << "=== CPU/GPU Cross-Backend Consistency Test ===\n";
 #ifdef USE_GPU_OFFLOAD
         std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
 #else
         std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
 #endif
-        std::cout << "Tolerance: " << std::scientific << BITWISE_TOLERANCE << "\n\n";
+        std::cout << "Tolerance: " << std::scientific << CROSS_BACKEND_TOLERANCE << " (NOT bit-identical; FP order differs)\n\n";
 
         if (!dump_prefix.empty()) {
 #ifdef USE_GPU_OFFLOAD

@@ -1,0 +1,66 @@
+{
+  "schema_version": "2",
+  "build_type": "gpu",
+  "created": "TODO: populate from GPU build",
+  "commit": "TODO",
+  "_note": "This baseline should be populated by running CI with USE_GPU_OFFLOAD=ON but WITHOUT HYPRE. Values may differ slightly from CPU due to floating-point order differences in GPU kernels.",
+  "poiseuille_steady": {
+    "relL2_profile": "TODO",
+    "U_bulk_err": "TODO",
+    "tau_w_err": "TODO",
+    "converged": true
+  },
+  "energy_budget": {
+    "budget_err_grad": "TODO",
+    "power_in": "TODO",
+    "dissipation_grad": "TODO",
+    "dKEdt": "TODO"
+  },
+  "projection_effectiveness": {
+    "div_before_max": "TODO",
+    "div_after_max": "TODO",
+    "reduction_ratio_max": "TODO"
+  },
+  "op_adjoint": {
+    "rel_mismatch": "TODO"
+  },
+  "projection_divfree": {
+    "div_before": "TODO",
+    "div_after": "TODO"
+  },
+  "divergence_reduction": {
+    "reduction_factor": "TODO"
+  },
+  "advection_rotation": {
+    "relL2_error": "TODO",
+    "centroid_error_dx": "TODO"
+  },
+  "poiseuille_refine": {
+    "err32": "TODO",
+    "err64": "TODO",
+    "rate": "TODO"
+  },
+  "rans_frame_invariance": {
+    "max_scalar_err": "TODO",
+    "max_tensor_err": "TODO",
+    "max_aniso_err": "TODO"
+  },
+  "galilean_invariance": {
+    "ke_rel_diff": "TODO",
+    "u_rel_L2": "TODO"
+  },
+  "projection_galilean": {
+    "div_A_max": "TODO",
+    "div_B_max": "TODO",
+    "mean_err": "TODO",
+    "u_rel_L2": "TODO"
+  },
+  "galilean_breakdown": {
+    "div_initial_rest": "TODO",
+    "div_initial_offset": "TODO",
+    "div_adv_rest": "TODO",
+    "div_adv_offset": "TODO",
+    "div_step_rest": "TODO",
+    "div_step_offset": "TODO"
+  }
+}
