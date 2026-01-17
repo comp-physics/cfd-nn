@@ -36,6 +36,8 @@
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+using nncfd::test::harness::record_ratchet;
+using nncfd::test::harness::record_track;
 
 // ============================================================================
 // Compute mean velocity over the domain
