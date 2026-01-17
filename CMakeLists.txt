@@ -423,6 +423,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_error_recovery LABELS fast)
     add_nncfd_test(test_adaptive_dt LABELS fast)
     add_nncfd_test(test_numerics LABELS fast)
+    add_nncfd_test(test_operator_convergence LABELS fast)
     add_nncfd_test(test_gpu_buffer TEST_NAME_SUFFIX GPUBufferTest LABELS fast)
 
     # =========================================================================

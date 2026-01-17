@@ -29,6 +29,11 @@ public:
                 PoissonBC y_lo, PoissonBC y_hi,
                 PoissonBC z_lo, PoissonBC z_hi);
 
+    /// Set spatial order for eigenvalue computation (2 or 4)
+    /// Must be called before first solve if using O4
+    /// O4 uses MAC-consistent eigenvalues: λ = Dfc_O4 ∘ Dcf_O4 symbol
+    void set_space_order(int order);
+
     /// Check if this solver is suitable for the given BC configuration
     static bool is_suitable(PoissonBC x_lo, PoissonBC x_hi,
                            PoissonBC y_lo, PoissonBC y_hi,
@@ -55,6 +60,10 @@ private:
     // Boundary conditions (y only - x/z must be periodic)
     PoissonBC bc_y_lo_ = PoissonBC::Neumann;
     PoissonBC bc_y_hi_ = PoissonBC::Neumann;
+
+    // Spatial order for eigenvalue computation (2 or 4)
+    // O4 uses MAC-consistent Dcf_O4 ∘ Dfc_O4 eigenvalues
+    int space_order_ = 2;
 
 #ifdef USE_GPU_OFFLOAD
     // Dedicated CUDA stream for entire Poisson solve

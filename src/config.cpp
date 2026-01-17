@@ -123,12 +123,33 @@ void Config::load(const std::string& filename) {
     T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);
     
-    // Numerical scheme
+    // Numerical scheme (advection)
     auto scheme_str = get_string("convective_scheme", "central");
     if (scheme_str == "upwind") {
         convective_scheme = ConvectiveScheme::Upwind;
+    } else if (scheme_str == "skew") {
+        convective_scheme = ConvectiveScheme::Skew;
+    } else if (scheme_str == "upwind2") {
+        convective_scheme = ConvectiveScheme::Upwind2;
     } else {
         convective_scheme = ConvectiveScheme::Central;
+    }
+
+    // Spatial order (2 or 4)
+    space_order = get_int("space_order", 2);
+    if (space_order != 2 && space_order != 4) {
+        std::cerr << "Warning: space_order must be 2 or 4, got " << space_order << ". Using 2.\n";
+        space_order = 2;
+    }
+
+    // Time integrator
+    auto integrator_str = get_string("time_integrator", "euler");
+    if (integrator_str == "rk2") {
+        time_integrator = TimeIntegrator::RK2;
+    } else if (integrator_str == "rk3") {
+        time_integrator = TimeIntegrator::RK3;
+    } else {
+        time_integrator = TimeIntegrator::Euler;
     }
     
     // Simulation mode
@@ -370,8 +391,26 @@ void Config::parse_args(int argc, char** argv) {
         } else if ((val = get_value(i, arg, "--scheme")) != "") {
             if (val == "upwind") {
                 convective_scheme = ConvectiveScheme::Upwind;
+            } else if (val == "skew") {
+                convective_scheme = ConvectiveScheme::Skew;
+            } else if (val == "upwind2") {
+                convective_scheme = ConvectiveScheme::Upwind2;
             } else {
                 convective_scheme = ConvectiveScheme::Central;
+            }
+        } else if ((val = get_value(i, arg, "--space-order")) != "") {
+            space_order = std::stoi(val);
+            if (space_order != 2 && space_order != 4) {
+                std::cerr << "Warning: --space-order must be 2 or 4, got " << space_order << ". Using 2.\n";
+                space_order = 2;
+            }
+        } else if ((val = get_value(i, arg, "--integrator")) != "") {
+            if (val == "rk2") {
+                time_integrator = TimeIntegrator::RK2;
+            } else if (val == "rk3") {
+                time_integrator = TimeIntegrator::RK3;
+            } else {
+                time_integrator = TimeIntegrator::Euler;
             }
         } else if ((val = get_value(i, arg, "--simulation_mode")) != "") {
             if (val == "unsteady") {
@@ -458,7 +497,8 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
-                      << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
+                      << "  --scheme SCHEME   Advection scheme: central (default), upwind, skew, upwind2\n"
+                      << "  --integrator I    Time integrator: euler (default), rk2, rk3\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
                       << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
@@ -880,7 +920,13 @@ void Config::print() const {
     }
     std::cout << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
-              << "Time stepping: Explicit Euler + Projection\n"
+              << "Time integrator: ";
+    switch (time_integrator) {
+        case TimeIntegrator::Euler: std::cout << "Euler (1st order)"; break;
+        case TimeIntegrator::RK2: std::cout << "SSP-RK2 (2nd order)"; break;
+        case TimeIntegrator::RK3: std::cout << "SSP-RK3 (3rd order)"; break;
+    }
+    std::cout << " + Projection\n"
               << "Poisson solver: ";
     switch (poisson_solver) {
         case PoissonSolverType::Auto: std::cout << "Auto"; break;
@@ -891,8 +937,15 @@ void Config::print() const {
         case PoissonSolverType::MG: std::cout << "Multigrid"; break;
     }
     std::cout << "\n"
-              << "Convective scheme: "
-              << (convective_scheme == ConvectiveScheme::Upwind ? "Upwind" : "Central") << "\n"
+              << "Advection scheme: ";
+    switch (convective_scheme) {
+        case ConvectiveScheme::Central: std::cout << "Central (2nd-order)"; break;
+        case ConvectiveScheme::Upwind: std::cout << "Upwind (1st-order)"; break;
+        case ConvectiveScheme::Skew: std::cout << "Skew-symmetric (energy-conserving)"; break;
+        case ConvectiveScheme::Upwind2: std::cout << "Upwind (2nd-order)"; break;
+    }
+    std::cout << "\n"
+              << "Spatial order: O" << space_order << "\n"
               << "dt: " << dt << ", max_steps: " << max_steps << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     

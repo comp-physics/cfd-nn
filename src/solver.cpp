@@ -61,6 +61,110 @@ namespace nncfd {
 #pragma omp declare target
 #endif
 
+// ============================================================================
+// Spatial Operator Primitives (O2 and O4)
+// These are the fundamental 1D building blocks for all derivative/interpolation ops.
+// For stretched grids, multiply result by appropriate metric at output location.
+// ============================================================================
+
+// --- O2 Primitives (uniform h) ---
+
+/// Same-stagger centered derivative O2: df/dx at location i (same stagger as input)
+/// Stencil: (f[i+1] - f[i-1]) / (2*h)
+inline double D_same_O2(double fm1, double fp1, double h) {
+    return (fp1 - fm1) / (2.0 * h);
+}
+
+/// Center→Face derivative O2: (Dcf p)_{i+1/2} where p is at centers
+/// Stencil: (p[i+1] - p[i]) / h  (output at face between i and i+1)
+inline double Dcf_O2(double p_i, double p_ip1, double h) {
+    return (p_ip1 - p_i) / h;
+}
+
+/// Face→Center derivative O2: (Dfc u)_i where u is at faces
+/// Stencil: (u[i+1/2] - u[i-1/2]) / h  (output at center i)
+inline double Dfc_O2(double u_imh, double u_iph, double h) {
+    return (u_iph - u_imh) / h;
+}
+
+/// Center→Face interpolation O2: (Icf p)_{i+1/2} where p is at centers
+/// Stencil: (p[i] + p[i+1]) / 2
+inline double Icf_O2(double p_i, double p_ip1) {
+    return 0.5 * (p_i + p_ip1);
+}
+
+/// Face→Center interpolation O2: (Ifc u)_i where u is at faces
+/// Stencil: (u[i-1/2] + u[i+1/2]) / 2
+inline double Ifc_O2(double u_imh, double u_iph) {
+    return 0.5 * (u_imh + u_iph);
+}
+
+// --- O4 Primitives (uniform h) ---
+
+/// Same-stagger centered derivative O4: df/dx at location i (same stagger as input)
+/// Stencil: (-f[i+2] + 8*f[i+1] - 8*f[i-1] + f[i-2]) / (12*h)
+inline double D_same_O4(double fm2, double fm1, double fp1, double fp2, double h) {
+    return (-fp2 + 8.0*fp1 - 8.0*fm1 + fm2) / (12.0 * h);
+}
+
+/// Center→Face derivative O4: (Dcf p)_{i+1/2} where p is at centers
+/// Stencil: (p[i-1] - 27*p[i] + 27*p[i+1] - p[i+2]) / (24*h)
+/// This is the compact 4th-order stencil for center→face
+inline double Dcf_O4(double p_im1, double p_i, double p_ip1, double p_ip2, double h) {
+    return (p_im1 - 27.0*p_i + 27.0*p_ip1 - p_ip2) / (24.0 * h);
+}
+
+/// Face→Center derivative O4: (Dfc u)_i where u is at faces
+/// Stencil: (u[i-3/2] - 27*u[i-1/2] + 27*u[i+1/2] - u[i+3/2]) / (24*h)
+/// Faces indexed as: i-3/2 → im3h, i-1/2 → imh, i+1/2 → iph, i+3/2 → ip3h
+inline double Dfc_O4(double u_im3h, double u_imh, double u_iph, double u_ip3h, double h) {
+    return (u_im3h - 27.0*u_imh + 27.0*u_iph - u_ip3h) / (24.0 * h);
+}
+
+/// Center→Face interpolation O4: (Icf p)_{i+1/2} where p is at centers
+/// Stencil: (-p[i-1] + 9*p[i] + 9*p[i+1] - p[i+2]) / 16
+inline double Icf_O4(double p_im1, double p_i, double p_ip1, double p_ip2) {
+    return (-p_im1 + 9.0*p_i + 9.0*p_ip1 - p_ip2) / 16.0;
+}
+
+/// Face→Center interpolation O4: (Ifc u)_i where u is at faces
+/// Stencil: (-u[i-3/2] + 9*u[i-1/2] + 9*u[i+1/2] - u[i+3/2]) / 16
+inline double Ifc_O4(double u_im3h, double u_imh, double u_iph, double u_ip3h) {
+    return (-u_im3h + 9.0*u_imh + 9.0*u_iph - u_ip3h) / 16.0;
+}
+
+// --- Boundary-safe order selection ---
+// These helpers determine if O4 stencil is safe at a given index
+
+/// Check if O4 same-stagger derivative is safe (needs ±2 neighbors)
+inline bool is_O4_safe_same(int i, int Ng, int N_interior) {
+    // Interior indices run from Ng to Ng+N_interior-1
+    // Need i-2 >= Ng and i+2 < Ng+N_interior
+    return (i >= Ng + 2) && (i < Ng + N_interior - 2);
+}
+
+/// Check if O4 center→face derivative is safe at face i+1/2
+/// For Dcf at face i+1/2, we need centers at i-1, i, i+1, i+2
+inline bool is_O4_safe_Dcf(int i, int Ng, int N_interior) {
+    return (i >= Ng + 1) && (i < Ng + N_interior - 2);
+}
+
+/// Check if O4 face→center derivative is safe at center i
+/// For Dfc at center i, we need faces at i-3/2, i-1/2, i+1/2, i+3/2
+/// In integer indexing: faces i-1, i, i+1, i+2 (if face index = left cell index + 1/2)
+inline bool is_O4_safe_Dfc(int i, int Ng, int N_interior) {
+    return (i >= Ng + 1) && (i < Ng + N_interior - 1);
+}
+
+/// Check if O4 interpolation is safe (same stencil width as derivatives)
+inline bool is_O4_safe_interp(int i, int Ng, int N_interior) {
+    return (i >= Ng + 1) && (i < Ng + N_interior - 1);
+}
+
+// ============================================================================
+// End of Spatial Operator Primitives
+// ============================================================================
+
 // Unified normal velocity BC kernel for staggered grid
 // Handles both u-velocity in x-direction and v-velocity in y-direction
 // @param idx_fixed     Index along the fixed direction (j for u_bc_x, i for v_bc_y)
@@ -557,6 +661,79 @@ inline void divergence_cell_kernel_staggered_3d(
     div_ptr[div_idx] = dudx + dvdy + dwdz;
 }
 
+// 3D O4 Divergence at cell center (face→center derivatives)
+// Uses Dfc_O4 with boundary fallback to O2
+// For periodic directions, ghost cells have valid data so O4 is always safe
+// Note: For full O4 projection, the Poisson solver would also need O4 Laplacian
+inline void divergence_cell_kernel_staggered_O4_3d(
+    int i, int j, int k, int Ng, int Nx, int Ny, int Nz,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int div_stride, int div_plane_stride,
+    double dx, double dy, double dz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* div_ptr)
+{
+    const int div_idx = k * div_plane_stride + j * div_stride + i;
+
+    // Check if O4 is safe in each direction
+    // For periodic: ghost cells have valid data, so O4 is always safe
+    // For non-periodic: need faces i-1, i, i+1, i+2 to be valid
+    const bool o4_safe_x = periodic_x || ((i >= Ng + 1) && (i <= Ng + Nx - 2));
+    const bool o4_safe_y = periodic_y || ((j >= Ng + 1) && (j <= Ng + Ny - 2));
+    const bool o4_safe_z = periodic_z || ((k >= Ng + 1) && (k <= Ng + Nz - 2));
+
+    // du/dx at cell center i using u at faces
+    double dudx;
+    if (o4_safe_x) {
+        // O4: Dfc uses faces i-1, i, i+1, i+2
+        const int u_im1 = k * u_plane_stride + j * u_stride + (i - 1);
+        const int u_i   = k * u_plane_stride + j * u_stride + i;
+        const int u_ip1 = k * u_plane_stride + j * u_stride + (i + 1);
+        const int u_ip2 = k * u_plane_stride + j * u_stride + (i + 2);
+        dudx = Dfc_O4(u_ptr[u_im1], u_ptr[u_i], u_ptr[u_ip1], u_ptr[u_ip2], dx);
+    } else {
+        // O2 fallback near non-periodic boundaries
+        const int u_right = k * u_plane_stride + j * u_stride + (i + 1);
+        const int u_left  = k * u_plane_stride + j * u_stride + i;
+        dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
+    }
+
+    // dv/dy at cell center j using v at faces
+    double dvdy;
+    if (o4_safe_y) {
+        const int v_jm1 = k * v_plane_stride + (j - 1) * v_stride + i;
+        const int v_j   = k * v_plane_stride + j * v_stride + i;
+        const int v_jp1 = k * v_plane_stride + (j + 1) * v_stride + i;
+        const int v_jp2 = k * v_plane_stride + (j + 2) * v_stride + i;
+        dvdy = Dfc_O4(v_ptr[v_jm1], v_ptr[v_j], v_ptr[v_jp1], v_ptr[v_jp2], dy);
+    } else {
+        // O2 fallback near non-periodic boundaries
+        const int v_top    = k * v_plane_stride + (j + 1) * v_stride + i;
+        const int v_bottom = k * v_plane_stride + j * v_stride + i;
+        dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
+    }
+
+    // dw/dz at cell center k using w at faces
+    double dwdz;
+    if (o4_safe_z) {
+        const int w_km1 = (k - 1) * w_plane_stride + j * w_stride + i;
+        const int w_k   = k * w_plane_stride + j * w_stride + i;
+        const int w_kp1 = (k + 1) * w_plane_stride + j * w_stride + i;
+        const int w_kp2 = (k + 2) * w_plane_stride + j * w_stride + i;
+        dwdz = Dfc_O4(w_ptr[w_km1], w_ptr[w_k], w_ptr[w_kp1], w_ptr[w_kp2], dz);
+    } else {
+        // O2 fallback near non-periodic boundaries
+        const int w_front = (k + 1) * w_plane_stride + j * w_stride + i;
+        const int w_back  = k * w_plane_stride + j * w_stride + i;
+        dwdz = (w_ptr[w_front] - w_ptr[w_back]) / dz;
+    }
+
+    div_ptr[div_idx] = dudx + dvdy + dwdz;
+}
+
 // 3D Velocity correction for u at x-face
 inline void correct_u_face_kernel_staggered_3d(
     int i, int j, int k,
@@ -607,6 +784,133 @@ inline void correct_w_face_kernel_staggered_3d(
     double dp_dz = (p_corr_ptr[p_front] - p_corr_ptr[p_back]) / dz;
     w_ptr[w_idx] = w_star_ptr[w_idx] - dt * dp_dz;
 }
+
+// ============================================================================
+// O4 Velocity Correction Kernels (3D) with boundary fallback
+// These use Dcf_O4 for center→face pressure gradient in interior,
+// falling back to O2 near boundaries where O4 stencil is incomplete.
+// ============================================================================
+
+// 3D O4 Velocity correction for u at x-face
+// At u-face i, derivative uses cells i-2, i-1, i, i+1
+// O4 safe when periodic OR (i >= Ng+2 and i <= Ng+Nx-2)
+// For periodic x, ghost cells contain valid periodic data so O4 is always safe
+inline void correct_u_face_kernel_staggered_O4_3d(
+    int i, int j, int k, int Ng, int Nx,
+    int u_stride, int u_plane_stride,
+    int p_stride, int p_plane_stride,
+    double dx, double dt, bool periodic_x,
+    const double* u_star_ptr, const double* p_corr_ptr,
+    double* u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const int jj = j;  // y index (unchanged)
+    const int kk = k;  // z index (unchanged)
+
+    double dp_dx;
+
+    // Check if O4 stencil is valid in x-direction
+    // For periodic: ghost cells have valid data, so O4 is always safe
+    // For non-periodic: need cells i-2, i-1, i, i+1 to be interior
+    const bool o4_safe = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 2));
+
+    if (o4_safe) {
+        // O4: Dcf at face between cells i-1 and i uses cells i-2, i-1, i, i+1
+        const int p_im2 = kk * p_plane_stride + jj * p_stride + (i - 2);
+        const int p_im1 = kk * p_plane_stride + jj * p_stride + (i - 1);
+        const int p_i   = kk * p_plane_stride + jj * p_stride + i;
+        const int p_ip1 = kk * p_plane_stride + jj * p_stride + (i + 1);
+        dp_dx = Dcf_O4(p_corr_ptr[p_im2], p_corr_ptr[p_im1],
+                       p_corr_ptr[p_i], p_corr_ptr[p_ip1], dx);
+    } else {
+        // O2 fallback near non-periodic boundaries
+        const int p_right = kk * p_plane_stride + jj * p_stride + i;
+        const int p_left  = kk * p_plane_stride + jj * p_stride + (i - 1);
+        dp_dx = (p_corr_ptr[p_right] - p_corr_ptr[p_left]) / dx;
+    }
+
+    u_ptr[u_idx] = u_star_ptr[u_idx] - dt * dp_dx;
+}
+
+// 3D O4 Velocity correction for v at y-face
+// At v-face j, derivative uses cells j-2, j-1, j, j+1
+// O4 safe when periodic OR (j >= Ng+2 and j <= Ng+Ny-2)
+inline void correct_v_face_kernel_staggered_O4_3d(
+    int i, int j, int k, int Ng, int Ny,
+    int v_stride, int v_plane_stride,
+    int p_stride, int p_plane_stride,
+    double dy, double dt, bool periodic_y,
+    const double* v_star_ptr, const double* p_corr_ptr,
+    double* v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const int ii = i;  // x index (unchanged)
+    const int kk = k;  // z index (unchanged)
+
+    double dp_dy;
+
+    // Check if O4 stencil is valid in y-direction
+    const bool o4_safe = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 2));
+
+    if (o4_safe) {
+        // O4: Dcf at face between cells j-1 and j uses cells j-2, j-1, j, j+1
+        const int p_jm2 = kk * p_plane_stride + (j - 2) * p_stride + ii;
+        const int p_jm1 = kk * p_plane_stride + (j - 1) * p_stride + ii;
+        const int p_j   = kk * p_plane_stride + j * p_stride + ii;
+        const int p_jp1 = kk * p_plane_stride + (j + 1) * p_stride + ii;
+        dp_dy = Dcf_O4(p_corr_ptr[p_jm2], p_corr_ptr[p_jm1],
+                       p_corr_ptr[p_j], p_corr_ptr[p_jp1], dy);
+    } else {
+        // O2 fallback near non-periodic boundaries
+        const int p_top    = kk * p_plane_stride + j * p_stride + ii;
+        const int p_bottom = kk * p_plane_stride + (j - 1) * p_stride + ii;
+        dp_dy = (p_corr_ptr[p_top] - p_corr_ptr[p_bottom]) / dy;
+    }
+
+    v_ptr[v_idx] = v_star_ptr[v_idx] - dt * dp_dy;
+}
+
+// 3D O4 Velocity correction for w at z-face
+// At w-face k, derivative uses cells k-2, k-1, k, k+1
+// O4 safe when periodic OR (k >= Ng+2 and k <= Ng+Nz-2)
+inline void correct_w_face_kernel_staggered_O4_3d(
+    int i, int j, int k, int Ng, int Nz,
+    int w_stride, int w_plane_stride,
+    int p_stride, int p_plane_stride,
+    double dz, double dt, bool periodic_z,
+    const double* w_star_ptr, const double* p_corr_ptr,
+    double* w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const int ii = i;  // x index (unchanged)
+    const int jj = j;  // y index (unchanged)
+
+    double dp_dz;
+
+    // Check if O4 stencil is valid in z-direction
+    const bool o4_safe = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 2));
+
+    if (o4_safe) {
+        // O4: Dcf at face between cells k-1 and k uses cells k-2, k-1, k, k+1
+        const int p_km2 = (k - 2) * p_plane_stride + jj * p_stride + ii;
+        const int p_km1 = (k - 1) * p_plane_stride + jj * p_stride + ii;
+        const int p_k   = k * p_plane_stride + jj * p_stride + ii;
+        const int p_kp1 = (k + 1) * p_plane_stride + jj * p_stride + ii;
+        dp_dz = Dcf_O4(p_corr_ptr[p_km2], p_corr_ptr[p_km1],
+                       p_corr_ptr[p_k], p_corr_ptr[p_kp1], dz);
+    } else {
+        // O2 fallback near non-periodic boundaries
+        const int p_front = k * p_plane_stride + jj * p_stride + ii;
+        const int p_back  = (k - 1) * p_plane_stride + jj * p_stride + ii;
+        dp_dz = (p_corr_ptr[p_front] - p_corr_ptr[p_back]) / dz;
+    }
+
+    w_ptr[w_idx] = w_star_ptr[w_idx] - dt * dp_dz;
+}
+
+// ============================================================================
+// End of O4 Velocity Correction Kernels
+// ============================================================================
 
 // 3D Convection term for u-momentum at x-face
 inline void convective_u_face_kernel_staggered_3d(
@@ -787,6 +1091,1180 @@ inline void convective_w_face_kernel_staggered_3d(
     const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
     conv_w_ptr[conv_idx] = uu * dwdx + vv * dwdy + ww * dwdz;
 }
+
+// ============================================================================
+// O4 CENTRAL ADVECTION KERNELS (4th-order spatial derivatives)
+// ============================================================================
+// These kernels use O4 same-stagger derivatives for velocity gradients.
+// Collocation interpolation remains O2 for now (to be upgraded in follow-up).
+// Falls back to O2 near boundaries where O4 stencil is not safe.
+
+// 3D O4 Central Convection for u-momentum at x-face
+inline void convective_u_face_kernel_central_O4_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    int Ng, int Nx, int Ny, int Nz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Interpolate v to x-face (O2: 4-point average in x-y plane)
+    const double v_bl = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_br = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[k * v_plane_stride + (j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    // Interpolate w to x-face (O2: 4-point average in x-z plane)
+    const double w_bl = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_br = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_fl = w_ptr[(k+1) * w_plane_stride + j * w_stride + (i-1)];
+    const double w_fr = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_br + w_fl + w_fr);
+
+    double dudx, dudy, dudz;
+
+    // Check boundary safety for O4 in each direction
+    // For periodic: ghost cells have valid data, so O4 is always safe
+    // u-faces: x runs from Ng to Ng+Nx (Nx+1 faces), y/z from Ng to Ng+N-1
+    const bool safe_x = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 2));
+    const bool safe_y = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 3));
+    const bool safe_z = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 3));
+
+    // X-derivative: ∂u/∂x at u-face (same-stagger)
+    if (safe_x) {
+        const double u_im2 = u_ptr[k * u_plane_stride + j * u_stride + (i-2)];
+        const double u_im1 = u_ptr[k * u_plane_stride + j * u_stride + (i-1)];
+        const double u_ip1 = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+        const double u_ip2 = u_ptr[k * u_plane_stride + j * u_stride + (i+2)];
+        dudx = D_same_O4(u_im2, u_im1, u_ip1, u_ip2, dx);
+    } else {
+        const double u_im1 = u_ptr[k * u_plane_stride + j * u_stride + (i-1)];
+        const double u_ip1 = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+        dudx = D_same_O2(u_im1, u_ip1, dx);
+    }
+
+    // Y-derivative: ∂u/∂y at u-face (same-stagger)
+    if (safe_y) {
+        const double u_jm2 = u_ptr[k * u_plane_stride + (j-2) * u_stride + i];
+        const double u_jm1 = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+        const double u_jp1 = u_ptr[k * u_plane_stride + (j+1) * u_stride + i];
+        const double u_jp2 = u_ptr[k * u_plane_stride + (j+2) * u_stride + i];
+        dudy = D_same_O4(u_jm2, u_jm1, u_jp1, u_jp2, dy);
+    } else {
+        const double u_jm1 = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+        const double u_jp1 = u_ptr[k * u_plane_stride + (j+1) * u_stride + i];
+        dudy = D_same_O2(u_jm1, u_jp1, dy);
+    }
+
+    // Z-derivative: ∂u/∂z at u-face (same-stagger)
+    if (safe_z) {
+        const double u_km2 = u_ptr[(k-2) * u_plane_stride + j * u_stride + i];
+        const double u_km1 = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+        const double u_kp1 = u_ptr[(k+1) * u_plane_stride + j * u_stride + i];
+        const double u_kp2 = u_ptr[(k+2) * u_plane_stride + j * u_stride + i];
+        dudz = D_same_O4(u_km2, u_km1, u_kp1, u_kp2, dz);
+    } else {
+        const double u_km1 = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+        const double u_kp1 = u_ptr[(k+1) * u_plane_stride + j * u_stride + i];
+        dudz = D_same_O2(u_km1, u_kp1, dz);
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_u_ptr[conv_idx] = uu * dudx + vv * dudy + ww * dudz;
+}
+
+// 3D O4 Central Convection for v-momentum at y-face
+inline void convective_v_face_kernel_central_O4_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    int Ng, int Nx, int Ny, int Nz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Interpolate u to y-face (O2: 4-point average)
+    const double u_bl = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_br = u_ptr[k * u_plane_stride + (j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_tr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    // Interpolate w to y-face (O2: 4-point average)
+    const double w_bl = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tl = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_bf = w_ptr[(k+1) * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tf = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_tl + w_bf + w_tf);
+
+    double dvdx, dvdy, dvdz;
+
+    // Boundary safety checks for v at y-faces (periodic-aware)
+    const bool safe_x = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 3));
+    const bool safe_y = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 2));
+    const bool safe_z = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 3));
+
+    // X-derivative
+    if (safe_x) {
+        const double v_im2 = v_ptr[k * v_plane_stride + j * v_stride + (i-2)];
+        const double v_im1 = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+        const double v_ip1 = v_ptr[k * v_plane_stride + j * v_stride + (i+1)];
+        const double v_ip2 = v_ptr[k * v_plane_stride + j * v_stride + (i+2)];
+        dvdx = D_same_O4(v_im2, v_im1, v_ip1, v_ip2, dx);
+    } else {
+        const double v_im1 = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+        const double v_ip1 = v_ptr[k * v_plane_stride + j * v_stride + (i+1)];
+        dvdx = D_same_O2(v_im1, v_ip1, dx);
+    }
+
+    // Y-derivative
+    if (safe_y) {
+        const double v_jm2 = v_ptr[k * v_plane_stride + (j-2) * v_stride + i];
+        const double v_jm1 = v_ptr[k * v_plane_stride + (j-1) * v_stride + i];
+        const double v_jp1 = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+        const double v_jp2 = v_ptr[k * v_plane_stride + (j+2) * v_stride + i];
+        dvdy = D_same_O4(v_jm2, v_jm1, v_jp1, v_jp2, dy);
+    } else {
+        const double v_jm1 = v_ptr[k * v_plane_stride + (j-1) * v_stride + i];
+        const double v_jp1 = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+        dvdy = D_same_O2(v_jm1, v_jp1, dy);
+    }
+
+    // Z-derivative
+    if (safe_z) {
+        const double v_km2 = v_ptr[(k-2) * v_plane_stride + j * v_stride + i];
+        const double v_km1 = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+        const double v_kp1 = v_ptr[(k+1) * v_plane_stride + j * v_stride + i];
+        const double v_kp2 = v_ptr[(k+2) * v_plane_stride + j * v_stride + i];
+        dvdz = D_same_O4(v_km2, v_km1, v_kp1, v_kp2, dz);
+    } else {
+        const double v_km1 = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+        const double v_kp1 = v_ptr[(k+1) * v_plane_stride + j * v_stride + i];
+        dvdz = D_same_O2(v_km1, v_kp1, dz);
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_v_ptr[conv_idx] = uu * dvdx + vv * dvdy + ww * dvdz;
+}
+
+// 3D O4 Central Convection for w-momentum at z-face
+inline void convective_w_face_kernel_central_O4_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    int Ng, int Nx, int Ny, int Nz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double ww = w_ptr[w_idx];
+
+    // Interpolate u to z-face (O2: 4-point average)
+    const double u_bl = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+    const double u_br = u_ptr[(k-1) * u_plane_stride + j * u_stride + (i+1)];
+    const double u_fl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_fr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_fl + u_fr);
+
+    // Interpolate v to z-face (O2: 4-point average)
+    const double v_bl = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[(k-1) * v_plane_stride + (j+1) * v_stride + i];
+    const double v_bf = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tf = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_tl + v_bf + v_tf);
+
+    double dwdx, dwdy, dwdz;
+
+    // Boundary safety checks for w at z-faces (periodic-aware)
+    const bool safe_x = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 3));
+    const bool safe_y = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 3));
+    const bool safe_z = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 2));
+
+    // X-derivative
+    if (safe_x) {
+        const double w_im2 = w_ptr[k * w_plane_stride + j * w_stride + (i-2)];
+        const double w_im1 = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+        const double w_ip1 = w_ptr[k * w_plane_stride + j * w_stride + (i+1)];
+        const double w_ip2 = w_ptr[k * w_plane_stride + j * w_stride + (i+2)];
+        dwdx = D_same_O4(w_im2, w_im1, w_ip1, w_ip2, dx);
+    } else {
+        const double w_im1 = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+        const double w_ip1 = w_ptr[k * w_plane_stride + j * w_stride + (i+1)];
+        dwdx = D_same_O2(w_im1, w_ip1, dx);
+    }
+
+    // Y-derivative
+    if (safe_y) {
+        const double w_jm2 = w_ptr[k * w_plane_stride + (j-2) * w_stride + i];
+        const double w_jm1 = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+        const double w_jp1 = w_ptr[k * w_plane_stride + (j+1) * w_stride + i];
+        const double w_jp2 = w_ptr[k * w_plane_stride + (j+2) * w_stride + i];
+        dwdy = D_same_O4(w_jm2, w_jm1, w_jp1, w_jp2, dy);
+    } else {
+        const double w_jm1 = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+        const double w_jp1 = w_ptr[k * w_plane_stride + (j+1) * w_stride + i];
+        dwdy = D_same_O2(w_jm1, w_jp1, dy);
+    }
+
+    // Z-derivative
+    if (safe_z) {
+        const double w_km2 = w_ptr[(k-2) * w_plane_stride + j * w_stride + i];
+        const double w_km1 = w_ptr[(k-1) * w_plane_stride + j * w_stride + i];
+        const double w_kp1 = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+        const double w_kp2 = w_ptr[(k+2) * w_plane_stride + j * w_stride + i];
+        dwdz = D_same_O4(w_km2, w_km1, w_kp1, w_kp2, dz);
+    } else {
+        const double w_km1 = w_ptr[(k-1) * w_plane_stride + j * w_stride + i];
+        const double w_kp1 = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+        dwdz = D_same_O2(w_km1, w_kp1, dz);
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_w_ptr[conv_idx] = uu * dwdx + vv * dwdy + ww * dwdz;
+}
+
+// ============================================================================
+// SKEW-SYMMETRIC (SPLIT) ADVECTION KERNELS - Energy Conserving
+// ============================================================================
+// The skew-symmetric form is: N = 0.5 * (A + C) where
+//   A = advective form: u·∇φ
+//   C = conservative form: ∇·(u⊗φ)
+// This form conserves kinetic energy in the inviscid limit for periodic BCs.
+
+// 2D skew-symmetric convection for u-momentum at x-face (i,j)
+inline void convective_u_face_kernel_skew_2d(
+    int i, int j,
+    int u_stride, int v_stride, int conv_stride,
+    double dx, double dy,
+    const double* u_ptr, const double* v_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Neighbors for derivatives
+    const double u_ip1 = u_ptr[j * u_stride + (i+1)];
+    const double u_im1 = u_ptr[j * u_stride + (i-1)];
+    const double u_jp1 = u_ptr[(j+1) * u_stride + i];
+    const double u_jm1 = u_ptr[(j-1) * u_stride + i];
+
+    // Interpolate v to x-face (average 4 surrounding v-faces)
+    const double v_bl = v_ptr[j * v_stride + (i-1)];
+    const double v_br = v_ptr[j * v_stride + i];
+    const double v_tl = v_ptr[(j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[(j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    // X-direction: skew = 0.5*(advective + conservative)
+    // Advective: uu * du/dx
+    const double adv_x = uu * (u_ip1 - u_im1) / (2.0 * dx);
+    // Conservative: d(uu*u)/dx using interpolated velocities at cell centers
+    // u at cell center (i-1,j) ≈ 0.5*(u[i-1] + u[i])
+    // u at cell center (i,j) ≈ 0.5*(u[i] + u[i+1])
+    const double uu_left = 0.5 * (u_im1 + uu);
+    const double uu_right = 0.5 * (uu + u_ip1);
+    const double cons_x = (uu_right * uu_right - uu_left * uu_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction: skew = 0.5*(advective + conservative)
+    // Advective: vv * du/dy
+    const double adv_y = vv * (u_jp1 - u_jm1) / (2.0 * dy);
+    // Conservative: d(vv*u)/dy using fluxes at edge midpoints
+    // vv*u at (i-1/2, j-1/2) and (i-1/2, j+1/2)
+    const double vv_bot = 0.5 * (v_bl + v_br);
+    const double vv_top = 0.5 * (v_tl + v_tr);
+    const double u_bot = 0.5 * (uu + u_jm1);
+    const double u_top = 0.5 * (uu + u_jp1);
+    const double cons_y = (vv_top * u_top - vv_bot * u_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    const int conv_idx = j * conv_stride + i;
+    conv_u_ptr[conv_idx] = skew_x + skew_y;
+}
+
+// 2D skew-symmetric convection for v-momentum at y-face (i,j)
+inline void convective_v_face_kernel_skew_2d(
+    int i, int j,
+    int u_stride, int v_stride, int conv_stride,
+    double dx, double dy,
+    const double* u_ptr, const double* v_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Neighbors for derivatives
+    const double v_ip1 = v_ptr[j * v_stride + (i+1)];
+    const double v_im1 = v_ptr[j * v_stride + (i-1)];
+    const double v_jp1 = v_ptr[(j+1) * v_stride + i];
+    const double v_jm1 = v_ptr[(j-1) * v_stride + i];
+
+    // Interpolate u to y-face (average 4 surrounding u-faces)
+    const double u_bl = u_ptr[(j-1) * u_stride + i];
+    const double u_br = u_ptr[(j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[j * u_stride + i];
+    const double u_tr = u_ptr[j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    // X-direction: skew = 0.5*(advective + conservative)
+    const double adv_x = uu * (v_ip1 - v_im1) / (2.0 * dx);
+    const double uu_left = 0.5 * (u_bl + u_tl);
+    const double uu_right = 0.5 * (u_br + u_tr);
+    const double v_left = 0.5 * (v_im1 + vv);
+    const double v_right = 0.5 * (vv + v_ip1);
+    const double cons_x = (uu_right * v_right - uu_left * v_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction: skew = 0.5*(advective + conservative)
+    const double adv_y = vv * (v_jp1 - v_jm1) / (2.0 * dy);
+    const double vv_bot = 0.5 * (v_jm1 + vv);
+    const double vv_top = 0.5 * (vv + v_jp1);
+    const double cons_y = (vv_top * vv_top - vv_bot * vv_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    const int conv_idx = j * conv_stride + i;
+    conv_v_ptr[conv_idx] = skew_x + skew_y;
+}
+
+// 3D skew-symmetric convection for u-momentum at x-face
+inline void convective_u_face_kernel_skew_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Neighbors
+    const double u_ip1 = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double u_im1 = u_ptr[k * u_plane_stride + j * u_stride + (i-1)];
+    const double u_jp1 = u_ptr[k * u_plane_stride + (j+1) * u_stride + i];
+    const double u_jm1 = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_kp1 = u_ptr[(k+1) * u_plane_stride + j * u_stride + i];
+    const double u_km1 = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+
+    // Interpolate v to x-face
+    const double v_bl = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_br = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[k * v_plane_stride + (j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    // Interpolate w to x-face
+    const double w_bl = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_br = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_fl = w_ptr[(k+1) * w_plane_stride + j * w_stride + (i-1)];
+    const double w_fr = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_br + w_fl + w_fr);
+
+    // X-direction skew
+    const double adv_x = uu * (u_ip1 - u_im1) / (2.0 * dx);
+    const double uu_left = 0.5 * (u_im1 + uu);
+    const double uu_right = 0.5 * (uu + u_ip1);
+    const double cons_x = (uu_right * uu_right - uu_left * uu_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction skew
+    const double adv_y = vv * (u_jp1 - u_jm1) / (2.0 * dy);
+    const double vv_bot = 0.5 * (v_bl + v_br);
+    const double vv_top = 0.5 * (v_tl + v_tr);
+    const double u_bot = 0.5 * (uu + u_jm1);
+    const double u_top = 0.5 * (uu + u_jp1);
+    const double cons_y = (vv_top * u_top - vv_bot * u_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    // Z-direction skew
+    const double adv_z = ww * (u_kp1 - u_km1) / (2.0 * dz);
+    const double ww_back = 0.5 * (w_bl + w_br);
+    const double ww_front = 0.5 * (w_fl + w_fr);
+    const double u_back = 0.5 * (uu + u_km1);
+    const double u_front = 0.5 * (uu + u_kp1);
+    const double cons_z = (ww_front * u_front - ww_back * u_back) / dz;
+    const double skew_z = 0.5 * (adv_z + cons_z);
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_u_ptr[conv_idx] = skew_x + skew_y + skew_z;
+}
+
+// 3D skew-symmetric convection for v-momentum at y-face
+inline void convective_v_face_kernel_skew_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Neighbors
+    const double v_ip1 = v_ptr[k * v_plane_stride + j * v_stride + (i+1)];
+    const double v_im1 = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_jp1 = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double v_jm1 = v_ptr[k * v_plane_stride + (j-1) * v_stride + i];
+    const double v_kp1 = v_ptr[(k+1) * v_plane_stride + j * v_stride + i];
+    const double v_km1 = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+
+    // Interpolate u to y-face
+    const double u_bl = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_br = u_ptr[k * u_plane_stride + (j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_tr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    // Interpolate w to y-face
+    const double w_bl = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tl = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_bf = w_ptr[(k+1) * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tf = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_tl + w_bf + w_tf);
+
+    // X-direction skew
+    const double adv_x = uu * (v_ip1 - v_im1) / (2.0 * dx);
+    const double uu_left = 0.5 * (u_bl + u_tl);
+    const double uu_right = 0.5 * (u_br + u_tr);
+    const double v_left = 0.5 * (v_im1 + vv);
+    const double v_right = 0.5 * (vv + v_ip1);
+    const double cons_x = (uu_right * v_right - uu_left * v_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction skew
+    const double adv_y = vv * (v_jp1 - v_jm1) / (2.0 * dy);
+    const double vv_bot = 0.5 * (v_jm1 + vv);
+    const double vv_top = 0.5 * (vv + v_jp1);
+    const double cons_y = (vv_top * vv_top - vv_bot * vv_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    // Z-direction skew
+    const double adv_z = ww * (v_kp1 - v_km1) / (2.0 * dz);
+    const double ww_back = 0.5 * (w_bl + w_tl);
+    const double ww_front = 0.5 * (w_bf + w_tf);
+    const double v_back = 0.5 * (vv + v_km1);
+    const double v_front = 0.5 * (vv + v_kp1);
+    const double cons_z = (ww_front * v_front - ww_back * v_back) / dz;
+    const double skew_z = 0.5 * (adv_z + cons_z);
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_v_ptr[conv_idx] = skew_x + skew_y + skew_z;
+}
+
+// 3D skew-symmetric convection for w-momentum at z-face
+inline void convective_w_face_kernel_skew_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double ww = w_ptr[w_idx];
+
+    // Neighbors
+    const double w_ip1 = w_ptr[k * w_plane_stride + j * w_stride + (i+1)];
+    const double w_im1 = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_jp1 = w_ptr[k * w_plane_stride + (j+1) * w_stride + i];
+    const double w_jm1 = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_kp1 = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double w_km1 = w_ptr[(k-1) * w_plane_stride + j * w_stride + i];
+
+    // Interpolate u to z-face
+    const double u_bl = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+    const double u_br = u_ptr[(k-1) * u_plane_stride + j * u_stride + (i+1)];
+    const double u_fl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_fr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_fl + u_fr);
+
+    // Interpolate v to z-face
+    const double v_bl = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[(k-1) * v_plane_stride + (j+1) * v_stride + i];
+    const double v_bf = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tf = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_tl + v_bf + v_tf);
+
+    // X-direction skew
+    const double adv_x = uu * (w_ip1 - w_im1) / (2.0 * dx);
+    const double uu_left = 0.5 * (u_bl + u_fl);
+    const double uu_right = 0.5 * (u_br + u_fr);
+    const double w_left = 0.5 * (w_im1 + ww);
+    const double w_right = 0.5 * (ww + w_ip1);
+    const double cons_x = (uu_right * w_right - uu_left * w_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction skew
+    const double adv_y = vv * (w_jp1 - w_jm1) / (2.0 * dy);
+    const double vv_bot = 0.5 * (v_bl + v_bf);
+    const double vv_top = 0.5 * (v_tl + v_tf);
+    const double w_bot = 0.5 * (ww + w_jm1);
+    const double w_top = 0.5 * (ww + w_jp1);
+    const double cons_y = (vv_top * w_top - vv_bot * w_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    // Z-direction skew
+    const double adv_z = ww * (w_kp1 - w_km1) / (2.0 * dz);
+    const double ww_back = 0.5 * (w_km1 + ww);
+    const double ww_front = 0.5 * (ww + w_kp1);
+    const double cons_z = (ww_front * ww_front - ww_back * ww_back) / dz;
+    const double skew_z = 0.5 * (adv_z + cons_z);
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_w_ptr[conv_idx] = skew_x + skew_y + skew_z;
+}
+
+// ============================================================================
+// O4 SKEW-SYMMETRIC ADVECTION KERNELS - 4th order with boundary fallback
+// ============================================================================
+// Uses O4 same-stagger derivatives for the advective part where safe,
+// falls back to O2 near boundaries.
+
+// 3D O4 skew-symmetric convection for u-momentum at x-face
+inline void convective_u_face_kernel_skew_O4_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    int Ng, int Nx, int Ny, int Nz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Neighbors for O2 (always needed for conservative)
+    const double u_ip1 = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double u_im1 = u_ptr[k * u_plane_stride + j * u_stride + (i-1)];
+    const double u_jp1 = u_ptr[k * u_plane_stride + (j+1) * u_stride + i];
+    const double u_jm1 = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_kp1 = u_ptr[(k+1) * u_plane_stride + j * u_stride + i];
+    const double u_km1 = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+
+    // Interpolate v to x-face (O2: 4-point average)
+    const double v_bl = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_br = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[k * v_plane_stride + (j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    // Interpolate w to x-face (O2: 4-point average)
+    const double w_bl = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_br = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_fl = w_ptr[(k+1) * w_plane_stride + j * w_stride + (i-1)];
+    const double w_fr = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_br + w_fl + w_fr);
+
+    // Check boundary safety for O4 in each direction (periodic-aware)
+    const bool safe_x = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 2));
+    const bool safe_y = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 3));
+    const bool safe_z = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 3));
+
+    // X-direction skew = 0.5*(advective + conservative)
+    double adv_x;
+    if (safe_x) {
+        const double u_im2 = u_ptr[k * u_plane_stride + j * u_stride + (i-2)];
+        const double u_ip2 = u_ptr[k * u_plane_stride + j * u_stride + (i+2)];
+        adv_x = uu * D_same_O4(u_im2, u_im1, u_ip1, u_ip2, dx);
+    } else {
+        adv_x = uu * D_same_O2(u_im1, u_ip1, dx);
+    }
+    // Conservative uses O2 flux reconstruction (inherently O2)
+    const double uu_left = 0.5 * (u_im1 + uu);
+    const double uu_right = 0.5 * (uu + u_ip1);
+    const double cons_x = (uu_right * uu_right - uu_left * uu_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction skew
+    double adv_y;
+    if (safe_y) {
+        const double u_jm2 = u_ptr[k * u_plane_stride + (j-2) * u_stride + i];
+        const double u_jp2 = u_ptr[k * u_plane_stride + (j+2) * u_stride + i];
+        adv_y = vv * D_same_O4(u_jm2, u_jm1, u_jp1, u_jp2, dy);
+    } else {
+        adv_y = vv * D_same_O2(u_jm1, u_jp1, dy);
+    }
+    const double vv_bot = 0.5 * (v_bl + v_br);
+    const double vv_top = 0.5 * (v_tl + v_tr);
+    const double u_bot = 0.5 * (uu + u_jm1);
+    const double u_top = 0.5 * (uu + u_jp1);
+    const double cons_y = (vv_top * u_top - vv_bot * u_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    // Z-direction skew
+    double adv_z;
+    if (safe_z) {
+        const double u_km2 = u_ptr[(k-2) * u_plane_stride + j * u_stride + i];
+        const double u_kp2 = u_ptr[(k+2) * u_plane_stride + j * u_stride + i];
+        adv_z = ww * D_same_O4(u_km2, u_km1, u_kp1, u_kp2, dz);
+    } else {
+        adv_z = ww * D_same_O2(u_km1, u_kp1, dz);
+    }
+    const double ww_back = 0.5 * (w_bl + w_br);
+    const double ww_front = 0.5 * (w_fl + w_fr);
+    const double u_back = 0.5 * (uu + u_km1);
+    const double u_front = 0.5 * (uu + u_kp1);
+    const double cons_z = (ww_front * u_front - ww_back * u_back) / dz;
+    const double skew_z = 0.5 * (adv_z + cons_z);
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_u_ptr[conv_idx] = skew_x + skew_y + skew_z;
+}
+
+// 3D O4 skew-symmetric convection for v-momentum at y-face
+inline void convective_v_face_kernel_skew_O4_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    int Ng, int Nx, int Ny, int Nz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Neighbors
+    const double v_ip1 = v_ptr[k * v_plane_stride + j * v_stride + (i+1)];
+    const double v_im1 = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_jp1 = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double v_jm1 = v_ptr[k * v_plane_stride + (j-1) * v_stride + i];
+    const double v_kp1 = v_ptr[(k+1) * v_plane_stride + j * v_stride + i];
+    const double v_km1 = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+
+    // Interpolate u to y-face
+    const double u_bl = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_br = u_ptr[k * u_plane_stride + (j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_tr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    // Interpolate w to y-face
+    const double w_bl = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tl = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_bf = w_ptr[(k+1) * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tf = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_tl + w_bf + w_tf);
+
+    // Check boundary safety for O4 (periodic directions always safe)
+    const bool safe_x = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 3));
+    const bool safe_y = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 2));
+    const bool safe_z = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 3));
+
+    // X-direction skew
+    double adv_x;
+    if (safe_x) {
+        const double v_im2 = v_ptr[k * v_plane_stride + j * v_stride + (i-2)];
+        const double v_ip2 = v_ptr[k * v_plane_stride + j * v_stride + (i+2)];
+        adv_x = uu * D_same_O4(v_im2, v_im1, v_ip1, v_ip2, dx);
+    } else {
+        adv_x = uu * D_same_O2(v_im1, v_ip1, dx);
+    }
+    const double uu_left = 0.5 * (u_bl + u_tl);
+    const double uu_right = 0.5 * (u_br + u_tr);
+    const double v_left = 0.5 * (v_im1 + vv);
+    const double v_right = 0.5 * (vv + v_ip1);
+    const double cons_x = (uu_right * v_right - uu_left * v_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction skew
+    double adv_y;
+    if (safe_y) {
+        const double v_jm2 = v_ptr[k * v_plane_stride + (j-2) * v_stride + i];
+        const double v_jp2 = v_ptr[k * v_plane_stride + (j+2) * v_stride + i];
+        adv_y = vv * D_same_O4(v_jm2, v_jm1, v_jp1, v_jp2, dy);
+    } else {
+        adv_y = vv * D_same_O2(v_jm1, v_jp1, dy);
+    }
+    const double vv_bot = 0.5 * (v_jm1 + vv);
+    const double vv_top = 0.5 * (vv + v_jp1);
+    const double cons_y = (vv_top * vv_top - vv_bot * vv_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    // Z-direction skew
+    double adv_z;
+    if (safe_z) {
+        const double v_km2 = v_ptr[(k-2) * v_plane_stride + j * v_stride + i];
+        const double v_kp2 = v_ptr[(k+2) * v_plane_stride + j * v_stride + i];
+        adv_z = ww * D_same_O4(v_km2, v_km1, v_kp1, v_kp2, dz);
+    } else {
+        adv_z = ww * D_same_O2(v_km1, v_kp1, dz);
+    }
+    const double ww_back = 0.5 * (w_bl + w_tl);
+    const double ww_front = 0.5 * (w_bf + w_tf);
+    const double v_back = 0.5 * (vv + v_km1);
+    const double v_front = 0.5 * (vv + v_kp1);
+    const double cons_z = (ww_front * v_front - ww_back * v_back) / dz;
+    const double skew_z = 0.5 * (adv_z + cons_z);
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_v_ptr[conv_idx] = skew_x + skew_y + skew_z;
+}
+
+// 3D O4 skew-symmetric convection for w-momentum at z-face
+inline void convective_w_face_kernel_skew_O4_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    int Ng, int Nx, int Ny, int Nz,
+    bool periodic_x, bool periodic_y, bool periodic_z,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double ww = w_ptr[w_idx];
+
+    // Neighbors
+    const double w_ip1 = w_ptr[k * w_plane_stride + j * w_stride + (i+1)];
+    const double w_im1 = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_jp1 = w_ptr[k * w_plane_stride + (j+1) * w_stride + i];
+    const double w_jm1 = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_kp1 = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double w_km1 = w_ptr[(k-1) * w_plane_stride + j * w_stride + i];
+
+    // Interpolate u to z-face
+    const double u_bl = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+    const double u_br = u_ptr[(k-1) * u_plane_stride + j * u_stride + (i+1)];
+    const double u_fl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_fr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_fl + u_fr);
+
+    // Interpolate v to z-face
+    const double v_bl = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[(k-1) * v_plane_stride + (j+1) * v_stride + i];
+    const double v_bf = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tf = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_tl + v_bf + v_tf);
+
+    // Check boundary safety for O4 (periodic directions always safe)
+    const bool safe_x = periodic_x || ((i >= Ng + 2) && (i <= Ng + Nx - 3));
+    const bool safe_y = periodic_y || ((j >= Ng + 2) && (j <= Ng + Ny - 3));
+    const bool safe_z = periodic_z || ((k >= Ng + 2) && (k <= Ng + Nz - 2));
+
+    // X-direction skew
+    double adv_x;
+    if (safe_x) {
+        const double w_im2 = w_ptr[k * w_plane_stride + j * w_stride + (i-2)];
+        const double w_ip2 = w_ptr[k * w_plane_stride + j * w_stride + (i+2)];
+        adv_x = uu * D_same_O4(w_im2, w_im1, w_ip1, w_ip2, dx);
+    } else {
+        adv_x = uu * D_same_O2(w_im1, w_ip1, dx);
+    }
+    const double uu_left = 0.5 * (u_bl + u_fl);
+    const double uu_right = 0.5 * (u_br + u_fr);
+    const double w_left = 0.5 * (w_im1 + ww);
+    const double w_right = 0.5 * (ww + w_ip1);
+    const double cons_x = (uu_right * w_right - uu_left * w_left) / dx;
+    const double skew_x = 0.5 * (adv_x + cons_x);
+
+    // Y-direction skew
+    double adv_y;
+    if (safe_y) {
+        const double w_jm2 = w_ptr[k * w_plane_stride + (j-2) * w_stride + i];
+        const double w_jp2 = w_ptr[k * w_plane_stride + (j+2) * w_stride + i];
+        adv_y = vv * D_same_O4(w_jm2, w_jm1, w_jp1, w_jp2, dy);
+    } else {
+        adv_y = vv * D_same_O2(w_jm1, w_jp1, dy);
+    }
+    const double vv_bot = 0.5 * (v_bl + v_bf);
+    const double vv_top = 0.5 * (v_tl + v_tf);
+    const double w_bot = 0.5 * (ww + w_jm1);
+    const double w_top = 0.5 * (ww + w_jp1);
+    const double cons_y = (vv_top * w_top - vv_bot * w_bot) / dy;
+    const double skew_y = 0.5 * (adv_y + cons_y);
+
+    // Z-direction skew
+    double adv_z;
+    if (safe_z) {
+        const double w_km2 = w_ptr[(k-2) * w_plane_stride + j * w_stride + i];
+        const double w_kp2 = w_ptr[(k+2) * w_plane_stride + j * w_stride + i];
+        adv_z = ww * D_same_O4(w_km2, w_km1, w_kp1, w_kp2, dz);
+    } else {
+        adv_z = ww * D_same_O2(w_km1, w_kp1, dz);
+    }
+    const double ww_back = 0.5 * (w_km1 + ww);
+    const double ww_front = 0.5 * (ww + w_kp1);
+    const double cons_z = (ww_front * ww_front - ww_back * ww_back) / dz;
+    const double skew_z = 0.5 * (adv_z + cons_z);
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_w_ptr[conv_idx] = skew_x + skew_y + skew_z;
+}
+
+// ============================================================================
+// 2ND-ORDER UPWIND ADVECTION KERNELS
+// ============================================================================
+// Uses a linear reconstruction: φ_{i+1/2} = φ_i + 0.5*slope_i (for positive velocity)
+// Slope limited for robustness (using minmod here for simplicity)
+
+inline double minmod(double a, double b) {
+    if (a * b <= 0.0) return 0.0;
+    return (a > 0.0) ? ((a < b) ? a : b) : ((a > b) ? a : b);
+}
+
+// 2D 2nd-order upwind convection for u-momentum at x-face
+inline void convective_u_face_kernel_upwind2_2d(
+    int i, int j,
+    int u_stride, int v_stride, int conv_stride,
+    double dx, double dy,
+    const double* u_ptr, const double* v_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Neighbors
+    const double u_ip2 = u_ptr[j * u_stride + (i+2)];
+    const double u_ip1 = u_ptr[j * u_stride + (i+1)];
+    const double u_im1 = u_ptr[j * u_stride + (i-1)];
+    const double u_im2 = u_ptr[j * u_stride + (i-2)];
+    const double u_jp2 = u_ptr[(j+2) * u_stride + i];
+    const double u_jp1 = u_ptr[(j+1) * u_stride + i];
+    const double u_jm1 = u_ptr[(j-1) * u_stride + i];
+    const double u_jm2 = u_ptr[(j-2) * u_stride + i];
+
+    // Interpolate v to x-face
+    const double v_bl = v_ptr[j * v_stride + (i-1)];
+    const double v_br = v_ptr[j * v_stride + i];
+    const double v_tl = v_ptr[(j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[(j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    double dudx, dudy;
+
+    // X-direction: 2nd-order upwind with minmod limiter
+    if (uu >= 0) {
+        // Use values from left: i-2, i-1, i
+        double slope = minmod(uu - u_im1, u_im1 - u_im2);
+        dudx = (uu - u_im1 + 0.5 * slope) / dx;
+    } else {
+        // Use values from right: i, i+1, i+2
+        double slope = minmod(u_ip1 - uu, u_ip2 - u_ip1);
+        dudx = (u_ip1 - uu - 0.5 * slope) / dx;
+    }
+
+    // Y-direction: 2nd-order upwind with minmod limiter
+    if (vv >= 0) {
+        double slope = minmod(uu - u_jm1, u_jm1 - u_jm2);
+        dudy = (uu - u_jm1 + 0.5 * slope) / dy;
+    } else {
+        double slope = minmod(u_jp1 - uu, u_jp2 - u_jp1);
+        dudy = (u_jp1 - uu - 0.5 * slope) / dy;
+    }
+
+    const int conv_idx = j * conv_stride + i;
+    conv_u_ptr[conv_idx] = uu * dudx + vv * dudy;
+}
+
+// 2D 2nd-order upwind convection for v-momentum at y-face
+inline void convective_v_face_kernel_upwind2_2d(
+    int i, int j,
+    int u_stride, int v_stride, int conv_stride,
+    double dx, double dy,
+    const double* u_ptr, const double* v_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Neighbors
+    const double v_ip2 = v_ptr[j * v_stride + (i+2)];
+    const double v_ip1 = v_ptr[j * v_stride + (i+1)];
+    const double v_im1 = v_ptr[j * v_stride + (i-1)];
+    const double v_im2 = v_ptr[j * v_stride + (i-2)];
+    const double v_jp2 = v_ptr[(j+2) * v_stride + i];
+    const double v_jp1 = v_ptr[(j+1) * v_stride + i];
+    const double v_jm1 = v_ptr[(j-1) * v_stride + i];
+    const double v_jm2 = v_ptr[(j-2) * v_stride + i];
+
+    // Interpolate u to y-face
+    const double u_bl = u_ptr[(j-1) * u_stride + i];
+    const double u_br = u_ptr[(j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[j * u_stride + i];
+    const double u_tr = u_ptr[j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    double dvdx, dvdy;
+
+    // X-direction
+    if (uu >= 0) {
+        double slope = minmod(vv - v_im1, v_im1 - v_im2);
+        dvdx = (vv - v_im1 + 0.5 * slope) / dx;
+    } else {
+        double slope = minmod(v_ip1 - vv, v_ip2 - v_ip1);
+        dvdx = (v_ip1 - vv - 0.5 * slope) / dx;
+    }
+
+    // Y-direction
+    if (vv >= 0) {
+        double slope = minmod(vv - v_jm1, v_jm1 - v_jm2);
+        dvdy = (vv - v_jm1 + 0.5 * slope) / dy;
+    } else {
+        double slope = minmod(v_jp1 - vv, v_jp2 - v_jp1);
+        dvdy = (v_jp1 - vv - 0.5 * slope) / dy;
+    }
+
+    const int conv_idx = j * conv_stride + i;
+    conv_v_ptr[conv_idx] = uu * dvdx + vv * dvdy;
+}
+
+// 3D 2nd-order upwind - simplified version using 1st-order near boundaries
+// Full 2nd-order requires Nghost >= 2
+inline void convective_u_face_kernel_upwind2_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_u_ptr)
+{
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double uu = u_ptr[u_idx];
+
+    // Neighbors for 2nd-order stencil
+    const double u_ip2 = u_ptr[k * u_plane_stride + j * u_stride + (i+2)];
+    const double u_ip1 = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double u_im1 = u_ptr[k * u_plane_stride + j * u_stride + (i-1)];
+    const double u_im2 = u_ptr[k * u_plane_stride + j * u_stride + (i-2)];
+    const double u_jp2 = u_ptr[k * u_plane_stride + (j+2) * u_stride + i];
+    const double u_jp1 = u_ptr[k * u_plane_stride + (j+1) * u_stride + i];
+    const double u_jm1 = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_jm2 = u_ptr[k * u_plane_stride + (j-2) * u_stride + i];
+    const double u_kp2 = u_ptr[(k+2) * u_plane_stride + j * u_stride + i];
+    const double u_kp1 = u_ptr[(k+1) * u_plane_stride + j * u_stride + i];
+    const double u_km1 = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+    const double u_km2 = u_ptr[(k-2) * u_plane_stride + j * u_stride + i];
+
+    // Interpolate v to x-face
+    const double v_bl = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_br = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[k * v_plane_stride + (j+1) * v_stride + (i-1)];
+    const double v_tr = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_br + v_tl + v_tr);
+
+    // Interpolate w to x-face
+    const double w_bl = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_br = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_fl = w_ptr[(k+1) * w_plane_stride + j * w_stride + (i-1)];
+    const double w_fr = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_br + w_fl + w_fr);
+
+    double dudx, dudy, dudz;
+
+    // X-direction with minmod limiter
+    if (uu >= 0) {
+        double slope = minmod(uu - u_im1, u_im1 - u_im2);
+        dudx = (uu - u_im1 + 0.5 * slope) / dx;
+    } else {
+        double slope = minmod(u_ip1 - uu, u_ip2 - u_ip1);
+        dudx = (u_ip1 - uu - 0.5 * slope) / dx;
+    }
+
+    // Y-direction
+    if (vv >= 0) {
+        double slope = minmod(uu - u_jm1, u_jm1 - u_jm2);
+        dudy = (uu - u_jm1 + 0.5 * slope) / dy;
+    } else {
+        double slope = minmod(u_jp1 - uu, u_jp2 - u_jp1);
+        dudy = (u_jp1 - uu - 0.5 * slope) / dy;
+    }
+
+    // Z-direction
+    if (ww >= 0) {
+        double slope = minmod(uu - u_km1, u_km1 - u_km2);
+        dudz = (uu - u_km1 + 0.5 * slope) / dz;
+    } else {
+        double slope = minmod(u_kp1 - uu, u_kp2 - u_kp1);
+        dudz = (u_kp1 - uu - 0.5 * slope) / dz;
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_u_ptr[conv_idx] = uu * dudx + vv * dudy + ww * dudz;
+}
+
+// 3D 2nd-order upwind for v-momentum (abbreviated - same pattern)
+inline void convective_v_face_kernel_upwind2_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_v_ptr)
+{
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double vv = v_ptr[v_idx];
+
+    // Neighbors
+    const double v_ip2 = v_ptr[k * v_plane_stride + j * v_stride + (i+2)];
+    const double v_ip1 = v_ptr[k * v_plane_stride + j * v_stride + (i+1)];
+    const double v_im1 = v_ptr[k * v_plane_stride + j * v_stride + (i-1)];
+    const double v_im2 = v_ptr[k * v_plane_stride + j * v_stride + (i-2)];
+    const double v_jp2 = v_ptr[k * v_plane_stride + (j+2) * v_stride + i];
+    const double v_jp1 = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double v_jm1 = v_ptr[k * v_plane_stride + (j-1) * v_stride + i];
+    const double v_jm2 = v_ptr[k * v_plane_stride + (j-2) * v_stride + i];
+    const double v_kp2 = v_ptr[(k+2) * v_plane_stride + j * v_stride + i];
+    const double v_kp1 = v_ptr[(k+1) * v_plane_stride + j * v_stride + i];
+    const double v_km1 = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+    const double v_km2 = v_ptr[(k-2) * v_plane_stride + j * v_stride + i];
+
+    // Interpolate u to y-face
+    const double u_bl = u_ptr[k * u_plane_stride + (j-1) * u_stride + i];
+    const double u_br = u_ptr[k * u_plane_stride + (j-1) * u_stride + (i+1)];
+    const double u_tl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_tr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_tl + u_tr);
+
+    // Interpolate w to y-face
+    const double w_bl = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tl = w_ptr[k * w_plane_stride + j * w_stride + i];
+    const double w_bf = w_ptr[(k+1) * w_plane_stride + (j-1) * w_stride + i];
+    const double w_tf = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double ww = 0.25 * (w_bl + w_tl + w_bf + w_tf);
+
+    double dvdx, dvdy, dvdz;
+
+    if (uu >= 0) {
+        double slope = minmod(vv - v_im1, v_im1 - v_im2);
+        dvdx = (vv - v_im1 + 0.5 * slope) / dx;
+    } else {
+        double slope = minmod(v_ip1 - vv, v_ip2 - v_ip1);
+        dvdx = (v_ip1 - vv - 0.5 * slope) / dx;
+    }
+
+    if (vv >= 0) {
+        double slope = minmod(vv - v_jm1, v_jm1 - v_jm2);
+        dvdy = (vv - v_jm1 + 0.5 * slope) / dy;
+    } else {
+        double slope = minmod(v_jp1 - vv, v_jp2 - v_jp1);
+        dvdy = (v_jp1 - vv - 0.5 * slope) / dy;
+    }
+
+    if (ww >= 0) {
+        double slope = minmod(vv - v_km1, v_km1 - v_km2);
+        dvdz = (vv - v_km1 + 0.5 * slope) / dz;
+    } else {
+        double slope = minmod(v_kp1 - vv, v_kp2 - v_kp1);
+        dvdz = (v_kp1 - vv - 0.5 * slope) / dz;
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_v_ptr[conv_idx] = uu * dvdx + vv * dvdy + ww * dvdz;
+}
+
+// 3D 2nd-order upwind for w-momentum
+inline void convective_w_face_kernel_upwind2_3d(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int conv_stride, int conv_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
+    double* conv_w_ptr)
+{
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double ww = w_ptr[w_idx];
+
+    // Neighbors
+    const double w_ip2 = w_ptr[k * w_plane_stride + j * w_stride + (i+2)];
+    const double w_ip1 = w_ptr[k * w_plane_stride + j * w_stride + (i+1)];
+    const double w_im1 = w_ptr[k * w_plane_stride + j * w_stride + (i-1)];
+    const double w_im2 = w_ptr[k * w_plane_stride + j * w_stride + (i-2)];
+    const double w_jp2 = w_ptr[k * w_plane_stride + (j+2) * w_stride + i];
+    const double w_jp1 = w_ptr[k * w_plane_stride + (j+1) * w_stride + i];
+    const double w_jm1 = w_ptr[k * w_plane_stride + (j-1) * w_stride + i];
+    const double w_jm2 = w_ptr[k * w_plane_stride + (j-2) * w_stride + i];
+    const double w_kp2 = w_ptr[(k+2) * w_plane_stride + j * w_stride + i];
+    const double w_kp1 = w_ptr[(k+1) * w_plane_stride + j * w_stride + i];
+    const double w_km1 = w_ptr[(k-1) * w_plane_stride + j * w_stride + i];
+    const double w_km2 = w_ptr[(k-2) * w_plane_stride + j * w_stride + i];
+
+    // Interpolate u to z-face
+    const double u_bl = u_ptr[(k-1) * u_plane_stride + j * u_stride + i];
+    const double u_br = u_ptr[(k-1) * u_plane_stride + j * u_stride + (i+1)];
+    const double u_fl = u_ptr[k * u_plane_stride + j * u_stride + i];
+    const double u_fr = u_ptr[k * u_plane_stride + j * u_stride + (i+1)];
+    const double uu = 0.25 * (u_bl + u_br + u_fl + u_fr);
+
+    // Interpolate v to z-face
+    const double v_bl = v_ptr[(k-1) * v_plane_stride + j * v_stride + i];
+    const double v_tl = v_ptr[(k-1) * v_plane_stride + (j+1) * v_stride + i];
+    const double v_bf = v_ptr[k * v_plane_stride + j * v_stride + i];
+    const double v_tf = v_ptr[k * v_plane_stride + (j+1) * v_stride + i];
+    const double vv = 0.25 * (v_bl + v_tl + v_bf + v_tf);
+
+    double dwdx, dwdy, dwdz;
+
+    if (uu >= 0) {
+        double slope = minmod(ww - w_im1, w_im1 - w_im2);
+        dwdx = (ww - w_im1 + 0.5 * slope) / dx;
+    } else {
+        double slope = minmod(w_ip1 - ww, w_ip2 - w_ip1);
+        dwdx = (w_ip1 - ww - 0.5 * slope) / dx;
+    }
+
+    if (vv >= 0) {
+        double slope = minmod(ww - w_jm1, w_jm1 - w_jm2);
+        dwdy = (ww - w_jm1 + 0.5 * slope) / dy;
+    } else {
+        double slope = minmod(w_jp1 - ww, w_jp2 - w_jp1);
+        dwdy = (w_jp1 - ww - 0.5 * slope) / dy;
+    }
+
+    if (ww >= 0) {
+        double slope = minmod(ww - w_km1, w_km1 - w_km2);
+        dwdz = (ww - w_km1 + 0.5 * slope) / dz;
+    } else {
+        double slope = minmod(w_kp1 - ww, w_kp2 - w_kp1);
+        dwdz = (w_kp1 - ww - 0.5 * slope) / dz;
+    }
+
+    const int conv_idx = k * conv_plane_stride + j * conv_stride + i;
+    conv_w_ptr[conv_idx] = uu * dwdx + vv * dwdy + ww * dwdz;
+}
+
+// ============================================================================
+// END ADVECTION KERNELS
+// ============================================================================
 
 // 3D Diffusion term for u-momentum at x-face
 inline void diffusive_u_face_kernel_staggered_3d(
@@ -1046,6 +2524,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , conv_(mesh)                 // Persistent convective work field
     , diff_(mesh)                 // Persistent diffusive work field
     , velocity_old_(mesh)         // GPU-resident old velocity for residual
+    , velocity_rk_(mesh)          // RK work buffer for multi-stage methods
     , dudx_(mesh), dudy_(mesh), dvdx_(mesh), dvdy_(mesh)  // Gradient scratch for turbulence
     , wall_distance_(mesh)        // Precomputed wall distance field
     , poisson_solver_(mesh)
@@ -1057,6 +2536,23 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     // (this code uses GPU parallelism, not MPI distribution)
     // Set NNCFD_ALLOW_MULTI_RANK=1 to override (dangerous)
     enforce_single_rank_gpu("RANSSolver");
+
+    // Validate ghost cell requirements for advection schemes
+    // Upwind2 requires Nghost >= 2 due to 5-point stencil (i±2)
+    if (config_.convective_scheme == ConvectiveScheme::Upwind2 && mesh.Nghost < 2) {
+        std::cerr << "[Solver] WARNING: upwind2 scheme requires Nghost >= 2 but Nghost = "
+                  << mesh.Nghost << "\n"
+                  << "         Falling back to 1st-order upwind scheme.\n";
+        config_.convective_scheme = ConvectiveScheme::Upwind;
+    }
+
+    // O4 spatial discretization requires Nghost >= 2 for 5-point stencils
+    if (config_.space_order == 4 && mesh.Nghost < 2) {
+        std::cerr << "[Solver] WARNING: space_order=4 requires Nghost >= 2 but Nghost = "
+                  << mesh.Nghost << "\n"
+                  << "         Falling back to space_order=2.\n";
+        config_.space_order = 2;
+    }
 
     // Precompute wall distance (once, then stays on GPU if enabled)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1111,6 +2607,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
                 fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                                              PoissonBC::Neumann, PoissonBC::Neumann,
                                              PoissonBC::Periodic, PoissonBC::Periodic);
+                // Set space order for O4-consistent eigenvalues when using O4 projection
+                fft_poisson_solver_->set_space_order(config_.space_order);
                 fft_applicable = true;
             } catch (const std::exception& e) {
                 std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
@@ -1473,6 +2971,16 @@ void RANSSolver::print_solver_info() const {
         std::cout << "None (laminar)";
     }
     std::cout << "\n";
+
+    // Discretization info
+    std::cout << "Convective scheme: ";
+    switch (config_.convective_scheme) {
+        case ConvectiveScheme::Central: std::cout << "Central"; break;
+        case ConvectiveScheme::Skew:    std::cout << "Skew-symmetric"; break;
+        case ConvectiveScheme::Upwind:  std::cout << "Upwind (1st)"; break;
+        case ConvectiveScheme::Upwind2: std::cout << "Upwind (2nd)"; break;
+    }
+    std::cout << ", space_order=" << config_.space_order << "\n";
 
     // Build info
     std::cout << "Build features: ";
@@ -1949,6 +3457,17 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int u_stride = v.u_stride;
     const int v_stride = v.v_stride;
     const bool use_central = (config_.convective_scheme == ConvectiveScheme::Central);
+    const bool use_skew = (config_.convective_scheme == ConvectiveScheme::Skew);
+    const bool use_upwind2 = (config_.convective_scheme == ConvectiveScheme::Upwind2);
+    const bool use_O4 = (config_.space_order == 4);
+
+    // Periodic flags for O4 boundary safety checks
+    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.x_hi == VelocityBC::Periodic);
+    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.y_hi == VelocityBC::Periodic);
+    const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.z_hi == VelocityBC::Periodic);
 
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
@@ -1969,85 +3488,320 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
         const double* w_ptr = v.w_face;
         double*       conv_w_ptr = v.conv_w;
 
-        // Compute u-momentum convection at x-faces (3D)
         const int n_u_faces = (Nx + 1) * Ny * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
-            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
-
-            convective_u_face_kernel_staggered_3d(i, j, k,
-                u_stride, u_plane_stride, v_stride, v_plane_stride,
-                w_stride, w_plane_stride, u_stride, u_plane_stride,
-                dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_u_ptr);
-        }
-
-        // Compute v-momentum convection at y-faces (3D)
         const int n_v_faces = Nx * (Ny + 1) * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
-            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
-
-            convective_v_face_kernel_staggered_3d(i, j, k,
-                u_stride, u_plane_stride, v_stride, v_plane_stride,
-                w_stride, w_plane_stride, v_stride, v_plane_stride,
-                dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_v_ptr);
-        }
-
-        // Compute w-momentum convection at z-faces (3D)
         const int n_w_faces = Nx * Ny * (Nz + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
-            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_w_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
+        const int conv_u_stride = u_stride;
+        const int conv_u_plane_stride = u_plane_stride;
+        const int conv_v_stride = v_stride;
+        const int conv_v_plane_stride = v_plane_stride;
+        const int conv_w_stride = w_stride;
+        const int conv_w_plane_stride = w_plane_stride;
 
-            convective_w_face_kernel_staggered_3d(i, j, k,
-                u_stride, u_plane_stride, v_stride, v_plane_stride,
-                w_stride, w_plane_stride, w_stride, w_plane_stride,
-                dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_w_ptr);
+        if (use_skew) {
+            // Skew-symmetric (energy-conserving) advection
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_u_stride, conv_u_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                convective_u_face_kernel_skew_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, conv_u_stride, conv_u_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, conv_u_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_v_stride, conv_v_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                convective_v_face_kernel_skew_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, conv_v_stride, conv_v_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, conv_v_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_w_stride, conv_w_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                convective_w_face_kernel_skew_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, conv_w_stride, conv_w_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, conv_w_ptr);
+            }
+        } else if (use_upwind2) {
+            // 2nd-order upwind with minmod limiter
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_u_stride, conv_u_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                convective_u_face_kernel_upwind2_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, conv_u_stride, conv_u_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, conv_u_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_v_stride, conv_v_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                convective_v_face_kernel_upwind2_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, conv_v_stride, conv_v_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, conv_v_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_w_stride, conv_w_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                convective_w_face_kernel_upwind2_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, conv_w_stride, conv_w_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, conv_w_ptr);
+            }
+        } else if (use_O4 && use_central) {
+            // O4 Central advection (4th-order derivatives, hybrid O4/O2 near boundaries)
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                convective_u_face_kernel_central_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, u_stride, u_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_u_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                convective_v_face_kernel_central_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, v_stride, v_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_v_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                convective_w_face_kernel_central_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, w_stride, w_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_w_ptr);
+            }
+        } else if (use_O4 && use_skew) {
+            // O4 Skew-symmetric advection (energy-conserving with 4th-order advective derivatives)
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                convective_u_face_kernel_skew_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, u_stride, u_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_u_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                convective_v_face_kernel_skew_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, v_stride, v_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_v_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                convective_w_face_kernel_skew_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, w_stride, w_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_w_ptr);
+            }
+        } else {
+            // Central or 1st-order upwind (O2 path)
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                convective_u_face_kernel_staggered_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, u_stride, u_plane_stride,
+                    dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_u_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                convective_v_face_kernel_staggered_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, v_stride, v_plane_stride,
+                    dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_v_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, use_central, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                convective_w_face_kernel_staggered_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, w_stride, w_plane_stride,
+                    dx, dy, dz, use_central, u_ptr, v_ptr, w_ptr, conv_w_ptr);
+            }
         }
         return;
     }
 
     // 2D path
-    // Compute u-momentum convection at x-faces
     const int n_u_faces = (Nx + 1) * Ny;
-    #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
-        firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
-    for (int idx = 0; idx < n_u_faces; ++idx) {
-        int i_local = idx % (Nx + 1);
-        int j_local = idx / (Nx + 1);
-        int i = i_local + Ng;
-        int j = j_local + Ng;
-
-        convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, use_central,
-                                          u_ptr, v_ptr, conv_u_ptr);
-    }
-
-    // Compute v-momentum convection at y-faces
     const int n_v_faces = Nx * (Ny + 1);
-    #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
-        firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
-    for (int idx = 0; idx < n_v_faces; ++idx) {
-        int i_local = idx % Nx;
-        int j_local = idx / Nx;
-        int i = i_local + Ng;
-        int j = j_local + Ng;
+    const int conv_u_stride = u_stride;
+    const int conv_v_stride = v_stride;
 
-        convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, use_central,
-                                          u_ptr, v_ptr, conv_v_ptr);
+    if (use_skew) {
+        // Skew-symmetric (energy-conserving) advection - 2D
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, u_stride, v_stride, conv_u_stride, Nx, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+
+            convective_u_face_kernel_skew_2d(i, j, u_stride, v_stride, conv_u_stride,
+                                            dx, dy, u_ptr, v_ptr, conv_u_ptr);
+        }
+
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, u_stride, v_stride, conv_v_stride, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+
+            convective_v_face_kernel_skew_2d(i, j, u_stride, v_stride, conv_v_stride,
+                                            dx, dy, u_ptr, v_ptr, conv_v_ptr);
+        }
+    } else if (use_upwind2) {
+        // 2nd-order upwind with minmod limiter - 2D
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, u_stride, v_stride, conv_u_stride, Nx, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+
+            convective_u_face_kernel_upwind2_2d(i, j, u_stride, v_stride, conv_u_stride,
+                                               dx, dy, u_ptr, v_ptr, conv_u_ptr);
+        }
+
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, u_stride, v_stride, conv_v_stride, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+
+            convective_v_face_kernel_upwind2_2d(i, j, u_stride, v_stride, conv_v_stride,
+                                               dx, dy, u_ptr, v_ptr, conv_v_ptr);
+        }
+    } else {
+        // Central or 1st-order upwind (original path) - 2D
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i_local = idx % (Nx + 1);
+            int j_local = idx / (Nx + 1);
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+
+            convective_u_face_kernel_staggered(i, j, u_stride, v_stride, u_stride, dx, dy, use_central,
+                                              u_ptr, v_ptr, conv_u_ptr);
+        }
+
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], conv_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, u_stride, v_stride, use_central, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = idx / Nx;
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+
+            convective_v_face_kernel_staggered(i, j, u_stride, v_stride, v_stride, dx, dy, use_central,
+                                              u_ptr, v_ptr, conv_v_ptr);
+        }
     }
 }
 
@@ -2187,6 +3941,18 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     const int Nz = v.Nz;
     const int Ng = v.Ng;
     const int div_stride = v.cell_stride;
+
+    // O4 spatial discretization for divergence (Dfc_O4)
+    const bool use_O4 = (config_.space_order == 4);
+
+    // Periodic flags for O4 boundary handling
+    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.x_hi == VelocityBC::Periodic);
+    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.y_hi == VelocityBC::Periodic);
+    const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.z_hi == VelocityBC::Periodic);
+
     const int u_stride = vel_ptrs.u_stride;
     const int v_stride = vel_ptrs.v_stride;
 
@@ -2210,18 +3976,37 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
         const double* w_ptr = vel_ptrs.w;
 
         const int n_cells = Nx * Ny * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size]) \
-            firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_cells; ++idx) {
-            const int i = idx % Nx + Ng;
-            const int j = (idx / Nx) % Ny + Ng;
-            const int k = idx / (Nx * Ny) + Ng;
+        if (use_O4) {
+            // O4 divergence with periodic-aware fallback
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Nz, Ng, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_cells; ++idx) {
+                const int i = idx % Nx + Ng;
+                const int j = (idx / Nx) % Ny + Ng;
+                const int k = idx / (Nx * Ny) + Ng;
 
-            divergence_cell_kernel_staggered_3d(i, j, k,
-                u_stride, u_plane_stride, v_stride, v_plane_stride,
-                w_stride, w_plane_stride, div_stride, div_plane_stride,
-                dx, dy, dz, u_ptr, v_ptr, w_ptr, div_ptr);
+                divergence_cell_kernel_staggered_O4_3d(i, j, k, Ng, Nx, Ny, Nz,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, div_stride, div_plane_stride,
+                    dx, dy, dz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, div_ptr);
+            }
+        } else {
+            // O2 divergence
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_cells; ++idx) {
+                const int i = idx % Nx + Ng;
+                const int j = (idx / Nx) % Ny + Ng;
+                const int k = idx / (Nx * Ny) + Ng;
+
+                divergence_cell_kernel_staggered_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, div_stride, div_plane_stride,
+                    dx, dy, dz, u_ptr, v_ptr, w_ptr, div_ptr);
+            }
         }
         return;
     }
@@ -2281,6 +4066,9 @@ void RANSSolver::correct_velocity() {
     const int v_stride = v.v_stride;
     const int p_stride = v.cell_stride;
 
+    // O4 spatial discretization for pressure gradient (Dcf_O4)
+    const bool use_O4 = (config_.space_order == 4);
+
     const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
                             (velocity_bc_.x_hi == VelocityBC::Periodic);
     const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
@@ -2313,17 +4101,34 @@ void RANSSolver::correct_velocity() {
 
         // Correct u-velocities at x-faces (3D)
         const int n_u_faces = (Nx + 1) * Ny * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], p_corr_ptr[0:p_total_size]) \
-            firstprivate(dx, dt, u_stride, u_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
+        if (use_O4) {
+            // O4 pressure gradient with periodic-aware fallback
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], p_corr_ptr[0:p_total_size]) \
+                firstprivate(dx, dt, u_stride, u_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng, x_periodic)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
 
-            correct_u_face_kernel_staggered_3d(i, j, k,
-                u_stride, u_plane_stride, p_stride, p_plane_stride,
-                dx, dt, u_star_ptr, p_corr_ptr, u_ptr);
+                correct_u_face_kernel_staggered_O4_3d(i, j, k, Ng, Nx,
+                    u_stride, u_plane_stride, p_stride, p_plane_stride,
+                    dx, dt, x_periodic, u_star_ptr, p_corr_ptr, u_ptr);
+            }
+        } else {
+            // O2 pressure gradient
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], u_star_ptr[0:u_total_size], p_corr_ptr[0:p_total_size]) \
+                firstprivate(dx, dt, u_stride, u_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                correct_u_face_kernel_staggered_3d(i, j, k,
+                    u_stride, u_plane_stride, p_stride, p_plane_stride,
+                    dx, dt, u_star_ptr, p_corr_ptr, u_ptr);
+            }
         }
 
         // Enforce x-periodicity (3D)
@@ -2347,17 +4152,34 @@ void RANSSolver::correct_velocity() {
 
         // Correct v-velocities at y-faces (3D)
         const int n_v_faces = Nx * (Ny + 1) * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
-            firstprivate(dy, dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
+        if (use_O4) {
+            // O4 pressure gradient with periodic-aware fallback
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
+                firstprivate(dy, dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng, y_periodic)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
 
-            correct_v_face_kernel_staggered_3d(i, j, k,
-                v_stride, v_plane_stride, p_stride, p_plane_stride,
-                dy, dt, v_star_ptr, p_corr_ptr, v_ptr);
+                correct_v_face_kernel_staggered_O4_3d(i, j, k, Ng, Ny,
+                    v_stride, v_plane_stride, p_stride, p_plane_stride,
+                    dy, dt, y_periodic, v_star_ptr, p_corr_ptr, v_ptr);
+            }
+        } else {
+            // O2 pressure gradient
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
+                firstprivate(dy, dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                correct_v_face_kernel_staggered_3d(i, j, k,
+                    v_stride, v_plane_stride, p_stride, p_plane_stride,
+                    dy, dt, v_star_ptr, p_corr_ptr, v_ptr);
+            }
         }
 
         // Enforce y-periodicity (3D)
@@ -2381,17 +4203,34 @@ void RANSSolver::correct_velocity() {
 
         // Correct w-velocities at z-faces (3D)
         const int n_w_faces = Nx * Ny * (Nz + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: w_ptr[0:w_total_size], w_star_ptr[0:w_total_size], p_corr_ptr[0:p_total_size]) \
-            firstprivate(dz, dt, w_stride, w_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_w_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
+        if (use_O4) {
+            // O4 pressure gradient with periodic-aware fallback
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size], w_star_ptr[0:w_total_size], p_corr_ptr[0:p_total_size]) \
+                firstprivate(dz, dt, w_stride, w_plane_stride, p_stride, p_plane_stride, Nx, Ny, Nz, Ng, z_periodic)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
 
-            correct_w_face_kernel_staggered_3d(i, j, k,
-                w_stride, w_plane_stride, p_stride, p_plane_stride,
-                dz, dt, w_star_ptr, p_corr_ptr, w_ptr);
+                correct_w_face_kernel_staggered_O4_3d(i, j, k, Ng, Nz,
+                    w_stride, w_plane_stride, p_stride, p_plane_stride,
+                    dz, dt, z_periodic, w_star_ptr, p_corr_ptr, w_ptr);
+            }
+        } else {
+            // O2 pressure gradient
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size], w_star_ptr[0:w_total_size], p_corr_ptr[0:p_total_size]) \
+                firstprivate(dz, dt, w_stride, w_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                correct_w_face_kernel_staggered_3d(i, j, k,
+                    w_stride, w_plane_stride, p_stride, p_plane_stride,
+                    dz, dt, w_star_ptr, p_corr_ptr, w_ptr);
+            }
         }
 
         // Enforce z-periodicity (3D)
@@ -2840,14 +4679,66 @@ double RANSSolver::step() {
         }
     }
 
+    // Dispatch to appropriate time integrator
+    // RK methods handle their own convective/diffusive terms and projection
+    if (config_.time_integrator != TimeIntegrator::Euler) {
+        if (config_.time_integrator == TimeIntegrator::RK3) {
+            ssprk3_step(current_dt_);
+        } else if (config_.time_integrator == TimeIntegrator::RK2) {
+            ssprk2_step(current_dt_);
+        }
+
+        // Compute residual for RK methods
+        // Note: Post-step divergence check and NaN guard are still done below
+        // Fall through to residual computation
+    } else {
+    // =========== Euler time integration path (default) ===========
     // 2. Compute convective and diffusive terms (use persistent fields)
     {
         TIMED_SCOPE("convective_term");
         NVTX_PUSH("convection");
         compute_convective_term(velocity_, conv_);
         NVTX_POP();
+
+        // Convective KE production diagnostic: <u, conv(u)>
+        // For skew-symmetric form, this should be ~0 (energy conservative)
+        static bool conv_ke_diagnostics = (std::getenv("NNCFD_CONV_KE_DIAGNOSTICS") != nullptr);
+        if (conv_ke_diagnostics && (iter_ % 100 == 0)) {
+#ifdef USE_GPU_OFFLOAD
+            // Need to sync conv_ and velocity_ to host for the diagnostic
+            conv_.sync_from_gpu();
+            velocity_.sync_from_gpu();
+#endif
+            double dke_conv = compute_convective_ke_production();
+            double ke = 0.0;
+            const double dV = mesh_->dx * mesh_->dy * (mesh_->is2D() ? 1.0 : mesh_->dz);
+            if (mesh_->is2D()) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double u = 0.5 * (velocity_.u(i, j) + velocity_.u(i+1, j));
+                        double v = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
+                        ke += 0.5 * (u*u + v*v) * dV;
+                    }
+                }
+            } else {
+                for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+                    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                            double u = 0.5 * (velocity_.u(i, j, k) + velocity_.u(i+1, j, k));
+                            double v = 0.5 * (velocity_.v(i, j, k) + velocity_.v(i, j+1, k));
+                            double w = 0.5 * (velocity_.w(i, j, k) + velocity_.w(i, j, k+1));
+                            ke += 0.5 * (u*u + v*v + w*w) * dV;
+                        }
+                    }
+                }
+            }
+            // Normalize by KE to get fractional rate
+            double rel_rate = (ke > 1e-30) ? dke_conv / ke : 0.0;
+            std::cout << "[Convection] dKE/dt_conv=" << std::scientific << std::setprecision(6)
+                      << dke_conv << " (rel=" << rel_rate << "/s)\n";
+        }
     }
-    
+
     {
         TIMED_SCOPE("diffusive_term");
         NVTX_PUSH("diffusion");
@@ -3467,6 +5358,8 @@ double RANSSolver::step() {
     // 6. Apply boundary conditions
     apply_velocity_bc();
 
+    } // End Euler time integration path
+
     // Post-projection divergence check (diagnostic only)
     // This is the actual measure of projection quality: max|div(u^{n+1})|
     {
@@ -3479,23 +5372,35 @@ double RANSSolver::step() {
         if (div_diagnostics && (iter_ % div_diagnostics_interval == 0)) {
             compute_divergence(VelocityWhich::Current, div_velocity_);  // Divergence of corrected velocity
             double max_div = 0.0;
+            double sum_div2 = 0.0;  // For L2 norm
+            int n_cells = 0;
             if (mesh_->is2D()) {
+                const double dV = mesh_->dx * mesh_->dy;  // Cell volume (uniform)
                 for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                     for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                        max_div = std::max(max_div, std::abs(div_velocity_(i, j)));
+                        double d = div_velocity_(i, j);
+                        max_div = std::max(max_div, std::abs(d));
+                        sum_div2 += d * d * dV;
+                        n_cells++;
                     }
                 }
             } else {
+                const double dV = mesh_->dx * mesh_->dy * mesh_->dz;  // Cell volume
                 for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
                     for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                         for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                            max_div = std::max(max_div, std::abs(div_velocity_(i, j, k)));
+                            double d = div_velocity_(i, j, k);
+                            max_div = std::max(max_div, std::abs(d));
+                            sum_div2 += d * d * dV;
+                            n_cells++;
                         }
                     }
                 }
             }
-            std::cout << "[Projection] max|div(u)|=" << std::scientific << std::setprecision(6)
-                      << max_div << " dt*max|div|=" << current_dt_ * max_div << "\n";
+            double l2_div = std::sqrt(sum_div2);
+            std::cout << "[Projection] ||div(u)||_Linf=" << std::scientific << std::setprecision(6)
+                      << max_div << " ||div(u)||_L2=" << l2_div
+                      << " dt*Linf=" << current_dt_ * max_div << "\n";
         }
     }
     
@@ -3597,6 +5502,560 @@ double RANSSolver::step() {
 
     return max_change;
 }
+
+// ============================================================================
+// RK Time Integration Methods
+// ============================================================================
+
+void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double dt) {
+    // Compute RHS: -conv + diff + force, and advance: vel_out = vel_in + dt * RHS
+    // This is the core Euler substep used by all RK methods
+
+    // Compute convective and diffusive terms using vel_in
+    compute_convective_term(vel_in, conv_);
+    compute_diffusive_term(vel_in, nu_eff_, diff_);
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    const double fx = fx_;
+    const double fy = fy_;
+    const double fz = fz_;
+    const bool is_2d = mesh_->is2D();
+
+    // Get raw pointers
+    const double* u_in = vel_in.u_data().data();
+    const double* v_in = vel_in.v_data().data();
+    double* u_out = vel_out.u_data().data();
+    double* v_out = vel_out.v_data().data();
+    const double* conv_u = conv_.u_data().data();
+    const double* conv_v = conv_.v_data().data();
+    const double* diff_u = diff_.u_data().data();
+    const double* diff_v = diff_.v_data().data();
+
+    const int u_stride = Nx + 2 * Ng + 1;
+    const int v_stride = Nx + 2 * Ng;
+
+    [[maybe_unused]] const size_t u_total = vel_in.u_total_size();
+    [[maybe_unused]] const size_t v_total = vel_in.v_total_size();
+
+    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.x_hi == VelocityBC::Periodic);
+    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.y_hi == VelocityBC::Periodic);
+
+    if (is_2d) {
+        // 2D path: advance u and v
+        const int n_u_faces = (Nx + 1) * Ny;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_in[0:u_total], u_out[0:u_total], conv_u[0:u_total], diff_u[0:u_total]) \
+            firstprivate(dt, fx, u_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+            int u_idx = j * u_stride + i;
+            u_out[u_idx] = u_in[u_idx] + dt * (-conv_u[u_idx] + diff_u[u_idx] + fx);
+        }
+
+        const int n_v_faces = Nx * (Ny + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: v_in[0:v_total], v_out[0:v_total], conv_v[0:v_total], diff_v[0:v_total]) \
+            firstprivate(dt, fy, v_stride, Nx, Ny, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            int v_idx = j * v_stride + i;
+            v_out[v_idx] = v_in[v_idx] + dt * (-conv_v[v_idx] + diff_v[v_idx] + fy);
+        }
+
+        // Enforce periodicity
+        if (x_periodic) {
+            #pragma omp target teams distribute parallel for \
+                map(present: u_out[0:u_total]) firstprivate(u_stride, Nx, Ny, Ng)
+            for (int j = 0; j < Ny; ++j) {
+                int jj = j + Ng;
+                double u_avg = 0.5 * (u_out[jj * u_stride + Ng] + u_out[jj * u_stride + (Ng + Nx)]);
+                u_out[jj * u_stride + Ng] = u_avg;
+                u_out[jj * u_stride + (Ng + Nx)] = u_avg;
+            }
+        }
+        if (y_periodic) {
+            #pragma omp target teams distribute parallel for \
+                map(present: v_out[0:v_total]) firstprivate(v_stride, Nx, Ny, Ng)
+            for (int i = 0; i < Nx; ++i) {
+                int ii = i + Ng;
+                double v_avg = 0.5 * (v_out[Ng * v_stride + ii] + v_out[(Ng + Ny) * v_stride + ii]);
+                v_out[Ng * v_stride + ii] = v_avg;
+                v_out[(Ng + Ny) * v_stride + ii] = v_avg;
+            }
+        }
+    } else {
+        // 3D path
+        const int Nz = mesh_->Nz;
+        const int u_plane_stride = u_stride * (Ny + 2 * Ng);
+        const int v_plane_stride = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane_stride = w_stride * (Ny + 2 * Ng);
+
+        const double* w_in = vel_in.w_data().data();
+        double* w_out = vel_out.w_data().data();
+        const double* conv_w = conv_.w_data().data();
+        const double* diff_w = diff_.w_data().data();
+        [[maybe_unused]] const size_t w_total = vel_in.w_total_size();
+
+        const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
+                                (velocity_bc_.z_hi == VelocityBC::Periodic);
+
+        // Advance u
+        const int n_u_faces = (Nx + 1) * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_in[0:u_total], u_out[0:u_total], conv_u[0:u_total], diff_u[0:u_total]) \
+            firstprivate(dt, fx, u_stride, u_plane_stride, Nx, Ny, Nz, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+            int u_idx = k * u_plane_stride + j * u_stride + i;
+            u_out[u_idx] = u_in[u_idx] + dt * (-conv_u[u_idx] + diff_u[u_idx] + fx);
+        }
+
+        // Advance v
+        const int n_v_faces = Nx * (Ny + 1) * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_in[0:v_total], v_out[0:v_total], conv_v[0:v_total], diff_v[0:v_total]) \
+            firstprivate(dt, fy, v_stride, v_plane_stride, Nx, Ny, Nz, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+            int v_idx = k * v_plane_stride + j * v_stride + i;
+            v_out[v_idx] = v_in[v_idx] + dt * (-conv_v[v_idx] + diff_v[v_idx] + fy);
+        }
+
+        // Advance w
+        const int n_w_faces = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: w_in[0:w_total], w_out[0:w_total], conv_w[0:w_total], diff_w[0:w_total]) \
+            firstprivate(dt, fz, w_stride, w_plane_stride, Nx, Ny, Nz, Ng)
+        for (int idx = 0; idx < n_w_faces; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            int w_idx = k * w_plane_stride + j * w_stride + i;
+            w_out[w_idx] = w_in[w_idx] + dt * (-conv_w[w_idx] + diff_w[w_idx] + fz);
+        }
+
+        // Enforce periodicity for 3D
+        if (x_periodic) {
+            const int n_periodic = Ny * Nz;
+            #pragma omp target teams distribute parallel for \
+                map(present: u_out[0:u_total]) firstprivate(u_stride, u_plane_stride, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_periodic; ++idx) {
+                int j = idx % Ny + Ng;
+                int k = idx / Ny + Ng;
+                int base = k * u_plane_stride + j * u_stride;
+                double u_avg = 0.5 * (u_out[base + Ng] + u_out[base + (Ng + Nx)]);
+                u_out[base + Ng] = u_avg;
+                u_out[base + (Ng + Nx)] = u_avg;
+            }
+        }
+        if (y_periodic) {
+            const int n_periodic = Nx * Nz;
+            #pragma omp target teams distribute parallel for \
+                map(present: v_out[0:v_total]) firstprivate(v_stride, v_plane_stride, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_periodic; ++idx) {
+                int i = idx % Nx + Ng;
+                int k = idx / Nx + Ng;
+                int base_lo = k * v_plane_stride + Ng * v_stride + i;
+                int base_hi = k * v_plane_stride + (Ng + Ny) * v_stride + i;
+                double v_avg = 0.5 * (v_out[base_lo] + v_out[base_hi]);
+                v_out[base_lo] = v_avg;
+                v_out[base_hi] = v_avg;
+            }
+        }
+        if (z_periodic) {
+            const int n_periodic = Nx * Ny;
+            #pragma omp target teams distribute parallel for \
+                map(present: w_out[0:w_total]) firstprivate(w_stride, w_plane_stride, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_periodic; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = idx / Nx + Ng;
+                int base_back = Ng * w_plane_stride + j * w_stride + i;
+                int base_front = (Ng + Nz) * w_plane_stride + j * w_stride + i;
+                double w_avg = 0.5 * (w_out[base_back] + w_out[base_front]);
+                w_out[base_back] = w_avg;
+                w_out[base_front] = w_avg;
+            }
+        }
+    }
+}
+
+void RANSSolver::project_velocity(VectorField& vel, double dt) {
+    // Project velocity to divergence-free using pressure correction
+    // This mirrors the projection logic in step() but operates on any velocity field
+
+    // Temporarily swap velocity_ with vel to use existing infrastructure
+    std::swap(velocity_, vel);
+#ifdef USE_GPU_OFFLOAD
+    // Also swap GPU pointers
+    double* temp_u = velocity_u_ptr_;
+    double* temp_v = velocity_v_ptr_;
+    double* temp_w = velocity_w_ptr_;
+    velocity_u_ptr_ = vel.u_data().data();
+    velocity_v_ptr_ = vel.v_data().data();
+    if (!mesh_->is2D()) velocity_w_ptr_ = vel.w_data().data();
+#endif
+
+    // Apply BCs to velocity
+    apply_velocity_bc();
+
+    // Compute divergence
+    compute_divergence(VelocityWhich::Current, div_velocity_);
+
+    // Build RHS for Poisson: rhs = div / dt (with mean subtracted for solvability)
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int stride = Nx + 2 * Ng;
+    const int plane_stride = stride * (Ny + 2 * Ng);
+    const bool is_2d = mesh_->is2D();
+
+    double mean_div = 0.0;
+    int count = is_2d ? (Nx * Ny) : (Nx * Ny * Nz);
+
+    // Compute mean divergence
+    if (is_2d) {
+        double sum = 0.0;
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                sum += div_velocity_(i, j);
+            }
+        }
+        mean_div = sum / count;
+    } else {
+        double sum = 0.0;
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    sum += div_velocity_(i, j, k);
+                }
+            }
+        }
+        mean_div = sum / count;
+    }
+
+    // Build RHS
+    const double dt_inv = 1.0 / dt;
+    if (is_2d) {
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                rhs_poisson_(i, j) = (div_velocity_(i, j) - mean_div) * dt_inv;
+            }
+        }
+    } else {
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    rhs_poisson_(i, j, k) = (div_velocity_(i, j, k) - mean_div) * dt_inv;
+                }
+            }
+        }
+    }
+
+    // Solve Poisson equation for pressure correction
+    PoissonConfig pcfg;
+    pcfg.max_vcycles = config_.poisson_max_vcycles;
+    pcfg.tol_rhs = config_.poisson_tol_rhs;
+    pcfg.fixed_cycles = config_.poisson_fixed_cycles;
+
+    mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+
+    // Correct velocity: u = u - dt * grad(p')
+    correct_velocity();
+
+    // Apply BCs after correction
+    apply_velocity_bc();
+
+    // Update pressure
+    if (is_2d) {
+        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                pressure_(i, j) += pressure_correction_(i, j);
+            }
+        }
+    } else {
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    pressure_(i, j, k) += pressure_correction_(i, j, k);
+                }
+            }
+        }
+    }
+
+    // Swap back
+    std::swap(velocity_, vel);
+#ifdef USE_GPU_OFFLOAD
+    velocity_u_ptr_ = temp_u;
+    velocity_v_ptr_ = temp_v;
+    if (!mesh_->is2D()) velocity_w_ptr_ = temp_w;
+#endif
+}
+
+void RANSSolver::ssprk2_step(double dt) {
+    // SSP-RK2 (Heun's method):
+    // u^(1) = u^n + dt * L(u^n)
+    // u^{n+1} = 0.5 * u^n + 0.5 * (u^(1) + dt * L(u^(1)))
+    //         = 0.5 * u^n + 0.5 * u^(1) + 0.5 * dt * L(u^(1))
+
+    // Store u^n in velocity_rk_
+    // Copy velocity_ -> velocity_rk_
+    const size_t u_total = velocity_.u_total_size();
+    const size_t v_total = velocity_.v_total_size();
+    std::copy(velocity_.u_data().begin(), velocity_.u_data().end(), velocity_rk_.u_data().begin());
+    std::copy(velocity_.v_data().begin(), velocity_.v_data().end(), velocity_rk_.v_data().begin());
+    if (!mesh_->is2D()) {
+        std::copy(velocity_.w_data().begin(), velocity_.w_data().end(), velocity_rk_.w_data().begin());
+    }
+
+    // Stage 1: u^(1) = u^n + dt * L(u^n), then project
+    euler_substep(velocity_, velocity_star_, dt);
+    project_velocity(velocity_star_, dt);
+
+    // Stage 2: u^{n+1} = 0.5 * u^n + 0.5 * (u^(1) + dt * L(u^(1)))
+    // First compute: temp = u^(1) + dt * L(u^(1))
+    euler_substep(velocity_star_, velocity_, dt);  // velocity_ = u^(1) + dt * L(u^(1))
+
+    // Then: u^{n+1} = 0.5 * u^n + 0.5 * temp
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    const int u_stride = Nx + 2 * Ng + 1;
+    const int v_stride = Nx + 2 * Ng;
+
+    double* u_new = velocity_.u_data().data();
+    double* v_new = velocity_.v_data().data();
+    const double* u_n = velocity_rk_.u_data().data();
+    const double* v_n = velocity_rk_.v_data().data();
+
+    if (mesh_->is2D()) {
+        const int n_u = (Nx + 1) * Ny;
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+            int u_idx = j * u_stride + i;
+            u_new[u_idx] = 0.5 * u_n[u_idx] + 0.5 * u_new[u_idx];
+        }
+        const int n_v = Nx * (Ny + 1);
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            int v_idx = j * v_stride + i;
+            v_new[v_idx] = 0.5 * v_n[v_idx] + 0.5 * v_new[v_idx];
+        }
+    } else {
+        const int Nz = mesh_->Nz;
+        const int u_plane = u_stride * (Ny + 2 * Ng);
+        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane = w_stride * (Ny + 2 * Ng);
+
+        double* w_new = velocity_.w_data().data();
+        const double* w_n = velocity_rk_.w_data().data();
+
+        const int n_u = (Nx + 1) * Ny * Nz;
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+            int u_idx = k * u_plane + j * u_stride + i;
+            u_new[u_idx] = 0.5 * u_n[u_idx] + 0.5 * u_new[u_idx];
+        }
+        const int n_v = Nx * (Ny + 1) * Nz;
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+            int v_idx = k * v_plane + j * v_stride + i;
+            v_new[v_idx] = 0.5 * v_n[v_idx] + 0.5 * v_new[v_idx];
+        }
+        const int n_w = Nx * Ny * (Nz + 1);
+        for (int idx = 0; idx < n_w; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            int w_idx = k * w_plane + j * w_stride + i;
+            w_new[w_idx] = 0.5 * w_n[w_idx] + 0.5 * w_new[w_idx];
+        }
+    }
+
+    // Final projection
+    project_velocity(velocity_, dt);
+}
+
+void RANSSolver::ssprk3_step(double dt) {
+    // SSP-RK3 (Strong Stability Preserving, 3-stage):
+    // u^(1) = u^n + dt * L(u^n)
+    // u^(2) = 3/4 * u^n + 1/4 * (u^(1) + dt * L(u^(1)))
+    // u^{n+1} = 1/3 * u^n + 2/3 * (u^(2) + dt * L(u^(2)))
+    //
+    // With projection at each stage for incompressibility
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    const int u_stride = Nx + 2 * Ng + 1;
+    const int v_stride = Nx + 2 * Ng;
+    const bool is_2d = mesh_->is2D();
+
+    // Store u^n in velocity_rk_
+    std::copy(velocity_.u_data().begin(), velocity_.u_data().end(), velocity_rk_.u_data().begin());
+    std::copy(velocity_.v_data().begin(), velocity_.v_data().end(), velocity_rk_.v_data().begin());
+    if (!is_2d) {
+        std::copy(velocity_.w_data().begin(), velocity_.w_data().end(), velocity_rk_.w_data().begin());
+    }
+
+    double* u_n = velocity_rk_.u_data().data();
+    double* v_n = velocity_rk_.v_data().data();
+    double* u_cur = velocity_.u_data().data();
+    double* v_cur = velocity_.v_data().data();
+    double* u_star = velocity_star_.u_data().data();
+    double* v_star = velocity_star_.v_data().data();
+
+    // =========== Stage 1: u^(1) = u^n + dt * L(u^n) ===========
+    euler_substep(velocity_, velocity_star_, dt);
+    project_velocity(velocity_star_, dt);
+    // velocity_star_ now contains u^(1)
+
+    // =========== Stage 2: u^(2) = 3/4 * u^n + 1/4 * (u^(1) + dt * L(u^(1))) ===========
+    // First compute: temp = u^(1) + dt * L(u^(1))
+    euler_substep(velocity_star_, velocity_, dt);
+    // velocity_ = u^(1) + dt * L(u^(1))
+
+    // Then: u^(2) = 3/4 * u^n + 1/4 * velocity_
+    if (is_2d) {
+        const int n_u = (Nx + 1) * Ny;
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+            int u_idx = j * u_stride + i;
+            u_star[u_idx] = 0.75 * u_n[u_idx] + 0.25 * u_cur[u_idx];
+        }
+        const int n_v = Nx * (Ny + 1);
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            int v_idx = j * v_stride + i;
+            v_star[v_idx] = 0.75 * v_n[v_idx] + 0.25 * v_cur[v_idx];
+        }
+    } else {
+        const int Nz = mesh_->Nz;
+        const int u_plane = u_stride * (Ny + 2 * Ng);
+        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane = w_stride * (Ny + 2 * Ng);
+
+        double* w_n = velocity_rk_.w_data().data();
+        double* w_cur = velocity_.w_data().data();
+        double* w_star = velocity_star_.w_data().data();
+
+        const int n_u = (Nx + 1) * Ny * Nz;
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+            int u_idx = k * u_plane + j * u_stride + i;
+            u_star[u_idx] = 0.75 * u_n[u_idx] + 0.25 * u_cur[u_idx];
+        }
+        const int n_v = Nx * (Ny + 1) * Nz;
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+            int v_idx = k * v_plane + j * v_stride + i;
+            v_star[v_idx] = 0.75 * v_n[v_idx] + 0.25 * v_cur[v_idx];
+        }
+        const int n_w = Nx * Ny * (Nz + 1);
+        for (int idx = 0; idx < n_w; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            int w_idx = k * w_plane + j * w_stride + i;
+            w_star[w_idx] = 0.75 * w_n[w_idx] + 0.25 * w_cur[w_idx];
+        }
+    }
+
+    project_velocity(velocity_star_, dt);
+    // velocity_star_ now contains u^(2)
+
+    // =========== Stage 3: u^{n+1} = 1/3 * u^n + 2/3 * (u^(2) + dt * L(u^(2))) ===========
+    // First compute: temp = u^(2) + dt * L(u^(2))
+    euler_substep(velocity_star_, velocity_, dt);
+    // velocity_ = u^(2) + dt * L(u^(2))
+
+    // Then: u^{n+1} = 1/3 * u^n + 2/3 * velocity_
+    if (is_2d) {
+        const int n_u = (Nx + 1) * Ny;
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+            int u_idx = j * u_stride + i;
+            u_cur[u_idx] = (1.0/3.0) * u_n[u_idx] + (2.0/3.0) * u_cur[u_idx];
+        }
+        const int n_v = Nx * (Ny + 1);
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            int v_idx = j * v_stride + i;
+            v_cur[v_idx] = (1.0/3.0) * v_n[v_idx] + (2.0/3.0) * v_cur[v_idx];
+        }
+    } else {
+        const int Nz = mesh_->Nz;
+        const int u_plane = u_stride * (Ny + 2 * Ng);
+        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride_local = Nx + 2 * Ng;
+        const int w_plane = w_stride_local * (Ny + 2 * Ng);
+
+        double* w_n = velocity_rk_.w_data().data();
+        double* w_cur = velocity_.w_data().data();
+
+        const int n_u = (Nx + 1) * Ny * Nz;
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+            int u_idx = k * u_plane + j * u_stride + i;
+            u_cur[u_idx] = (1.0/3.0) * u_n[u_idx] + (2.0/3.0) * u_cur[u_idx];
+        }
+        const int n_v = Nx * (Ny + 1) * Nz;
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+            int v_idx = k * v_plane + j * v_stride + i;
+            v_cur[v_idx] = (1.0/3.0) * v_n[v_idx] + (2.0/3.0) * v_cur[v_idx];
+        }
+        const int n_w = Nx * Ny * (Nz + 1);
+        for (int idx = 0; idx < n_w; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            int w_idx = k * w_plane + j * w_stride_local + i;
+            w_cur[w_idx] = (1.0/3.0) * w_n[w_idx] + (2.0/3.0) * w_cur[w_idx];
+        }
+    }
+
+    // Final projection
+    project_velocity(velocity_, dt);
+
+    // Apply final BCs
+    apply_velocity_bc();
+}
+
+// ============================================================================
+// End RK Time Integration Methods
+// ============================================================================
 
 std::pair<double, int> RANSSolver::solve_steady() {
     double residual = 1.0;
@@ -3904,6 +6363,76 @@ double RANSSolver::Re_tau() const {
     double u_tau = friction_velocity();
     double delta = (mesh_->y_max - mesh_->y_min) / 2.0;
     return u_tau * delta / config_.nu;
+}
+
+double RANSSolver::compute_convective_ke_production() const {
+    // Compute <u, conv(u)> = rate of KE change due to advection
+    // For skew-symmetric advection with div(u)=0, this should be ~0
+    //
+    // IMPORTANT: For periodic directions, the last face wraps to the first,
+    // so we only sum over Nx (not Nx+1) unique faces to avoid double counting.
+    // For non-periodic (wall) directions, all Ny+1 faces are unique.
+
+    double sum = 0.0;
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dV = mesh_->dx * mesh_->dy * (mesh_->is2D() ? 1.0 : mesh_->dz);
+
+    // Determine periodicity from velocity BCs
+    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic);
+    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic);
+    const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic);
+
+    // Face counts: periodic dirs have N unique faces, non-periodic have N+1
+    const int n_u_x = x_periodic ? Nx : (Nx + 1);  // u-faces in x
+    const int n_v_y = y_periodic ? Ny : (Ny + 1);  // v-faces in y
+    const int n_w_z = z_periodic ? Nz : (Nz + 1);  // w-faces in z
+
+    if (mesh_->is2D()) {
+        // 2D: u-faces + v-faces
+        // u-faces: n_u_x faces in x, Ny cells in y
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + n_u_x; ++i) {
+                sum += velocity_.u(i, j) * conv_.u(i, j) * dV;
+            }
+        }
+        // v-faces: Nx cells in x, n_v_y faces in y
+        for (int j = Ng; j < Ng + n_v_y; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                sum += velocity_.v(i, j) * conv_.v(i, j) * dV;
+            }
+        }
+    } else {
+        // 3D: u-faces + v-faces + w-faces
+        // u-faces: n_u_x in x, Ny in y, Nz in z
+        for (int k = Ng; k < Ng + Nz; ++k) {
+            for (int j = Ng; j < Ng + Ny; ++j) {
+                for (int i = Ng; i < Ng + n_u_x; ++i) {
+                    sum += velocity_.u(i, j, k) * conv_.u(i, j, k) * dV;
+                }
+            }
+        }
+        // v-faces: Nx in x, n_v_y in y, Nz in z
+        for (int k = Ng; k < Ng + Nz; ++k) {
+            for (int j = Ng; j < Ng + n_v_y; ++j) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    sum += velocity_.v(i, j, k) * conv_.v(i, j, k) * dV;
+                }
+            }
+        }
+        // w-faces: Nx in x, Ny in y, n_w_z in z
+        for (int k = Ng; k < Ng + n_w_z; ++k) {
+            for (int j = Ng; j < Ng + Ny; ++j) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    sum += velocity_.w(i, j, k) * conv_.w(i, j, k) * dV;
+                }
+            }
+        }
+    }
+
+    return sum;
 }
 
 // ============================================================================
@@ -4940,6 +7469,8 @@ void RANSSolver::extract_field_pointers() {
     velocity_star_v_ptr_ = velocity_star_.v_data().data();
     velocity_old_u_ptr_ = velocity_old_.u_data().data();
     velocity_old_v_ptr_ = velocity_old_.v_data().data();
+    velocity_rk_u_ptr_ = velocity_rk_.u_data().data();
+    velocity_rk_v_ptr_ = velocity_rk_.v_data().data();
 
     // Cell-centered fields
     pressure_ptr_ = pressure_.data().data();
@@ -4960,6 +7491,7 @@ void RANSSolver::extract_field_pointers() {
         velocity_w_ptr_ = velocity_.w_data().data();
         velocity_star_w_ptr_ = velocity_star_.w_data().data();
         velocity_old_w_ptr_ = velocity_old_.w_data().data();
+        velocity_rk_w_ptr_ = velocity_rk_.w_data().data();
         conv_w_ptr_ = conv_.w_data().data();
         diff_w_ptr_ = diff_.w_data().data();
     }
@@ -5039,10 +7571,13 @@ void RANSSolver::initialize_gpu_buffers() {
 
     // Group 5: device-only arrays (alloc: will be computed on GPU)
     // velocity_old: device-resident for residual computation (host never used)
+    // velocity_rk: work buffer for RK time integration stages
     // tau_*: Reynolds stress components computed by EARSM/TBNN
     #pragma omp target enter data \
         map(alloc: velocity_old_u_ptr_[0:u_total_size], \
                    velocity_old_v_ptr_[0:v_total_size], \
+                   velocity_rk_u_ptr_[0:u_total_size], \
+                   velocity_rk_v_ptr_[0:v_total_size], \
                    tau_xx_ptr_[0:field_total_size_], \
                    tau_xy_ptr_[0:field_total_size_], \
                    tau_yy_ptr_[0:field_total_size_])
@@ -5055,7 +7590,8 @@ void RANSSolver::initialize_gpu_buffers() {
                     velocity_star_w_ptr_[0:w_total_size], \
                     conv_w_ptr_[0:w_total_size], \
                     diff_w_ptr_[0:w_total_size]) \
-            map(alloc: velocity_old_w_ptr_[0:w_total_size])
+            map(alloc: velocity_old_w_ptr_[0:w_total_size], \
+                       velocity_rk_w_ptr_[0:w_total_size])
     }
 
     // Zero-initialize device-only arrays to prevent garbage in first residual computation
@@ -5066,10 +7602,18 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target teams distribute parallel for map(present: velocity_old_v_ptr_[0:v_total_size])
     for (size_t i = 0; i < v_total_size; ++i) velocity_old_v_ptr_[i] = 0.0;
 
+    #pragma omp target teams distribute parallel for map(present: velocity_rk_u_ptr_[0:u_total_size])
+    for (size_t i = 0; i < u_total_size; ++i) velocity_rk_u_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: velocity_rk_v_ptr_[0:v_total_size])
+    for (size_t i = 0; i < v_total_size; ++i) velocity_rk_v_ptr_[i] = 0.0;
+
     if (!mesh_->is2D()) {
         const size_t w_total_size = velocity_.w_total_size();
         #pragma omp target teams distribute parallel for map(present: velocity_old_w_ptr_[0:w_total_size])
         for (size_t i = 0; i < w_total_size; ++i) velocity_old_w_ptr_[i] = 0.0;
+        #pragma omp target teams distribute parallel for map(present: velocity_rk_w_ptr_[0:w_total_size])
+        for (size_t i = 0; i < w_total_size; ++i) velocity_rk_w_ptr_[i] = 0.0;
     }
 
     // Zero-initialize Reynolds stress tensor components
@@ -5124,6 +7668,8 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: velocity_star_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(delete: velocity_old_u_ptr_[0:u_total_size])
     #pragma omp target exit data map(delete: velocity_old_v_ptr_[0:v_total_size])
+    #pragma omp target exit data map(delete: velocity_rk_u_ptr_[0:u_total_size])
+    #pragma omp target exit data map(delete: velocity_rk_v_ptr_[0:v_total_size])
     #pragma omp target exit data map(delete: pressure_corr_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: nu_eff_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: conv_u_ptr_[0:u_total_size])
@@ -5138,6 +7684,7 @@ void RANSSolver::cleanup_gpu_buffers() {
         const size_t w_total_size = velocity_.w_total_size();
         #pragma omp target exit data map(delete: velocity_star_w_ptr_[0:w_total_size])
         #pragma omp target exit data map(delete: velocity_old_w_ptr_[0:w_total_size])
+        #pragma omp target exit data map(delete: velocity_rk_w_ptr_[0:w_total_size])
         #pragma omp target exit data map(delete: conv_w_ptr_[0:w_total_size])
         #pragma omp target exit data map(delete: diff_w_ptr_[0:w_total_size])
     }

@@ -166,6 +166,11 @@ public:
     
     /// Compute friction Reynolds number Re_tau
     double Re_tau() const;
+
+    /// Compute convective KE production rate: <u, conv(u)>
+    /// Returns the rate of KE change due to advection (should be ~0 for skew-symmetric form)
+    /// Call this after compute_convective_term() to get meaningful results
+    double compute_convective_ke_production() const;
     
     /// Print velocity profile at x = x_loc
     void print_velocity_profile(double x_loc = 0.0) const;
@@ -211,6 +216,7 @@ private:
     VectorField conv_;           // Convective term
     VectorField diff_;           // Diffusive term
     VectorField velocity_old_;   // Previous velocity for residual (GPU-resident when offload enabled)
+    VectorField velocity_rk_;    // Work buffer for RK stages (stores u^n during multi-stage update)
     
     // Gradient scratch buffers for turbulence models (GPU-resident)
     ScalarField dudx_, dudy_, dvdx_, dvdy_;
@@ -260,7 +266,9 @@ private:
                                   VectorField& u_new, double dt);
     
     // Time integration methods
-    void project_velocity(VectorField& vel_star, double dt);
+    void euler_substep(VectorField& vel_in, VectorField& vel_out, double dt);
+    void project_velocity(VectorField& vel, double dt);
+    void ssprk2_step(double dt);
     void ssprk3_step(double dt);
     
     // Gradient computations
@@ -282,6 +290,9 @@ private:
     double* velocity_old_u_ptr_ = nullptr;  // Device-resident old velocity for residual
     double* velocity_old_v_ptr_ = nullptr;  // Device-resident old velocity for residual
     double* velocity_old_w_ptr_ = nullptr;  // 3D w-velocity
+    double* velocity_rk_u_ptr_ = nullptr;   // RK work buffer for u
+    double* velocity_rk_v_ptr_ = nullptr;   // RK work buffer for v
+    double* velocity_rk_w_ptr_ = nullptr;   // RK work buffer for w (3D)
     double* pressure_ptr_ = nullptr;
     double* pressure_corr_ptr_ = nullptr;
     double* nu_t_ptr_ = nullptr;

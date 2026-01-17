@@ -121,6 +121,7 @@ __global__ void kernel_subtract_mean(
 // Input layout:  packed[(i*Nz + k)*Ny + j]  (cuFFT interleaved batches)
 // Output layout: p_ptr[k+Ng][j+Ng][i+Ng]    (ghost cells, field ordering)
 // Also fills: x-ghosts (periodic), y-ghosts (Neumann), z-ghosts (periodic)
+// Supports Ng >= 1 ghost layers
 __global__ void kernel_unpack_and_bc(
     const double* __restrict__ packed,
     double* __restrict__ p_ptr,
@@ -144,42 +145,56 @@ __global__ void kernel_unpack_and_bc(
                          (j + Ng) * Nx_full + (i + Ng);
         p_ptr[dst_idx] = val;
 
-        // Fill x-ghosts (periodic) - boundary threads only
-        if (i == 0) {
-            // x_lo ghost: copy from x_hi interior (i=Nx-1)
-            size_t src_mode = static_cast<size_t>(Nx - 1) * Nz + k;
+        // Fill ALL Ng x-ghost layers (periodic) - threads at boundary i values
+        // x_lo ghosts: threads at i = [0, Ng-1] fill ghost[g] from interior[Nx-(Ng-g)]
+        if (i < Ng) {
+            // This thread fills x_lo ghost layer 'i' from interior at Nx-Ng+i
+            int src_i = Nx - Ng + i;
+            size_t src_mode = static_cast<size_t>(src_i) * Nz + k;
             double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + 0] = src_val;
+            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + i] = src_val;
         }
-        if (i == Nx - 1) {
-            // x_hi ghost: copy from x_lo interior (i=0)
-            size_t src_mode = static_cast<size_t>(0) * Nz + k;
+        // x_hi ghosts: threads at i = [Nx-Ng, Nx-1] fill ghost[Ng+Nx+g] from interior[Ng+g]
+        if (i >= Nx - Ng) {
+            // This thread fills x_hi ghost layer 'g' where g = i - (Nx - Ng)
+            int g = i - (Nx - Ng);
+            int src_i = g;  // interior index g
+            size_t src_mode = static_cast<size_t>(src_i) * Nz + k;
             double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Nx + Ng)] = src_val;
+            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Ng + Nx + g)] = src_val;
         }
 
-        // Fill y-ghosts (Neumann: dp/dy=0) - boundary threads only
-        if (j == 0) {
-            // y_lo ghost: copy from first interior row
-            p_ptr[(k + Ng) * Nx_full * Ny_full + 0 * Nx_full + (i + Ng)] = val;
+        // Fill ALL Ng y-ghost layers (Neumann: dp/dy=0) - threads at boundary j values
+        // y_lo ghosts: all ghost layers copy from first interior row (j=0)
+        if (j < Ng) {
+            // Ghost layer j copies from interior j=0
+            size_t src_mode_j0 = static_cast<size_t>(i) * Nz + k;
+            double src_val = packed[src_mode_j0 * Ny + 0] * norm;  // j=0 interior
+            p_ptr[(k + Ng) * Nx_full * Ny_full + j * Nx_full + (i + Ng)] = src_val;
         }
-        if (j == Ny - 1) {
-            // y_hi ghost: copy from last interior row
-            p_ptr[(k + Ng) * Nx_full * Ny_full + (Ny + Ng) * Nx_full + (i + Ng)] = val;
+        // y_hi ghosts: all ghost layers copy from last interior row (j=Ny-1)
+        if (j >= Ny - Ng) {
+            int g = j - (Ny - Ng);
+            size_t src_mode_jN = static_cast<size_t>(i) * Nz + k;
+            double src_val = packed[src_mode_jN * Ny + (Ny - 1)] * norm;  // j=Ny-1 interior
+            p_ptr[(k + Ng) * Nx_full * Ny_full + (Ng + Ny + g) * Nx_full + (i + Ng)] = src_val;
         }
 
-        // Fill z-ghosts (periodic) - boundary threads only
-        if (k == 0) {
-            // z_lo ghost: copy from z_hi interior (k=Nz-1)
-            size_t src_mode = static_cast<size_t>(i) * Nz + (Nz - 1);
+        // Fill ALL Ng z-ghost layers (periodic) - threads at boundary k values
+        // z_lo ghosts: threads at k = [0, Ng-1] fill ghost[g] from interior[Nz-(Ng-g)]
+        if (k < Ng) {
+            int src_k = Nz - Ng + k;
+            size_t src_mode = static_cast<size_t>(i) * Nz + src_k;
             double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[0 * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
+            p_ptr[k * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
         }
-        if (k == Nz - 1) {
-            // z_hi ghost: copy from z_lo interior (k=0)
-            size_t src_mode = static_cast<size_t>(i) * Nz + 0;
+        // z_hi ghosts: threads at k = [Nz-Ng, Nz-1] fill ghost[Ng+Nz+g] from interior[g]
+        if (k >= Nz - Ng) {
+            int g = k - (Nz - Ng);
+            int src_k = g;
+            size_t src_mode = static_cast<size_t>(i) * Nz + src_k;
             double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[(Nz + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
+            p_ptr[(Ng + Nz + g) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
         }
     }
 }
@@ -188,10 +203,7 @@ __global__ void kernel_unpack_and_bc(
 
 FFTPoissonSolver::FFTPoissonSolver(const Mesh& mesh)
     : mesh_(&mesh) {
-    // FFT solver's apply_bc_device() only fills outermost ghost layer
-    if (mesh.Nghost != 1) {
-        throw std::runtime_error("FFTPoissonSolver requires Nghost == 1");
-    }
+    // FFT solver supports Nghost >= 1 (apply_bc_device fills all ghost layers)
 #ifdef USE_GPU_OFFLOAD
     using_gpu_ = true;
     initialize_fft();
@@ -245,6 +257,23 @@ void FFTPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     }
     bc_y_lo_ = y_lo;
     bc_y_hi_ = y_hi;
+}
+
+void FFTPoissonSolver::set_space_order(int order) {
+    if (order != 2 && order != 4) {
+        std::cerr << "[FFTPoissonSolver] Warning: space_order must be 2 or 4, got "
+                  << order << ". Using 2.\n";
+        order = 2;
+    }
+    if (order != space_order_) {
+        space_order_ = order;
+        // Recompute eigenvalues and tridiagonal matrices with new order
+        if (initialized_) {
+            std::cout << "[FFTPoissonSolver] Recomputing eigenvalues for O" << order << "\n";
+            compute_eigenvalues();
+            initialize_cusparse();  // Recompute tridiagonal matrices
+        }
+    }
 }
 
 bool FFTPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
@@ -404,14 +433,39 @@ void FFTPoissonSolver::compute_eigenvalues() {
     const double dz = mesh_->dz;
     const double pi = M_PI;
 
-    // Eigenvalues for x direction: λ_x(kx) = (2 - 2*cos(2π*kx/Nx)) / dx²
-    for (int kx = 0; kx < Nx; ++kx) {
-        lambda_x_[kx] = (2.0 - 2.0 * std::cos(2.0 * pi * kx / Nx)) / (dx * dx);
-    }
+    if (space_order_ == 4) {
+        // O4 MAC-consistent eigenvalues: λ = symbol of (Dfc_O4 ∘ Dcf_O4)
+        // For Dcf_O4 = (1, -27, 27, -1)/(24h) and Dfc_O4 = (1, -27, 27, -1)/(24h),
+        // the composed Laplacian symbol is:
+        //   λ(θ) = (1460 - 1566*cos(θ) + 108*cos(2θ) - 2*cos(3θ)) / (576*h²)
+        // This gives an exact FFT solve consistent with O4 grad/div projection.
+        std::cout << "[FFTPoissonSolver] Using O4 MAC-consistent eigenvalues\n";
 
-    // Eigenvalues for z direction (only positive frequencies for R2C)
-    for (int kz = 0; kz < Nz_complex; ++kz) {
-        lambda_z_[kz] = (2.0 - 2.0 * std::cos(2.0 * pi * kz / Nz)) / (dz * dz);
+        for (int kx = 0; kx < Nx; ++kx) {
+            double theta = 2.0 * pi * kx / Nx;
+            double c1 = std::cos(theta);
+            double c2 = std::cos(2.0 * theta);
+            double c3 = std::cos(3.0 * theta);
+            lambda_x_[kx] = (1460.0 - 1566.0*c1 + 108.0*c2 - 2.0*c3) / (576.0 * dx * dx);
+        }
+
+        for (int kz = 0; kz < Nz_complex; ++kz) {
+            double theta = 2.0 * pi * kz / Nz;
+            double c1 = std::cos(theta);
+            double c2 = std::cos(2.0 * theta);
+            double c3 = std::cos(3.0 * theta);
+            lambda_z_[kz] = (1460.0 - 1566.0*c1 + 108.0*c2 - 2.0*c3) / (576.0 * dz * dz);
+        }
+    } else {
+        // O2 eigenvalues: λ(θ) = (2 - 2*cos(θ)) / h² = 4*sin²(θ/2) / h²
+        // Standard second-order discrete Laplacian
+        for (int kx = 0; kx < Nx; ++kx) {
+            lambda_x_[kx] = (2.0 - 2.0 * std::cos(2.0 * pi * kx / Nx)) / (dx * dx);
+        }
+
+        for (int kz = 0; kz < Nz_complex; ++kz) {
+            lambda_z_[kz] = (2.0 - 2.0 * std::cos(2.0 * pi * kz / Nz)) / (dz * dz);
+        }
     }
 
     cudaDeviceSynchronize();
@@ -714,8 +768,7 @@ void FFTPoissonSolver::unpack_and_apply_bc(double* p_ptr) {
 
     double* packed = p_packed_;
 
-    // FUSED: Unpack interior + fill all ghost cells in one pass
-    // This eliminates 3 separate BC kernels and improves memory access
+    // Step 1: Unpack interior cells from FFT result
     #pragma omp target teams distribute parallel for collapse(3) \
         map(present: p_ptr[0:total_size]) is_device_ptr(packed)
     for (int i = 0; i < Nx; ++i) {
@@ -729,40 +782,55 @@ void FFTPoissonSolver::unpack_and_apply_bc(double* p_ptr) {
                 const size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
                                        (j + Ng) * Nx_full + (i + Ng);
                 p_ptr[dst_idx] = val;
+            }
+        }
+    }
 
-                // Fill x-ghosts for boundary cells (periodic)
-                if (i == 0) {
-                    // x_lo ghost: copy from x_hi interior (i=Nx-1)
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + 0] =
-                        packed[static_cast<size_t>((Nx - 1) * Nz + k) * Ny + j] * norm;
-                }
-                if (i == Nx - 1) {
-                    // x_hi ghost: copy from x_lo interior (i=0)
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Nx + Ng)] =
-                        packed[static_cast<size_t>(0 * Nz + k) * Ny + j] * norm;
-                }
+    // Step 2: Fill ALL Ng ghost layers for each boundary
+    // X boundaries (periodic) - fill all Ng ghost layers
+    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
+    for (int g = 0; g < Ng; ++g) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                const int kk = k + Ng;
+                const int jj = j + Ng;
+                // x_lo ghost layer g: ghost[g] = interior[Nx + g] (periodic wrap)
+                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + g] =
+                    p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Nx + g)];
+                // x_hi ghost layer g: ghost[Ng + Nx + g] = interior[Ng + g]
+                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Ng + Nx + g)] =
+                    p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Ng + g)];
+            }
+        }
+    }
 
-                // Fill y-ghosts for boundary cells (Neumann: dp/dy=0)
-                if (j == 0) {
-                    // y_lo ghost: copy from first interior row
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + 0 * Nx_full + (i + Ng)] = val;
-                }
-                if (j == Ny - 1) {
-                    // y_hi ghost: copy from last interior row
-                    p_ptr[(k + Ng) * Nx_full * Ny_full + (Ny + Ng) * Nx_full + (i + Ng)] = val;
-                }
+    // Y boundaries (Neumann dp/dy = 0) - fill all Ng ghost layers
+    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
+    for (int g = 0; g < Ng; ++g) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int i = 0; i < Nx + 2 * Ng; ++i) {
+                const int kk = k + Ng;
+                // y_lo ghost layer g: all ghost layers copy from first interior cell (Neumann)
+                p_ptr[kk * Nx_full * Ny_full + g * Nx_full + i] =
+                    p_ptr[kk * Nx_full * Ny_full + Ng * Nx_full + i];
+                // y_hi ghost layer g: all ghost layers copy from last interior cell
+                p_ptr[kk * Nx_full * Ny_full + (Ng + Ny + g) * Nx_full + i] =
+                    p_ptr[kk * Nx_full * Ny_full + (Ng + Ny - 1) * Nx_full + i];
+            }
+        }
+    }
 
-                // Fill z-ghosts for boundary cells (periodic)
-                if (k == 0) {
-                    // z_lo ghost: copy from z_hi interior (k=Nz-1)
-                    p_ptr[0 * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
-                        packed[static_cast<size_t>(i * Nz + (Nz - 1)) * Ny + j] * norm;
-                }
-                if (k == Nz - 1) {
-                    // z_hi ghost: copy from z_lo interior (k=0)
-                    p_ptr[(Nz + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] =
-                        packed[static_cast<size_t>(i * Nz + 0) * Ny + j] * norm;
-                }
+    // Z boundaries (periodic) - fill all Ng ghost layers
+    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
+    for (int g = 0; g < Ng; ++g) {
+        for (int j = 0; j < Ny + 2 * Ng; ++j) {
+            for (int i = 0; i < Nx + 2 * Ng; ++i) {
+                // z_lo ghost layer g: ghost[g] = interior[Nz + g] (periodic wrap)
+                p_ptr[g * Nx_full * Ny_full + j * Nx_full + i] =
+                    p_ptr[(Nz + g) * Nx_full * Ny_full + j * Nx_full + i];
+                // z_hi ghost layer g: ghost[Ng + Nz + g] = interior[Ng + g]
+                p_ptr[(Ng + Nz + g) * Nx_full * Ny_full + j * Nx_full + i] =
+                    p_ptr[(Ng + g) * Nx_full * Ny_full + j * Nx_full + i];
             }
         }
     }
@@ -777,45 +845,53 @@ void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
     const int Ny_full = Ny + 2 * Ng;
     const size_t total_size = static_cast<size_t>(Nx_full) * Ny_full * (Nz + 2 * Ng);
 
-    // X boundaries (periodic)
-    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
-    for (int k = 0; k < Nz; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            const int kk = k + Ng;
-            const int jj = j + Ng;
-            // x_lo ghost from x_hi interior
-            p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + 0] =
-                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + Nx];
-            // x_hi ghost from x_lo interior
-            p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Nx + Ng)] =
-                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + Ng];
+    // Fill ALL Ng ghost layers for each boundary
+
+    // X boundaries (periodic) - fill all Ng ghost layers
+    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
+    for (int g = 0; g < Ng; ++g) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                const int kk = k + Ng;
+                const int jj = j + Ng;
+                // x_lo ghost layer g: ghost[g] = interior[Nx + g] (periodic wrap)
+                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + g] =
+                    p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Nx + g)];
+                // x_hi ghost layer g: ghost[Ng + Nx + g] = interior[Ng + g]
+                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Ng + Nx + g)] =
+                    p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Ng + g)];
+            }
         }
     }
 
-    // Y boundaries (Neumann)
-    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
-    for (int k = 0; k < Nz; ++k) {
-        for (int i = 0; i < Nx + 2 * Ng; ++i) {
-            const int kk = k + Ng;
-            // y_lo ghost (Neumann: dp/dy = 0)
-            p_ptr[kk * Nx_full * Ny_full + 0 * Nx_full + i] =
-                p_ptr[kk * Nx_full * Ny_full + Ng * Nx_full + i];
-            // y_hi ghost
-            p_ptr[kk * Nx_full * Ny_full + (Ny + Ng) * Nx_full + i] =
-                p_ptr[kk * Nx_full * Ny_full + (Ny + Ng - 1) * Nx_full + i];
+    // Y boundaries (Neumann dp/dy = 0) - fill all Ng ghost layers
+    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
+    for (int g = 0; g < Ng; ++g) {
+        for (int k = 0; k < Nz; ++k) {
+            for (int i = 0; i < Nx + 2 * Ng; ++i) {
+                const int kk = k + Ng;
+                // y_lo ghost layer g: all ghost layers copy from first interior cell (Neumann)
+                p_ptr[kk * Nx_full * Ny_full + g * Nx_full + i] =
+                    p_ptr[kk * Nx_full * Ny_full + Ng * Nx_full + i];
+                // y_hi ghost layer g: all ghost layers copy from last interior cell
+                p_ptr[kk * Nx_full * Ny_full + (Ng + Ny + g) * Nx_full + i] =
+                    p_ptr[kk * Nx_full * Ny_full + (Ng + Ny - 1) * Nx_full + i];
+            }
         }
     }
 
-    // Z boundaries (periodic)
-    #pragma omp target teams distribute parallel for collapse(2) map(present: p_ptr[0:total_size])
-    for (int j = 0; j < Ny + 2 * Ng; ++j) {
-        for (int i = 0; i < Nx + 2 * Ng; ++i) {
-            // z_lo ghost
-            p_ptr[0 * Nx_full * Ny_full + j * Nx_full + i] =
-                p_ptr[Nz * Nx_full * Ny_full + j * Nx_full + i];
-            // z_hi ghost
-            p_ptr[(Nz + Ng) * Nx_full * Ny_full + j * Nx_full + i] =
-                p_ptr[Ng * Nx_full * Ny_full + j * Nx_full + i];
+    // Z boundaries (periodic) - fill all Ng ghost layers
+    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
+    for (int g = 0; g < Ng; ++g) {
+        for (int j = 0; j < Ny + 2 * Ng; ++j) {
+            for (int i = 0; i < Nx + 2 * Ng; ++i) {
+                // z_lo ghost layer g: ghost[g] = interior[Nz + g] (periodic wrap)
+                p_ptr[g * Nx_full * Ny_full + j * Nx_full + i] =
+                    p_ptr[(Nz + g) * Nx_full * Ny_full + j * Nx_full + i];
+                // z_hi ghost layer g: ghost[Ng + Nz + g] = interior[Ng + g]
+                p_ptr[(Ng + Nz + g) * Nx_full * Ny_full + j * Nx_full + i] =
+                    p_ptr[(Ng + g) * Nx_full * Ny_full + j * Nx_full + i];
+            }
         }
     }
 }
