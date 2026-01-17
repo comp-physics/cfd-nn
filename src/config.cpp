@@ -132,7 +132,8 @@ void Config::load(const std::string& filename) {
     } else if (scheme_str == "upwind2") {
         convective_scheme = ConvectiveScheme::Upwind2;
     } else if (scheme_str == "conservative" || scheme_str == "cons") {
-        std::cerr << "Warning: 'conservative' scheme was removed. Using 'skew' (energy-conserving, Galilean invariant) instead.\n";
+        std::cerr << "Warning: 'conservative' (flux-form) scheme was removed; mapping to 'skew' (not flux-form).\n";
+        std::cerr << "         Note: skew is energy-conserving but NOT equivalent to flux-form conservative.\n";
         std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
         convective_scheme = ConvectiveScheme::Skew;
     } else if (scheme_str == "central") {
@@ -404,7 +405,7 @@ void Config::parse_args(int argc, char** argv) {
             } else if (val == "upwind2") {
                 convective_scheme = ConvectiveScheme::Upwind2;
             } else if (val == "conservative" || val == "cons") {
-                std::cerr << "Warning: 'conservative' scheme was removed. Using 'skew' instead.\n";
+                std::cerr << "Warning: 'conservative' (flux-form) removed; mapping to 'skew' (not flux-form).\n";
                 convective_scheme = ConvectiveScheme::Skew;
             } else if (val == "central") {
                 convective_scheme = ConvectiveScheme::Central;
