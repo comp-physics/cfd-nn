@@ -66,6 +66,12 @@ inline TestCounters& counters() {
 // Test Recording
 //=============================================================================
 
+/// Test type: GATE (hard fail) vs TRACK (monitor only, always passes CI)
+enum class TestType {
+    GATE,   ///< Hard CI gate - failure fails CI
+    TRACK   ///< Diagnostic tracking - logged but never fails CI
+};
+
 /// Record a test result with optional skip flag
 /// @param name  Test name (displayed left-aligned)
 /// @param pass  Whether test passed (ignored if skip=true)
@@ -81,6 +87,85 @@ inline void record(const char* name, bool pass, bool skip = false, int width = 5
         ++counters().passed;
     } else {
         std::cout << "[FAIL]\n";
+        ++counters().failed;
+        counters().failed_names.push_back(name);
+    }
+}
+
+/// Record a test result with explicit GATE/TRACK type
+/// TRACK tests show [TRACK:PASS] or [TRACK:WARN] but never fail CI
+/// GATE tests show [GATE:PASS] or [GATE:FAIL] and fail CI on failure
+inline void record(const char* name, bool pass, TestType type, int width = 50) {
+    std::cout << "  " << std::left << std::setw(width) << name;
+    if (type == TestType::TRACK) {
+        if (pass) {
+            std::cout << "[TRACK:PASS]\n";
+        } else {
+            std::cout << "[TRACK:WARN]\n";  // Warning only, doesn't fail CI
+        }
+        ++counters().passed;  // TRACK tests always count as passed
+    } else {
+        // GATE type - standard behavior
+        if (pass) {
+            std::cout << "[GATE:PASS]\n";
+            ++counters().passed;
+        } else {
+            std::cout << "[GATE:FAIL]\n";
+            ++counters().failed;
+            counters().failed_names.push_back(name);
+        }
+    }
+}
+
+/// Record a gated test with value display
+inline void record_gate(const char* name, bool pass, double actual, double threshold, int width = 50) {
+    std::cout << "  " << std::left << std::setw(width) << name;
+    std::cout << std::scientific << std::setprecision(2);
+    if (pass) {
+        std::cout << "[GATE:PASS] (" << actual << " vs " << threshold << ")\n";
+        ++counters().passed;
+    } else {
+        std::cout << "[GATE:FAIL] (" << actual << " vs " << threshold << ")\n";
+        ++counters().failed;
+        counters().failed_names.push_back(name);
+    }
+}
+
+/// Record a tracked (diagnostic) test with value display - never fails CI
+inline void record_track(const char* name, double actual, double goal, int width = 50) {
+    std::cout << "  " << std::left << std::setw(width) << name;
+    std::cout << std::scientific << std::setprecision(2);
+    bool meets_goal = actual <= goal;
+    if (meets_goal) {
+        std::cout << "[TRACK:PASS] (" << actual << " vs goal " << goal << ")\n";
+    } else {
+        std::cout << "[TRACK:WARN] (" << actual << " vs goal " << goal << ")\n";
+    }
+    ++counters().passed;  // Always passes for CI purposes
+}
+
+/// Record a baseline-relative gated test (ratchet test)
+/// Fails CI if current value exceeds baseline * (1 + margin)
+/// This allows tracking improvement: as baseline improves, threshold tightens
+/// @param name       Test name
+/// @param actual     Current measured value
+/// @param baseline   Baseline value from tests/baselines/
+/// @param margin     Allowed regression margin (e.g., 0.1 = 10% worse than baseline allowed)
+/// @param goal       Ultimate physics goal (for display context)
+inline void record_ratchet(const char* name, double actual, double baseline,
+                            double margin, double goal, int width = 50) {
+    double threshold = baseline * (1.0 + margin);
+    bool pass = actual <= threshold;
+
+    std::cout << "  " << std::left << std::setw(width) << name;
+    std::cout << std::scientific << std::setprecision(2);
+    if (pass) {
+        std::cout << "[RATCHET:PASS] (val=" << actual << ", base=" << baseline
+                  << ", limit=" << threshold << ", goal=" << goal << ")\n";
+        ++counters().passed;
+    } else {
+        std::cout << "[RATCHET:FAIL] (val=" << actual << ", base=" << baseline
+                  << ", limit=" << threshold << ", goal=" << goal << ")\n";
         ++counters().failed;
         counters().failed_names.push_back(name);
     }

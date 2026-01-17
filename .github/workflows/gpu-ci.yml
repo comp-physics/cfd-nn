@@ -140,12 +140,12 @@ jobs:
         echo "=== Test binaries ==="
         ls -lh build_gpu_hypre/test_* 2>/dev/null || echo "No test binaries found"
 
-    # Save HYPRE cache only on cache miss (HYPRE builds are expensive)
-    # Skip if cache was restored with exact key match (cache-hit=true)
+    # Save HYPRE cache only on SUCCESS and cache miss (HYPRE builds are expensive)
+    # Using success() instead of always() to avoid caching corrupted builds
     # continue-on-error: cache save failures shouldn't red-mark CI
     - name: Save HYPRE cache
       continue-on-error: true
-      if: always() && steps.hypre_cache.outputs.cache-hit != 'true'
+      if: success() && steps.hypre_cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: |
@@ -156,15 +156,21 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        # Clean up Slurm artifacts and logs
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
-        rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
+        # On failure, preserve logs for debugging; on success, clean everything
+        if [ "${{ job.status }}" = "success" ]; then
+          # Clean up Slurm artifacts and logs only on success
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
+          rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
+        else
+          echo "=== Preserving logs for debugging (job status: ${{ job.status }}) ==="
+          ls -la "${GITHUB_WORKSPACE}"/gpu_ci_*.{sbatch,out,err,log} 2>/dev/null || true
+        fi
         # Clean build artifacts but keep _deps for cache (only *_hypre dirs are cached)
         for dir in build_gpu_hypre build_cpu_hypre; do
           if [ -d "${GITHUB_WORKSPACE}/${dir}" ]; then

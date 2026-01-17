@@ -383,15 +383,21 @@ void test_galilean_invariance() {
     // Emit QoI
     emit_qoi_galilean(r.ke_rel_diff, r.u_rel_L2);
 
-    // Record results as diagnostics (not hard CI gates)
-    // The comprehensive test_galilean_stage_breakdown handles CI gating
-    // These metrics track the known advection discretization behavior
-    record("[Diagnostic] KE rel diff tracked", true);
-    record("[Diagnostic] u' relL2 tracked", true);
-    std::cout << "  [INFO] KE rel diff: " << r.ke_rel_diff << " (physics goal: <1e-6)\n";
-    std::cout << "  [INFO] u' relL2: " << r.u_rel_L2 << " (physics goal: <1e-4)\n";
-    std::cout << "  NOTE: Strict Galilean invariance limited by advection discretization.\n";
-    std::cout << "        See test_galilean_stage_breakdown for CI-gated divergence checks.\n";
+    // Baseline-relative gating (ratchet tests)
+    // These prevent regressions while allowing future improvements to tighten the bar.
+    // Baseline values from tests/baselines/baseline_cpu.json
+    // If you improve the advection scheme, update the baseline to lock in the gain!
+    constexpr double KE_BASELINE = 6.794184784284718e-02;   // Current expected KE rel diff
+    constexpr double KE_GOAL = 1e-6;                        // Physics goal (perfect invariance)
+    constexpr double U_BASELINE = 1.502662061516368e+00;    // Current expected u' relL2
+    constexpr double U_GOAL = 1e-4;                         // Physics goal
+    constexpr double MARGIN = 0.10;  // Allow 10% regression from baseline
+
+    record_ratchet("Galilean KE invariance", r.ke_rel_diff, KE_BASELINE, MARGIN, KE_GOAL);
+    record_ratchet("Galilean u' invariance", r.u_rel_L2, U_BASELINE, MARGIN, U_GOAL);
+
+    std::cout << "\n  NOTE: Strict Galilean invariance limited by advection discretization.\n";
+    std::cout << "        Ratchet tests prevent regression; improve advection to tighten baseline.\n";
 }
 
 // ============================================================================

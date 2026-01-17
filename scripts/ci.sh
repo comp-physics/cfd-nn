@@ -1067,14 +1067,58 @@ compare_to_baseline() {
     log_info "Comparing QoI against baseline ($BUILD_TYPE)..."
 
     # Verify schema version matches (using Python for portable JSON parsing)
+    # First check that python3 is available
+    if ! command -v python3 &> /dev/null; then
+        log_failure "python3 not found - required for baseline comparison"
+        return 1
+    fi
+
+    # Extract schema versions with explicit error handling
     local current_schema baseline_schema
-    current_schema=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('schema_version',''))" "$METRICS_FILE" 2>/dev/null || echo "")
-    baseline_schema=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('schema_version',''))" "$BASELINE_FILE" 2>/dev/null || echo "")
+    local parse_error
+
+    # Parse current metrics file
+    parse_error=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(d.get('schema_version', ''))
+except Exception as e:
+    print('PARSE_ERROR: ' + str(e), file=sys.stderr)
+    sys.exit(1)
+" "$METRICS_FILE" 2>&1)
+    if [ $? -ne 0 ]; then
+        log_failure "Failed to parse metrics file: $METRICS_FILE"
+        log_info "Error: $parse_error"
+        return 1
+    fi
+    current_schema="$parse_error"
+
+    # Parse baseline file
+    parse_error=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(d.get('schema_version', ''))
+except Exception as e:
+    print('PARSE_ERROR: ' + str(e), file=sys.stderr)
+    sys.exit(1)
+" "$BASELINE_FILE" 2>&1)
+    if [ $? -ne 0 ]; then
+        log_failure "Failed to parse baseline file: $BASELINE_FILE"
+        log_info "Error: $parse_error"
+        return 1
+    fi
+    baseline_schema="$parse_error"
 
     # Schema mismatch is a hard error - baseline must be regenerated
     if [ -z "$baseline_schema" ]; then
         log_failure "Baseline file has no schema_version - regenerate baseline"
         log_info "To regenerate: cp $METRICS_FILE $BASELINE_FILE"
+        return 1
+    fi
+    if [ -z "$current_schema" ]; then
+        log_failure "Metrics file has no schema_version - this is a bug"
         return 1
     fi
     if [ "$current_schema" != "$baseline_schema" ]; then

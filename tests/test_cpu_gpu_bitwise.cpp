@@ -1,4 +1,4 @@
-/// CPU/GPU Bitwise Comparison Test
+/// CPU/GPU Cross-Backend Consistency Test
 /// Compares CPU-built and GPU-built solver outputs to verify code sharing paradigm.
 ///
 /// This test REQUIRES two separate builds:
@@ -7,6 +7,11 @@
 ///
 /// Expected result: Small differences (1e-12 to 1e-10) due to FP operation ordering,
 /// but not exact zeros (which would indicate both runs used the same backend).
+///
+/// NOTE: The name "bitwise" is historical - results are NOT bit-identical due to
+/// floating-point operation ordering differences between CPU and GPU backends.
+/// The tolerance (1e-10) catches significant algorithmic divergence while allowing
+/// expected FP rounding differences.
 
 #include "mesh.hpp"
 #include "fields.hpp"
@@ -28,6 +33,7 @@
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
 using nncfd::test::BITWISE_TOLERANCE;
+using nncfd::test::CROSS_BACKEND_TOLERANCE;
 using nncfd::test::MIN_EXPECTED_DIFF;
 
 // OpenMP headers - needed for both CPU and GPU builds for backend verification
@@ -549,13 +555,13 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "=== CPU/GPU Bitwise Comparison Test ===\n";
+        std::cout << "=== CPU/GPU Cross-Backend Consistency Test ===\n";
 #ifdef USE_GPU_OFFLOAD
         std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
 #else
         std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
 #endif
-        std::cout << "Tolerance: " << std::scientific << BITWISE_TOLERANCE << "\n\n";
+        std::cout << "Tolerance: " << std::scientific << CROSS_BACKEND_TOLERANCE << " (NOT bit-identical; FP order differs)\n\n";
 
         if (!dump_prefix.empty()) {
 #ifdef USE_GPU_OFFLOAD

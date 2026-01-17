@@ -376,13 +376,17 @@ void test_projection_galilean() {
 
     emit_qoi(r1, U0, V0);
 
-    // Record as diagnostics (not hard CI gates)
-    // The comprehensive test_galilean_stage_breakdown handles CI gating
-    record("[Diagnostic] Gradient IC: divergence tracked", true);
-    record("[Diagnostic] Gradient IC: mean velocity tracked", true);
-    std::cout << "  [INFO] div_match: " << (r1.div_match ? "yes" : "no")
-              << ", mean_preserved: " << (r1.mean_preserved ? "yes" : "no")
-              << ", fluct_match: " << (r1.fluct_match ? "yes" : "no") << "\n";
+    // Baseline-relative gating (ratchet tests) for projection Galilean invariance
+    // Values from tests/baselines/baseline_cpu.json
+    constexpr double MEAN_ERR_BASELINE = 6.152104627696357e-10;  // Current mean_err
+    constexpr double MEAN_ERR_GOAL = 1e-14;                       // Physics goal (machine eps)
+    constexpr double U_REL_BASELINE = 5.948696029982835e+00;      // Current u_rel_L2
+    constexpr double U_REL_GOAL = 1e-6;                           // Physics goal
+    constexpr double MARGIN = 0.10;  // Allow 10% regression from baseline
+
+    record_ratchet("Projection mean preservation (grad IC)", r1.mean_preservation_err,
+                   MEAN_ERR_BASELINE, MARGIN, MEAN_ERR_GOAL);
+    record_track("Projection fluct match (grad IC)", r1.u_rel_L2, U_REL_GOAL);
 
     // Test 2: TGV IC (nearly solenoidal)
     std::cout << "  === Test 2: TGV IC (u = TGV + U0, nearly solenoidal) ===\n";
@@ -405,15 +409,12 @@ void test_projection_galilean() {
 
     emit_qoi(r2, U0, V0);
 
-    // Record as diagnostics (not hard CI gates)
-    // The comprehensive test_galilean_stage_breakdown handles CI gating
-    record("[Diagnostic] TGV IC: divergence tracked", true);
-    record("[Diagnostic] TGV IC: mean velocity tracked", true);
-    std::cout << "  [INFO] div_match: " << (r2.div_match ? "yes" : "no")
-              << ", mean_preserved: " << (r2.mean_preserved ? "yes" : "no")
-              << ", fluct_match: " << (r2.fluct_match ? "yes" : "no") << "\n";
-    std::cout << "\n  NOTE: Strict Galilean invariance limited by advection discretization.\n";
-    std::cout << "        See test_galilean_stage_breakdown for CI-gated divergence checks.\n";
+    // Baseline-relative gating for TGV IC (stricter since TGV is nearly solenoidal)
+    record_ratchet("Projection mean preservation (TGV IC)", r2.mean_preservation_err,
+                   MEAN_ERR_BASELINE, MARGIN, MEAN_ERR_GOAL);
+    record_track("Projection fluct match (TGV IC)", r2.u_rel_L2, U_REL_GOAL);
+
+    std::cout << "\n  NOTE: Ratchet tests prevent regression; improve nullspace handling to tighten baseline.\n";
 }
 
 // ============================================================================
