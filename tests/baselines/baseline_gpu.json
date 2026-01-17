@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": "2",
   "build_type": "gpu",
   "created": "TODO: populate from GPU build",
   "commit": "TODO",

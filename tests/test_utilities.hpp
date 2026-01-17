@@ -145,8 +145,12 @@ struct FieldComparison {
 // Tolerance Constants
 //=============================================================================
 
-/// CPU/GPU bitwise comparison tolerance
+/// CPU/GPU cross-backend consistency tolerance
+/// NOTE: Named "BITWISE" for historical reasons, but results are NOT bit-identical.
+/// This tolerance (1e-10) allows for expected FP rounding differences between
+/// CPU and GPU backends while catching significant algorithmic divergence.
 constexpr double BITWISE_TOLERANCE = 1e-10;
+constexpr double CROSS_BACKEND_TOLERANCE = BITWISE_TOLERANCE;  // Preferred name
 
 /// Minimum expected FP difference (to verify different backends executed)
 constexpr double MIN_EXPECTED_DIFF = 1e-14;
