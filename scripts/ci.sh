@@ -1074,11 +1074,13 @@ compare_to_baseline() {
     fi
 
     # Extract schema versions with explicit error handling
+    # Use temp file to separate stdout (schema) from stderr (errors)
     local current_schema baseline_schema
-    local parse_error
+    local parse_stderr
+    parse_stderr=$(mktemp)
 
     # Parse current metrics file
-    parse_error=$(python3 -c "
+    current_schema=$(python3 -c "
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -1086,16 +1088,16 @@ try:
 except Exception as e:
     print('PARSE_ERROR: ' + str(e), file=sys.stderr)
     sys.exit(1)
-" "$METRICS_FILE" 2>&1)
+" "$METRICS_FILE" 2>"$parse_stderr")
     if [ $? -ne 0 ]; then
         log_failure "Failed to parse metrics file: $METRICS_FILE"
-        log_info "Error: $parse_error"
+        log_info "Error: $(cat "$parse_stderr")"
+        rm -f "$parse_stderr"
         return 1
     fi
-    current_schema="$parse_error"
 
     # Parse baseline file
-    parse_error=$(python3 -c "
+    baseline_schema=$(python3 -c "
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -1103,13 +1105,14 @@ try:
 except Exception as e:
     print('PARSE_ERROR: ' + str(e), file=sys.stderr)
     sys.exit(1)
-" "$BASELINE_FILE" 2>&1)
+" "$BASELINE_FILE" 2>"$parse_stderr")
     if [ $? -ne 0 ]; then
         log_failure "Failed to parse baseline file: $BASELINE_FILE"
-        log_info "Error: $parse_error"
+        log_info "Error: $(cat "$parse_stderr")"
+        rm -f "$parse_stderr"
         return 1
     fi
-    baseline_schema="$parse_error"
+    rm -f "$parse_stderr"
 
     # Schema mismatch is a hard error - baseline must be regenerated
     if [ -z "$baseline_schema" ]; then

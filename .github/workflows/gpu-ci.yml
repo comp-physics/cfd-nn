@@ -113,8 +113,10 @@ jobs:
         echo "==================================================================="
         echo "  Slurm Job Output (last 200 lines each)"
         echo "==================================================================="
-        for f in gpu_ci_correctness_${GITHUB_RUN_ID}.out gpu_ci_correctness_${GITHUB_RUN_ID}.err \
-                 gpu_ci_perf_${GITHUB_RUN_ID}.out gpu_ci_perf_${GITHUB_RUN_ID}.err; do
+        for f in "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" \
+                 "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" \
+                 "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" \
+                 "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err"; do
           if [ -f "$f" ]; then
             echo ""
             echo "===== $f ====="

@@ -157,6 +157,10 @@ inline void record_track(const char* name, double actual, double goal, int width
 ///   - Flaky failures when baseline is tiny (noise exceeds relative margin)
 ///   - Large absolute drift when baseline is big (relative margin too loose)
 ///
+/// Edge cases:
+///   - baseline <= 0: Uses abs_floor only (relative margin undefined)
+///   - baseline very small: abs_floor dominates
+///
 /// @param name       Test name
 /// @param actual     Current measured value
 /// @param baseline   Baseline value from tests/baselines/
@@ -166,10 +170,16 @@ inline void record_track(const char* name, double actual, double goal, int width
 inline void record_ratchet(const char* name, double actual, double baseline,
                             double margin, double goal, int width = 50,
                             double abs_floor = 0.002) {
-    // Use whichever is MORE restrictive: relative or absolute margin
-    double rel_limit = baseline * (1.0 + margin);
-    double abs_limit = baseline + abs_floor;
-    double threshold = std::min(rel_limit, abs_limit);
+    double threshold;
+    if (baseline <= 0.0) {
+        // Edge case: baseline is zero or negative - use absolute floor only
+        threshold = abs_floor;
+    } else {
+        // Normal case: use whichever is MORE restrictive: relative or absolute margin
+        double rel_limit = baseline * (1.0 + margin);
+        double abs_limit = baseline + abs_floor;
+        threshold = std::min(rel_limit, abs_limit);
+    }
     bool pass = actual <= threshold;
 
     std::cout << "  " << std::left << std::setw(width) << name << "\n";

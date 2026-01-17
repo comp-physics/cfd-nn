@@ -32,7 +32,7 @@
 
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
-using nncfd::test::BITWISE_TOLERANCE;
+using nncfd::test::CROSS_BACKEND_TOLERANCE;
 using nncfd::test::CROSS_BACKEND_TOLERANCE;
 using nncfd::test::MIN_EXPECTED_DIFF;
 
@@ -129,7 +129,7 @@ bool verify_gpu_backend() {
 }
 
 // Tolerance constants imported from test_utilities.hpp:
-// - BITWISE_TOLERANCE = 1e-10 (CPU vs GPU comparison)
+// - CROSS_BACKEND_TOLERANCE = 1e-10 (CPU vs GPU comparison)
 // - MIN_EXPECTED_DIFF = 1e-14 (minimum to verify different backends)
 
 //=============================================================================
@@ -411,8 +411,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         result.print("u-velocity");
         u_rel_l2 = result.rel_l2();
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -437,8 +437,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         result.finalize();
         result.print("v-velocity");
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -463,8 +463,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         result.finalize();
         result.print("w-velocity");
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
@@ -490,8 +490,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
         result.print("pressure");
         p_rel_l2 = result.rel_l2();
 
-        if (!result.within_tolerance(BITWISE_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << BITWISE_TOLERANCE << "\n";
+        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
             all_passed = false;
         } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
             // Small diff is fine - canary test verifies backend execution.
