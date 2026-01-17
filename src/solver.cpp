@@ -2744,6 +2744,23 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
               << " reason=" << selection_reason_
               << " dims=" << mesh.Nx << "x" << mesh.Ny << "x" << mesh.Nz << "\n";
 
+    // Safety check: O4 spatial order requires Nghost >= 2, but MG is currently ng=1 only
+    if (config.space_order == 4 && selected_solver_ == PoissonSolverType::MG) {
+        std::cerr << "[Solver] ERROR: space_order=4 requires Nghost >= 2, but MG backend is ng=1 only.\n";
+#ifdef USE_HYPRE
+        if (hypre_poisson_solver_) {
+            std::cerr << "         Falling back to HYPRE.\n";
+            selected_solver_ = PoissonSolverType::HYPRE;
+            selection_reason_ = "fallback from MG: O4 requires ng>=2";
+        } else {
+            std::cerr << "         HYPRE not available. Results may be incorrect!\n";
+        }
+#else
+        std::cerr << "         HYPRE not built. Consider using FFT (periodic BCs) or rebuilding with HYPRE.\n";
+        std::cerr << "         Results may be incorrect!\n";
+#endif
+    }
+
 #ifdef USE_GPU_OFFLOAD
     // Fail-fast if GPU offload is enabled but no device is available
     gpu::verify_device_available();
