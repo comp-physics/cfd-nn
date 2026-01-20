@@ -1525,7 +1525,7 @@ void test_operator_consistency() {
     // The GPU path still runs and emits QoI for monitoring, but doesn't gate CI.
     record("[Physics] RHS = div(u*)/dt (operators consistent)",
            rhs_consistent,                           // pass condition
-           gpu_div_not_synced ? "GPU: div field unavailable, skipped" : "",
+           std::string(gpu_div_not_synced ? "GPU: div field unavailable, skipped" : ""),
            gpu_div_not_synced);                      // skip on GPU
 }
 

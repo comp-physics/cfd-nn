@@ -122,10 +122,11 @@ All quantities of interest computed on device via reductions:
 ## Test Results (GPU Build)
 
 ```
-lint_gpu_pointers.sh:        PASSED
-test_gpu_mapping_canary:     8/8 PASS
-test_tgv_2d_invariants:      9/9 PASS (+ sync check)
-test_tgv_3d_invariants:      8/8 PASS
+lint_gpu_pointers.sh:                    PASSED
+test_gpu_mapping_canary:                 8/8 PASS
+test_tgv_2d_invariants:                  16/16 PASS (+ RK2/RK3 smoke test)
+test_tgv_3d_invariants:                  8/8 PASS
+test_fractional_step_temporal_convergence: 11/11 PASS (Richardson self-ref)
 ```
 
 ---
@@ -143,11 +144,35 @@ If any are currently "informational", make them **required status checks**.
 
 ---
 
+## Known Limitations / Follow-ups
+
+### Deprecation Warnings
+
+NVHPC 25.5 emits deprecation warnings for `use_device_ptr` in `solver_time_kernels_*.cpp`:
+
+```
+warning: The use of use_device_ptr is deprecated, use use_device_addr instead
+```
+
+**Affected files** (16 warnings total):
+- `solver_time_kernels_blend.cpp`
+- `solver_time_kernels_copy.cpp`
+- `solver_time_kernels_euler.cpp`
+- `solver_time_kernels_periodic.cpp`
+- `solver_time_kernels_projection.cpp`
+
+**Status**: These warnings do not affect correctness. The `use_device_ptr` clause works correctly; it's simply deprecated per OpenMP 5.1 spec.
+
+**Planned fix**: Migrate to `use_device_addr` in a follow-up PR. Not included in PR1 to minimize scope and risk.
+
+---
+
 ## Merge Checklist
 
 - [x] GPU canary test verifies device execution (`omp_is_initial_device()`)
 - [x] Lint script blocks unsafe patterns
-- [x] TGV invariants pass on GPU
+- [x] TGV invariants pass on GPU (including RK2/RK3 smoke test)
 - [x] No H↔D transfers during stepping (sync counter verified)
 - [x] Contract documented for future contributors
 - [x] O4+MG guard remains in place
+- [x] Temporal convergence test uses Richardson self-referencing

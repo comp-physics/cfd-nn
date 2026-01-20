@@ -2745,6 +2745,29 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
               << " reason=" << selection_reason_
               << " dims=" << mesh.Nx << "x" << mesh.Ny << "x" << mesh.Nz << "\n";
 
+    // Log full solver configuration for debugging (one line for CI grepping)
+    // Format: [Solver Config] integrator=X scheme=Y poisson=Z gpu=true/false
+    {
+        const char* integrator_name =
+            (config.time_integrator == TimeIntegrator::RK3) ? "RK3" :
+            (config.time_integrator == TimeIntegrator::RK2) ? "RK2" : "Euler";
+        const char* scheme_name =
+            (config.convective_scheme == ConvectiveScheme::Skew) ? "skew" :
+            (config.convective_scheme == ConvectiveScheme::Central) ? "central" :
+            (config.convective_scheme == ConvectiveScheme::Upwind2) ? "upwind2" :
+            (config.convective_scheme == ConvectiveScheme::Upwind) ? "upwind" : "unknown";
+#ifdef USE_GPU_OFFLOAD
+        const char* gpu_str = "true";
+#else
+        const char* gpu_str = "false";
+#endif
+        // This line is machine-parseable for CI/QOI extraction
+        std::cout << "[Solver Config] integrator=" << integrator_name
+                  << " scheme=" << scheme_name
+                  << " poisson=" << solver_name
+                  << " gpu=" << gpu_str << "\n";
+    }
+
     // Safety check: O4 spatial order requires Nghost >= 2, but MG is currently ng=1 only
     if (config.space_order == 4 && selected_solver_ == PoissonSolverType::MG) {
         std::cerr << "[Solver] ERROR: space_order=4 requires Nghost >= 2, but MG backend is ng=1 only.\n";
@@ -3537,14 +3560,17 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
         const int conv_w_stride = conv.w_stride();
         const int conv_w_plane_stride = conv.w_plane_stride();
 
-        // NVHPC WORKAROUND: Use MEMBER pointers directly for device access.
-        // The euler_substep function swaps velocity_u_ptr_ etc. before calling this,
-        // so these member pointers point to the correct velocity field data.
-        // Using function parameter pointers (u_host etc.) doesn't work correctly
-        // because NVHPC fails to find the device mapping.
-        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+        // Use get_velocity_ptrs() to map the VectorField& argument to its raw pointer triplet.
+        // This enables RK stages to compute convection on any velocity field (velocity_star_, etc.)
+        // without relying on the broken swap mechanism.
+        double* vel_u_ptr_local;
+        double* vel_v_ptr_local;
+        double* vel_w_ptr_local;
+        get_velocity_ptrs(vel, vel_u_ptr_local, vel_v_ptr_local, vel_w_ptr_local);
+
+        const double* u_dev = gpu::dev_ptr(vel_u_ptr_local);
+        const double* v_dev = gpu::dev_ptr(vel_v_ptr_local);
+        const double* w_dev = gpu::dev_ptr(vel_w_ptr_local);
         double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
         double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
         double* conv_w_dev = gpu::dev_ptr(conv_w_ptr_);
@@ -3759,24 +3785,21 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
         return;
     }
 
-    // 2D path - use aliases that match original pragma pattern
+    // 2D path - use get_velocity_ptrs() to support any velocity field (not just velocity_)
     const int n_u_faces = (Nx + 1) * Ny;
     const int n_v_faces = Nx * (Ny + 1);
 
-#ifdef USE_GPU_OFFLOAD
-    // NVHPC WORKAROUND: Get actual device addresses via omp_get_mapped_ptr
-    // Local pointer copies in map(present:) get HOST addresses in NVHPC
-    int device = omp_get_default_device();
-    const double* u_dev = static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(u_host), device));
-    const double* v_dev = static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(v_host), device));
-    double* cu_dev = static_cast<double*>(omp_get_mapped_ptr(cu_host, device));
-    double* cv_dev = static_cast<double*>(omp_get_mapped_ptr(cv_host, device));
-#else
-    const double* u_dev = u_host;
-    const double* v_dev = v_host;
-    double* cu_dev = cu_host;
-    double* cv_dev = cv_host;
-#endif
+    // Use get_velocity_ptrs() to map the VectorField& argument to its raw pointer triplet.
+    // This enables RK stages to compute convection on any velocity field (velocity_star_, etc.)
+    double* vel_u_ptr_local;
+    double* vel_v_ptr_local;
+    double* vel_w_ptr_local;  // unused for 2D
+    get_velocity_ptrs(vel, vel_u_ptr_local, vel_v_ptr_local, vel_w_ptr_local);
+
+    const double* u_dev = gpu::dev_ptr(vel_u_ptr_local);
+    const double* v_dev = gpu::dev_ptr(vel_v_ptr_local);
+    double* cu_dev = gpu::dev_ptr(conv_u_ptr_);
+    double* cv_dev = gpu::dev_ptr(conv_v_ptr_);
 
     if (use_skew) {
         // Skew-symmetric (energy-conserving) advection - 2D
@@ -3799,6 +3822,7 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
             convective_v_face_kernel_skew_2d(i, j, u_stride, v_stride, conv_v_stride,
                                             dx, dy, u_dev, v_dev, cv_dev);
         }
+
     } else if (use_upwind2) {
         // 2nd-order upwind with minmod limiter - 2D
         #pragma omp target teams distribute parallel for is_device_ptr(u_dev, v_dev, cu_dev) \
@@ -3903,9 +3927,10 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
                                         VectorField& diff) {
     NVTX_SCOPE_DIFFUSE("solver:diffusive_term");
 
-    (void)vel;     // Unused - always operates on velocity_ via view
-    (void)nu_eff;  // Unused - always operates on nu_eff_ via view
-    (void)diff;    // Unused - always operates on diff_ via view
+    // Note: nu_eff and diff args are currently unused - always use member pointers.
+    // The vel argument IS used via get_velocity_ptrs() for RK stage support.
+    (void)nu_eff;
+    (void)diff;
 
     // Get unified view
     auto v = get_solver_view();
@@ -3942,14 +3967,17 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
         const double* w_ptr = v.w_face;
         double*       diff_w_ptr = v.diff_w;
 
-        // NVHPC WORKAROUND: Use MEMBER pointers directly for device access.
-        // The euler_substep function swaps velocity_u_ptr_ etc. before calling this,
-        // so these member pointers point to the correct velocity field data.
-        // Using get_solver_view() pointers doesn't work correctly because NVHPC
-        // fails to find the device mapping.
-        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+        // Use get_velocity_ptrs() to map the VectorField& argument to its raw pointer triplet.
+        // This enables RK stages to compute diffusion on any velocity field (velocity_star_, etc.)
+        // without relying on the broken swap mechanism.
+        double* vel_u_ptr_local;
+        double* vel_v_ptr_local;
+        double* vel_w_ptr_local;
+        get_velocity_ptrs(vel, vel_u_ptr_local, vel_v_ptr_local, vel_w_ptr_local);
+
+        const double* u_dev = gpu::dev_ptr(vel_u_ptr_local);
+        const double* v_dev = gpu::dev_ptr(vel_v_ptr_local);
+        const double* w_dev = gpu::dev_ptr(vel_w_ptr_local);
         const double* nu_dev = gpu::dev_ptr(nu_eff_ptr_);
         double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
         double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
@@ -4000,23 +4028,18 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     }
 
     // 2D path
-    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
-    // Member pointers in target regions get HOST addresses in NVHPC.
+    // Use get_velocity_ptrs() to map the VectorField& argument to its raw pointer triplet.
+    // This enables RK stages to compute diffusion on any velocity field (velocity_star_, etc.)
+    double* vel_u_ptr_local;
+    double* vel_v_ptr_local;
+    double* vel_w_ptr_local;  // unused for 2D
+    get_velocity_ptrs(vel, vel_u_ptr_local, vel_v_ptr_local, vel_w_ptr_local);
 
-#ifdef USE_GPU_OFFLOAD
-    int device = omp_get_default_device();
-    const double* u_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_u_ptr_, device));
-    const double* v_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_v_ptr_, device));
-    const double* nu_dev = static_cast<const double*>(omp_get_mapped_ptr(nu_eff_ptr_, device));
-    double* diff_u_dev = static_cast<double*>(omp_get_mapped_ptr(diff_u_ptr_, device));
-    double* diff_v_dev = static_cast<double*>(omp_get_mapped_ptr(diff_v_ptr_, device));
-#else
-    const double* u_dev = velocity_u_ptr_;
-    const double* v_dev = velocity_v_ptr_;
-    const double* nu_dev = nu_eff_ptr_;
-    double* diff_u_dev = diff_u_ptr_;
-    double* diff_v_dev = diff_v_ptr_;
-#endif
+    const double* u_dev = gpu::dev_ptr(vel_u_ptr_local);
+    const double* v_dev = gpu::dev_ptr(vel_v_ptr_local);
+    const double* nu_dev = gpu::dev_ptr(nu_eff_ptr_);
+    double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
+    double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
 
     // Compute u-momentum diffusion at x-faces
     const int n_u_faces = (Nx + 1) * Ny;
@@ -7279,6 +7302,44 @@ void RANSSolver::extract_field_pointers() {
     wall_distance_ptr_ = wall_distance_.data().data();
 }
 
+void RANSSolver::get_velocity_ptrs(const VectorField& vel,
+                                   double*& u_ptr, double*& v_ptr, double*& w_ptr) const {
+    // Map VectorField reference to its corresponding raw pointer members.
+    // This enables compute functions to use the correct device-mapped pointers
+    // for any velocity field (not just velocity_), which is critical for RK stages.
+    //
+    // The comparison uses address-of because VectorField doesn't have unique IDs.
+    // The raw pointer members ARE the GPU-mapped addresses.
+
+    if (&vel == &velocity_) {
+        u_ptr = velocity_u_ptr_;
+        v_ptr = velocity_v_ptr_;
+        w_ptr = velocity_w_ptr_;
+    } else if (&vel == &velocity_star_) {
+        u_ptr = velocity_star_u_ptr_;
+        v_ptr = velocity_star_v_ptr_;
+        w_ptr = velocity_star_w_ptr_;
+    } else if (&vel == &velocity_old_) {
+        u_ptr = velocity_old_u_ptr_;
+        v_ptr = velocity_old_v_ptr_;
+        w_ptr = velocity_old_w_ptr_;
+    } else if (&vel == &velocity_rk_) {
+        u_ptr = velocity_rk_u_ptr_;
+        v_ptr = velocity_rk_v_ptr_;
+        w_ptr = velocity_rk_w_ptr_;
+    } else {
+        // Unknown VectorField - this is a bug
+        std::cerr << "[get_velocity_ptrs] ERROR: Unknown VectorField at address " << &vel << "\n";
+        std::cerr << "  Known fields: velocity_=" << &velocity_
+                  << " velocity_star_=" << &velocity_star_
+                  << " velocity_old_=" << &velocity_old_
+                  << " velocity_rk_=" << &velocity_rk_ << "\n";
+        u_ptr = nullptr;
+        v_ptr = nullptr;
+        w_ptr = nullptr;
+    }
+}
+
 #ifndef NDEBUG
 /// Verify that field data pointers haven't changed since GPU mapping.
 /// Call this at the start of step() to catch accidental std::vector reallocation.
@@ -7647,6 +7708,107 @@ void RANSSolver::sync_transport_from_gpu() {
 }
 
 // ============================================================================
+// GPU field presence verification (for testing)
+// ============================================================================
+
+bool RANSSolver::verify_gpu_field_presence() const {
+    if (!gpu_ready_) return false;
+
+    int device = omp_get_default_device();
+    bool all_present = true;
+
+    // Helper lambda to check and report
+    auto check_field = [&](double* ptr, const char* name) {
+        if (!omp_target_is_present(ptr, device)) {
+            std::fprintf(stderr, "[verify_gpu_field_presence] MISSING: %s (ptr=%p)\n",
+                         name, static_cast<void*>(ptr));
+            all_present = false;
+        }
+    };
+
+    // Check all velocity fields (critical for RK stepping)
+    check_field(velocity_u_ptr_, "velocity_u");
+    check_field(velocity_v_ptr_, "velocity_v");
+    check_field(velocity_star_u_ptr_, "velocity_star_u");
+    check_field(velocity_star_v_ptr_, "velocity_star_v");
+    check_field(velocity_old_u_ptr_, "velocity_old_u");
+    check_field(velocity_old_v_ptr_, "velocity_old_v");
+    check_field(velocity_rk_u_ptr_, "velocity_rk_u");
+    check_field(velocity_rk_v_ptr_, "velocity_rk_v");
+
+    // Check work arrays
+    check_field(conv_u_ptr_, "conv_u");
+    check_field(conv_v_ptr_, "conv_v");
+    check_field(diff_u_ptr_, "diff_u");
+    check_field(diff_v_ptr_, "diff_v");
+
+    // Check scalar fields (critical for projection)
+    check_field(pressure_ptr_, "pressure");
+    check_field(pressure_corr_ptr_, "pressure_correction");
+    check_field(rhs_poisson_ptr_, "rhs_poisson");
+    check_field(div_velocity_ptr_, "div_velocity");
+    check_field(nu_eff_ptr_, "nu_eff");
+
+    // 3D fields
+    if (!mesh_->is2D()) {
+        check_field(velocity_w_ptr_, "velocity_w");
+        check_field(velocity_star_w_ptr_, "velocity_star_w");
+        check_field(velocity_old_w_ptr_, "velocity_old_w");
+        check_field(velocity_rk_w_ptr_, "velocity_rk_w");
+        check_field(conv_w_ptr_, "conv_w");
+        check_field(diff_w_ptr_, "diff_w");
+    }
+
+    // If presence checks passed, do a write/read sanity check on a critical field
+    // This catches "mapped but writes land nowhere" bugs
+    if (all_present) {
+        // Pick a safe index in the interior (avoid boundaries)
+        const int Ng = mesh_->Nghost;
+        const int test_idx = Ng * (mesh_->Nx + 2 * Ng) + Ng;  // First interior cell
+        const double sentinel = 314159.265358979;  // Unlikely value
+
+        // Save original value, write sentinel, read back, restore
+        double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_poisson_ptr_, device));
+
+        double original = 0.0;
+        double readback = 0.0;
+
+        // Read original value
+        #pragma omp target is_device_ptr(rhs_dev) map(from: original)
+        {
+            original = rhs_dev[test_idx];
+        }
+
+        // Write sentinel
+        #pragma omp target is_device_ptr(rhs_dev)
+        {
+            rhs_dev[test_idx] = sentinel;
+        }
+
+        // Read back sentinel
+        #pragma omp target is_device_ptr(rhs_dev) map(from: readback)
+        {
+            readback = rhs_dev[test_idx];
+        }
+
+        // Restore original
+        #pragma omp target is_device_ptr(rhs_dev) firstprivate(original)
+        {
+            rhs_dev[test_idx] = original;
+        }
+
+        // Check if write/read round-tripped correctly
+        if (std::abs(readback - sentinel) > 1e-10) {
+            std::fprintf(stderr, "[verify_gpu_field_presence] WRITE/READ FAILED: "
+                         "wrote %.6f, read %.6f (expected sentinel)\n", sentinel, readback);
+            all_present = false;
+        }
+    }
+
+    return all_present;
+}
+
+// ============================================================================
 // Device-side QOI computation (avoids broken D2H sync in NVHPC)
 // ============================================================================
 
@@ -7921,6 +8083,74 @@ double RANSSolver::compute_divergence_l2_device() const {
     return std::sqrt(l2_sq);
 }
 
+double RANSSolver::compute_max_conv_device() const {
+    // Compute max(|conv_u|, |conv_v|, |conv_w|) on device
+    // Used to verify convection term is actually being computed (not accidentally zero)
+    // NVHPC WORKAROUND: Use gpu::dev_ptr + is_device_ptr for correct device addresses
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+
+    double max_conv = 0.0;
+
+    // Get device pointers
+    const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
+    const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
+
+    if (mesh_->is2D()) {
+        const int u_stride = conv_.u_stride();
+        const int v_stride = conv_.v_stride();
+        const int n_cells = Nx * Ny;
+
+        #pragma omp target teams distribute parallel for is_device_ptr(conv_u_dev, conv_v_dev) \
+            reduction(max:max_conv) firstprivate(Nx, Ny, Ng, u_stride, v_stride)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+
+            double cu = conv_u_dev[j * u_stride + i];
+            double cv = conv_v_dev[j * v_stride + i];
+            if (cu < 0) cu = -cu;
+            if (cv < 0) cv = -cv;
+            double val = (cu > cv) ? cu : cv;
+            if (val > max_conv) max_conv = val;
+        }
+    } else {
+        const int u_stride = conv_.u_stride();
+        const int v_stride = conv_.v_stride();
+        const int w_stride = conv_.w_stride();
+        const int u_plane = conv_.u_plane_stride();
+        const int v_plane = conv_.v_plane_stride();
+        const int w_plane = conv_.w_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+
+        const double* conv_w_dev = gpu::dev_ptr(conv_w_ptr_);
+
+        #pragma omp target teams distribute parallel for is_device_ptr(conv_u_dev, conv_v_dev, conv_w_dev) \
+            reduction(max:max_conv) firstprivate(Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+
+            double cu = conv_u_dev[k * u_plane + j * u_stride + i];
+            double cv = conv_v_dev[k * v_plane + j * v_stride + i];
+            double cw = conv_w_dev[k * w_plane + j * w_stride + i];
+            if (cu < 0) cu = -cu;
+            if (cv < 0) cv = -cv;
+            if (cw < 0) cw = -cw;
+            double val = cu;
+            if (cv > val) val = cv;
+            if (cw > val) val = cw;
+            if (val > max_conv) max_conv = val;
+        }
+    }
+
+    return max_conv;
+}
+
 TurbulenceDeviceView RANSSolver::get_device_view() const {
     assert(gpu_ready_ && "GPU must be initialized to get device view");
     
@@ -8095,6 +8325,11 @@ void RANSSolver::sync_solution_from_gpu() {
 
 void RANSSolver::sync_transport_from_gpu() {
     // No-op
+}
+
+bool RANSSolver::verify_gpu_field_presence() const {
+    // CPU build: always return true (no GPU mapping to check)
+    return true;
 }
 
 TurbulenceDeviceView RANSSolver::get_device_view() const {

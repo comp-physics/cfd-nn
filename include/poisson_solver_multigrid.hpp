@@ -221,7 +221,15 @@ private:
     std::vector<double*> r_ptrs_;  // Device pointers for r at each level
     std::vector<double*> tmp_ptrs_;  // Scratch buffer for Jacobi ping-pong
     std::vector<size_t> level_sizes_;  // Total size for each level
-    
+
+    // NVHPC WORKAROUND: Level-0 member pointers for direct use in target regions.
+    // Local pointer copies from vectors get HOST addresses in NVHPC target regions.
+    // Using member pointers directly works around this bug.
+    double* u_level0_ptr_ = nullptr;
+    double* f_level0_ptr_ = nullptr;
+    double* r_level0_ptr_ = nullptr;
+    size_t level0_size_ = 0;
+
     void initialize_gpu_buffers();
     void cleanup_gpu_buffers();
 };

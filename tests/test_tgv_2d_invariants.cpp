@@ -108,6 +108,12 @@ void test_tgv_2d_invariants() {
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();
 
+    // Verify all critical GPU fields are present (catches missing mappings early)
+#ifdef USE_GPU_OFFLOAD
+    bool fields_present = solver.verify_gpu_field_presence();
+    record("All GPU fields present after sync", fields_present);
+#endif
+
     // Reset sync counter AFTER initialization sync (debug builds only)
     // This allows us to verify no syncs occur during stepping
     nncfd::gpu::reset_sync_counter();
@@ -537,6 +543,135 @@ void test_fourier_mode_invariance() {
 }
 
 // ============================================================================
+// Test: RK2/RK3 time integrator smoke test
+// Verifies higher-order time steppers work correctly on GPU by running TGV
+// with same invariant checks. This catches bugs in copy/blend/projection
+// kernels that RK2/RK3 use but Euler doesn't exercise.
+// ============================================================================
+void test_rk_integrator_smoke() {
+    std::cout << "\n--- RK2/RK3 Time Integrator Smoke Test ---\n\n";
+
+    // Smaller grid for speed (smoke test, not accuracy test)
+    // Use higher viscosity to show meaningful decay in fewer steps
+    const int N = 24;
+    const int nsteps = 100;  // More steps
+    const double nu = 0.01;  // Higher viscosity for faster decay
+    const double dt = 0.005;
+    const double L = 2.0 * M_PI;
+
+    // Thresholds (same as main TGV test)
+    const double div_threshold = 1e-6;
+
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+
+    std::cout << "  Grid: " << N << "x" << N << ", " << nsteps << " steps, nu=" << nu << "\n\n";
+
+    // Test RK2 and RK3 integrators
+    // Both now use dev_ptr() + is_device_ptr pattern for NVHPC compatibility.
+    std::vector<std::pair<std::string, TimeIntegrator>> integrators = {
+        {"RK2", TimeIntegrator::RK2},
+        {"RK3", TimeIntegrator::RK3}
+    };
+
+    for (const auto& [name, integrator] : integrators) {
+        Config config;
+        config.nu = nu;
+        config.dt = dt;
+        config.time_integrator = integrator;
+        config.adaptive_dt = false;
+        config.turb_model = TurbulenceModelType::None;
+        config.verbose = false;
+
+        RANSSolver solver(mesh, config);
+
+        // Fully periodic BCs
+        VelocityBC bc;
+        bc.x_lo = VelocityBC::Periodic;
+        bc.x_hi = VelocityBC::Periodic;
+        bc.y_lo = VelocityBC::Periodic;
+        bc.y_hi = VelocityBC::Periodic;
+        solver.set_velocity_bc(bc);
+
+        // Initialize with Taylor-Green vortex
+        init_taylor_green(solver, mesh);
+        solver.sync_to_gpu();
+
+        // Track energy
+#ifdef USE_GPU_OFFLOAD
+        double E_init = solver.compute_kinetic_energy_device();
+#else
+        double E_init = compute_kinetic_energy(mesh, solver.velocity());
+#endif
+
+        double max_div = 0.0;
+        double max_conv_observed = 0.0;  // Track max convection term magnitude
+        bool energy_monotonic = true;
+        double E_prev = E_init;
+
+        // Run simulation
+        for (int step = 0; step < nsteps; ++step) {
+            solver.step();
+
+#ifdef USE_GPU_OFFLOAD
+            double div = solver.compute_divergence_linf_device();
+            double E_curr = solver.compute_kinetic_energy_device();
+
+            // Check convection term after first few steps (catches "convection accidentally disabled")
+            if (step < 5) {
+                double max_conv = solver.compute_max_conv_device();
+                max_conv_observed = std::max(max_conv_observed, max_conv);
+            }
+#else
+            solver.sync_from_gpu();
+            double div = compute_max_divergence_2d(solver.velocity(), mesh);
+            double E_curr = compute_kinetic_energy(mesh, solver.velocity());
+#endif
+
+            max_div = std::max(max_div, div);
+            if (E_curr > E_prev * 1.001) {  // 0.1% tolerance
+                energy_monotonic = false;
+            }
+            E_prev = E_curr;
+        }
+
+        double E_final = E_prev;
+        double ke_ratio = E_final / E_init;
+
+        std::cout << "  " << name << ": max_div=" << std::scientific << std::setprecision(2)
+                  << max_div << " KE_ratio=" << std::fixed << std::setprecision(4) << ke_ratio
+                  << (energy_monotonic ? " (stable)" : " (GREW!)") << "\n";
+
+        // Record results - smoke test validates:
+        // 1. Divergence stays bounded (projection works)
+        // 2. Energy doesn't explode (stability)
+        // 3. Energy actually decays (catches "RHS accidentally zero" regressions)
+        //    With nu=0.01, dt=0.005, 100 steps, T=0.5, expect measurable decay
+        record(name + " divergence-free (< 1e-6)", max_div < div_threshold,
+               qoi(max_div, div_threshold));
+        record(name + " energy stable (not exploding)", energy_monotonic && std::isfinite(E_final));
+
+        // CRITICAL: Verify field actually evolved (catches "RHS zero" bugs)
+        // With viscosity and 100 steps, energy should decay by at least 0.1%
+        // If ke_ratio >= 0.9999, the RHS was likely zero (no evolution)
+        const double decay_threshold = 0.9999;
+        bool field_evolved = (ke_ratio < decay_threshold);
+        record(name + " field evolved (KE decayed)", field_evolved,
+               "(ratio=" + std::to_string(ke_ratio) + ", threshold=" + std::to_string(decay_threshold) + ")");
+
+#ifdef USE_GPU_OFFLOAD
+        // Verify convection term is non-zero (catches "convection accidentally disabled")
+        // For TGV at Re=1000, max|conv| should be O(1) due to u*du/dx terms
+        const double conv_floor = 1e-6;  // Conservative floor
+        bool conv_active = (max_conv_observed > conv_floor);
+        record(name + " convection active (max|conv| > 1e-6)", conv_active,
+               "(max_conv=" + std::to_string(max_conv_observed) + ")");
+#endif
+    }
+    std::cout << "\n";
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 int main() {
@@ -546,5 +681,6 @@ int main() {
         test_tgv_2d_decay_rate();
         test_constant_velocity_invariance();
         test_fourier_mode_invariance();
+        test_rk_integrator_smoke();
     });
 }
