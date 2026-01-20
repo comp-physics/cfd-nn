@@ -395,6 +395,50 @@ inline const T* dev_ptr(const T* host_ptr, const char* context = nullptr) {
 }
 #endif
 
+//=============================================================================
+// Debug Sync Counter (for verifying no H↔D transfers during stepping)
+//=============================================================================
+
+/// Global counter for H↔D sync operations during stepping
+/// Tests can use this to verify "no mid-step transfers" guarantee
+///
+/// Usage in solver (debug builds):
+///   void sync_from_gpu() {
+///       #ifndef NDEBUG
+///       gpu::increment_sync_counter();
+///       #endif
+///       // ... actual sync code ...
+///   }
+///
+/// Usage in tests:
+///   gpu::reset_sync_counter();
+///   for (int i = 0; i < nsteps; ++i) solver.step();
+///   ASSERT(gpu::get_sync_counter() == 0);  // No syncs during stepping
+///   gpu::ensure_synced(solver);             // Allowed: one sync for output
+///   ASSERT(gpu::get_sync_counter() == 1);
+
+inline int& sync_counter_ref() {
+    static int counter = 0;
+    return counter;
+}
+
+inline void reset_sync_counter() { sync_counter_ref() = 0; }
+inline int get_sync_counter() { return sync_counter_ref(); }
+inline void increment_sync_counter() { ++sync_counter_ref(); }
+
+/// Assert no syncs occurred (for enforcing no-H↔D-during-stepping)
+/// Returns true if counter is zero, false otherwise (with error message)
+inline bool assert_no_syncs(const char* context = nullptr) {
+    if (sync_counter_ref() != 0) {
+        std::fprintf(stderr, "[GPU Sync Guard] FAILURE: Expected 0 sync calls");
+        if (context) std::fprintf(stderr, " during %s", context);
+        std::fprintf(stderr, ", but got %d\n", sync_counter_ref());
+        std::fprintf(stderr, "[GPU Sync Guard] This violates the 'no H↔D during stepping' guarantee!\n");
+        return false;
+    }
+    return true;
+}
+
 } // namespace gpu
 } // namespace nncfd
 
