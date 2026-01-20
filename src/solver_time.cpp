@@ -563,9 +563,13 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
                   << " mean_div=" << mean_div << " max_rhs=" << max_rhs << "\n";
     }
 
-    // Use solve_device() since our RHS was built on GPU using dev_ptr pattern
-    // solve() reads from HOST memory which is stale; solve_device() works with device-resident data
+    // Use solve_device() for GPU builds (data is device-resident)
+    // Use solve() for CPU builds (data is host-resident)
+#ifdef USE_GPU_OFFLOAD
     mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+#else
+    mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+#endif
 
     // DEBUG: Check pressure correction after solve
     if (proj_debug < 5) {
