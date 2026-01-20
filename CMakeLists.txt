@@ -230,6 +230,12 @@ set(LIB_SOURCES
     src/poisson_solver.cpp
     src/poisson_solver_multigrid.cpp
     src/solver.cpp
+    src/solver_time.cpp
+    src/solver_time_kernels_copy.cpp
+    src/solver_time_kernels_blend.cpp
+    src/solver_time_kernels_euler.cpp
+    src/solver_time_kernels_periodic.cpp
+    src/solver_time_kernels_projection.cpp
     src/timing.cpp
     src/config.cpp
     src/features.cpp
@@ -425,8 +431,14 @@ if(BUILD_TESTS)
     add_nncfd_test(test_numerics LABELS fast)
     add_nncfd_test(test_operator_convergence LABELS fast)
     add_nncfd_test(test_gpu_buffer TEST_NAME_SUFFIX GPUBufferTest LABELS fast)
+    add_nncfd_test(test_gpu_mapping_canary TEST_NAME_SUFFIX GPUMappingCanaryTest LABELS fast)
     add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
     add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
+    add_nncfd_test(test_invariant_scaling TEST_NAME_SUFFIX InvariantScalingTest LABELS fast)
+    add_nncfd_test(test_convection_diagnostic TEST_NAME_SUFFIX ConvectionDiagnosticTest LABELS fast)
+    add_nncfd_test(test_step_trace TEST_NAME_SUFFIX StepTraceTest LABELS fast)
+    add_nncfd_test(test_term_values TEST_NAME_SUFFIX TermValuesTest LABELS fast)
+    add_nncfd_test(test_div_constant TEST_NAME_SUFFIX DivConstantTest LABELS fast)
     add_nncfd_test(test_rans_channel_sanity TEST_NAME_SUFFIX RANSChannelSanityTest LABELS fast)
     add_nncfd_test(test_poiseuille_steady TEST_NAME_SUFFIX PoiseuilleTest LABELS fast)
     add_nncfd_test(test_energy_budget_channel TEST_NAME_SUFFIX EnergyBudgetTest LABELS fast)
@@ -438,6 +450,9 @@ if(BUILD_TESTS)
     add_nncfd_test(test_galilean_invariance TEST_NAME_SUFFIX GalileanInvarianceTest LABELS fast)
     add_nncfd_test(test_projection_galilean TEST_NAME_SUFFIX ProjectionGalileanTest LABELS fast)
     add_nncfd_test(test_galilean_stage_breakdown TEST_NAME_SUFFIX GalileanStageBreakdownTest LABELS fast)
+    add_nncfd_test(test_mg_ramp_diagnostic TEST_NAME_SUFFIX MGRampDiagnosticTest LABELS fast)
+    add_nncfd_test(test_projection_trace TEST_NAME_SUFFIX ProjectionTraceTest LABELS fast)
+    add_nncfd_test(test_conv_diff_constant TEST_NAME_SUFFIX ConvDiffConstantTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s)
@@ -445,6 +460,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest)
     add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest)
     add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest)
+    add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest)
     add_nncfd_test(test_poisson_unified)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
     add_nncfd_test(test_turbulence_unified)

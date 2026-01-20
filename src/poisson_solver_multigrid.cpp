@@ -198,17 +198,18 @@ void MultigridPoissonSolver::apply_bc(int level) {
     const int bc_z_hi = static_cast<int>(bc_z_hi_);
     const double dval = dirichlet_val_;
 
-    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
-    double* u_ptr = u_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
 #ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
     #define BC_TARGET_FOR_X \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr)")
     #define BC_TARGET_FOR_Y \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr)")
     #define BC_TARGET_FOR_Z \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr)")
 #else
+    double* u_ptr = u_ptrs_[level];
     #define BC_TARGET_FOR_X
     #define BC_TARGET_FOR_Y
     #define BC_TARGET_FOR_Z
@@ -438,9 +439,11 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 #ifdef USE_GPU_OFFLOAD
     // GPU path for residual BCs
     if (gpu_ready_) {
-        const size_t total_size = level_sizes_[level];
-        double* r_ptr = r_ptrs_[level];
         const int stride = Nx + 2*Ng;
+
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+        int device = omp_get_default_device();
+        double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
 
         // Convert BCs to integers for GPU
         const int bc_x_lo = static_cast<int>(bc_x_lo_);
@@ -453,8 +456,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
         if (is_2d) {
             // 2D GPU path for residual - fill ALL Ng ghost layers
             // x-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size])
+            #pragma omp target teams distribute parallel for is_device_ptr(r_ptr)
             for (int j = 0; j < Ny + 2*Ng; ++j) {
                 int idx = j * stride;
                 for (int g = 0; g < Ng; ++g) {
@@ -474,8 +476,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
             }
 
             // y-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size])
+            #pragma omp target teams distribute parallel for is_device_ptr(r_ptr)
             for (int i = 0; i < Nx + 2*Ng; ++i) {
                 for (int g = 0; g < Ng; ++g) {
                     // Bottom ghost at position g
@@ -500,8 +501,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
             const int Nz_g = Nz + 2*Ng;
             const int n_total_g = Nx_g * Ny_g * Nz_g;
 
-            #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size]) \
+            #pragma omp target teams distribute parallel for is_device_ptr(r_ptr) \
                 firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, bc_y_lo, bc_y_hi, bc_z_lo, bc_z_hi)
             for (int idx_g = 0; idx_g < n_total_g; ++idx_g) {
                 int i = idx_g % Nx_g;
@@ -729,20 +729,24 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
     const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
 
-    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
-    double* u_ptr = u_ptrs_[level];
-    const double* f_ptr = f_ptrs_[level];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
+    // Local pointer copies with map(present:) get HOST addresses in NVHPC.
 #ifdef USE_GPU_OFFLOAD
-    double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* tmp_ptr = tmp_ptrs_[level];  // Already a raw device pointer (omp_target_alloc)
     // Note: Cannot use nowait here - Chebyshev iterations have data dependencies
     // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define CHEBY_TARGET_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define CHEBY_TARGET_COPY \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr, tmp_ptr)")
 #else
+    double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     #define CHEBY_TARGET_2D
     #define CHEBY_TARGET_3D
@@ -825,26 +829,30 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     const int Nz = grid.Nz;
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
-    const size_t total_size = grid.total_size;
+    [[maybe_unused]] const size_t total_size = grid.total_size;
 
-    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
+#ifdef USE_GPU_OFFLOAD
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
+    // Local pointer copies with map(present:) get HOST addresses in NVHPC.
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* tmp_ptr = tmp_ptrs_[level];  // Already a raw device pointer (omp_target_alloc)
+    // All pointers are now device pointers - use is_device_ptr for all
+    #define JACOBI_TARGET_U_TO_TMP_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_U_TO_TMP_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_COPY \
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr, tmp_ptr)")
+#else
+    // CPU path: use host pointers directly
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
-#ifdef USE_GPU_OFFLOAD
-    double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
-    // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
-    // Note: Cannot use nowait here - Jacobi iterations have data dependencies
-    #define JACOBI_TARGET_U_TO_TMP_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_TMP_TO_U_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_U_TO_TMP_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_TMP_TO_U_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_COPY \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-#else
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     // CPU: no pragmas needed
     #define JACOBI_TARGET_U_TO_TMP_2D
@@ -964,16 +972,21 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+#ifdef USE_GPU_OFFLOAD
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+    int device = omp_get_default_device();
+    const double* u_ptr = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+#else
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = grid.total_size;
+#endif
 
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr)
 #endif
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i < Nx + Ng; ++i) {
@@ -986,8 +999,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
     } else {
         // 3D path
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, r_ptr)
 #endif
         for (int k = Ng; k < Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
@@ -1022,10 +1034,17 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
 
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* u_ptr = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+#else
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = grid.total_size;
+#endif
 
     double max_res = 0.0;
     double sum_sq = 0.0;
@@ -1033,8 +1052,7 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
-            reduction(max: max_res) reduction(+: sum_sq)
+            is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
 #endif
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i < Nx + Ng; ++i) {
@@ -1053,8 +1071,7 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
         // 3D path
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
-            reduction(max: max_res) reduction(+: sum_sq)
+            is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
 #endif
         for (int k = Ng; k < Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
@@ -1098,17 +1115,20 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     const int plane_stride_f = fine.plane_stride;
     const int plane_stride_c = coarse.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+#ifdef USE_GPU_OFFLOAD
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+    int device = omp_get_default_device();
+    const double* r_fine = static_cast<const double*>(omp_get_mapped_ptr(r_ptrs_[fine_level], device));
+    double* f_coarse = static_cast<double*>(omp_get_mapped_ptr(f_ptrs_[fine_level + 1], device));
+#else
     const double* r_fine = r_ptrs_[fine_level];
     double* f_coarse = f_ptrs_[fine_level + 1];
-    [[maybe_unused]] const size_t size_f = fine.total_size;
-    [[maybe_unused]] const size_t size_c = coarse.total_size;
+#endif
 
     if (is_2d) {
         // 2D: 9-point stencil
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(r_fine, f_coarse)
 #endif
         for (int j_c = Ng_c; j_c < Ny_c + Ng_c; ++j_c) {
             for (int i_c = Ng_c; i_c < Nx_c + Ng_c; ++i_c) {
@@ -1128,8 +1148,7 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     } else {
         // 3D: 27-point stencil
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(r_fine, f_coarse)
 #endif
         for (int k_c = Ng_c; k_c < Nz_c + Ng_c; ++k_c) {
             for (int j_c = Ng_c; j_c < Ny_c + Ng_c; ++j_c) {
@@ -1194,18 +1213,21 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     const int plane_stride_f = fine.plane_stride;
     const int plane_stride_c = coarse.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* u_coarse = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[coarse_level], device));
+    double* u_fine = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[coarse_level - 1], device));
+#else
     const double* u_coarse = u_ptrs_[coarse_level];
     double* u_fine = u_ptrs_[coarse_level - 1];
-    [[maybe_unused]] const size_t size_f = fine.total_size;
-    [[maybe_unused]] const size_t size_c = coarse.total_size;
+#endif
 
     if (is_2d) {
         // 2D owner-computes bilinear interpolation
         // Each fine cell reads from up to 4 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_coarse, u_fine)
 #endif
         for (int j_f = Ng_f; j_f < Ny_f + Ng_f; ++j_f) {
             for (int i_f = Ng_f; i_f < Nx_f + Ng_f; ++i_f) {
@@ -1238,8 +1260,7 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
         // 3D owner-computes trilinear interpolation
         // Each fine cell reads from up to 8 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_coarse, u_fine)
 #endif
         for (int k_f = Ng_f; k_f < Nz_f + Ng_f; ++k_f) {
             for (int j_f = Ng_f; j_f < Ny_f + Ng_f; ++j_f) {
@@ -1354,10 +1375,11 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 #ifdef USE_GPU_OFFLOAD
         assert(gpu_ready_ && "GPU must be initialized");
         const size_t size_c = level_sizes_[level + 1];
-        double* u_coarse = u_ptrs_[level + 1];
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+        int device = omp_get_default_device();
+        double* u_coarse = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level + 1], device));
 
-        #pragma omp target teams distribute parallel for \
-            map(present: u_coarse[0:size_c])
+        #pragma omp target teams distribute parallel for is_device_ptr(u_coarse)
         for (int idx = 0; idx < (int)size_c; ++idx) {
             u_coarse[idx] = 0.0;
         }
@@ -1400,15 +1422,18 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* r_ptr = static_cast<const double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+#else
     const double* r_ptr = r_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = grid.total_size;
+#endif
 
     if (Nz == 1) {
         // 2D case
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(max:max_res) is_device_ptr(r_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1426,8 +1451,7 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     } else {
         // 3D case
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(max:max_res) is_device_ptr(r_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1483,15 +1507,18 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+#else
     double* u_ptr = u_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = grid.total_size;
+#endif
 
     if (Nz == 1) {
         // 2D case - compute sum
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(+:sum) is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1503,8 +1530,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 
         // 2D case - subtract mean
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1514,8 +1540,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     } else {
         // 3D case - compute sum
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(+:sum) is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1528,8 +1553,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 
         // 3D case - subtract mean
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1753,15 +1777,26 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 }
 
 #ifdef USE_GPU_OFFLOAD
+/// GPU Multigrid Solver - Device-Resident Implementation
+///
+/// CONTRACT: All device kernels in this section MUST use one of these patterns:
+///   1. gpu::dev_ptr(host_ptr) + is_device_ptr(dev_ptr)
+///   2. omp_get_mapped_ptr() + is_device_ptr()
+///   3. Member pointers with map(present:) for simple kernels
+///
+/// FORBIDDEN: Local pointer aliases without explicit device address resolution.
+/// See gpu_utils.hpp for full NVHPC workaround documentation.
+///
 int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg) {
     NVTX_SCOPE_POISSON("poisson:solve_device");
 
     assert(gpu_ready_ && "GPU must be initialized in constructor");
-    
+
     // Device-resident solve using Model 1 (host pointer + present mapping)
     // Parameters are host pointers that caller has already mapped via `target enter data`.
-    // We use map(present: ...) to access the device copies without additional transfers.
-    
+    // NVHPC WORKAROUND: Use member pointers directly instead of local copies from vectors.
+    // Local pointer copies get HOST addresses in NVHPC target regions.
+
     auto& finest = *levels_[0];
     const int Nx = finest.Nx;
     const int Ny = finest.Ny;
@@ -1769,17 +1804,20 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     // Total size includes ghost cells: Sx * Sy * Sz (accounts for level's Ng)
     const size_t total_size = finest.total_size;
 
-    // Get device pointers for finest level multigrid buffers
-    double* u_dev = u_ptrs_[0];
-    double* f_dev = f_ptrs_[0];
-
     // Copy RHS and initial guess from caller's present-mapped arrays to multigrid level-0 buffers
-    // This is device-to-device copy via present mappings (no host staging)
-    #pragma omp target teams distribute parallel for \
-        map(present: rhs_present[0:total_size], p_present[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
-    for (size_t idx = 0; idx < total_size; ++idx) {
-        f_dev[idx] = rhs_present[idx];
-        u_dev[idx] = p_present[idx];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses, then use is_device_ptr.
+    {
+        int device = omp_get_default_device();
+        double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_present, device));
+        double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_present, device));
+        double* f_dev = static_cast<double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
+        double* u_dev = static_cast<double*>(omp_get_mapped_ptr(u_level0_ptr_, device));
+
+        #pragma omp target teams distribute parallel for is_device_ptr(rhs_dev, p_dev, f_dev, u_dev)
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            f_dev[idx] = rhs_dev[idx];
+            u_dev[idx] = p_dev[idx];
+        }
     }
 
     apply_bc(0);
@@ -1915,10 +1953,15 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         fix_nullspace(0);
 
         // Copy result from multigrid buffer back to caller's present-mapped array (D-to-D)
-        #pragma omp target teams distribute parallel for \
-            map(present: p_present[0:total_size], u_dev[0:total_size])
-        for (size_t idx = 0; idx < total_size; ++idx) {
-            p_present[idx] = u_dev[idx];
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+        {
+            int device = omp_get_default_device();
+            double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_present, device));
+            double* u_dev = static_cast<double*>(omp_get_mapped_ptr(u_level0_ptr_, device));
+            #pragma omp target teams distribute parallel for is_device_ptr(p_dev, u_dev)
+            for (size_t idx = 0; idx < total_size; ++idx) {
+                p_dev[idx] = u_dev[idx];
+            }
         }
 
         return cycles_run;
@@ -1952,29 +1995,34 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     const int plane_stride_gpu = finest_gpu.plane_stride;
     const bool is_2d_gpu = finest_gpu.is2D();
 
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
     double b_inf_local = 0.0;
     double b_sum_sq = 0.0;
-    if (is_2d_gpu) {
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
-        for (int j = Ng; j < Ny_g + Ng; ++j) {
-            for (int i = Ng; i < Nx_g + Ng; ++i) {
-                int idx = j * stride_gpu + i;
-                double val = f_dev[idx];
-                b_inf_local = std::max(b_inf_local, std::abs(val));
-                b_sum_sq += val * val;
-            }
-        }
-    } else {
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
-        for (int k = Ng; k < Nz_g + Ng; ++k) {
+    {
+        int device = omp_get_default_device();
+        const double* f_dev = static_cast<const double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
+        if (is_2d_gpu) {
+            #pragma omp target teams distribute parallel for collapse(2) \
+                is_device_ptr(f_dev) reduction(max: b_inf_local) reduction(+: b_sum_sq)
             for (int j = Ng; j < Ny_g + Ng; ++j) {
                 for (int i = Ng; i < Nx_g + Ng; ++i) {
-                    int idx = k * plane_stride_gpu + j * stride_gpu + i;
+                    int idx = j * stride_gpu + i;
                     double val = f_dev[idx];
                     b_inf_local = std::max(b_inf_local, std::abs(val));
                     b_sum_sq += val * val;
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) \
+                is_device_ptr(f_dev) reduction(max: b_inf_local) reduction(+: b_sum_sq)
+            for (int k = Ng; k < Nz_g + Ng; ++k) {
+                for (int j = Ng; j < Ny_g + Ng; ++j) {
+                    for (int i = Ng; i < Nx_g + Ng; ++i) {
+                        int idx = k * plane_stride_gpu + j * stride_gpu + i;
+                        double val = f_dev[idx];
+                        b_inf_local = std::max(b_inf_local, std::abs(val));
+                        b_sum_sq += val * val;
+                    }
                 }
             }
         }
@@ -2039,11 +2087,15 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     fix_nullspace(0);
 
     // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
-    // This is device-to-device copy via present mappings (no host staging)
-    #pragma omp target teams distribute parallel for \
-        map(present: p_present[0:total_size], u_dev[0:total_size])
-    for (size_t idx = 0; idx < total_size; ++idx) {
-        p_present[idx] = u_dev[idx];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+    {
+        int device = omp_get_default_device();
+        double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_present, device));
+        double* u_dev = static_cast<double*>(omp_get_mapped_ptr(u_level0_ptr_, device));
+        #pragma omp target teams distribute parallel for is_device_ptr(p_dev, u_dev)
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            p_dev[idx] = u_dev[idx];
+        }
     }
 
     return cycles_used;  // Actual number of V-cycles executed
@@ -2088,10 +2140,10 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         }
 
         // Zero-initialize residual and scratch arrays to avoid garbage
-        double* r_ptr = r_ptrs_[lvl];
-        double* tmp_ptr = tmp_ptrs_[lvl];
-        #pragma omp target teams distribute parallel for \
-            map(present: r_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+        double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[lvl], device_id));
+        double* tmp_ptr = tmp_ptrs_[lvl];  // Already a device pointer (omp_target_alloc)
+        #pragma omp target teams distribute parallel for is_device_ptr(r_ptr, tmp_ptr)
         for (size_t idx = 0; idx < total_size; ++idx) {
             r_ptr[idx] = 0.0;
             tmp_ptr[idx] = 0.0;
@@ -2102,7 +2154,16 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     if (!u_ptrs_.empty() && !gpu::is_pointer_present(u_ptrs_[0])) {
         throw std::runtime_error("GPU mapping failed despite device availability");
     }
-    
+
+    // NVHPC WORKAROUND: Set level-0 member pointers for direct use in target regions.
+    // Local pointer copies from vectors get HOST addresses in NVHPC target regions.
+    if (!u_ptrs_.empty()) {
+        u_level0_ptr_ = u_ptrs_[0];
+        f_level0_ptr_ = f_ptrs_[0];
+        r_level0_ptr_ = r_ptrs_[0];
+        level0_size_ = level_sizes_[0];
+    }
+
     gpu_ready_ = true;
 }
 

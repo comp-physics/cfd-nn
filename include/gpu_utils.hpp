@@ -1,10 +1,54 @@
 #pragma once
 
-/// GPU utilities for OpenMP target offloading
-/// Provides RAII-style memory management and helper macros
+/// @file gpu_utils.hpp
+/// @brief GPU utilities for OpenMP target offloading
+///
+/// Provides RAII-style memory management, device pointer helpers, and macros.
+///
+/// ## NVHPC Workaround: Device Pointer Pattern
+///
+/// NVHPC (25.x) has a bug where mapped host pointers used directly in OpenMP target
+/// regions sometimes receive the HOST address instead of the device address. This
+/// causes silent memory corruption - kernels read/write wrong memory locations.
+///
+/// **REQUIRED PATTERN** (all GPU kernels must follow this):
+/// ```cpp
+/// // 1. Get device pointer explicitly using omp_get_mapped_ptr
+/// double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+///
+/// // 2. Use is_device_ptr clause to tell compiler this is a device address
+/// #pragma omp target teams distribute parallel for is_device_ptr(u_dev)
+/// for (int i = 0; i < n; ++i) {
+///     u_dev[i] = ...;
+/// }
+/// ```
+///
+/// **FORBIDDEN PATTERNS** (will cause silent corruption):
+/// ```cpp
+/// // BAD: Local pointer alias without dev_ptr
+/// double* u = velocity_u_ptr_;
+/// #pragma omp target teams distribute parallel for
+/// for (...) { u[i] = ...; }  // WRONG - may use host address!
+///
+/// // BAD: Raw pointer with map(present:)
+/// #pragma omp target teams distribute parallel for map(present: u[0:n])
+/// for (...) { u[i] = ...; }  // WRONG - may use host address!
+///
+/// // BAD: firstprivate with pointer
+/// #pragma omp target teams distribute parallel for firstprivate(u)
+/// for (...) { u[i] = ...; }  // WRONG - passes host address!
+/// ```
+///
+/// The dev_ptr() function aborts with a clear error if the pointer is not mapped,
+/// providing fail-fast behavior instead of silent corruption.
+///
+/// This pattern has no measurable performance impact - it's one pointer lookup per
+/// kernel launch, not per element.
 
 #include <vector>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -245,6 +289,17 @@ bool is_pointer_present(void* ptr);
 /// Get device pointer for an OpenMP-mapped host pointer
 /// Uses omp_get_mapped_ptr (OpenMP 5.1) to convert host -> device pointer
 /// Returns nullptr if pointer is not mapped or host_ptr is nullptr
+///
+/// NVHPC WORKAROUND: NVHPC sometimes fails to use the device address associated
+/// with a mapped host pointer when that pointer appears in certain target constructs.
+/// Using omp_get_mapped_ptr + is_device_ptr forces the compiler to use the correct
+/// device address.
+///
+/// Usage pattern:
+///   double* u_dev = gpu::dev_ptr(velocity_u_ptr_);  // Asserts mapping exists
+///   #pragma omp target teams distribute parallel for is_device_ptr(u_dev)
+///   for (...) u_dev[i] = ...
+///
 template<typename T>
 inline T* get_device_ptr(T* host_ptr) {
     if (host_ptr == nullptr) return nullptr;
@@ -252,6 +307,61 @@ inline T* get_device_ptr(T* host_ptr) {
     void* dev_ptr = omp_get_mapped_ptr(host_ptr, device);
     // omp_get_mapped_ptr returns nullptr if pointer is not mapped
     return static_cast<T*>(dev_ptr);
+}
+
+/// Get device pointer with assertion that mapping exists
+/// Aborts if host_ptr is nullptr or not mapped to device
+/// Use this when the pointer MUST be mapped (i.e., in compute kernels)
+///
+/// @param host_ptr  Host pointer that should be mapped to device
+/// @param context   Optional field name for debugging (e.g., "velocity_u")
+template<typename T>
+inline T* dev_ptr(T* host_ptr, const char* context = nullptr) {
+    if (host_ptr == nullptr) {
+        if (context) {
+            std::fprintf(stderr, "dev_ptr(%s): host_ptr is nullptr\n", context);
+        } else {
+            std::fprintf(stderr, "dev_ptr: host_ptr is nullptr\n");
+        }
+        std::abort();
+    }
+    int device = omp_get_default_device();
+    void* dev = omp_get_mapped_ptr(host_ptr, device);
+    if (dev == nullptr) {
+        // Additional diagnostic: check if pointer is "present" on device
+        int is_present = omp_target_is_present(host_ptr, device);
+
+        std::fprintf(stderr, "\n========================================\n");
+        std::fprintf(stderr, "GPU POINTER MAPPING FAILURE\n");
+        std::fprintf(stderr, "========================================\n");
+        if (context) {
+            std::fprintf(stderr, "Field: %s\n", context);
+        }
+        std::fprintf(stderr, "Host pointer:  %p\n", static_cast<void*>(host_ptr));
+        std::fprintf(stderr, "Target device: %d\n", device);
+        std::fprintf(stderr, "omp_target_is_present: %s\n", is_present ? "YES" : "NO");
+        std::fprintf(stderr, "\n");
+
+        if (!is_present) {
+            std::fprintf(stderr, "Diagnosis: Pointer was NEVER MAPPED to device.\n");
+            std::fprintf(stderr, "  - Check that map_fields_to_gpu() was called before step()\n");
+            std::fprintf(stderr, "  - Check that std::vector didn't reallocate (invalidating pointer)\n");
+            std::fprintf(stderr, "  - Verify field is included in enter data map() directive\n");
+        } else {
+            std::fprintf(stderr, "Diagnosis: Pointer IS present but omp_get_mapped_ptr returned NULL.\n");
+            std::fprintf(stderr, "  - This may be a compiler/runtime bug\n");
+            std::fprintf(stderr, "  - Try recompiling with latest NVHPC version\n");
+        }
+        std::fprintf(stderr, "========================================\n\n");
+        std::abort();
+    }
+    return static_cast<T*>(dev);
+}
+
+/// Const overload for dev_ptr
+template<typename T>
+inline const T* dev_ptr(const T* host_ptr, const char* context = nullptr) {
+    return dev_ptr(const_cast<T*>(host_ptr), context);
 }
 
 /// Synchronize OpenMP target tasks (wait for deferred target regions to complete)
@@ -264,6 +374,25 @@ inline void sync() {
 #else
 /// CPU: sync is a no-op
 inline void sync() {}
+
+/// CPU stubs for dev_ptr - just return the host pointer unchanged
+/// These allow code using gpu::dev_ptr() to compile on CPU builds
+template<typename T>
+inline T* get_device_ptr(T* host_ptr) {
+    return host_ptr;
+}
+
+template<typename T>
+inline T* dev_ptr(T* host_ptr, const char* context = nullptr) {
+    (void)context;
+    return host_ptr;
+}
+
+template<typename T>
+inline const T* dev_ptr(const T* host_ptr, const char* context = nullptr) {
+    (void)context;
+    return host_ptr;
+}
 #endif
 
 } // namespace gpu
