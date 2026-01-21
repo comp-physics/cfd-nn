@@ -42,13 +42,9 @@ int main() {
     // Set zero body force explicitly
     solver.set_body_force(0.0, 0.0);
 
-    // Constant velocity everywhere (including ghost cells)
-    for (int j = 0; j <= mesh.Ny + 1; ++j) {
-        for (int i = 0; i <= mesh.Nx + 1; ++i) {
-            solver.velocity().u(i, j) = u_const;
-            solver.velocity().v(i, j) = v_const;
-        }
-    }
+    // Constant velocity everywhere using fill() to ensure ALL staggered grid
+    // faces are initialized (manual loops can miss edge faces due to staggered layout)
+    solver.velocity().fill(u_const, v_const);
 
     std::cout << "Setup:\n";
     std::cout << "  Grid: " << N << "x" << N << "\n";

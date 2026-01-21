@@ -132,6 +132,11 @@ double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, in
     // Run one step to solve Poisson
     solver.step();
 
+#ifdef USE_GPU_OFFLOAD
+    // Sync pressure from GPU to host for inspection
+    solver.sync_from_gpu();
+#endif
+
     // Compute residual: L(p) - rhs (where rhs = div(u*)/dt)
     // After projection, the pressure should satisfy the discrete Poisson equation
     const ScalarField& p = solver.pressure();

@@ -18,10 +18,10 @@ static void test_safe_divide() {
     // Normal division
     assert_close("safe_divide normal", safe_divide(1.0, 2.0), 0.5);
     assert_close("safe_divide negative num", safe_divide(-1.0, 2.0), -0.5);
-    // Note: safe_divide uses abs(den) so sign of denominator is ignored
-    // This is intentional for turbulence (k, omega always positive)
-    assert_close("safe_divide negative den (abs)", safe_divide(1.0, -2.0), 0.5);
-    assert_close("safe_divide both negative (abs den)", safe_divide(-1.0, -2.0), -0.5);
+    // Note: safe_divide preserves the sign of the denominator
+    // This matches standard division behavior: 1/-2 = -0.5, -1/-2 = 0.5
+    assert_close("safe_divide negative den", safe_divide(1.0, -2.0), -0.5);
+    assert_close("safe_divide both negative", safe_divide(-1.0, -2.0), 0.5);
 
     // Division by zero - should use floor
     assert_close("safe_divide by zero", safe_divide(1.0, 0.0), 1e30, 1e25, 0.0);
