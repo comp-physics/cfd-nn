@@ -70,9 +70,11 @@ fi
 echo ""
 echo "Checking for 'map(from:' or 'map(tofrom:' in stepping code..."
 
-STEPPING_FILES="solver_time"
+# Stepping-critical files: these run every time step and must not do H↔D transfers
+# - solver_time*.cpp: RK time integration
+# - solver_periodic_halos.cpp: periodic boundary fill
 # Exclude lines containing "DEBUG", "_sample", or "original" (debug instrumentation)
-MAP_FROM_IN_STEPPING=$(grep -rn --include="*${STEPPING_FILES}*.cpp" \
+MAP_FROM_IN_STEPPING=$(grep -rn --include="solver_time*.cpp" --include="solver_periodic_halos.cpp" \
     -E 'map\((from|tofrom):' "$REPO_ROOT/src" 2>/dev/null | \
     grep -v -E '(DEBUG|_sample|original|readback|sentinel)' || true)
 
@@ -92,7 +94,7 @@ fi
 # Pattern 4: Check for map(to:) in stepping code (also causes host→device transfer)
 echo "Checking for 'map(to:' in stepping code..."
 
-MAP_TO_IN_STEPPING=$(grep -rn --include="*${STEPPING_FILES}*.cpp" \
+MAP_TO_IN_STEPPING=$(grep -rn --include="solver_time*.cpp" --include="solver_periodic_halos.cpp" \
     -E 'map\(to:' "$REPO_ROOT/src" 2>/dev/null | grep -v 'map(to: dt)' || true)
 
 if [ -n "$MAP_TO_IN_STEPPING" ]; then
@@ -110,9 +112,27 @@ fi
 echo ""
 echo "Checking for 'solve(' (not solve_device) Poisson calls in stepping code..."
 
-BARE_SOLVE_IN_STEPPING=$(grep -rn --include="*${STEPPING_FILES}*.cpp" \
-    '\\.solve(' "$REPO_ROOT/src" 2>/dev/null | \
-    grep -v 'solve_device' | grep -v '//' || true)
+# Note: Lines inside #else (CPU path) are fine - we only care about GPU path
+BARE_SOLVE_IN_STEPPING=$(grep -rn --include="solver_time*.cpp" --include="solver_periodic_halos.cpp" \
+    '\.solve(' "$REPO_ROOT/src" 2>/dev/null | \
+    grep -v 'solve_device' | grep -v '//' | grep -v '#else' || true)
+
+# Additional filter: if the hit is inside a !USE_GPU_OFFLOAD block, that's OK
+# We check this by looking for #else on the previous line (simple heuristic)
+if [ -n "$BARE_SOLVE_IN_STEPPING" ]; then
+    REAL_ISSUES=""
+    while IFS= read -r line; do
+        file=$(echo "$line" | cut -d: -f1)
+        lineno=$(echo "$line" | cut -d: -f2)
+        # Check if previous few lines contain #else or #ifndef USE_GPU_OFFLOAD
+        prev_lines=$(sed -n "$((lineno-5)),$((lineno-1))p" "$file" 2>/dev/null || true)
+        if echo "$prev_lines" | grep -qE '#else|#ifndef USE_GPU_OFFLOAD'; then
+            continue  # Skip - this is in CPU path
+        fi
+        REAL_ISSUES="$REAL_ISSUES$line\n"
+    done <<< "$BARE_SOLVE_IN_STEPPING"
+    BARE_SOLVE_IN_STEPPING=$(echo -e "$REAL_ISSUES" | grep -v '^$' || true)
+fi
 
 if [ -n "$BARE_SOLVE_IN_STEPPING" ]; then
     echo -e "${RED}ERROR: Found 'solve(' instead of 'solve_device(' in stepping code:${NC}"

@@ -565,11 +565,45 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 
     // Use solve_device() for GPU builds (data is device-resident)
     // Use solve() for CPU builds (data is host-resident)
+    // IMPORTANT: Dispatch based on selected_solver_ to use FFT when appropriate
+    int vcycles = 0;
 #ifdef USE_GPU_OFFLOAD
-    mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-#else
-    mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+    switch (selected_solver_) {
+#ifdef USE_FFT_POISSON
+        case PoissonSolverType::FFT:
+            if (fft_poisson_solver_) {
+                vcycles = fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+            }
+            break;
+        case PoissonSolverType::FFT2D:
+            if (fft2d_poisson_solver_) {
+                vcycles = fft2d_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+            }
+            break;
+        case PoissonSolverType::FFT1D:
+            if (fft1d_poisson_solver_) {
+                vcycles = fft1d_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+            }
+            break;
 #endif
+        case PoissonSolverType::MG:
+        default:
+            vcycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+            break;
+    }
+#else
+    vcycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+#endif
+
+    // Track Poisson solve stats for benchmarking (enable with POISSON_STATS=1)
+    static bool print_stats = (std::getenv("POISSON_STATS") != nullptr);
+    static int poisson_solve_count = 0;
+    static int total_vcycles = 0;
+    poisson_solve_count++;
+    total_vcycles += vcycles;
+    if (print_stats) {
+        std::cerr << "[Poisson] solve #" << poisson_solve_count << " vcycles=" << vcycles << "\n";
+    }
 
     // DEBUG: Check pressure correction after solve
     if (proj_debug < 5) {

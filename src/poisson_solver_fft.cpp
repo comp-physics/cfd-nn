@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cmath>
 #include <stdexcept>
+#include <cstdlib>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -960,6 +961,14 @@ void FFTPoissonSolver::launch_unpack_and_bc(double* p_dev) {
 }
 
 int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
+    // Track Poisson solve counts (enable with POISSON_STATS=1)
+    static bool print_stats = (std::getenv("POISSON_STATS") != nullptr);
+    static int solve_count = 0;
+    ++solve_count;
+    if (print_stats) {
+        std::cerr << "[FFT Poisson] solve #" << solve_count << "\n";
+    }
+
     if (!initialized_) {
         throw std::runtime_error("FFTPoissonSolver not initialized");
     }
