@@ -4412,7 +4412,7 @@ double RANSSolver::step() {
         #pragma omp target data map(present: u[0:n_u], uo[0:n_u], v[0:n_v], vo[0:n_v])
         {
             // Copy u-velocity (2D)
-            #pragma omp target teams distribute parallel for collapse(2)
+            #pragma omp target teams distribute parallel for 
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     const int idx = j * u_stride + i;
@@ -4421,7 +4421,7 @@ double RANSSolver::step() {
             }
 
             // Copy v-velocity (2D)
-            #pragma omp target teams distribute parallel for collapse(2)
+            #pragma omp target teams distribute parallel for 
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     const int idx = j * v_stride + i;
@@ -4719,13 +4719,10 @@ double RANSSolver::step() {
 
         // Convective KE production diagnostic: <u, conv(u)>
         // For skew-symmetric form, this should be ~0 (energy conservative)
+        // NOTE: CPU-only diagnostic - GPU builds skip this (would need expensive D→H sync)
+#ifndef USE_GPU_OFFLOAD
         static bool conv_ke_diagnostics = (std::getenv("NNCFD_CONV_KE_DIAGNOSTICS") != nullptr);
         if (conv_ke_diagnostics && (iter_ % 100 == 0)) {
-#ifdef USE_GPU_OFFLOAD
-            // Need to sync conv_ and velocity_ to host for the diagnostic
-            conv_.sync_from_gpu();
-            velocity_.sync_from_gpu();
-#endif
             double dke_conv = compute_convective_ke_production();
             double ke = 0.0;
             const double dV = mesh_->dx * mesh_->dy * (mesh_->is2D() ? 1.0 : mesh_->dz);
@@ -4754,6 +4751,7 @@ double RANSSolver::step() {
             std::cout << "[Convection] dKE/dt_conv=" << std::scientific << std::setprecision(6)
                       << dke_conv << " (rel=" << rel_rate << "/s)\n";
         }
+#endif  // !USE_GPU_OFFLOAD
     }
 
     {
@@ -5002,7 +5000,7 @@ double RANSSolver::step() {
 
         if (is_2d) {
             // 2D path
-            #pragma omp target teams distribute parallel for collapse(2) \
+            #pragma omp target teams distribute parallel for \
                 map(present: div_ptr[0:n_field]) \
                 reduction(+:sum_div)
             for (int j = 0; j < Ny; ++j) {
@@ -5038,7 +5036,7 @@ double RANSSolver::step() {
 
         if (is_2d) {
             // 2D path
-            #pragma omp target teams distribute parallel for collapse(2) \
+            #pragma omp target teams distribute parallel for \
                 map(present: div_ptr[0:n_field], rhs_ptr[0:n_field])
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
@@ -5159,7 +5157,7 @@ double RANSSolver::step() {
 
             if (mesh_->is2D()) {
 #ifdef USE_GPU_OFFLOAD
-                #pragma omp target teams distribute parallel for collapse(2) \
+                #pragma omp target teams distribute parallel for \
                     map(present: rhs_poisson_ptr_[0:field_total_size_]) \
                     reduction(+:rhs_norm_sq, rhs_count)
 #endif
@@ -5520,559 +5518,6 @@ double RANSSolver::step() {
     return max_change;
 }
 
-// ============================================================================
-// RK Time Integration Methods
-// ============================================================================
-
-void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double dt) {
-    // Compute RHS: -conv + diff + force, and advance: vel_out = vel_in + dt * RHS
-    // This is the core Euler substep used by all RK methods
-
-    // Compute convective and diffusive terms using vel_in
-    compute_convective_term(vel_in, conv_);
-    compute_diffusive_term(vel_in, nu_eff_, diff_);
-
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
-    const double fx = fx_;
-    const double fy = fy_;
-    const double fz = fz_;
-    const bool is_2d = mesh_->is2D();
-
-    // Get raw pointers
-    const double* u_in = vel_in.u_data().data();
-    const double* v_in = vel_in.v_data().data();
-    double* u_out = vel_out.u_data().data();
-    double* v_out = vel_out.v_data().data();
-    const double* conv_u = conv_.u_data().data();
-    const double* conv_v = conv_.v_data().data();
-    const double* diff_u = diff_.u_data().data();
-    const double* diff_v = diff_.v_data().data();
-
-    const int u_stride = Nx + 2 * Ng + 1;
-    const int v_stride = Nx + 2 * Ng;
-
-    [[maybe_unused]] const size_t u_total = vel_in.u_total_size();
-    [[maybe_unused]] const size_t v_total = vel_in.v_total_size();
-
-    const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
-                            (velocity_bc_.x_hi == VelocityBC::Periodic);
-    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
-                            (velocity_bc_.y_hi == VelocityBC::Periodic);
-
-    if (is_2d) {
-        // 2D path: advance u and v
-        const int n_u_faces = (Nx + 1) * Ny;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_in[0:u_total], u_out[0:u_total], conv_u[0:u_total], diff_u[0:u_total]) \
-            firstprivate(dt, fx, u_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = idx / (Nx + 1) + Ng;
-            int u_idx = j * u_stride + i;
-            u_out[u_idx] = u_in[u_idx] + dt * (-conv_u[u_idx] + diff_u[u_idx] + fx);
-        }
-
-        const int n_v_faces = Nx * (Ny + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: v_in[0:v_total], v_out[0:v_total], conv_v[0:v_total], diff_v[0:v_total]) \
-            firstprivate(dt, fy, v_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            int v_idx = j * v_stride + i;
-            v_out[v_idx] = v_in[v_idx] + dt * (-conv_v[v_idx] + diff_v[v_idx] + fy);
-        }
-
-        // Enforce periodicity
-        if (x_periodic) {
-            #pragma omp target teams distribute parallel for \
-                map(present: u_out[0:u_total]) firstprivate(u_stride, Nx, Ny, Ng)
-            for (int j = 0; j < Ny; ++j) {
-                int jj = j + Ng;
-                double u_avg = 0.5 * (u_out[jj * u_stride + Ng] + u_out[jj * u_stride + (Ng + Nx)]);
-                u_out[jj * u_stride + Ng] = u_avg;
-                u_out[jj * u_stride + (Ng + Nx)] = u_avg;
-            }
-        }
-        if (y_periodic) {
-            #pragma omp target teams distribute parallel for \
-                map(present: v_out[0:v_total]) firstprivate(v_stride, Nx, Ny, Ng)
-            for (int i = 0; i < Nx; ++i) {
-                int ii = i + Ng;
-                double v_avg = 0.5 * (v_out[Ng * v_stride + ii] + v_out[(Ng + Ny) * v_stride + ii]);
-                v_out[Ng * v_stride + ii] = v_avg;
-                v_out[(Ng + Ny) * v_stride + ii] = v_avg;
-            }
-        }
-    } else {
-        // 3D path
-        const int Nz = mesh_->Nz;
-        const int u_plane_stride = u_stride * (Ny + 2 * Ng);
-        const int v_plane_stride = v_stride * (Ny + 2 * Ng + 1);
-        const int w_stride = Nx + 2 * Ng;
-        const int w_plane_stride = w_stride * (Ny + 2 * Ng);
-
-        const double* w_in = vel_in.w_data().data();
-        double* w_out = vel_out.w_data().data();
-        const double* conv_w = conv_.w_data().data();
-        const double* diff_w = diff_.w_data().data();
-        [[maybe_unused]] const size_t w_total = vel_in.w_total_size();
-
-        const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
-                                (velocity_bc_.z_hi == VelocityBC::Periodic);
-
-        // Advance u
-        const int n_u_faces = (Nx + 1) * Ny * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_in[0:u_total], u_out[0:u_total], conv_u[0:u_total], diff_u[0:u_total]) \
-            firstprivate(dt, fx, u_stride, u_plane_stride, Nx, Ny, Nz, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
-            int u_idx = k * u_plane_stride + j * u_stride + i;
-            u_out[u_idx] = u_in[u_idx] + dt * (-conv_u[u_idx] + diff_u[u_idx] + fx);
-        }
-
-        // Advance v
-        const int n_v_faces = Nx * (Ny + 1) * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: v_in[0:v_total], v_out[0:v_total], conv_v[0:v_total], diff_v[0:v_total]) \
-            firstprivate(dt, fy, v_stride, v_plane_stride, Nx, Ny, Nz, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
-            int v_idx = k * v_plane_stride + j * v_stride + i;
-            v_out[v_idx] = v_in[v_idx] + dt * (-conv_v[v_idx] + diff_v[v_idx] + fy);
-        }
-
-        // Advance w
-        const int n_w_faces = Nx * Ny * (Nz + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: w_in[0:w_total], w_out[0:w_total], conv_w[0:w_total], diff_w[0:w_total]) \
-            firstprivate(dt, fz, w_stride, w_plane_stride, Nx, Ny, Nz, Ng)
-        for (int idx = 0; idx < n_w_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
-            int w_idx = k * w_plane_stride + j * w_stride + i;
-            w_out[w_idx] = w_in[w_idx] + dt * (-conv_w[w_idx] + diff_w[w_idx] + fz);
-        }
-
-        // Enforce periodicity for 3D
-        if (x_periodic) {
-            const int n_periodic = Ny * Nz;
-            #pragma omp target teams distribute parallel for \
-                map(present: u_out[0:u_total]) firstprivate(u_stride, u_plane_stride, Nx, Ny, Nz, Ng)
-            for (int idx = 0; idx < n_periodic; ++idx) {
-                int j = idx % Ny + Ng;
-                int k = idx / Ny + Ng;
-                int base = k * u_plane_stride + j * u_stride;
-                double u_avg = 0.5 * (u_out[base + Ng] + u_out[base + (Ng + Nx)]);
-                u_out[base + Ng] = u_avg;
-                u_out[base + (Ng + Nx)] = u_avg;
-            }
-        }
-        if (y_periodic) {
-            const int n_periodic = Nx * Nz;
-            #pragma omp target teams distribute parallel for \
-                map(present: v_out[0:v_total]) firstprivate(v_stride, v_plane_stride, Nx, Ny, Nz, Ng)
-            for (int idx = 0; idx < n_periodic; ++idx) {
-                int i = idx % Nx + Ng;
-                int k = idx / Nx + Ng;
-                int base_lo = k * v_plane_stride + Ng * v_stride + i;
-                int base_hi = k * v_plane_stride + (Ng + Ny) * v_stride + i;
-                double v_avg = 0.5 * (v_out[base_lo] + v_out[base_hi]);
-                v_out[base_lo] = v_avg;
-                v_out[base_hi] = v_avg;
-            }
-        }
-        if (z_periodic) {
-            const int n_periodic = Nx * Ny;
-            #pragma omp target teams distribute parallel for \
-                map(present: w_out[0:w_total]) firstprivate(w_stride, w_plane_stride, Nx, Ny, Nz, Ng)
-            for (int idx = 0; idx < n_periodic; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = idx / Nx + Ng;
-                int base_back = Ng * w_plane_stride + j * w_stride + i;
-                int base_front = (Ng + Nz) * w_plane_stride + j * w_stride + i;
-                double w_avg = 0.5 * (w_out[base_back] + w_out[base_front]);
-                w_out[base_back] = w_avg;
-                w_out[base_front] = w_avg;
-            }
-        }
-    }
-}
-
-void RANSSolver::project_velocity(VectorField& vel, double dt) {
-    // Project velocity to divergence-free using pressure correction
-    // This mirrors the projection logic in step() but operates on any velocity field
-
-    // Temporarily swap velocity_ with vel to use existing infrastructure
-    std::swap(velocity_, vel);
-#ifdef USE_GPU_OFFLOAD
-    // Also swap GPU pointers
-    double* temp_u = velocity_u_ptr_;
-    double* temp_v = velocity_v_ptr_;
-    double* temp_w = velocity_w_ptr_;
-    velocity_u_ptr_ = vel.u_data().data();
-    velocity_v_ptr_ = vel.v_data().data();
-    if (!mesh_->is2D()) velocity_w_ptr_ = vel.w_data().data();
-#endif
-
-    // Apply BCs to velocity
-    apply_velocity_bc();
-
-    // Compute divergence
-    compute_divergence(VelocityWhich::Current, div_velocity_);
-
-    // Build RHS for Poisson: rhs = div / dt (with mean subtracted for solvability)
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Nz = mesh_->Nz;
-    const int Ng = mesh_->Nghost;
-    const int stride = Nx + 2 * Ng;
-    const int plane_stride = stride * (Ny + 2 * Ng);
-    const bool is_2d = mesh_->is2D();
-
-    double mean_div = 0.0;
-    int count = is_2d ? (Nx * Ny) : (Nx * Ny * Nz);
-
-    // Compute mean divergence
-    if (is_2d) {
-        double sum = 0.0;
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                sum += div_velocity_(i, j);
-            }
-        }
-        mean_div = sum / count;
-    } else {
-        double sum = 0.0;
-        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    sum += div_velocity_(i, j, k);
-                }
-            }
-        }
-        mean_div = sum / count;
-    }
-
-    // Build RHS
-    const double dt_inv = 1.0 / dt;
-    if (is_2d) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                rhs_poisson_(i, j) = (div_velocity_(i, j) - mean_div) * dt_inv;
-            }
-        }
-    } else {
-        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    rhs_poisson_(i, j, k) = (div_velocity_(i, j, k) - mean_div) * dt_inv;
-                }
-            }
-        }
-    }
-
-    // Solve Poisson equation for pressure correction
-    PoissonConfig pcfg;
-    pcfg.max_vcycles = config_.poisson_max_vcycles;
-    pcfg.tol_rhs = config_.poisson_tol_rhs;
-    pcfg.fixed_cycles = config_.poisson_fixed_cycles;
-
-    mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-
-    // Correct velocity: u = u - dt * grad(p')
-    correct_velocity();
-
-    // Apply BCs after correction
-    apply_velocity_bc();
-
-    // Update pressure
-    if (is_2d) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                pressure_(i, j) += pressure_correction_(i, j);
-            }
-        }
-    } else {
-        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    pressure_(i, j, k) += pressure_correction_(i, j, k);
-                }
-            }
-        }
-    }
-
-    // Swap back
-    std::swap(velocity_, vel);
-#ifdef USE_GPU_OFFLOAD
-    velocity_u_ptr_ = temp_u;
-    velocity_v_ptr_ = temp_v;
-    if (!mesh_->is2D()) velocity_w_ptr_ = temp_w;
-#endif
-}
-
-void RANSSolver::ssprk2_step(double dt) {
-    // SSP-RK2 (Heun's method):
-    // u^(1) = u^n + dt * L(u^n)
-    // u^{n+1} = 0.5 * u^n + 0.5 * (u^(1) + dt * L(u^(1)))
-    //         = 0.5 * u^n + 0.5 * u^(1) + 0.5 * dt * L(u^(1))
-
-    // Store u^n in velocity_rk_
-    // Copy velocity_ -> velocity_rk_
-    const size_t u_total = velocity_.u_total_size();
-    const size_t v_total = velocity_.v_total_size();
-    std::copy(velocity_.u_data().begin(), velocity_.u_data().end(), velocity_rk_.u_data().begin());
-    std::copy(velocity_.v_data().begin(), velocity_.v_data().end(), velocity_rk_.v_data().begin());
-    if (!mesh_->is2D()) {
-        std::copy(velocity_.w_data().begin(), velocity_.w_data().end(), velocity_rk_.w_data().begin());
-    }
-
-    // Stage 1: u^(1) = u^n + dt * L(u^n), then project
-    euler_substep(velocity_, velocity_star_, dt);
-    project_velocity(velocity_star_, dt);
-
-    // Stage 2: u^{n+1} = 0.5 * u^n + 0.5 * (u^(1) + dt * L(u^(1)))
-    // First compute: temp = u^(1) + dt * L(u^(1))
-    euler_substep(velocity_star_, velocity_, dt);  // velocity_ = u^(1) + dt * L(u^(1))
-
-    // Then: u^{n+1} = 0.5 * u^n + 0.5 * temp
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
-    const int u_stride = Nx + 2 * Ng + 1;
-    const int v_stride = Nx + 2 * Ng;
-
-    double* u_new = velocity_.u_data().data();
-    double* v_new = velocity_.v_data().data();
-    const double* u_n = velocity_rk_.u_data().data();
-    const double* v_n = velocity_rk_.v_data().data();
-
-    if (mesh_->is2D()) {
-        const int n_u = (Nx + 1) * Ny;
-        for (int idx = 0; idx < n_u; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = idx / (Nx + 1) + Ng;
-            int u_idx = j * u_stride + i;
-            u_new[u_idx] = 0.5 * u_n[u_idx] + 0.5 * u_new[u_idx];
-        }
-        const int n_v = Nx * (Ny + 1);
-        for (int idx = 0; idx < n_v; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            int v_idx = j * v_stride + i;
-            v_new[v_idx] = 0.5 * v_n[v_idx] + 0.5 * v_new[v_idx];
-        }
-    } else {
-        const int Nz = mesh_->Nz;
-        const int u_plane = u_stride * (Ny + 2 * Ng);
-        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-        const int w_stride = Nx + 2 * Ng;
-        const int w_plane = w_stride * (Ny + 2 * Ng);
-
-        double* w_new = velocity_.w_data().data();
-        const double* w_n = velocity_rk_.w_data().data();
-
-        const int n_u = (Nx + 1) * Ny * Nz;
-        for (int idx = 0; idx < n_u; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
-            int u_idx = k * u_plane + j * u_stride + i;
-            u_new[u_idx] = 0.5 * u_n[u_idx] + 0.5 * u_new[u_idx];
-        }
-        const int n_v = Nx * (Ny + 1) * Nz;
-        for (int idx = 0; idx < n_v; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
-            int v_idx = k * v_plane + j * v_stride + i;
-            v_new[v_idx] = 0.5 * v_n[v_idx] + 0.5 * v_new[v_idx];
-        }
-        const int n_w = Nx * Ny * (Nz + 1);
-        for (int idx = 0; idx < n_w; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
-            int w_idx = k * w_plane + j * w_stride + i;
-            w_new[w_idx] = 0.5 * w_n[w_idx] + 0.5 * w_new[w_idx];
-        }
-    }
-
-    // Final projection
-    project_velocity(velocity_, dt);
-}
-
-void RANSSolver::ssprk3_step(double dt) {
-    // SSP-RK3 (Strong Stability Preserving, 3-stage):
-    // u^(1) = u^n + dt * L(u^n)
-    // u^(2) = 3/4 * u^n + 1/4 * (u^(1) + dt * L(u^(1)))
-    // u^{n+1} = 1/3 * u^n + 2/3 * (u^(2) + dt * L(u^(2)))
-    //
-    // With projection at each stage for incompressibility
-
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Ng = mesh_->Nghost;
-    const int u_stride = Nx + 2 * Ng + 1;
-    const int v_stride = Nx + 2 * Ng;
-    const bool is_2d = mesh_->is2D();
-
-    // Store u^n in velocity_rk_
-    std::copy(velocity_.u_data().begin(), velocity_.u_data().end(), velocity_rk_.u_data().begin());
-    std::copy(velocity_.v_data().begin(), velocity_.v_data().end(), velocity_rk_.v_data().begin());
-    if (!is_2d) {
-        std::copy(velocity_.w_data().begin(), velocity_.w_data().end(), velocity_rk_.w_data().begin());
-    }
-
-    double* u_n = velocity_rk_.u_data().data();
-    double* v_n = velocity_rk_.v_data().data();
-    double* u_cur = velocity_.u_data().data();
-    double* v_cur = velocity_.v_data().data();
-    double* u_star = velocity_star_.u_data().data();
-    double* v_star = velocity_star_.v_data().data();
-
-    // =========== Stage 1: u^(1) = u^n + dt * L(u^n) ===========
-    euler_substep(velocity_, velocity_star_, dt);
-    project_velocity(velocity_star_, dt);
-    // velocity_star_ now contains u^(1)
-
-    // =========== Stage 2: u^(2) = 3/4 * u^n + 1/4 * (u^(1) + dt * L(u^(1))) ===========
-    // First compute: temp = u^(1) + dt * L(u^(1))
-    euler_substep(velocity_star_, velocity_, dt);
-    // velocity_ = u^(1) + dt * L(u^(1))
-
-    // Then: u^(2) = 3/4 * u^n + 1/4 * velocity_
-    if (is_2d) {
-        const int n_u = (Nx + 1) * Ny;
-        for (int idx = 0; idx < n_u; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = idx / (Nx + 1) + Ng;
-            int u_idx = j * u_stride + i;
-            u_star[u_idx] = 0.75 * u_n[u_idx] + 0.25 * u_cur[u_idx];
-        }
-        const int n_v = Nx * (Ny + 1);
-        for (int idx = 0; idx < n_v; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            int v_idx = j * v_stride + i;
-            v_star[v_idx] = 0.75 * v_n[v_idx] + 0.25 * v_cur[v_idx];
-        }
-    } else {
-        const int Nz = mesh_->Nz;
-        const int u_plane = u_stride * (Ny + 2 * Ng);
-        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-        const int w_stride = Nx + 2 * Ng;
-        const int w_plane = w_stride * (Ny + 2 * Ng);
-
-        double* w_n = velocity_rk_.w_data().data();
-        double* w_cur = velocity_.w_data().data();
-        double* w_star = velocity_star_.w_data().data();
-
-        const int n_u = (Nx + 1) * Ny * Nz;
-        for (int idx = 0; idx < n_u; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
-            int u_idx = k * u_plane + j * u_stride + i;
-            u_star[u_idx] = 0.75 * u_n[u_idx] + 0.25 * u_cur[u_idx];
-        }
-        const int n_v = Nx * (Ny + 1) * Nz;
-        for (int idx = 0; idx < n_v; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
-            int v_idx = k * v_plane + j * v_stride + i;
-            v_star[v_idx] = 0.75 * v_n[v_idx] + 0.25 * v_cur[v_idx];
-        }
-        const int n_w = Nx * Ny * (Nz + 1);
-        for (int idx = 0; idx < n_w; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
-            int w_idx = k * w_plane + j * w_stride + i;
-            w_star[w_idx] = 0.75 * w_n[w_idx] + 0.25 * w_cur[w_idx];
-        }
-    }
-
-    project_velocity(velocity_star_, dt);
-    // velocity_star_ now contains u^(2)
-
-    // =========== Stage 3: u^{n+1} = 1/3 * u^n + 2/3 * (u^(2) + dt * L(u^(2))) ===========
-    // First compute: temp = u^(2) + dt * L(u^(2))
-    euler_substep(velocity_star_, velocity_, dt);
-    // velocity_ = u^(2) + dt * L(u^(2))
-
-    // Then: u^{n+1} = 1/3 * u^n + 2/3 * velocity_
-    if (is_2d) {
-        const int n_u = (Nx + 1) * Ny;
-        for (int idx = 0; idx < n_u; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = idx / (Nx + 1) + Ng;
-            int u_idx = j * u_stride + i;
-            u_cur[u_idx] = (1.0/3.0) * u_n[u_idx] + (2.0/3.0) * u_cur[u_idx];
-        }
-        const int n_v = Nx * (Ny + 1);
-        for (int idx = 0; idx < n_v; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = idx / Nx + Ng;
-            int v_idx = j * v_stride + i;
-            v_cur[v_idx] = (1.0/3.0) * v_n[v_idx] + (2.0/3.0) * v_cur[v_idx];
-        }
-    } else {
-        const int Nz = mesh_->Nz;
-        const int u_plane = u_stride * (Ny + 2 * Ng);
-        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-        const int w_stride_local = Nx + 2 * Ng;
-        const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        double* w_n = velocity_rk_.w_data().data();
-        double* w_cur = velocity_.w_data().data();
-
-        const int n_u = (Nx + 1) * Ny * Nz;
-        for (int idx = 0; idx < n_u; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
-            int u_idx = k * u_plane + j * u_stride + i;
-            u_cur[u_idx] = (1.0/3.0) * u_n[u_idx] + (2.0/3.0) * u_cur[u_idx];
-        }
-        const int n_v = Nx * (Ny + 1) * Nz;
-        for (int idx = 0; idx < n_v; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
-            int v_idx = k * v_plane + j * v_stride + i;
-            v_cur[v_idx] = (1.0/3.0) * v_n[v_idx] + (2.0/3.0) * v_cur[v_idx];
-        }
-        const int n_w = Nx * Ny * (Nz + 1);
-        for (int idx = 0; idx < n_w; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
-            int w_idx = k * w_plane + j * w_stride_local + i;
-            w_cur[w_idx] = (1.0/3.0) * w_n[w_idx] + (2.0/3.0) * w_cur[w_idx];
-        }
-    }
-
-    // Final projection
-    project_velocity(velocity_, dt);
-
-    // Apply final BCs
-    apply_velocity_bc();
-}
-
-// ============================================================================
-// End RK Time Integration Methods
-// ============================================================================
 
 std::pair<double, int> RANSSolver::solve_steady() {
     double residual = 1.0;
@@ -6300,7 +5745,7 @@ double RANSSolver::bulk_velocity() const {
         const size_t u_total_size = velocity_.u_total_size();
         const int u_stride = Nx + 2*Ng + 1;
         
-        #pragma omp target teams distribute parallel for collapse(2) \
+        #pragma omp target teams distribute parallel for \
             map(present: velocity_u_ptr_[0:u_total_size]) \
             reduction(+:sum)
         for (int j = 0; j < Ny; ++j) {
@@ -6653,7 +6098,7 @@ double RANSSolver::compute_adaptive_dt() const {
         const size_t n_f = field_total_size;
 
         // 2D: Compute max velocity magnitude (for advective CFL)
-        #pragma omp target teams distribute parallel for collapse(2) \
+        #pragma omp target teams distribute parallel for \
             map(present: u[0:n_u], v[0:n_v]) reduction(max:u_max)
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
@@ -6669,7 +6114,7 @@ double RANSSolver::compute_adaptive_dt() const {
 
         // 2D: Compute max effective viscosity (for diffusive CFL) if turbulence active
         if (turb_model_) {
-            #pragma omp target teams distribute parallel for collapse(2) \
+            #pragma omp target teams distribute parallel for \
                 map(present: nut[0:n_f]) reduction(max:nu_eff_max)
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
@@ -7831,6 +7276,344 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     
     return view;
 }
+
+// ============================================================================
+// Device-side diagnostic functions (GPU QOI computation)
+// ============================================================================
+
+bool RANSSolver::verify_gpu_field_presence() const {
+    if (!gpu_ready_) return false;
+
+    int device = omp_get_default_device();
+    bool all_present = true;
+
+    // Helper lambda to check and report
+    auto check_field = [&](double* ptr, const char* name) {
+        if (!omp_target_is_present(ptr, device)) {
+            std::fprintf(stderr, "[verify_gpu_field_presence] MISSING: %s (ptr=%p)\n",
+                         name, static_cast<void*>(ptr));
+            all_present = false;
+        }
+    };
+
+    // Check all velocity fields (critical for RK stepping)
+    check_field(velocity_u_ptr_, "velocity_u");
+    check_field(velocity_v_ptr_, "velocity_v");
+    check_field(velocity_star_u_ptr_, "velocity_star_u");
+    check_field(velocity_star_v_ptr_, "velocity_star_v");
+    check_field(velocity_old_u_ptr_, "velocity_old_u");
+    check_field(velocity_old_v_ptr_, "velocity_old_v");
+    check_field(velocity_rk_u_ptr_, "velocity_rk_u");
+    check_field(velocity_rk_v_ptr_, "velocity_rk_v");
+
+    // Check work arrays
+    check_field(conv_u_ptr_, "conv_u");
+    check_field(conv_v_ptr_, "conv_v");
+    check_field(diff_u_ptr_, "diff_u");
+    check_field(diff_v_ptr_, "diff_v");
+
+    // Check scalar fields (critical for projection)
+    check_field(pressure_ptr_, "pressure");
+    check_field(pressure_corr_ptr_, "pressure_correction");
+    check_field(rhs_poisson_ptr_, "rhs_poisson");
+    check_field(div_velocity_ptr_, "div_velocity");
+    check_field(nu_eff_ptr_, "nu_eff");
+
+    // 3D fields
+    if (!mesh_->is2D()) {
+        check_field(velocity_w_ptr_, "velocity_w");
+        check_field(velocity_star_w_ptr_, "velocity_star_w");
+        check_field(velocity_old_w_ptr_, "velocity_old_w");
+        check_field(velocity_rk_w_ptr_, "velocity_rk_w");
+        check_field(conv_w_ptr_, "conv_w");
+        check_field(diff_w_ptr_, "diff_w");
+    }
+
+    // If presence checks passed, do a write/read sanity check on a critical field
+    if (all_present) {
+        const int Ng = mesh_->Nghost;
+        const int test_idx = Ng * (mesh_->Nx + 2 * Ng) + Ng;
+        const double sentinel = 314159.265358979;
+
+        double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_poisson_ptr_, device));
+
+        double original = 0.0;
+        double readback = 0.0;
+
+        #pragma omp target is_device_ptr(rhs_dev) map(from: original)
+        {
+            original = rhs_dev[test_idx];
+        }
+
+        #pragma omp target is_device_ptr(rhs_dev)
+        {
+            rhs_dev[test_idx] = sentinel;
+        }
+
+        #pragma omp target is_device_ptr(rhs_dev) map(from: readback)
+        {
+            readback = rhs_dev[test_idx];
+        }
+
+        #pragma omp target is_device_ptr(rhs_dev) firstprivate(original)
+        {
+            rhs_dev[test_idx] = original;
+        }
+
+        if (std::abs(readback - sentinel) > 1e-10) {
+            std::fprintf(stderr, "[verify_gpu_field_presence] WRITE/READ FAILED: "
+                         "wrote %.6f, read %.6f (expected sentinel)\n", sentinel, readback);
+            all_present = false;
+        }
+    }
+
+    return all_present;
+}
+
+double RANSSolver::compute_kinetic_energy_device() const {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
+    const double dV = dx * dy * dz;
+
+    const int u_stride = velocity_.u_stride();
+    const int v_stride = velocity_.v_stride();
+
+    double ke = 0.0;
+
+    if (mesh_->is2D()) {
+        const int n_cells = Nx * Ny;
+        int device = omp_get_default_device();
+        const double* u_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_u_ptr_, device));
+        const double* v_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_v_ptr_, device));
+
+        #pragma omp target teams distribute parallel for reduction(+:ke) is_device_ptr(u_dev, v_dev) \
+            firstprivate(Nx, Ny, Ng, u_stride, v_stride, dV)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double u = 0.5 * (u_dev[j * u_stride + i] + u_dev[j * u_stride + (i + 1)]);
+            double v = 0.5 * (v_dev[j * v_stride + i] + v_dev[(j + 1) * v_stride + i]);
+            ke += 0.5 * (u * u + v * v) * dV;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+
+        int device = omp_get_default_device();
+        const double* u_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_u_ptr_, device));
+        const double* v_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_v_ptr_, device));
+        const double* w_dev = static_cast<const double*>(omp_get_mapped_ptr(velocity_w_ptr_, device));
+
+        #pragma omp target teams distribute parallel for reduction(+:ke) is_device_ptr(u_dev, v_dev, w_dev) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, dV)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double u = 0.5 * (u_dev[k * u_plane + j * u_stride + i] + u_dev[k * u_plane + j * u_stride + (i + 1)]);
+            double v = 0.5 * (v_dev[k * v_plane + j * v_stride + i] + v_dev[k * v_plane + (j + 1) * v_stride + i]);
+            double w = 0.5 * (w_dev[k * w_plane + j * w_stride + i] + w_dev[(k + 1) * w_plane + j * w_stride + i]);
+            ke += 0.5 * (u * u + v * v + w * w) * dV;
+        }
+    }
+
+    return ke;
+}
+
+double RANSSolver::compute_max_velocity_device() const {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+
+    const int u_stride = velocity_.u_stride();
+    const int v_stride = velocity_.v_stride();
+
+    double max_vel = 0.0;
+
+    const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+    const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+
+    if (mesh_->is2D()) {
+        const int n_u = (Nx + 1) * Ny;
+        #pragma omp target teams distribute parallel for is_device_ptr(u_dev) reduction(max:max_vel) \
+            firstprivate(Nx, Ny, Ng, u_stride)
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = idx / (Nx + 1) + Ng;
+            double val = u_dev[j * u_stride + i];
+            if (val < 0) val = -val;
+            if (val > max_vel) max_vel = val;
+        }
+
+        const int n_v = Nx * (Ny + 1);
+        #pragma omp target teams distribute parallel for is_device_ptr(v_dev) reduction(max:max_vel) \
+            firstprivate(Nx, Ny, Ng, v_stride)
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double val = v_dev[j * v_stride + i];
+            if (val < 0) val = -val;
+            if (val > max_vel) max_vel = val;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+
+        const int n_u = (Nx + 1) * Ny * Nz;
+        #pragma omp target teams distribute parallel for is_device_ptr(u_dev) reduction(max:max_vel) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, u_plane)
+        for (int idx = 0; idx < n_u; ++idx) {
+            int i = idx % (Nx + 1) + Ng;
+            int j = (idx / (Nx + 1)) % Ny + Ng;
+            int k = idx / ((Nx + 1) * Ny) + Ng;
+            double val = u_dev[k * u_plane + j * u_stride + i];
+            if (val < 0) val = -val;
+            if (val > max_vel) max_vel = val;
+        }
+
+        const int n_v = Nx * (Ny + 1) * Nz;
+        #pragma omp target teams distribute parallel for is_device_ptr(v_dev) reduction(max:max_vel) \
+            firstprivate(Nx, Ny, Nz, Ng, v_stride, v_plane)
+        for (int idx = 0; idx < n_v; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % (Ny + 1) + Ng;
+            int k = idx / (Nx * (Ny + 1)) + Ng;
+            double val = v_dev[k * v_plane + j * v_stride + i];
+            if (val < 0) val = -val;
+            if (val > max_vel) max_vel = val;
+        }
+
+        const int n_w = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for is_device_ptr(w_dev) reduction(max:max_vel) \
+            firstprivate(Nx, Ny, Nz, Ng, w_stride, w_plane)
+        for (int idx = 0; idx < n_w; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double val = w_dev[k * w_plane + j * w_stride + i];
+            if (val < 0) val = -val;
+            if (val > max_vel) max_vel = val;
+        }
+    }
+
+    return max_vel;
+}
+
+double RANSSolver::compute_divergence_linf_device() const {
+    auto* self = const_cast<RANSSolver*>(this);
+    self->compute_divergence(VelocityWhich::Current, self->div_velocity_);
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int stride = mesh_->total_Nx();
+    const int plane_stride = stride * mesh_->total_Ny();
+
+    double max_div = 0.0;
+    const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
+
+    if (mesh_->is2D()) {
+        const int n_cells = Nx * Ny;
+        #pragma omp target teams distribute parallel for is_device_ptr(div_dev) reduction(max:max_div) \
+            firstprivate(Nx, Ny, Ng, stride)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double val = div_dev[j * stride + i];
+            if (val < 0) val = -val;
+            if (val > max_div) max_div = val;
+        }
+    } else {
+        const int n_cells = Nx * Ny * Nz;
+        #pragma omp target teams distribute parallel for is_device_ptr(div_dev) reduction(max:max_div) \
+            firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double val = div_dev[k * plane_stride + j * stride + i];
+            if (val < 0) val = -val;
+            if (val > max_div) max_div = val;
+        }
+    }
+
+    return max_div;
+}
+
+double RANSSolver::compute_max_conv_device() const {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+
+    double max_conv = 0.0;
+
+    const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
+    const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
+
+    if (mesh_->is2D()) {
+        const int u_stride = conv_.u_stride();
+        const int v_stride = conv_.v_stride();
+        const int n_cells = Nx * Ny;
+
+        #pragma omp target teams distribute parallel for is_device_ptr(conv_u_dev, conv_v_dev) \
+            reduction(max:max_conv) firstprivate(Nx, Ny, Ng, u_stride, v_stride)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double cu = conv_u_dev[j * u_stride + i];
+            double cv = conv_v_dev[j * v_stride + i];
+            if (cu < 0) cu = -cu;
+            if (cv < 0) cv = -cv;
+            double val = (cu > cv) ? cu : cv;
+            if (val > max_conv) max_conv = val;
+        }
+    } else {
+        const int u_stride = conv_.u_stride();
+        const int v_stride = conv_.v_stride();
+        const int w_stride = conv_.w_stride();
+        const int u_plane = conv_.u_plane_stride();
+        const int v_plane = conv_.v_plane_stride();
+        const int w_plane = conv_.w_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+
+        const double* conv_w_dev = gpu::dev_ptr(conv_w_ptr_);
+
+        #pragma omp target teams distribute parallel for is_device_ptr(conv_u_dev, conv_v_dev, conv_w_dev) \
+            reduction(max:max_conv) firstprivate(Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double cu = conv_u_dev[k * u_plane + j * u_stride + i];
+            double cv = conv_v_dev[k * v_plane + j * v_stride + i];
+            double cw = conv_w_dev[k * w_plane + j * w_stride + i];
+            if (cu < 0) cu = -cu;
+            if (cv < 0) cv = -cv;
+            if (cw < 0) cw = -cw;
+            double val = cu;
+            if (cv > val) val = cv;
+            if (cw > val) val = cw;
+            if (val > max_conv) max_conv = val;
+        }
+    }
+
+    return max_conv;
+}
+
 
 SolverDeviceView RANSSolver::get_solver_view() const {
     SolverDeviceView view;

@@ -311,6 +311,10 @@ private:
     void project_velocity(VectorField& vel, double dt);
     void ssprk2_step(double dt);
     void ssprk3_step(double dt);
+
+    /// Fill periodic ghost layers on device for a velocity field (GPU-resident, no swaps)
+    /// This is called after predictor and after correction to ensure halos are consistent.
+    void enforce_periodic_halos_device(double* u_ptr, double* v_ptr, double* w_ptr = nullptr);
     
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);

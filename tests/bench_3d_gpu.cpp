@@ -47,12 +47,18 @@ void init_tgv_3d(RANSSolver& solver, const Mesh& mesh) {
 int main(int argc, char** argv) {
     int N = (argc > 1) ? std::atoi(argv[1]) : 64;
     int nsteps = (argc > 2) ? std::atoi(argv[2]) : 100;
+    std::string ti_name = (argc > 3) ? argv[3] : "euler";
+
+    TimeIntegrator ti = TimeIntegrator::Euler;
+    if (ti_name == "rk2") ti = TimeIntegrator::RK2;
+    else if (ti_name == "rk3") ti = TimeIntegrator::RK3;
 
     std::cout << "=========================================\n";
     std::cout << "  3D GPU Performance Benchmark\n";
     std::cout << "=========================================\n";
     std::cout << "Grid: " << N << "x" << N << "x" << N << "\n";
     std::cout << "Steps: " << nsteps << "\n";
+    std::cout << "Integrator: " << ti_name << "\n";
 #ifdef USE_GPU_OFFLOAD
     std::cout << "Build: GPU\n";
     std::cout << "Devices: " << gpu::num_devices() << "\n";
@@ -71,6 +77,7 @@ int main(int argc, char** argv) {
     config.adaptive_dt = false;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
+    config.time_integrator = ti;
 
     RANSSolver solver(mesh, config);
 
