@@ -7,18 +7,25 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <cstring>
 
 using namespace nncfd;
 
 int main(int argc, char** argv) {
     int N = (argc > 1) ? std::atoi(argv[1]) : 64;
     int nsteps = (argc > 2) ? std::atoi(argv[2]) : 50;
+    std::string ti_name = (argc > 3) ? argv[3] : "euler";
+
+    TimeIntegrator ti = TimeIntegrator::Euler;
+    if (ti_name == "rk2") ti = TimeIntegrator::RK2;
+    else if (ti_name == "rk3") ti = TimeIntegrator::RK3;
 
     std::cout << "=========================================\n";
-    std::cout << "  3D GPU MG Benchmark (Channel BCs)\n";
+    std::cout << "  3D GPU MG Benchmark (Duct BCs)\n";
     std::cout << "=========================================\n";
     std::cout << "Grid: " << N << "x" << N << "x" << N << "\n";
     std::cout << "Steps: " << nsteps << "\n";
+    std::cout << "Integrator: " << ti_name << "\n";
 #ifdef USE_GPU_OFFLOAD
     std::cout << "Build: GPU\n";
 #else
@@ -35,14 +42,16 @@ int main(int argc, char** argv) {
     config.adaptive_dt = false;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
+    config.time_integrator = ti;
+    config.poisson_solver = PoissonSolverType::MG;  // Force MG solver for benchmarking
 
     RANSSolver solver(mesh, config);
 
-    // Channel BCs (wall y, periodic x,z) - forces MG solver
+    // Duct BCs (wall y AND z, periodic x only) - forces MG solver
     VelocityBC bc;
     bc.x_lo = bc.x_hi = VelocityBC::Periodic;
     bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
+    bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
     solver.set_velocity_bc(bc);
     solver.set_body_force(1.0, 0.0, 0.0);
 

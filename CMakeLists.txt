@@ -236,6 +236,7 @@ set(LIB_SOURCES
     src/solver_time_kernels_euler.cpp
     src/solver_time_kernels_periodic.cpp
     src/solver_time_kernels_projection.cpp
+    src/solver_periodic_halos.cpp
     src/timing.cpp
     src/config.cpp
     src/features.cpp
@@ -437,6 +438,9 @@ if(BUILD_TESTS)
     add_executable(bench_3d_gpu tests/bench_3d_gpu.cpp)
     target_link_libraries(bench_3d_gpu PRIVATE nn_cfd_core)
     target_include_directories(bench_3d_gpu PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
+    add_executable(bench_mg tests/bench_mg.cpp)
+    target_link_libraries(bench_mg PRIVATE nn_cfd_core)
+    target_include_directories(bench_mg PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
     add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
     add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
     add_nncfd_test(test_invariant_scaling TEST_NAME_SUFFIX InvariantScalingTest LABELS fast)
