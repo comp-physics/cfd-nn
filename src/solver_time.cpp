@@ -440,25 +440,6 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
         const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
         double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
 
-        // DEBUG: Check velocity data on GPU before divergence computation
-        static int div_debug = 0;
-        if (div_debug < 3) {
-            div_debug++;
-            double max_u_before = 0.0;
-            int sample_idx_div = (Ng + Ny / 4) * u_stride_div + (Ng + Nx / 4);
-            double u_sample_before = 0.0;
-            #pragma omp target teams distribute parallel for reduction(max:max_u_before) \
-                map(from:u_sample_before) is_device_ptr(u_dev)
-            for (size_t i = 0; i < u_total_div; ++i) {
-                double val = u_dev[i];
-                if (val < 0) val = -val;
-                if (val > max_u_before) max_u_before = val;
-                if (static_cast<int>(i) == sample_idx_div) u_sample_before = u_dev[i];
-            }
-            std::cerr << "[project_velocity div DEBUG] velocity_u_ptr_=" << velocity_u_ptr_
-                      << " max_u_before=" << max_u_before << " u_sample=" << u_sample_before << "\n";
-        }
-
         const int n_cells = Nx * Ny;
         #pragma omp target teams distribute parallel for is_device_ptr(u_dev, v_dev, div_dev)
         for (int idx = 0; idx < n_cells; ++idx) {
@@ -547,22 +528,6 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     pcfg.tol_rhs = config_.poisson_tol_rhs;
     pcfg.fixed_cycles = config_.poisson_fixed_cycles;
 
-    // DEBUG: Check RHS before Poisson solve
-    static int proj_debug = 0;
-    if (proj_debug < 5) {
-        const double* rhs_dev = gpu::dev_ptr(rhs_poisson_ptr_);
-        double max_rhs = 0.0;
-        #pragma omp target teams distribute parallel for reduction(max:max_rhs) \
-            is_device_ptr(rhs_dev)
-        for (size_t idx = 0; idx < field_total_size_; ++idx) {
-            double r = rhs_dev[idx];
-            if (r < 0) r = -r;
-            if (r > max_rhs) max_rhs = r;
-        }
-        std::cerr << "[project_velocity DEBUG] need_swap=" << need_swap
-                  << " mean_div=" << mean_div << " max_rhs=" << max_rhs << "\n";
-    }
-
     // Use solve_device() for GPU builds (data is device-resident)
     // Use solve() for CPU builds (data is host-resident)
     // IMPORTANT: Dispatch based on selected_solver_ to use FFT when appropriate
@@ -603,21 +568,6 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     total_vcycles += vcycles;
     if (print_stats) {
         std::cerr << "[Poisson] solve #" << poisson_solve_count << " vcycles=" << vcycles << "\n";
-    }
-
-    // DEBUG: Check pressure correction after solve
-    if (proj_debug < 5) {
-        proj_debug++;
-        const double* pcorr_dev = gpu::dev_ptr(pressure_corr_ptr_);
-        double max_pcorr = 0.0;
-        #pragma omp target teams distribute parallel for reduction(max:max_pcorr) \
-            is_device_ptr(pcorr_dev)
-        for (size_t idx = 0; idx < field_total_size_; ++idx) {
-            double p = pcorr_dev[idx];
-            if (p < 0) p = -p;
-            if (p > max_pcorr) max_pcorr = p;
-        }
-        std::cerr << "[project_velocity DEBUG] max_pcorr=" << max_pcorr << "\n";
     }
 
     // Copy velocity_ to velocity_star_ for correct_velocity()
@@ -732,25 +682,6 @@ void RANSSolver::ssprk2_step(double dt) {
     const size_t u_total = velocity_.u_total_size();
     const size_t v_total = velocity_.v_total_size();
 
-    // DEBUG: Check values BEFORE copy
-    static int copy_debug = 0;
-    if (copy_debug < 3) {
-        const double* u_src_dbg = gpu::dev_ptr(velocity_u_ptr_);
-        const double* u_dst_dbg = gpu::dev_ptr(velocity_rk_u_ptr_);
-        double u_src_sample = 0.0, u_dst_sample_before = 0.0;
-        int ii = Ng + Nx / 4;
-        int jj = Ng + Ny / 4;
-        int sample_idx = jj * u_stride + ii;
-        #pragma omp target map(from: u_src_sample, u_dst_sample_before) \
-            is_device_ptr(u_src_dbg, u_dst_dbg)
-        {
-            u_src_sample = u_src_dbg[sample_idx];
-            u_dst_sample_before = u_dst_dbg[sample_idx];
-        }
-        std::cerr << "[ssprk2 copy DEBUG] BEFORE copy: u_src[" << sample_idx << "]=" << u_src_sample
-                  << " u_dst(rk)[" << sample_idx << "]=" << u_dst_sample_before << "\n";
-    }
-
     // Store u^n in velocity_rk_ - use dev_ptr + is_device_ptr pattern (NVHPC workaround)
     // Member pointers inside target regions get HOST addresses with NVHPC.
     if (is_2d) {
@@ -778,20 +709,6 @@ void RANSSolver::ssprk2_step(double dt) {
                 int idx = j * v_stride + i;
                 v_dst_dev[idx] = v_src_dev[idx];
             }
-        }
-
-        // DEBUG: Check values AFTER copy
-        if (copy_debug < 3) {
-            copy_debug++;
-            double u_dst_sample_after = 0.0;
-            int ii = Ng + Nx / 4;
-            int jj = Ng + Ny / 4;
-            int sample_idx = jj * u_stride + ii;
-            #pragma omp target map(from: u_dst_sample_after) is_device_ptr(u_dst_dev)
-            {
-                u_dst_sample_after = u_dst_dev[sample_idx];
-            }
-            std::cerr << "[ssprk2 copy DEBUG] AFTER copy: u_dst(rk)[" << sample_idx << "]=" << u_dst_sample_after << "\n";
         }
     } else {
         // 3D INLINE copy: velocity_rk_ = velocity_
@@ -855,28 +772,6 @@ void RANSSolver::ssprk2_step(double dt) {
     euler_substep(velocity_star_, velocity_, dt);
 
     // Blend: u^{n+1} = 0.5 * u^n + 0.5 * temp
-    // DEBUG: Check values before blend - sample from middle of domain
-    static int blend_debug = 0;
-    if (blend_debug < 3) {
-        const double* u_rk_dbg = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* u_dbg = gpu::dev_ptr(velocity_u_ptr_);
-        double u_rk_sample = 0.0, u_sample = 0.0;
-        // Sample from cell (Nx/4, Ny/4) relative to interior
-        int ii = Ng + Nx / 4;
-        int jj = Ng + Ny / 4;
-        int sample_idx = jj * u_stride + ii;
-        std::cerr << "[ssprk2 blend DEBUG] Nx=" << Nx << " Ny=" << Ny << " Ng=" << Ng
-                  << " u_stride=" << u_stride << " sample_idx=" << sample_idx << "\n";
-        #pragma omp target map(from: u_rk_sample, u_sample) \
-            is_device_ptr(u_rk_dbg, u_dbg)
-        {
-            u_rk_sample = u_rk_dbg[sample_idx];
-            u_sample = u_dbg[sample_idx];
-        }
-        std::cerr << "[ssprk2 blend DEBUG] BEFORE: u_rk[" << sample_idx << "]=" << u_rk_sample
-                  << " u[" << sample_idx << "]=" << u_sample << "\n";
-    }
-
     if (is_2d) {
         // INLINE blend: velocity_ = 0.5 * velocity_rk_ + 0.5 * velocity_
         // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
@@ -903,20 +798,6 @@ void RANSSolver::ssprk2_step(double dt) {
                 int idx = j * v_stride + i;
                 v_dev[idx] = 0.5 * v_rk_dev[idx] + 0.5 * v_dev[idx];
             }
-        }
-
-        // DEBUG: Check values after blend
-        if (blend_debug < 3) {
-            blend_debug++;
-            double u_sample_after = 0.0;
-            int ii = Ng + Nx / 4;
-            int jj = Ng + Ny / 4;
-            int sample_idx = jj * u_stride + ii;
-            #pragma omp target map(from: u_sample_after) is_device_ptr(u_dev)
-            {
-                u_sample_after = u_dev[sample_idx];
-            }
-            std::cerr << "[ssprk2 blend DEBUG] AFTER: u[" << sample_idx << "]=" << u_sample_after << "\n";
         }
     } else {
         // 3D INLINE blend: velocity_ = 0.5 * velocity_rk_ + 0.5 * velocity_
@@ -1180,26 +1061,6 @@ void RANSSolver::ssprk3_step(double dt) {
         const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
         double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
 
-        // DEBUG: Check values BEFORE final blend
-        static int blend_debug = 0;
-        if (blend_debug < 3) {
-            double max_rk = 0.0, max_vel = 0.0;
-            const size_t nu_dbg = u_total;
-
-            #pragma omp target teams distribute parallel for reduction(max:max_rk,max_vel) \
-                is_device_ptr(u_rk_dev, u_dev)
-            for (size_t i = 0; i < nu_dbg; ++i) {
-                double r = std::abs(u_rk_dev[i]);
-                double v = std::abs(u_dev[i]);
-                if (r > max_rk) max_rk = r;
-                if (v > max_vel) max_vel = v;
-            }
-
-            std::cerr << "[RK3 BLEND DEBUG] BEFORE: max_rk=" << max_rk << " max_vel=" << max_vel
-                      << " velocity_rk_u_ptr_=" << velocity_rk_u_ptr_
-                      << " velocity_u_ptr_=" << velocity_u_ptr_ << "\n";
-        }
-
         // Blend u-velocity
         #pragma omp target teams distribute parallel for collapse(2) \
             is_device_ptr(u_rk_dev, u_dev)
@@ -1218,22 +1079,6 @@ void RANSSolver::ssprk3_step(double dt) {
                 int idx = j * v_stride + i;
                 v_dev[idx] = (1.0/3.0) * v_rk_dev[idx] + (2.0/3.0) * v_dev[idx];
             }
-        }
-
-        // DEBUG: Check values AFTER final blend
-        if (blend_debug < 3) {
-            blend_debug++;
-            double max_vel_after = 0.0;
-            const size_t nu_dbg = u_total;
-
-            #pragma omp target teams distribute parallel for reduction(max:max_vel_after) \
-                is_device_ptr(u_dev)
-            for (size_t i = 0; i < nu_dbg; ++i) {
-                double v = std::abs(u_dev[i]);
-                if (v > max_vel_after) max_vel_after = v;
-            }
-
-            std::cerr << "[RK3 BLEND DEBUG] AFTER: max_vel=" << max_vel_after << "\n";
         }
     } else {
         // 3D INLINE blend: velocity_ = (1/3) * velocity_rk_ + (2/3) * velocity_
@@ -1291,30 +1136,11 @@ void RANSSolver::ssprk3_step(double dt) {
     project_velocity(velocity_, dt);
     apply_velocity_bc();
 
-    // DEBUG: Verify pointer consistency at end of RK3 step
+    // Verify pointer consistency at end of RK3 step
     if (velocity_u_ptr_ != velocity_.u_data().data()) {
         std::cerr << "[ssprk3_step] ERROR: velocity_u_ptr_ mismatch!\n"
                   << "  velocity_u_ptr_ = " << velocity_u_ptr_
                   << "  velocity_.u_data().data() = " << velocity_.u_data().data() << "\n";
-    }
-
-    // DEBUG: Verify GPU data at end of RK3 step
-    static int rk3_end_debug = 0;
-    if (rk3_end_debug < 3) {
-        rk3_end_debug++;
-        const double* u_final_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double max_u_final = 0.0;
-        const size_t nu = u_total;
-
-        #pragma omp target teams distribute parallel for reduction(max:max_u_final) \
-            is_device_ptr(u_final_dev)
-        for (size_t i = 0; i < nu; ++i) {
-            double val = std::abs(u_final_dev[i]);
-            if (val > max_u_final) max_u_final = val;
-        }
-
-        std::cerr << "[ssprk3_step END] velocity_u_ptr_=" << velocity_u_ptr_
-                  << " max_u_final=" << max_u_final << "\n";
     }
 }
 
