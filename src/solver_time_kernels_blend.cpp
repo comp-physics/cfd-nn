@@ -11,6 +11,7 @@ void blend_2d_uv(double* u_a, double* u_b, double* v_a, double* v_b,
                  double a1, double a2,
                  int Nx, int Ny, int Ng, int u_stride, int v_stride,
                  size_t u_total, size_t v_total) {
+    (void)u_total; (void)v_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_a, u_b, v_a, v_b)
     {
@@ -40,6 +41,7 @@ void blend_3d_uvw(double* u_a, double* u_b, double* v_a, double* v_b,
                   int u_stride, int v_stride, int w_stride,
                   int u_plane, int v_plane, int w_plane,
                   size_t u_total, size_t v_total, size_t w_total) {
+    (void)u_total; (void)v_total; (void)w_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_a, u_b, v_a, v_b, w_a, w_b)
     {
@@ -83,6 +85,7 @@ void blend_to_2d_uv(double* u_a, double* u_b, double* u_c,
                     double a1, double a2,
                     int Nx, int Ny, int Ng, int u_stride, int v_stride,
                     size_t u_total, size_t v_total) {
+    (void)u_total; (void)v_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_a, u_b, u_c, v_a, v_b, v_c)
     {
@@ -114,6 +117,7 @@ void blend_to_3d_uvw(double* u_a, double* u_b, double* u_c,
                      int u_stride, int v_stride, int w_stride,
                      int u_plane, int v_plane, int w_plane,
                      size_t u_total, size_t v_total, size_t w_total) {
+    (void)u_total; (void)v_total; (void)w_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_a, u_b, u_c, v_a, v_b, v_c, w_a, w_b, w_c)
     {

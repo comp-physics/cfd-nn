@@ -10,6 +10,7 @@ namespace time_kernels {
 void periodic_2d(double* u, double* v, bool x_periodic, bool y_periodic,
                  int Nx, int Ny, int Ng, int u_stride, int v_stride,
                  size_t u_total, size_t v_total) {
+    (void)u_total; (void)v_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u, v)
     {
@@ -37,6 +38,7 @@ void periodic_3d(double* u, double* v, double* w,
                  int u_stride, int v_stride, int w_stride,
                  int u_plane, int v_plane, int w_plane,
                  size_t u_total, size_t v_total, size_t w_total) {
+    (void)u_total; (void)v_total; (void)w_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u, v, w)
     {

@@ -10,6 +10,7 @@ namespace time_kernels {
 void copy_2d_uv(double* u_src, double* u_dst, double* v_src, double* v_dst,
                 int Nx, int Ny, int Ng, int u_stride, int v_stride,
                 size_t u_total, size_t v_total) {
+    (void)u_total; (void)v_total;  // Reserved for future use (e.g., target map clauses)
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_src, u_dst, v_src, v_dst)
     {
@@ -39,6 +40,7 @@ void copy_3d_uvw(double* u_src, double* u_dst, double* v_src, double* v_dst,
                  int u_stride, int v_stride, int w_stride,
                  int u_plane, int v_plane, int w_plane,
                  size_t u_total, size_t v_total, size_t w_total) {
+    (void)u_total; (void)v_total; (void)w_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_src, u_dst, v_src, v_dst, w_src, w_dst)
     {

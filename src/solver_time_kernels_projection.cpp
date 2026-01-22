@@ -9,6 +9,7 @@ namespace time_kernels {
 
 double compute_mean_divergence_2d(double* div, int Nx, int Ny, int Ng,
                                    int stride, size_t total) {
+    (void)total;  // Reserved for future use
     double sum = 0.0;
     const int count = Nx * Ny;
 
@@ -29,6 +30,7 @@ double compute_mean_divergence_2d(double* div, int Nx, int Ny, int Ng,
 
 double compute_mean_divergence_3d(double* div, int Nx, int Ny, int Nz, int Ng,
                                    int stride, int plane_stride, size_t total) {
+    (void)total;  // Reserved for future use
     double sum = 0.0;
     const int count = Nx * Ny * Nz;
 
@@ -51,6 +53,7 @@ double compute_mean_divergence_3d(double* div, int Nx, int Ny, int Nz, int Ng,
 
 void build_poisson_rhs_2d(double* div, double* rhs, double mean_div, double dt_inv,
                            int Nx, int Ny, int Ng, int stride, size_t total) {
+    (void)total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(div, rhs)
     {
@@ -67,6 +70,7 @@ void build_poisson_rhs_2d(double* div, double* rhs, double mean_div, double dt_i
 void build_poisson_rhs_3d(double* div, double* rhs, double mean_div, double dt_inv,
                            int Nx, int Ny, int Nz, int Ng,
                            int stride, int plane_stride, size_t total) {
+    (void)total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(div, rhs)
     {
@@ -84,6 +88,7 @@ void build_poisson_rhs_3d(double* div, double* rhs, double mean_div, double dt_i
 
 void update_pressure_2d(double* p, double* p_corr, int Nx, int Ny, int Ng,
                          int stride, size_t total) {
+    (void)total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(p, p_corr)
     {
@@ -99,6 +104,7 @@ void update_pressure_2d(double* p, double* p_corr, int Nx, int Ny, int Ng,
 
 void update_pressure_3d(double* p, double* p_corr, int Nx, int Ny, int Nz, int Ng,
                          int stride, int plane_stride, size_t total) {
+    (void)total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(p, p_corr)
     {

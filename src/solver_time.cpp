@@ -44,7 +44,8 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
         }
     };
 
-    double *u_in, *v_in, *w_in, *u_out, *v_out, *w_out;
+    double *u_in = nullptr, *v_in = nullptr, *w_in = nullptr;
+    double *u_out = nullptr, *v_out = nullptr, *w_out = nullptr;
     get_ptrs(vel_in, u_in, v_in, w_in);
     get_ptrs(vel_out, u_out, v_out, w_out);
 

@@ -12,6 +12,7 @@ void euler_advance_2d(double* u_in, double* u_out, double* conv_u, double* diff_
                       int Nx, int Ny, int Ng, int u_stride, int v_stride,
                       double dt, double fx, double fy,
                       size_t u_total, size_t v_total) {
+    (void)u_total; (void)v_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     // within this region. The inner target regions then use these converted pointers.
     #pragma omp target data use_device_ptr(u_in, u_out, conv_u, diff_u, v_in, v_out, conv_v, diff_v)
@@ -44,6 +45,7 @@ void euler_advance_3d(double* u_in, double* u_out, double* conv_u, double* diff_
                       int u_plane, int v_plane, int w_plane,
                       double dt, double fx, double fy, double fz,
                       size_t u_total, size_t v_total, size_t w_total) {
+    (void)u_total; (void)v_total; (void)w_total;  // Reserved for future use
     // NVHPC WORKAROUND: Use use_device_ptr to convert host pointers to device pointers
     #pragma omp target data use_device_ptr(u_in, u_out, conv_u, diff_u, v_in, v_out, conv_v, diff_v, w_in, w_out, conv_w, diff_w)
     {
