@@ -1403,14 +1403,11 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
                     std::cout << " [PASS]";
                     // Warning if we're using >80% of tolerance
                     if (margin_pct > 80.0) {
-                        std::cout << " [WARN: " << std::fixed << std::setprecision(0) << margin_pct << "% of tolerance]";
+                        std::cout << " [WARN: " << std::fixed << std::setprecision(0) << margin_pct << "% of tol]";
                         std::cout << std::scientific << std::setprecision(10);
                     }
-                    // For very small diffs, also print ref/test values for sanity check
-                    if (diff.abs_diff < 1e-15) {
-                        std::cout << " (ref=" << diff.ref_value << ", test=" << diff.test_value << ")";
-                    }
-                    std::cout << "\n";
+                    // Always show ref/test values for full transparency
+                    std::cout << "\n           ref=" << diff.ref_value << " test=" << diff.test_value << "\n";
                 } else {
                     std::cout << " [FAIL]\n";
                     std::cout << "           ref=" << diff.ref_value << " test=" << diff.test_value << "\n";

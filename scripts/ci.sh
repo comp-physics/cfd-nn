@@ -725,7 +725,8 @@ run_cross_build_test() {
             cat "$output_file" | sed 's/^/    /'
         else
             local summary
-            summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[SUCCESS\]|\[FAILURE\]|Passed:|Failed:|Summary)' "$output_file" | head -15) || true
+            # Include SCENARIO headers and Backend info for clarity
+            summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[SUCCESS\]|\[FAILURE\]|Passed:|Failed:|Summary|SCENARIO:|Backend mismatch|REFERENCE|TEST \()' "$output_file" | head -25) || true
             if [ -n "$summary" ]; then
                 echo "$summary" | sed 's/^/    /'
             fi
