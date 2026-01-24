@@ -1081,14 +1081,10 @@ ScenarioSignature run_nn_mlp() {
     ScalarField omega(mesh, 10.0);
     ScalarField nu_t(mesh);
 
-#ifdef USE_GPU_OFFLOAD
-    TurbulenceDeviceView device_view;
-    nn_model.prepare_gpu_buffers(mesh);
-    nn_model.get_device_view(device_view);
-    nn_model.update(mesh, vel, k, omega, nu_t, &device_view);
-#else
+    // Note: device_view is optional (defaults to nullptr) and is typically
+    // provided by RANSSolver when GPU buffers are managed externally.
+    // For this standalone test, we let TurbulenceNNMLP handle its own buffers.
     nn_model.update(mesh, vel, k, omega, nu_t);
-#endif
 
     ScenarioSignature sig;
     sig.name = "nn_mlp";
