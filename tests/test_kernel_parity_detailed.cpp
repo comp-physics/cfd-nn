@@ -247,6 +247,13 @@ int main(int argc, char* argv[]) {
                 all_passed = false;
             }
         } else {
+#ifdef USE_GPU_OFFLOAD
+            // GPU standalone mode: skip analytical verification because
+            // compute_gradients_from_mac requires pre-mapped GPU data.
+            // Use --dump-prefix / --compare-prefix for CPU/GPU parity testing.
+            std::cout << "  [SKIP] Standalone gradient verification not supported on GPU\n";
+            std::cout << "         (use --dump-prefix / --compare-prefix for parity testing)\n";
+#else
             // Verify gradients analytically
             // u = sin(x)*cos(y) -> dudx = cos(x)*cos(y), dudy = -sin(x)*sin(y)
             double max_err = 0.0;
@@ -268,6 +275,7 @@ int main(int argc, char* argv[]) {
                           << std::scientific << max_err << ")\n";
                 all_passed = false;
             }
+#endif
         }
     }
 
