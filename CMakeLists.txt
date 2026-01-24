@@ -464,19 +464,19 @@ if(BUILD_TESTS)
     add_nncfd_test(test_conv_diff_constant TEST_NAME_SUFFIX ConvDiffConstantTest LABELS fast)
 
     # =========================================================================
-    # Medium tests (30-120s)
+    # Medium tests (30-120s) - run with: ctest -L medium
     # =========================================================================
-    add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest)
-    add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest)
-    add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest)
-    add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest)
-    add_nncfd_test(test_poisson_unified)
-    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
-    add_nncfd_test(test_turbulence_unified)
-    add_nncfd_test(test_projection_invariants)
-    add_nncfd_test(test_perf_sentinel)
-    add_nncfd_test(test_solver_selection)
-    add_nncfd_test(test_stability_sentinel)
+    add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest LABELS medium)
+    add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest LABELS medium)
+    add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest LABELS medium)
+    add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest LABELS medium)
+    add_nncfd_test(test_poisson_unified LABELS medium)
+    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest LABELS medium)
+    add_nncfd_test(test_turbulence_unified LABELS medium)
+    add_nncfd_test(test_projection_invariants LABELS medium)
+    add_nncfd_test(test_perf_sentinel LABELS medium)
+    add_nncfd_test(test_solver_selection LABELS medium)
+    add_nncfd_test(test_stability_sentinel LABELS medium)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
@@ -502,6 +502,8 @@ if(BUILD_TESTS)
         add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
         set_tests_properties(CPUGPUBitwiseTest PROPERTIES LABELS "gpu")
         add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
+        # MANDATORY ensures GPU offload actually happens (no silent CPU fallback)
+        set_tests_properties(GPUUtilizationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
     endif()
 
     # =========================================================================

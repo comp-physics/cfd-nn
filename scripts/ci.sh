@@ -2,10 +2,12 @@
 # ci.sh - Run CI tests (locally or in CI pipelines)
 #
 # This script runs the test suite used by both local development and GitHub CI.
+# Tests are self-registering via CMakeLists.txt labels - add LABELS fast/medium/slow
+# to a test and it will be automatically included in the appropriate suite.
 #
 # Usage:
 #   ./scripts/ci.sh              # Run all tests with GPU+HYPRE (default)
-#   ./scripts/ci.sh fast         # Run only fast tests (~1 minute)
+#   ./scripts/ci.sh fast         # Run only fast tests (ctest -L fast)
 #   ./scripts/ci.sh full         # Run all tests including slow ones
 #   ./scripts/ci.sh gpu          # Run GPU-specific tests only
 #   ./scripts/ci.sh hypre        # Run HYPRE-specific tests only
@@ -16,6 +18,14 @@
 #   ./scripts/ci.sh --debug      # Debug build mode (4x timeout multiplier)
 #   ./scripts/ci.sh -v           # Verbose output (show full test output)
 #   ./scripts/ci.sh --verbose    # Same as -v
+#
+# Test Labels (defined in CMakeLists.txt):
+#   fast   - Quick tests (<2 min), run with: ./ci.sh fast
+#   medium - Moderate tests (2-5 min), run with: ./ci.sh all
+#   slow   - Long tests (5+ min), run with: ./ci.sh full
+#   gpu    - GPU-specific tests (require special handling)
+#   hypre  - HYPRE solver tests (require HYPRE build)
+#   fft    - FFT-related tests
 #
 # HYPRE Poisson Solver:
 #   HYPRE is ENABLED by default for GPU builds (provides 8-10x speedup).
@@ -495,6 +505,103 @@ run_test() {
     rm -f "$output_file"
 }
 
+# Run a ctest label-based test suite
+# Usage: run_ctest_suite <label> <per_test_timeout>
+# Example: run_ctest_suite fast 120
+run_ctest_suite() {
+    local label=$1
+    local per_test_timeout=${2:-120}
+
+    # Apply timeout multiplier for Debug builds
+    local timeout_secs=$((per_test_timeout * TIMEOUT_MULTIPLIER))
+
+    # Check if any tests exist with this label
+    local test_count
+    test_count=$(cd "$BUILD_DIR" && ctest -L "$label" -N 2>/dev/null | grep -c "Test #" || echo "0")
+
+    if [ "$test_count" -eq 0 ]; then
+        log_info "No tests found with label '$label'"
+        return 0
+    fi
+
+    log_info "Running $test_count tests with label '$label' (timeout: ${timeout_secs}s per test)..."
+
+    local output_file="/tmp/ctest_output_$$.txt"
+    local exit_code=0
+
+    # Run ctest with label filter
+    # --output-on-failure: Show output only for failed tests (unless verbose)
+    # --timeout: Per-test timeout
+    # --verbose: Show all test output (if VERBOSE=1)
+    local verbose_flag=""
+    if [ $VERBOSE -eq 1 ]; then
+        verbose_flag="--verbose"
+    else
+        verbose_flag="--output-on-failure"
+    fi
+
+    cd "$BUILD_DIR"
+    ctest -L "$label" --timeout "$timeout_secs" $verbose_flag > "$output_file" 2>&1 || exit_code=$?
+    cd "$PROJECT_DIR"
+
+    # Parse ctest output to count passed/failed
+    local suite_passed suite_failed
+    suite_passed=$(grep -oP '\d+(?= tests passed)' "$output_file" 2>/dev/null | head -1 || echo "0")
+    suite_failed=$(grep -oP '\d+(?= tests failed)' "$output_file" 2>/dev/null | head -1 || echo "0")
+
+    # If the regex didn't match, try alternate format "X% tests passed, Y tests failed"
+    if [ "$suite_passed" = "0" ] && [ "$suite_failed" = "0" ]; then
+        local summary_line
+        summary_line=$(grep -E "[0-9]+% tests passed" "$output_file" 2>/dev/null || true)
+        if [ -n "$summary_line" ]; then
+            suite_failed=$(echo "$summary_line" | grep -oP '\d+(?= tests failed)' || echo "0")
+            local total_tests pct_passed
+            total_tests=$(echo "$summary_line" | grep -oP '\d+(?= tests)' | head -1 || echo "0")
+            # If we have failed count, passed = total - failed
+            if [ -n "$suite_failed" ] && [ "$suite_failed" != "0" ]; then
+                suite_passed=$((test_count - suite_failed))
+            else
+                suite_passed=$test_count
+                suite_failed=0
+            fi
+        fi
+    fi
+
+    # Update global counters
+    PASSED=$((PASSED + suite_passed))
+    FAILED=$((FAILED + suite_failed))
+
+    if [ "$suite_failed" -gt 0 ]; then
+        log_failure "Label '$label': $suite_passed passed, $suite_failed failed"
+        # Show failed test names
+        grep -E "^\s*[0-9]+.*\*\*\*Failed" "$output_file" | while read -r line; do
+            local test_name
+            test_name=$(echo "$line" | sed 's/.*- //' | sed 's/ .*//')
+            FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
+        done
+        # Show last 50 lines of output for debugging
+        echo "  Output (last 50 lines):"
+        tail -50 "$output_file" | sed 's/^/    /'
+    else
+        log_success "Label '$label': $suite_passed passed"
+        if [ $VERBOSE -eq 1 ]; then
+            cat "$output_file" | sed 's/^/    /'
+        else
+            # Show summary lines
+            grep -E '(Test #|Passed|Failed|passed|failed|\[PASS\]|\[FAIL\]|QOI_JSON)' "$output_file" | head -30 | sed 's/^/    /' || true
+        fi
+    fi
+
+    # Extract QoI from verbose output if present
+    # ctest --verbose includes test output, which may contain QOI_JSON lines
+    if grep -q 'QOI_JSON:' "$output_file"; then
+        extract_qoi_metrics "ctest_${label}" "$output_file"
+    fi
+
+    rm -f "$output_file"
+    return $exit_code
+}
+
 # Run a CPU/GPU cross-build comparison test
 # These tests require both CPU and GPU builds and compare outputs between them
 # This function will build both versions if they don't exist
@@ -664,32 +771,31 @@ fi
 echo ""
 
 # ============================================================================
-# Discovery check: Print what test suites will run
-# This makes it immediately obvious if a suite is missing from the runner
+# Discovery check: Print what test suites will run (using ctest labels)
+# Tests are self-registering via CMakeLists.txt LABELS
 # ============================================================================
-echo "Test suites to run:"
+echo "Test suites to run (using ctest -L <label>):"
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = "full" ]; then
-    echo "  [FAST] 3D-Quick, 3D-Gradients, 3D-W, 3D-BC, Mesh, Features, NN-Core,"
-    echo "         Data-Driven, Config, TGV-2D-Invariants, TGV-Repeatability"
+    fast_count=$(cd "$BUILD_DIR" && ctest -L fast -N 2>/dev/null | grep -c "Test #" || echo "?")
+    echo "  [FAST] ctest -L fast ($fast_count tests)"
 fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
-    echo "  [MEDIUM] 3D-Poiseuille, Poisson, Stability, Turbulence, Error-Recovery,"
-    echo "           Adaptive-Dt, Mesh-Edge, 3D-BC-Corners, VTK, TGV-3D-Invariants,"
-    echo "           MMS-Convergence, RANS-Channel-Sanity"
+    medium_count=$(cd "$BUILD_DIR" && ctest -L medium -N 2>/dev/null | grep -c "Test #" || echo "?")
+    echo "  [MEDIUM] ctest -L medium ($medium_count tests)"
 fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "full" ]; then
-    echo "  [GPU] CPU/GPU-Bitwise, Backend-Unified, GPU-Utilization, V-cycle-Graph"
+    gpu_count=$(cd "$BUILD_DIR" && ctest -L gpu -N 2>/dev/null | grep -c "Test #" || echo "?")
+    echo "  [GPU] ctest -L gpu ($gpu_count tests) + CPU/GPU-Bitwise (cross-build)"
 fi
 if [[ "$USE_HYPRE" == "ON" ]]; then
     if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "hypre" ] || [ "$TEST_SUITE" = "full" ]; then
-        echo "  [HYPRE] HYPRE-All-BCs, HYPRE-Validation, HYPRE-Cross-Build"
+        hypre_count=$(cd "$BUILD_DIR" && ctest -L hypre -N 2>/dev/null | grep -c "Test #" || echo "?")
+        echo "  [HYPRE] ctest -L hypre ($hypre_count tests) + HYPRE-Cross-Build (manual)"
     fi
 fi
-if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
-    echo "  [LONG] 2D/3D-Comparison, Solver, Divergence-All-BCs, Physics-Validation, NN-Integration"
-fi
 if [ "$TEST_SUITE" = "full" ]; then
-    echo "  [SLOW] Perturbed-Channel"
+    slow_count=$(cd "$BUILD_DIR" && ctest -L slow -N 2>/dev/null | grep -c "Test #" || echo "?")
+    echo "  [SLOW] ctest -L slow ($slow_count tests)"
 fi
 echo ""
 
@@ -707,129 +813,51 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "paradigm" ] || [ "$TEST_SUITE
 fi
 
 # Fast tests (~1-2 minutes total)
+# Uses ctest -L fast to run all tests labeled 'fast' in CMakeLists.txt
+# Tests are self-registering: add LABELS fast in CMakeLists.txt to include here
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = "full" ]; then
-    log_section "Fast Tests (~1-2 minutes)"
-
-    # Core infrastructure tests (very fast)
-    run_test "Mesh" "$BUILD_DIR/test_mesh" 30
-    run_test "Features" "$BUILD_DIR/test_features" 30
-    run_test "NN Core" "$BUILD_DIR/test_nn_core" 30
-    run_test "Config" "$BUILD_DIR/test_config" 30
-    run_test "MPI Guard" "$BUILD_DIR/test_mpi_guard" 30
-    run_test "Numerics" "$BUILD_DIR/test_numerics" 30
-    run_test "VTK Output" "$BUILD_DIR/test_vtk_output" 60
-    run_test "Backend Unified" "$BUILD_DIR/test_backend_unified" 60
-    run_test "Residual Consistency" "$BUILD_DIR/test_residual_consistency" 60
-    run_test "GPU Buffer" "$BUILD_DIR/test_gpu_buffer" 60
-    run_test "GPU Mapping Canary" "$BUILD_DIR/test_gpu_mapping_canary" 60
-
-    # Operator and discretization tests
-    run_test "Operator Convergence" "$BUILD_DIR/test_operator_convergence" 60
-    run_test "Operator Consistency" "$BUILD_DIR/test_operator_consistency" 120
-    run_test "Div Constant" "$BUILD_DIR/test_div_constant" 60
-    run_test "Conv Diff Constant" "$BUILD_DIR/test_conv_diff_constant" 60
-    run_test "Invariant Scaling" "$BUILD_DIR/test_invariant_scaling" 60
-
-    # TGV invariant tests (fast: 2D, small grids)
-    run_test "TGV 2D Invariants" "$BUILD_DIR/test_tgv_2d_invariants" 120
-    run_test "TGV Repeatability" "$BUILD_DIR/test_tgv_repeatability" 60
-
-    # Error handling and edge cases
-    run_test "Error Recovery" "$BUILD_DIR/test_error_recovery" 120
-    run_test "Adaptive Dt" "$BUILD_DIR/test_adaptive_dt" 120
-    run_test "Mesh Edge Cases" "$BUILD_DIR/test_mesh_edge_cases" 120
-
-    # Physics validation (fast)
-    run_test "Poiseuille Steady" "$BUILD_DIR/test_poiseuille_steady" 600
-    run_test "Energy Budget" "$BUILD_DIR/test_energy_budget_channel" 120
-    run_test "Advection Rotation" "$BUILD_DIR/test_advection_rotation" 60
-    run_test "Projection Effectiveness" "$BUILD_DIR/test_projection_effectiveness" 60
-    run_test "RANS Channel Sanity" "$BUILD_DIR/test_rans_channel_sanity" 600
-
-    # Frame invariance tests
-    run_test "RANS Frame Invariance" "$BUILD_DIR/test_rans_frame_invariance" 60
-    run_test "Galilean Invariance" "$BUILD_DIR/test_galilean_invariance" 300
-    run_test "Projection Galilean" "$BUILD_DIR/test_projection_galilean" 120
-    run_test "Galilean Stage Breakdown" "$BUILD_DIR/test_galilean_stage_breakdown" 120
-
-    # Diagnostic tests (trace/debug helpers - fast but verbose)
-    run_test "Convection Diagnostic" "$BUILD_DIR/test_convection_diagnostic" 60
-    run_test "MG Ramp Diagnostic" "$BUILD_DIR/test_mg_ramp_diagnostic" 60
-    run_test "Projection Trace" "$BUILD_DIR/test_projection_trace" 60
-    run_test "Step Trace" "$BUILD_DIR/test_step_trace" 60
-    run_test "Term Values" "$BUILD_DIR/test_term_values" 60
+    log_section "Fast Tests (ctest -L fast)"
+    run_ctest_suite "fast" 600
 fi
 
 # Medium tests (~2-5 minutes total)
-# These are tests without explicit labels or labeled as "medium"
+# Uses ctest -L medium to run all tests labeled 'medium' in CMakeLists.txt
+# Tests are self-registering: add LABELS medium in CMakeLists.txt to include here
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
-    log_section "Medium Tests (~2-5 minutes)"
-
-    # Poisson solver tests
-    run_test "Poisson Unified" "$BUILD_DIR/test_poisson_unified" 180
-    run_test "Projection Invariants" "$BUILD_DIR/test_projection_invariants" 180
-
-    # Turbulence and RANS tests
-    run_test "Turbulence Unified" "$BUILD_DIR/test_turbulence_unified" 300
-
-    # Convergence and verification tests
-    run_test "TGV 3D Invariants" "$BUILD_DIR/test_tgv_3d_invariants" 300
-    run_test "MMS Convergence" "$BUILD_DIR/test_mms_convergence" 300
-    run_test "Poiseuille Refinement" "$BUILD_DIR/test_poiseuille_refinement" 300
-    run_test "Fractional Step Temporal Convergence" "$BUILD_DIR/test_fractional_step_temporal_convergence" 300
-
-    # Solver selection and stability
-    run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120
-    run_test "Stability Sentinel" "$BUILD_DIR/test_stability_sentinel" 120
-    run_test "Perf Sentinel" "$BUILD_DIR/test_perf_sentinel" 120
-
-    # Conservation and integration tests
-    run_test "Conservation Audit" "$BUILD_DIR/test_conservation_audit" 180
-    run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
+    log_section "Medium Tests (ctest -L medium)"
+    run_ctest_suite "medium" 300
 fi
 
 # GPU-specific tests
+# Uses ctest -L gpu for most tests, with manual handling for cross-build comparison
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "full" ]; then
-    log_section "GPU-Specific Tests"
+    log_section "GPU-Specific Tests (ctest -L gpu)"
 
-    # Cross-build comparison tests (require both CPU and GPU builds)
-    # These tests compare CPU-built outputs against GPU-built outputs
-    # Skip these if --cpu flag was passed (no GPU comparison possible)
     if [[ "$USE_GPU" == "OFF" ]]; then
-        log_info "Skipping cross-build tests in CPU-only mode (--cpu flag)"
-        log_info "Cross-build tests require GPU to compare CPU vs GPU outputs"
+        log_info "Skipping GPU tests in CPU-only mode (--cpu flag)"
     else
+        # Run all GPU-labeled tests via ctest
+        # Includes: test_cpu_gpu_unified, test_gpu_utilization, test_fft_unified
+        # Note: test_gpu_utilization has ENVIRONMENT property set in CMakeLists.txt
+        run_ctest_suite "gpu" 300
+
+        # Cross-build comparison test (requires BOTH CPU and GPU builds)
+        # This cannot use ctest because it orchestrates two separate builds:
+        # 1. Run CPU build to generate reference output
+        # 2. Run GPU build and compare against CPU reference
+        # This is a CI orchestration test, not a unit test
         run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
-    fi
-
-    # GPU-specific tests (only meaningful for GPU builds)
-    if [[ "$USE_GPU" == "ON" ]]; then
-        # GPU utilization test - ensures compute runs on GPU, not CPU
-        # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
-        run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300 "OMP_TARGET_OFFLOAD=MANDATORY"
-
-        # CPU/GPU unified comparison test
-        run_test "CPU GPU Unified" "$BUILD_DIR/test_cpu_gpu_unified" 300
-
-        # FFT unified test (requires GPU + FFT)
-        run_test "FFT Unified" "$BUILD_DIR/test_fft_unified" 300
     fi
 fi
 
 # HYPRE-specific tests (only when --hypre flag is used)
+# Uses ctest -L hypre for most tests, with manual handling for cross-build
 if [[ "$USE_HYPRE" == "ON" ]]; then
     if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "hypre" ] || [ "$TEST_SUITE" = "full" ]; then
-        log_section "HYPRE Poisson Solver Tests"
+        log_section "HYPRE Poisson Solver Tests (ctest -L hypre)"
 
-        # HYPRE initialization test (fast)
-        run_test "HYPRE All BCs Init" "$BUILD_DIR/test_hypre_all_bcs" 60
-
-        # HYPRE backend test
-        run_test "HYPRE Backend" "$BUILD_DIR/test_hypre_backend" 120
-
-        # HYPRE vs Multigrid validation test
-        # This compares HYPRE and Multigrid results on the same problem
-        run_test "HYPRE Validation" "$BUILD_DIR/test_hypre_validation" 300
+        # Run all HYPRE-labeled tests via ctest
+        run_ctest_suite "hypre" 300
 
         # Cross-build HYPRE test (CPU HYPRE vs GPU HYPRE)
         # Only run if GPU is available and enabled
@@ -886,21 +914,11 @@ if [[ "$USE_HYPRE" == "ON" ]]; then
 fi
 
 # Slow tests (labeled 'slow' in CMakeLists - run with 'full' flag)
+# Uses ctest -L slow to run all tests labeled 'slow' in CMakeLists.txt
+# Tests are self-registering: add LABELS slow in CMakeLists.txt to include here
 if [ "$TEST_SUITE" = "full" ]; then
-    log_section "Slow Tests (full suite only)"
-
-    # 3D unified tests (consolidated from individual 3D tests)
-    run_test "3D Unified" "$BUILD_DIR/test_3d_unified" 600
-
-    # Comparison and validation tests
-    run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
-    run_test "Physics Validation Advanced" "$BUILD_DIR/test_physics_validation_advanced" 600
-
-    # Long-running stability and repeatability tests
-    run_test "Perturbed Channel" "$BUILD_DIR/test_perturbed_channel" 600
-    run_test "Endurance Stability" "$BUILD_DIR/test_endurance_stability" 900
-    run_test "Repeatability" "$BUILD_DIR/test_repeatability" 600
-    run_test "Kernel Parity Detailed" "$BUILD_DIR/test_kernel_parity_detailed" 600
+    log_section "Slow Tests (ctest -L slow)"
+    run_ctest_suite "slow" 900
 fi
 
 # Summary
