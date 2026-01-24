@@ -1035,15 +1035,11 @@ ScenarioSignature run_mixing_length() {
 }
 
 //=============================================================================
-// Scenario: NN-MLP turbulence
+// Scenario: NN-MLP turbulence (via RANSSolver public API)
 //=============================================================================
 
 bool nn_mlp_available() {
-#ifdef USE_GPU_OFFLOAD
-    // NN-MLP requires device_view with pre-mapped GPU buffers managed by RANSSolver.
-    // Standalone testing not supported on GPU; test through full solver integration.
-    return false;
-#endif
+    // Check if model files exist
     std::string path = "data/models/mlp_channel_caseholdout";
     if (file_exists(path + "/layer0_W.txt")) return true;
     path = "../data/models/mlp_channel_caseholdout";
@@ -1060,40 +1056,64 @@ std::string get_nn_mlp_model_path() {
 }
 
 ScenarioSignature run_nn_mlp() {
+    // Test NN-MLP turbulence model through RANSSolver public API
+    // This ensures proper GPU buffer management via device_view
     const int NX = 32, NY = 48;
+    const int NUM_STEPS = 5;
 
     Mesh mesh;
     mesh.init_uniform(NX, NY, 0.0, 4.0, -1.0, 1.0);
 
     Config config;
+    config.Nx = NX;
+    config.Ny = NY;
     config.nu = 0.001;
+    config.dt = 0.001;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::NNMLP;
+    config.nn_weights_path = get_nn_mlp_model_path();
+    config.nn_scaling_path = get_nn_mlp_model_path();
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
 
-    std::string model_path = get_nn_mlp_model_path();
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
 
-    TurbulenceNNMLP nn_model;
-    nn_model.set_nu(config.nu);
-    nn_model.load(model_path, model_path);
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    solver.set_velocity_bc(bc);
 
-    VectorField vel(mesh);
+    // Initialize with parabolic profile
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         double y = mesh.y(j);
+        double u_base = 1.0 - y * y;
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            vel.u(i, j) = 1.0 - y * y;
+            solver.velocity().u(i, j) = u_base;
         }
     }
 
-    ScalarField k(mesh, 0.01);
-    ScalarField omega(mesh, 10.0);
-    ScalarField nu_t(mesh);
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
 
-    // Note: device_view is optional (defaults to nullptr) and is typically
-    // provided by RANSSolver when GPU buffers are managed externally.
-    // For this standalone test, we let TurbulenceNNMLP handle its own buffers.
-    nn_model.update(mesh, vel, k, omega, nu_t);
+    // Run a few steps to exercise the NN-MLP turbulence model
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
 
     ScenarioSignature sig;
     sig.name = "nn_mlp";
 
+    // Extract nu_t statistics from solver
+    const ScalarField& nu_t = solver.nu_t();
     double nu_t_sum = 0.0, nu_t_max = 0.0;
     int count = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
