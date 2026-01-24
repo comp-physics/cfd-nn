@@ -1039,6 +1039,11 @@ ScenarioSignature run_mixing_length() {
 //=============================================================================
 
 bool nn_mlp_available() {
+#ifdef USE_GPU_OFFLOAD
+    // NN-MLP requires device_view with pre-mapped GPU buffers managed by RANSSolver.
+    // Standalone testing not supported on GPU; test through full solver integration.
+    return false;
+#endif
     std::string path = "data/models/mlp_channel_caseholdout";
     if (file_exists(path + "/layer0_W.txt")) return true;
     path = "../data/models/mlp_channel_caseholdout";
