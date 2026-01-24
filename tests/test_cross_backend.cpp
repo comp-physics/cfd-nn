@@ -1255,6 +1255,16 @@ int run_dump_mode(const std::string& output_file, const std::set<std::string>& f
 // Compare mode: Compare two signature files
 //=============================================================================
 
+// Simple string hash for file content verification
+static std::string compute_content_hash(const std::string& content) {
+    // Use std::hash for a quick fingerprint (not cryptographic, but catches accidental duplication)
+    std::hash<std::string> hasher;
+    size_t hash = hasher(content);
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return oss.str();
+}
+
 int run_compare_mode(const std::string& ref_file, const std::string& test_file) {
     std::cout << "=== Signature Comparison Mode ===\n";
     std::cout << "Reference: " << ref_file << "\n";
@@ -1280,18 +1290,37 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
                            std::istreambuf_iterator<char>());
     SignatureFile test_sig = SignatureFile::from_json(test_json);
 
-    // Print metadata comparison
-    std::cout << "Reference metadata:\n";
-    std::cout << "  Backend: " << ref_sig.metadata.backend << "\n";
-    std::cout << "  Git SHA: " << ref_sig.metadata.git_sha << "\n";
-    std::cout << "  Build:   " << ref_sig.metadata.build_type << "\n";
-    std::cout << "  Device:  " << ref_sig.metadata.device << "\n\n";
+    // Compute file hashes for paranoia check
+    std::string ref_hash = compute_content_hash(ref_json);
+    std::string test_hash = compute_content_hash(test_json);
 
-    std::cout << "Test metadata:\n";
-    std::cout << "  Backend: " << test_sig.metadata.backend << "\n";
-    std::cout << "  Git SHA: " << test_sig.metadata.git_sha << "\n";
-    std::cout << "  Build:   " << test_sig.metadata.build_type << "\n";
-    std::cout << "  Device:  " << test_sig.metadata.device << "\n\n";
+    // Print metadata comparison with file hashes
+    std::cout << "┌─────────────────────────────────────────────────────────────┐\n";
+    std::cout << "│ REFERENCE (" << ref_sig.metadata.backend << ")";
+    std::cout << std::string(50 - ref_sig.metadata.backend.length(), ' ') << "│\n";
+    std::cout << "├─────────────────────────────────────────────────────────────┤\n";
+    std::cout << "│  File:     " << ref_file << std::string(std::max(0, 48 - (int)ref_file.length()), ' ') << "│\n";
+    std::cout << "│  Hash:     " << ref_hash << "                                │\n";
+    std::cout << "│  Git SHA:  " << ref_sig.metadata.git_sha << std::string(std::max(0, 48 - (int)ref_sig.metadata.git_sha.length()), ' ') << "│\n";
+    std::cout << "│  Device:   " << ref_sig.metadata.device << std::string(std::max(0, 48 - (int)ref_sig.metadata.device.length()), ' ') << "│\n";
+    std::cout << "└─────────────────────────────────────────────────────────────┘\n\n";
+
+    std::cout << "┌─────────────────────────────────────────────────────────────┐\n";
+    std::cout << "│ TEST (" << test_sig.metadata.backend << ")";
+    std::cout << std::string(54 - test_sig.metadata.backend.length(), ' ') << "│\n";
+    std::cout << "├─────────────────────────────────────────────────────────────┤\n";
+    std::cout << "│  File:     " << test_file << std::string(std::max(0, 48 - (int)test_file.length()), ' ') << "│\n";
+    std::cout << "│  Hash:     " << test_hash << "                                │\n";
+    std::cout << "│  Git SHA:  " << test_sig.metadata.git_sha << std::string(std::max(0, 48 - (int)test_sig.metadata.git_sha.length()), ' ') << "│\n";
+    std::cout << "│  Device:   " << test_sig.metadata.device << std::string(std::max(0, 48 - (int)test_sig.metadata.device.length()), ' ') << "│\n";
+    std::cout << "└─────────────────────────────────────────────────────────────┘\n\n";
+
+    // GUARDRAIL: Check file hashes - identical hashes are very suspicious
+    if (ref_hash == test_hash) {
+        std::cerr << "WARNING: File hashes are identical!\n";
+        std::cerr << "         This could indicate comparing the same file twice.\n";
+        std::cerr << "         Proceeding with caution...\n\n";
+    }
 
     // GUARDRAIL: Fail if both files have the same backend
     // This catches the bug where we accidentally compare CPU vs CPU
@@ -1328,7 +1357,10 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
         ComparisonResult result;
         result.scenario = ref.name;
 
-        std::cout << "--- " << ref.name << " ---\n";
+        // Clear scenario header
+        std::cout << "\n════════════════════════════════════════════════════════════════\n";
+        std::cout << "  SCENARIO: " << ref.name << "\n";
+        std::cout << "════════════════════════════════════════════════════════════════\n";
 
         auto it = test_map.find(ref.name);
         if (it == test_map.end()) {
@@ -1363,8 +1395,17 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
                 // Use higher precision to detect near-zero differences
                 std::cout << std::scientific << std::setprecision(10);
                 std::cout << "diff=" << diff.abs_diff << " tol=" << diff.tolerance;
+
+                // Calculate how close we are to the tolerance
+                double margin_pct = (diff.tolerance > 0) ? (diff.abs_diff / diff.tolerance) * 100.0 : 0.0;
+
                 if (diff.passed) {
                     std::cout << " [PASS]";
+                    // Warning if we're using >80% of tolerance
+                    if (margin_pct > 80.0) {
+                        std::cout << " [WARN: " << std::fixed << std::setprecision(0) << margin_pct << "% of tolerance]";
+                        std::cout << std::scientific << std::setprecision(10);
+                    }
                     // For very small diffs, also print ref/test values for sanity check
                     if (diff.abs_diff < 1e-15) {
                         std::cout << " (ref=" << diff.ref_value << ", test=" << diff.test_value << ")";
