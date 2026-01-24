@@ -17,6 +17,7 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
+#include "turbulence_nn_mlp.hpp"
 #include "test_utilities.hpp"
 #include "test_harness.hpp"
 #include <iostream>
@@ -269,10 +270,87 @@ void set_channel_bcs(RANSSolver& solver) {
 }
 
 //=============================================================================
+// NN-MLP Turbulence Model Test
+//=============================================================================
+
+// Check if NN-MLP model files exist
+bool nn_mlp_model_available() {
+    std::string path = "data/models/mlp_channel_caseholdout";
+    if (file_exists(path + "/layer0_W.txt")) return true;
+    path = "../data/models/mlp_channel_caseholdout";
+    if (file_exists(path + "/layer0_W.txt")) return true;
+    return false;
+}
+
+// Get the NN-MLP model path
+std::string get_nn_mlp_model_path() {
+    std::string path = "data/models/mlp_channel_caseholdout";
+    if (file_exists(path + "/layer0_W.txt")) return path;
+    path = "../data/models/mlp_channel_caseholdout";
+    if (file_exists(path + "/layer0_W.txt")) return path;
+    return "";
+}
+
+// Setup for NN-MLP turbulence test - 2D channel flow
+void setup_nn_mlp_test(Mesh& mesh, Config& config, int NX, int NY, int num_iter) {
+    mesh.init_uniform(NX, NY, 0.0, 4.0, -1.0, 1.0);  // 2D channel, y in [-1, 1]
+
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = num_iter;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::Baseline;  // Will be overridden
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+}
+
+// Initialize channel IC for NN-MLP test
+void initialize_channel_ic_nn_mlp(RANSSolver& solver, const Mesh& mesh) {
+    // Parabolic Poiseuille profile
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j);
+        double u_val = 1.0 - y * y;  // Parabolic profile, max at y=0
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_val;
+        }
+    }
+}
+
+// Set BCs for NN-MLP channel test
+void set_channel_bcs_nn_mlp(RANSSolver& solver) {
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    solver.set_velocity_bc(bc);
+}
+
+// Write scalar field (nu_t) to file
+void write_scalar_field(const std::string& filename,
+                        const Mesh& mesh,
+                        const ScalarField& field) {
+    std::ofstream file(filename);
+    if (!file) {
+        throw std::runtime_error("Cannot open file for writing: " + filename);
+    }
+
+    file << std::setprecision(17) << std::scientific;
+    file << "# i j value\n";
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            file << i << " " << j << " 0 " << field(i, j) << "\n";
+        }
+    }
+}
+
+//=============================================================================
 // Dump mode: Generate CPU reference
 //=============================================================================
 
-int run_dump_mode(const std::string& prefix) {
+int run_dump_mode(const std::string& prefix, bool test_nn_mlp = false) {
 #ifdef USE_GPU_OFFLOAD
     std::cerr << "ERROR: --dump-prefix requires CPU-only build\n";
     std::cerr << "       This binary was built with USE_GPU_OFFLOAD=ON\n";
@@ -281,7 +359,8 @@ int run_dump_mode(const std::string& prefix) {
 #else
     std::cout << "=== CPU Reference Generation Mode ===\n";
     print_backend_identity();
-    std::cout << "Output prefix: " << prefix << "\n\n";
+    std::cout << "Output prefix: " << prefix << "\n";
+    std::cout << "Test NN-MLP: " << (test_nn_mlp ? "YES" : "NO") << "\n\n";
 
     // Verify we're actually running on CPU
     if (!verify_cpu_backend()) {
@@ -289,50 +368,103 @@ int run_dump_mode(const std::string& prefix) {
         return 1;
     }
 
-    const int NX = 48, NY = 48, NZ = 8;
-    const int NUM_STEPS = 30;
+    // =========================================================================
+    // Part 1: Solver test (existing)
+    // =========================================================================
+    {
+        std::cout << "--- Solver Test ---\n";
+        const int NX = 48, NY = 48, NZ = 8;
+        const int NUM_STEPS = 30;
 
-    Mesh mesh;
-    Config config;
-    setup_channel_test(mesh, config, NX, NY, NZ, NUM_STEPS);
+        Mesh mesh;
+        Config config;
+        setup_channel_test(mesh, config, NX, NY, NZ, NUM_STEPS);
 
-    RANSSolver solver(mesh, config);
-    solver.set_body_force(0.001, 0.0, 0.0);
-    set_channel_bcs(solver);
-    initialize_poiseuille_ic(solver, mesh);
+        RANSSolver solver(mesh, config);
+        solver.set_body_force(0.001, 0.0, 0.0);
+        set_channel_bcs(solver);
+        initialize_poiseuille_ic(solver, mesh);
 
-    std::cout << "Running " << NUM_STEPS << " time steps on CPU...\n";
-    for (int step = 0; step < NUM_STEPS; ++step) {
-        solver.step();
+        std::cout << "Running " << NUM_STEPS << " time steps on CPU...\n";
+        for (int step = 0; step < NUM_STEPS; ++step) {
+            solver.step();
+        }
+
+        std::cout << "Writing reference fields...\n";
+
+        // Write u-velocity (at x-faces, so i goes to i_end inclusive)
+        write_field_data(prefix + "_u.dat", mesh,
+            [&](int i, int j, int k) { return solver.velocity().u(i, j, k); },
+            mesh.i_begin(), mesh.i_end() + 1, mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end());
+        std::cout << "  Wrote: " << prefix << "_u.dat\n";
+
+        // Write v-velocity (at y-faces, so j goes to j_end inclusive)
+        write_field_data(prefix + "_v.dat", mesh,
+            [&](int i, int j, int k) { return solver.velocity().v(i, j, k); },
+            mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end() + 1, mesh.k_begin(), mesh.k_end());
+        std::cout << "  Wrote: " << prefix << "_v.dat\n";
+
+        // Write w-velocity (at z-faces, so k goes to k_end inclusive)
+        if (!mesh.is2D()) {
+            write_field_data(prefix + "_w.dat", mesh,
+                [&](int i, int j, int k) { return solver.velocity().w(i, j, k); },
+                mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end() + 1);
+            std::cout << "  Wrote: " << prefix << "_w.dat\n";
+        }
+
+        // Write pressure (cell-centered)
+        write_field_data(prefix + "_p.dat", mesh,
+            [&](int i, int j, int k) { return solver.pressure()(i, j, k); },
+            mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end());
+        std::cout << "  Wrote: " << prefix << "_p.dat\n";
     }
 
-    std::cout << "Writing reference fields...\n";
+    // =========================================================================
+    // Part 2: NN-MLP turbulence test (optional)
+    // =========================================================================
+    if (test_nn_mlp) {
+        std::cout << "\n--- NN-MLP Turbulence Test ---\n";
 
-    // Write u-velocity (at x-faces, so i goes to i_end inclusive)
-    write_field_data(prefix + "_u.dat", mesh,
-        [&](int i, int j, int k) { return solver.velocity().u(i, j, k); },
-        mesh.i_begin(), mesh.i_end() + 1, mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end());
-    std::cout << "  Wrote: " << prefix << "_u.dat\n";
+        std::string model_path = get_nn_mlp_model_path();
+        if (model_path.empty()) {
+            std::cerr << "WARNING: NN-MLP model not found, skipping NN-MLP test\n";
+        } else {
+            const int NX = 32, NY = 64;
+            const int NUM_STEPS = 10;
 
-    // Write v-velocity (at y-faces, so j goes to j_end inclusive)
-    write_field_data(prefix + "_v.dat", mesh,
-        [&](int i, int j, int k) { return solver.velocity().v(i, j, k); },
-        mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end() + 1, mesh.k_begin(), mesh.k_end());
-    std::cout << "  Wrote: " << prefix << "_v.dat\n";
+            Mesh mesh;
+            Config config;
+            setup_nn_mlp_test(mesh, config, NX, NY, NUM_STEPS);
 
-    // Write w-velocity (at z-faces, so k goes to k_end inclusive)
-    if (!mesh.is2D()) {
-        write_field_data(prefix + "_w.dat", mesh,
-            [&](int i, int j, int k) { return solver.velocity().w(i, j, k); },
-            mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end() + 1);
-        std::cout << "  Wrote: " << prefix << "_w.dat\n";
+            // Create NN-MLP model
+            TurbulenceNNMLP nn_model;
+            nn_model.set_nu(config.nu);
+            nn_model.load(model_path, model_path);
+
+            // Create velocity field with shear
+            VectorField vel(mesh);
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                double y = mesh.y(j);
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    vel.u(i, j) = 1.0 - y * y;  // Parabolic profile
+                }
+            }
+
+            // Create k, omega, nu_t fields
+            ScalarField k(mesh, 0.01);
+            ScalarField omega(mesh, 10.0);
+            ScalarField nu_t(mesh);
+
+            std::cout << "Running NN-MLP turbulence model on CPU...\n";
+
+            // CPU path: just call update without device_view
+            nn_model.update(mesh, vel, k, omega, nu_t);
+
+            // Write nu_t field
+            write_scalar_field(prefix + "_nn_mlp_nu_t.dat", mesh, nu_t);
+            std::cout << "  Wrote: " << prefix << "_nn_mlp_nu_t.dat\n";
+        }
     }
-
-    // Write pressure (cell-centered)
-    write_field_data(prefix + "_p.dat", mesh,
-        [&](int i, int j, int k) { return solver.pressure()(i, j, k); },
-        mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end());
-    std::cout << "  Wrote: " << prefix << "_p.dat\n";
 
     std::cout << "\n[SUCCESS] CPU reference files written\n";
     return 0;
@@ -343,7 +475,8 @@ int run_dump_mode(const std::string& prefix) {
 // Compare mode: Run GPU and compare against CPU reference
 //=============================================================================
 
-int run_compare_mode([[maybe_unused]] const std::string& prefix) {
+int run_compare_mode([[maybe_unused]] const std::string& prefix,
+                     [[maybe_unused]] bool test_nn_mlp = false) {
 #ifndef USE_GPU_OFFLOAD
     std::cerr << "ERROR: --compare-prefix requires GPU build\n";
     std::cerr << "       This binary was built with USE_GPU_OFFLOAD=OFF\n";
@@ -352,7 +485,8 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
 #else
     std::cout << "=== GPU Comparison Mode ===\n";
     print_backend_identity();
-    std::cout << "Reference prefix: " << prefix << "\n\n";
+    std::cout << "Reference prefix: " << prefix << "\n";
+    std::cout << "Test NN-MLP: " << (test_nn_mlp ? "YES" : "NO") << "\n\n";
 
     // Verify GPU is actually accessible and executing on device
     if (!verify_gpu_backend()) {
@@ -504,6 +638,77 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix) {
     // Emit machine-readable QoI for CI metrics
     nncfd::test::harness::emit_qoi_cpu_gpu(u_rel_l2, p_rel_l2);
 
+    // =========================================================================
+    // Part 2: NN-MLP turbulence test (optional)
+    // =========================================================================
+    if (test_nn_mlp) {
+        std::cout << "\n--- NN-MLP Turbulence Test ---\n";
+
+        std::string nn_mlp_ref = prefix + "_nn_mlp_nu_t.dat";
+        if (!file_exists(nn_mlp_ref)) {
+            std::cerr << "WARNING: NN-MLP reference file not found: " << nn_mlp_ref << "\n";
+            std::cerr << "         Run CPU build with --test-nn-mlp --dump-prefix first\n";
+        } else {
+            std::string model_path = get_nn_mlp_model_path();
+            if (model_path.empty()) {
+                std::cerr << "WARNING: NN-MLP model not found, skipping NN-MLP comparison\n";
+            } else {
+                const int NX = 32, NY = 64;
+
+                Mesh mesh;
+                Config config;
+                setup_nn_mlp_test(mesh, config, NX, NY, 10);
+
+                // Create NN-MLP model
+                TurbulenceNNMLP nn_model;
+                nn_model.set_nu(config.nu);
+                nn_model.load(model_path, model_path);
+
+                // Create velocity field with shear
+                VectorField vel(mesh);
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    double y = mesh.y(j);
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        vel.u(i, j) = 1.0 - y * y;  // Parabolic profile
+                    }
+                }
+
+                // Create k, omega, nu_t fields
+                ScalarField k(mesh, 0.01);
+                ScalarField omega(mesh, 10.0);
+                ScalarField nu_t(mesh);
+
+                // GPU path: create device view and run on GPU
+                TurbulenceDeviceView device_view;
+                nn_model.prepare_gpu_buffers(mesh);
+                nn_model.get_device_view(device_view);
+
+                std::cout << "Running NN-MLP turbulence model on GPU...\n";
+                nn_model.update(mesh, vel, k, omega, nu_t, &device_view);
+
+                // Compare nu_t against CPU reference
+                auto ref = read_field_data(nn_mlp_ref);
+                FieldComparison result;
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        result.update(i, j, 0, ref(i, j, 0), nu_t(i, j));
+                    }
+                }
+                result.finalize();
+                result.print("nu_t (NN-MLP)");
+
+                if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
+                    std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
+                    all_passed = false;
+                } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
+                    std::cout << "    [PASS] (tiny diff - not sensitive to FP reordering)\n";
+                } else {
+                    std::cout << "    [PASS]\n";
+                }
+            }
+        }
+    }
+
     std::cout << "\n";
     if (all_passed) {
         std::cout << "[SUCCESS] GPU results match CPU reference within tolerance\n";
@@ -532,18 +737,22 @@ void print_usage(const char* prog) {
     std::cout << "Options:\n";
     std::cout << "  --dump-prefix <prefix>     Generate CPU reference files (CPU build only)\n";
     std::cout << "  --compare-prefix <prefix>  Compare GPU against CPU reference (GPU build only)\n";
+    std::cout << "  --test-nn-mlp              Also test NN-MLP turbulence model (optional)\n";
     std::cout << "  --help                     Show this message\n";
 }
 
 int main(int argc, char* argv[]) {
     try {
         std::string dump_prefix, compare_prefix;
+        bool test_nn_mlp = false;
 
         for (int i = 1; i < argc; ++i) {
             if (std::strcmp(argv[i], "--dump-prefix") == 0 && i + 1 < argc) {
                 dump_prefix = argv[++i];
             } else if (std::strcmp(argv[i], "--compare-prefix") == 0 && i + 1 < argc) {
                 compare_prefix = argv[++i];
+            } else if (std::strcmp(argv[i], "--test-nn-mlp") == 0) {
+                test_nn_mlp = true;
             } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
                 print_usage(argv[0]);
                 return 0;
@@ -569,10 +778,10 @@ int main(int argc, char* argv[]) {
             std::cerr << "       To generate reference data, rebuild with -DUSE_GPU_OFFLOAD=OFF\n";
             return 1;
 #else
-            return run_dump_mode(dump_prefix);
+            return run_dump_mode(dump_prefix, test_nn_mlp);
 #endif
         } else if (!compare_prefix.empty()) {
-            return run_compare_mode(compare_prefix);
+            return run_compare_mode(compare_prefix, test_nn_mlp);
         } else {
             std::cerr << "ERROR: This test requires --dump-prefix or --compare-prefix\n\n";
             print_usage(argv[0]);
