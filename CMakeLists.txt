@@ -467,6 +467,7 @@ if(BUILD_TESTS)
     # Medium tests (30-120s) - run with: ctest -L medium
     # =========================================================================
     add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest LABELS medium)
+    add_nncfd_test(test_skew_energy_conservation TEST_NAME_SUFFIX SkewEnergyTest LABELS medium)
     add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest LABELS medium)
     add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest LABELS medium)
     add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest LABELS medium)
