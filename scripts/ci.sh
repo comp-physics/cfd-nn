@@ -609,7 +609,6 @@ run_cross_build_test() {
     local test_name=$1
     local test_binary_name=$2
     local timeout_secs=${3:-120}
-    local ref_prefix=$4
 
     local cpu_build_dir="${PROJECT_DIR}/build_cpu"
     local gpu_build_dir="${PROJECT_DIR}/build_gpu"
@@ -664,56 +663,81 @@ run_cross_build_test() {
         return 0
     fi
 
-    # Create reference directory
-    local ref_dir="${PROJECT_DIR}/build_gpu/cpu_reference"
-    mkdir -p "$ref_dir"
+    # Create signature directory
+    local sig_dir="${PROJECT_DIR}/build_gpu/cross_backend_signatures"
+    mkdir -p "$sig_dir"
+    local cpu_sig="${sig_dir}/cpu.json"
+    local gpu_sig="${sig_dir}/gpu.json"
 
     local output_file="/tmp/test_output_$$.txt"
 
-    # Always regenerate CPU reference to ensure consistency
-    # (reference files might be stale from a previous build)
-    log_info "  Step 1: Generating CPU reference..."
+    # Step 1: Generate CPU signatures
+    log_info "  Step 1: Generating CPU signatures..."
     local cpu_exit_code=0
-    timeout "$timeout_secs" "$cpu_binary" --dump-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || cpu_exit_code=$?
+    timeout "$timeout_secs" "$cpu_binary" --dump "$cpu_sig" > "$output_file" 2>&1 || cpu_exit_code=$?
 
     if [ $cpu_exit_code -ne 0 ]; then
-        log_failure "$test_name (CPU reference generation failed, exit code: $cpu_exit_code)"
+        log_failure "$test_name (CPU signature generation failed, exit code: $cpu_exit_code)"
         echo "  Output (last 30 lines):"
         tail -30 "$output_file" | sed 's/^/    /'
         FAILED=$((FAILED + 1))
-        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU ref generation)"
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (CPU signatures)"
         rm -f "$output_file"
         return 0
     fi
 
     if [ $VERBOSE -eq 1 ]; then
-        echo "  CPU reference output:"
+        echo "  CPU signature output:"
         cat "$output_file" | sed 's/^/    /'
     fi
 
-    # Run GPU comparison against CPU reference
+    # Step 2: Generate GPU signatures
     # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
-    log_info "  Step 2: Running GPU and comparing against CPU reference..."
-    local gpu_exit_code=0
-    OMP_TARGET_OFFLOAD=MANDATORY timeout "$timeout_secs" "$gpu_binary" --compare-prefix "${ref_dir}/${ref_prefix}" > "$output_file" 2>&1 || gpu_exit_code=$?
+    log_info "  Step 2: Generating GPU signatures..."
+    local gpu_dump_exit_code=0
+    OMP_TARGET_OFFLOAD=MANDATORY timeout "$timeout_secs" "$gpu_binary" --dump "$gpu_sig" > "$output_file" 2>&1 || gpu_dump_exit_code=$?
 
-    if [ $gpu_exit_code -eq 0 ]; then
+    if [ $gpu_dump_exit_code -ne 0 ]; then
+        log_failure "$test_name (GPU signature generation failed, exit code: $gpu_dump_exit_code)"
+        echo "  Output (last 30 lines):"
+        tail -30 "$output_file" | sed 's/^/    /'
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS="${FAILED_TESTS}\n  - $test_name (GPU signatures)"
+        rm -f "$output_file"
+        return 0
+    fi
+
+    if [ $VERBOSE -eq 1 ]; then
+        echo "  GPU signature output:"
+        cat "$output_file" | sed 's/^/    /'
+    fi
+
+    # Step 3: Compare CPU vs GPU signatures (can use either binary)
+    log_info "  Step 3: Comparing CPU vs GPU signatures..."
+    local compare_exit_code=0
+    timeout "$timeout_secs" "$cpu_binary" --compare "$cpu_sig" "$gpu_sig" > "$output_file" 2>&1 || compare_exit_code=$?
+
+    if [ $compare_exit_code -eq 0 ]; then
         log_success "$test_name"
         PASSED=$((PASSED + 1))
         if [ $VERBOSE -eq 1 ]; then
-            echo "  GPU comparison output:"
+            echo "  Comparison output:"
             cat "$output_file" | sed 's/^/    /'
         else
             local summary
-            summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[OK\]|\[SUCCESS\]|\[WARN\]|PASSED|FAILED|Max abs diff|Max rel diff|RMS diff)' "$output_file" | head -10) || true
+            summary=$(grep -E '(\[PASS\]|\[FAIL\]|\[SUCCESS\]|\[FAILURE\]|Passed:|Failed:|Summary)' "$output_file" | head -15) || true
             if [ -n "$summary" ]; then
                 echo "$summary" | sed 's/^/    /'
             fi
         fi
     else
-        log_failure "$test_name (GPU comparison failed, exit code: $gpu_exit_code)"
-        echo "  Output (last 30 lines):"
-        tail -30 "$output_file" | sed 's/^/    /'
+        log_failure "$test_name (comparison failed, exit code: $compare_exit_code)"
+        echo "  Output (last 40 lines):"
+        tail -40 "$output_file" | sed 's/^/    /'
+        echo ""
+        echo "  Artifacts for debugging:"
+        echo "    CPU signatures: $cpu_sig"
+        echo "    GPU signatures: $gpu_sig"
         FAILED=$((FAILED + 1))
         FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
     fi
@@ -846,7 +870,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
         # 1. Run CPU build to generate reference output
         # 2. Run GPU build and compare against CPU reference
         # This is a CI orchestration test, not a unit test
-        run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
+        run_cross_build_test "Cross-Backend Consistency" "test_cross_backend" 300
     fi
 fi
 

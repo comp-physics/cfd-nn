@@ -492,21 +492,21 @@ if(BUILD_TESTS)
     # =========================================================================
     # GPU-specific tests - run with: ctest -L gpu
     # =========================================================================
-    # test_cpu_gpu_bitwise must be built unconditionally (used by both CPU and GPU CI builds)
+    # test_cross_backend must be built unconditionally (used by both CPU and GPU CI builds)
     # but only registered as a test when GPU offload is enabled
-    add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
-    target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
+    add_executable(test_cross_backend tests/test_cross_backend.cpp)
+    target_link_libraries(test_cross_backend nn_cfd_core)
 
     if(USE_GPU_OFFLOAD)
         # TODO: CPUGPUUnifiedTest fails with "NN-MLP GPU pipeline requires device_view and GPU buffers initialized"
         # This test was never run in CI before - needs investigation and fix
         # Label as "needs-fix" to exclude from regular CI runs
         add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS needs-fix)
-        # CPUGPUBitwiseTest requires cross-build orchestration (CPU reference generation)
+        # CrossBackendTest requires cross-build orchestration (CPU reference generation)
         # Label as "cross-build" so it's not picked up by "ctest -L gpu"
         # This test is run manually by ci.sh via run_cross_build_test()
-        add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
-        set_tests_properties(CPUGPUBitwiseTest PROPERTIES LABELS "cross-build")
+        add_test(NAME CrossBackendTest COMMAND test_cross_backend)
+        set_tests_properties(CrossBackendTest PROPERTIES LABELS "cross-build")
         add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
         # MANDATORY ensures GPU offload actually happens (no silent CPU fallback)
         set_tests_properties(GPUUtilizationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
