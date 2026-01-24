@@ -1293,6 +1293,27 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
     std::cout << "  Build:   " << test_sig.metadata.build_type << "\n";
     std::cout << "  Device:  " << test_sig.metadata.device << "\n\n";
 
+    // GUARDRAIL: Fail if both files have the same backend
+    // This catches the bug where we accidentally compare CPU vs CPU
+    if (ref_sig.metadata.backend == test_sig.metadata.backend) {
+        std::cerr << "ERROR: Both files have the same backend '" << ref_sig.metadata.backend << "'\n";
+        std::cerr << "       Cross-backend test requires CPU vs GPU comparison.\n";
+        std::cerr << "       Check that you're not comparing the same file twice.\n";
+        return 1;
+    }
+
+    // GUARDRAIL: For GPU backend, verify we're actually on a GPU device
+    if (test_sig.metadata.backend == "GPU") {
+        if (test_sig.metadata.device == "CPU" || test_sig.metadata.device.empty()) {
+            std::cerr << "ERROR: GPU backend but device is '" << test_sig.metadata.device << "'\n";
+            std::cerr << "       GPU offload may not be working correctly.\n";
+            return 1;
+        }
+    }
+
+    std::cout << "[OK] Backend mismatch verified: " << ref_sig.metadata.backend
+              << " vs " << test_sig.metadata.backend << "\n\n";
+
     // Build lookup for test scenarios
     std::map<std::string, const ScenarioSignature*> test_map;
     for (const auto& sig : test_sig.scenarios) {
@@ -1339,12 +1360,19 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
                 diff.passed = (diff.abs_diff <= diff.tolerance);
 
                 std::cout << "    " << std::left << std::setw(15) << name << ": ";
-                std::cout << std::scientific << std::setprecision(4);
+                // Use higher precision to detect near-zero differences
+                std::cout << std::scientific << std::setprecision(10);
                 std::cout << "diff=" << diff.abs_diff << " tol=" << diff.tolerance;
                 if (diff.passed) {
-                    std::cout << " [PASS]\n";
+                    std::cout << " [PASS]";
+                    // For very small diffs, also print ref/test values for sanity check
+                    if (diff.abs_diff < 1e-15) {
+                        std::cout << " (ref=" << diff.ref_value << ", test=" << diff.test_value << ")";
+                    }
+                    std::cout << "\n";
                 } else {
                     std::cout << " [FAIL]\n";
+                    std::cout << "           ref=" << diff.ref_value << " test=" << diff.test_value << "\n";
                     result.passed = false;
                 }
             }
@@ -1380,7 +1408,8 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
                     diff.passed = (diff.max_diff <= diff.tolerance);
 
                     std::cout << "    " << std::left << std::setw(15) << name << ": ";
-                    std::cout << std::scientific << std::setprecision(4);
+                    // Use higher precision for probes too
+                    std::cout << std::scientific << std::setprecision(10);
                     std::cout << "max_diff=" << diff.max_diff;
                     if (diff.passed) {
                         std::cout << " [PASS]\n";
