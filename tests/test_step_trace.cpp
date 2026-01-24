@@ -95,9 +95,12 @@ int main() {
     solver.step();
     solver.sync_from_gpu();
 
-    // Get access to internal fields via solver view (host pointers when not using GPU)
+    // Get access to internal fields via solver view
+    // NOTE: In GPU builds, conv_u/diff_u etc. are device pointers NOT synced by sync_from_gpu()
+    // so we can only access them in CPU builds
     auto view = solver.get_solver_view();
 
+#ifndef USE_GPU_OFFLOAD
     std::cout << "4. Convection terms:\n";
     double max_conv_u = 0, max_conv_v = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -131,6 +134,10 @@ int main() {
     }
     std::cout << "   max|diff_u| = " << std::scientific << max_diff_u << "\n";
     std::cout << "   max|diff_v| = " << max_diff_v << "\n";
+#else
+    std::cout << "4. Convection terms: [skipped - GPU work arrays not synced]\n";
+    std::cout << "5. Diffusion terms: [skipped - GPU work arrays not synced]\n";
+#endif
 
     std::cout << "\n6. Poisson RHS (= div(u*)/dt):\n";
     double max_rhs = 0, rhs_sum = 0;
@@ -193,6 +200,7 @@ int main() {
     bool pass = true;
     double tol = 1e-10;
 
+#ifndef USE_GPU_OFFLOAD
     if (max_conv_u > tol || max_conv_v > tol) {
         std::cout << "ISSUE: Non-zero convection terms\n";
         pass = false;
@@ -201,6 +209,7 @@ int main() {
         std::cout << "ISSUE: Non-zero diffusion terms\n";
         pass = false;
     }
+#endif
     if (max_rhs > tol) {
         std::cout << "ISSUE: Non-zero Poisson RHS\n";
         pass = false;

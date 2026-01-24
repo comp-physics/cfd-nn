@@ -574,11 +574,12 @@ run_ctest_suite() {
     if [ "$suite_failed" -gt 0 ]; then
         log_failure "Label '$label': $suite_passed passed, $suite_failed failed"
         # Show failed test names
-        grep -E "^\s*[0-9]+.*\*\*\*Failed" "$output_file" | while read -r line; do
+        # NOTE: Use process substitution to avoid subshell (pipe would lose FAILED_TESTS modifications)
+        while read -r line; do
             local test_name
             test_name=$(echo "$line" | sed 's/.*- //' | sed 's/ .*//')
             FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
-        done
+        done < <(grep -E "^\s*[0-9]+.*\*\*\*Failed" "$output_file" || true)
         # Show last 50 lines of output for debugging
         echo "  Output (last 50 lines):"
         tail -50 "$output_file" | sed 's/^/    /'

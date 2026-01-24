@@ -157,7 +157,11 @@ void Config::load(const std::string& filename) {
         time_integrator = TimeIntegrator::RK2;
     } else if (integrator_str == "rk3") {
         time_integrator = TimeIntegrator::RK3;
+    } else if (integrator_str == "euler") {
+        time_integrator = TimeIntegrator::Euler;
     } else {
+        std::cerr << "Warning: unknown time_integrator '" << integrator_str
+                  << "'. Using euler.\n";
         time_integrator = TimeIntegrator::Euler;
     }
     
@@ -424,7 +428,11 @@ void Config::parse_args(int argc, char** argv) {
                 time_integrator = TimeIntegrator::RK2;
             } else if (val == "rk3") {
                 time_integrator = TimeIntegrator::RK3;
+            } else if (val == "euler") {
+                time_integrator = TimeIntegrator::Euler;
             } else {
+                std::cerr << "Warning: unknown --integrator '" << val
+                          << "'. Using euler.\n";
                 time_integrator = TimeIntegrator::Euler;
             }
         } else if ((val = get_value(i, arg, "--simulation_mode")) != "") {

@@ -54,8 +54,8 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
     const int Ng = mesh_->Nghost;
     const int u_stride = Nx + 2 * Ng + 1;
     const int v_stride = Nx + 2 * Ng;
-    const size_t u_total = vel_in.u_total_size();
-    const size_t v_total = vel_in.v_total_size();
+    [[maybe_unused]] const size_t u_total = vel_in.u_total_size();
+    [[maybe_unused]] const size_t v_total = vel_in.v_total_size();
 
     const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&
                             (velocity_bc_.x_hi == VelocityBC::Periodic);
@@ -424,7 +424,6 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     const bool is_2d = mesh_->is2D();
     const int stride = Nx + 2 * Ng;
     const int plane_stride = stride * (Ny + 2 * Ng);
-    const size_t field_total = field_total_size_;
 
     // INLINE divergence computation to use member pointers directly (NVHPC workaround)
     // compute_divergence(VelocityWhich::Current, div_velocity_);
@@ -677,11 +676,9 @@ void RANSSolver::ssprk2_step(double dt) {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Ng = mesh_->Nghost;
-    const int u_stride = Nx + 2 * Ng + 1;
-    const int v_stride = Nx + 2 * Ng;
+    [[maybe_unused]] const int u_stride = Nx + 2 * Ng + 1;
+    [[maybe_unused]] const int v_stride = Nx + 2 * Ng;
     const bool is_2d = mesh_->is2D();
-    const size_t u_total = velocity_.u_total_size();
-    const size_t v_total = velocity_.v_total_size();
 
     // Store u^n in velocity_rk_ - use dev_ptr + is_device_ptr pattern (NVHPC workaround)
     // Member pointers inside target regions get HOST addresses with NVHPC.
@@ -869,11 +866,9 @@ void RANSSolver::ssprk3_step(double dt) {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Ng = mesh_->Nghost;
-    const int u_stride = Nx + 2 * Ng + 1;
-    const int v_stride = Nx + 2 * Ng;
+    [[maybe_unused]] const int u_stride = Nx + 2 * Ng + 1;
+    [[maybe_unused]] const int v_stride = Nx + 2 * Ng;
     const bool is_2d = mesh_->is2D();
-    const size_t u_total = velocity_.u_total_size();
-    const size_t v_total = velocity_.v_total_size();
 
     // Store u^n in velocity_rk_ - use dev_ptr + is_device_ptr pattern (NVHPC workaround)
     // Member pointers inside target regions get HOST addresses with NVHPC.

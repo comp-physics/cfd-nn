@@ -8,7 +8,7 @@
 
 using namespace nncfd;
 
-void test_integrator(TimeIntegrator integrator, const char* name) {
+bool test_integrator(TimeIntegrator integrator, const char* name) {
     Mesh mesh;
     mesh.init_uniform(32, 32, 0.0, 2*M_PI, 0.0, 2*M_PI);
     
@@ -74,14 +74,16 @@ void test_integrator(TimeIntegrator integrator, const char* name) {
     bool decaying = ke_ratio < 1.0 && ke_ratio > 0.5;  // Should decay but not explode
     
     std::cout << std::fixed << std::setprecision(4);
-    std::cout << name << ": KE_init=" << ke_init << " KE_final=" << ke_final 
+    std::cout << name << ": KE_init=" << ke_init << " KE_final=" << ke_final
               << " ratio=" << ke_ratio << " => " << (decaying ? "OK" : "FAIL") << "\n";
+    return decaying;
 }
 
 int main() {
     std::cout << "=== Quick RK Verification (50 steps of 2D TGV) ===\n";
-    test_integrator(TimeIntegrator::Euler, "Euler");
-    test_integrator(TimeIntegrator::RK2, "RK2  ");
-    test_integrator(TimeIntegrator::RK3, "RK3  ");
-    return 0;
+    bool all_pass = true;
+    all_pass &= test_integrator(TimeIntegrator::Euler, "Euler");
+    all_pass &= test_integrator(TimeIntegrator::RK2, "RK2  ");
+    all_pass &= test_integrator(TimeIntegrator::RK3, "RK3  ");
+    return all_pass ? 0 : 1;
 }

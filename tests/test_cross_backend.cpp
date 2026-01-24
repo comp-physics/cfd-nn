@@ -419,19 +419,19 @@ struct ComparisonResult {
 
     struct MetricDiff {
         std::string name;
-        double ref_value;
-        double test_value;
-        double abs_diff;
-        double tolerance;
-        bool passed;
+        double ref_value = 0.0;
+        double test_value = 0.0;
+        double abs_diff = 0.0;
+        double tolerance = 0.0;
+        bool passed = false;
     };
     std::vector<MetricDiff> metric_diffs;
 
     struct ProbeDiff {
         std::string name;
-        double max_diff;
-        double tolerance;
-        bool passed;
+        double max_diff = 0.0;
+        double tolerance = 0.0;
+        bool passed = false;
     };
     std::vector<ProbeDiff> probe_diffs;
 };
