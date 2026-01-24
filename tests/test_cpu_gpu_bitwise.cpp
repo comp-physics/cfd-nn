@@ -1,23 +1,20 @@
 /// CPU/GPU Cross-Backend Consistency Test
-/// Compares CPU-built and GPU-built solver outputs to verify code sharing paradigm.
+/// Compares CPU-built and GPU-built solver outputs via compact signatures.
 ///
 /// This test REQUIRES two separate builds:
-///   1. CPU build (USE_GPU_OFFLOAD=OFF): Run with --dump-prefix to generate reference
-///   2. GPU build (USE_GPU_OFFLOAD=ON):  Run with --compare-prefix to compare against reference
+///   1. CPU build (USE_GPU_OFFLOAD=OFF): Run with --dump to generate reference
+///   2. GPU build (USE_GPU_OFFLOAD=ON):  Run with --compare to compare against reference
 ///
-/// Expected result: Small differences (1e-12 to 1e-10) due to FP operation ordering,
-/// but not exact zeros (which would indicate both runs used the same backend).
-///
-/// NOTE: The name "bitwise" is historical - results are NOT bit-identical due to
-/// floating-point operation ordering differences between CPU and GPU backends.
-/// The tolerance (1e-10) catches significant algorithmic divergence while allowing
-/// expected FP rounding differences.
+/// Each scenario produces a JSON signature with scalar QoIs and probes.
+/// Comparison uses per-metric tolerances to catch algorithmic divergence
+/// while allowing expected FP rounding differences.
 
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
 #include "config.hpp"
 #include "turbulence_nn_mlp.hpp"
+#include "turbulence_baseline.hpp"
 #include "test_utilities.hpp"
 #include "test_harness.hpp"
 #include <iostream>
@@ -29,14 +26,13 @@
 #include <vector>
 #include <sstream>
 #include <functional>
-#include <climits>
+#include <map>
+#include <set>
+#include <algorithm>
 
-using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
 using nncfd::test::CROSS_BACKEND_TOLERANCE;
-using nncfd::test::MIN_EXPECTED_DIFF;
 
-// OpenMP headers - needed for both CPU and GPU builds for backend verification
 #if defined(_OPENMP)
 #include <omp.h>
 #endif
@@ -44,10 +40,205 @@ using nncfd::test::MIN_EXPECTED_DIFF;
 using namespace nncfd;
 
 //=============================================================================
-// Backend identity verification
+// Signature: Compact representation of scenario output
 //=============================================================================
 
-// Print backend identity marker for CI parsing
+struct Metric {
+    double value = 0.0;
+    double abs_tol = 1e-10;  // Absolute tolerance
+    double rel_tol = 1e-8;   // Relative tolerance
+
+    Metric() = default;
+    Metric(double v, double at = 1e-10, double rt = 1e-8)
+        : value(v), abs_tol(at), rel_tol(rt) {}
+};
+
+struct Probe {
+    std::vector<double> values;  // e.g., [u, v] or [u, v, w]
+    double abs_tol = 1e-10;
+    double rel_tol = 1e-8;
+};
+
+struct Signature {
+    int schema_version = 1;
+    std::string scenario;
+    std::string backend;
+    std::map<std::string, Metric> metrics;
+    std::map<std::string, Probe> probes;
+
+    // Serialize to JSON
+    std::string to_json() const {
+        std::ostringstream os;
+        os << std::setprecision(17) << std::scientific;
+        os << "{\n";
+        os << "  \"schema_version\": " << schema_version << ",\n";
+        os << "  \"scenario\": \"" << scenario << "\",\n";
+        os << "  \"backend\": \"" << backend << "\",\n";
+
+        os << "  \"metrics\": {\n";
+        bool first = true;
+        for (const auto& [name, m] : metrics) {
+            if (!first) os << ",\n";
+            os << "    \"" << name << "\": " << m.value;
+            first = false;
+        }
+        os << "\n  },\n";
+
+        os << "  \"probes\": {\n";
+        first = true;
+        for (const auto& [name, p] : probes) {
+            if (!first) os << ",\n";
+            os << "    \"" << name << "\": [";
+            for (size_t i = 0; i < p.values.size(); ++i) {
+                if (i > 0) os << ", ";
+                os << p.values[i];
+            }
+            os << "]";
+            first = false;
+        }
+        os << "\n  }\n";
+        os << "}\n";
+        return os.str();
+    }
+
+    // Parse from JSON (simple parser for our known format)
+    static Signature from_json(const std::string& json) {
+        Signature sig;
+
+        // Extract scenario name
+        auto extract_string = [&](const std::string& key) -> std::string {
+            std::string pattern = "\"" + key + "\": \"";
+            auto pos = json.find(pattern);
+            if (pos == std::string::npos) return "";
+            pos += pattern.size();
+            auto end = json.find("\"", pos);
+            return json.substr(pos, end - pos);
+        };
+
+        sig.scenario = extract_string("scenario");
+        sig.backend = extract_string("backend");
+
+        // Extract metrics (simple: find "metrics": { ... } block)
+        auto metrics_start = json.find("\"metrics\":");
+        auto metrics_end = json.find("}", metrics_start);
+        if (metrics_start != std::string::npos && metrics_end != std::string::npos) {
+            std::string metrics_block = json.substr(metrics_start, metrics_end - metrics_start + 1);
+
+            // Parse each metric: "name": value
+            size_t pos = 0;
+            while ((pos = metrics_block.find("\"", pos)) != std::string::npos) {
+                size_t name_start = pos + 1;
+                size_t name_end = metrics_block.find("\"", name_start);
+                if (name_end == std::string::npos) break;
+
+                std::string name = metrics_block.substr(name_start, name_end - name_start);
+                if (name == "metrics") { pos = name_end + 1; continue; }
+
+                size_t colon = metrics_block.find(":", name_end);
+                if (colon == std::string::npos) break;
+
+                // Find the value (number)
+                size_t val_start = colon + 1;
+                while (val_start < metrics_block.size() &&
+                       (metrics_block[val_start] == ' ' || metrics_block[val_start] == '\n'))
+                    ++val_start;
+
+                size_t val_end = val_start;
+                while (val_end < metrics_block.size() &&
+                       (std::isdigit(metrics_block[val_end]) ||
+                        metrics_block[val_end] == '.' ||
+                        metrics_block[val_end] == 'e' ||
+                        metrics_block[val_end] == 'E' ||
+                        metrics_block[val_end] == '+' ||
+                        metrics_block[val_end] == '-'))
+                    ++val_end;
+
+                if (val_end > val_start) {
+                    double val = std::stod(metrics_block.substr(val_start, val_end - val_start));
+                    sig.metrics[name] = Metric(val);
+                }
+
+                pos = val_end;
+            }
+        }
+
+        // Extract probes similarly (simplified - just get the values)
+        auto probes_start = json.find("\"probes\":");
+        if (probes_start != std::string::npos) {
+            size_t pos = probes_start;
+            while ((pos = json.find("\"", pos)) != std::string::npos) {
+                size_t name_start = pos + 1;
+                size_t name_end = json.find("\"", name_start);
+                if (name_end == std::string::npos) break;
+
+                std::string name = json.substr(name_start, name_end - name_start);
+                if (name == "probes" || name == "}") { pos = name_end + 1; continue; }
+
+                size_t bracket = json.find("[", name_end);
+                if (bracket == std::string::npos) break;
+                size_t bracket_end = json.find("]", bracket);
+                if (bracket_end == std::string::npos) break;
+
+                std::string arr = json.substr(bracket + 1, bracket_end - bracket - 1);
+                Probe p;
+                std::istringstream iss(arr);
+                double v;
+                char comma;
+                while (iss >> v) {
+                    p.values.push_back(v);
+                    iss >> comma;  // consume comma if present
+                }
+                if (!p.values.empty()) {
+                    sig.probes[name] = p;
+                }
+
+                pos = bracket_end + 1;
+            }
+        }
+
+        return sig;
+    }
+};
+
+//=============================================================================
+// Comparison result for a single metric
+//=============================================================================
+
+struct MetricResult {
+    std::string name;
+    double ref_value;
+    double test_value;
+    double abs_diff;
+    double rel_diff;
+    double abs_tol;
+    double rel_tol;
+    bool passed;
+
+    void print() const {
+        std::cout << "    " << std::left << std::setw(20) << name << ": ";
+        std::cout << std::scientific << std::setprecision(6);
+        std::cout << "ref=" << ref_value << " test=" << test_value;
+        std::cout << " |diff|=" << abs_diff;
+        if (passed) {
+            std::cout << " [PASS]\n";
+        } else {
+            std::cout << " [FAIL] (tol: abs=" << abs_tol << " rel=" << rel_tol << ")\n";
+        }
+    }
+};
+
+//=============================================================================
+// Backend verification
+//=============================================================================
+
+std::string get_backend_name() {
+#ifdef USE_GPU_OFFLOAD
+    return "GPU";
+#else
+    return "CPU";
+#endif
+}
+
 void print_backend_identity() {
 #ifdef USE_GPU_OFFLOAD
     std::cout << "EXEC_BACKEND=GPU_OFFLOAD\n";
@@ -59,206 +250,208 @@ void print_backend_identity() {
 #else
     std::cout << "EXEC_BACKEND=CPU_ONLY\n";
     std::cout << "  Compiled with: USE_GPU_OFFLOAD=OFF\n";
-    #if defined(_OPENMP)
-    std::cout << "  OMP available: YES (version " << _OPENMP << ")\n";
-    // Check if target offload is even possible
-    int num_devices = 0;
-    #if _OPENMP >= 201511  // OpenMP 4.5+
-    num_devices = omp_get_num_devices();
-    #endif
-    std::cout << "  OMP devices visible: " << num_devices << "\n";
-    #else
-    std::cout << "  OMP available: NO\n";
-    #endif
 #endif
 }
 
-// Verify CPU build is actually running on CPU (not secretly offloading)
-// Returns true if verification passes, false if something is wrong
-bool verify_cpu_backend() {
+bool verify_backend() {
 #ifdef USE_GPU_OFFLOAD
-    // GPU build - this function shouldn't be called
-    return false;
-#else
-    #if defined(_OPENMP) && _OPENMP >= 201511
-    // Even in CPU build, check that we're on initial device
-    // This catches cases where the build system was misconfigured
-    int on_initial = 1;
-    // Note: We can't use #pragma omp target in CPU build, but we CAN check
-    // that no devices are being used by examining omp_get_num_devices()
-    // and OMP_TARGET_OFFLOAD environment variable
-    const char* offload_env = std::getenv("OMP_TARGET_OFFLOAD");
-    if (offload_env != nullptr) {
-        std::string offload_str(offload_env);
-        if (offload_str == "MANDATORY") {
-            std::cerr << "WARNING: OMP_TARGET_OFFLOAD=MANDATORY but this is a CPU build\n";
-            std::cerr << "         This environment variable has no effect on CPU builds\n";
-        }
-    }
-    #endif
-    return true;
-#endif
-}
-
-// Verify GPU build is actually running on GPU
-bool verify_gpu_backend() {
-#ifndef USE_GPU_OFFLOAD
-    return false;
-#else
     const int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
         std::cerr << "ERROR: No GPU devices found\n";
         return false;
     }
-
-    // Actually test that target regions execute on device
     int on_device = 0;
     #pragma omp target map(tofrom: on_device)
     {
         on_device = !omp_is_initial_device();
     }
-
     if (!on_device) {
         std::cerr << "ERROR: Target region executed on host, not GPU\n";
         return false;
     }
-
     std::cout << "  GPU execution verified: YES (device " << omp_get_default_device() << ")\n";
-    return true;
 #endif
+    return true;
 }
 
-// Tolerance constants imported from test_utilities.hpp:
-// - CROSS_BACKEND_TOLERANCE = 1e-10 (CPU vs GPU comparison)
-// - MIN_EXPECTED_DIFF = 1e-14 (minimum to verify different backends)
-
 //=============================================================================
-// File I/O helpers
+// QoI computation helpers
 //=============================================================================
 
-// file_exists() imported from test_utilities.hpp
-
-// Write velocity field component to file
-void write_field_data(const std::string& filename,
-                      [[maybe_unused]] const Mesh& mesh,
-                      const std::function<double(int, int, int)>& getter,
-                      int i_begin, int i_end, int j_begin, int j_end, int k_begin, int k_end) {
-    std::ofstream file(filename);
-    if (!file) {
-        throw std::runtime_error("Cannot open file for writing: " + filename);
-    }
-
-    file << std::setprecision(17) << std::scientific;
-    file << "# i j k value\n";
-
-    for (int k = k_begin; k < k_end; ++k) {
-        for (int j = j_begin; j < j_end; ++j) {
-            for (int i = i_begin; i < i_end; ++i) {
-                file << i << " " << j << " " << k << " " << getter(i, j, k) << "\n";
+double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
+    double KE = 0.0;
+    if (mesh.is2D()) {
+        const double cell_area = mesh.dx * mesh.dy;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                KE += 0.5 * (u*u + v*v) * cell_area;
+            }
+        }
+    } else {
+        const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                    KE += 0.5 * (u*u + v*v + w*w) * cell_vol;
+                }
             }
         }
     }
+    return KE;
 }
 
-// Read field data from file into a vector with index mapping
-struct FieldData {
-    std::vector<double> values;
-    int i_min, i_max, j_min, j_max, k_min, k_max;
-    int ni, nj, nk;
-
-    double operator()(int i, int j, int k) const {
-        int idx = (k - k_min) * ni * nj + (j - j_min) * ni + (i - i_min);
-        return values[idx];
+double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
+    double max_div = 0.0;
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
+                double dvdy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
+                max_div = std::max(max_div, std::abs(dudx + dvdy));
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
+                    double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
+                    double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
+                    max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
+                }
+            }
+        }
     }
+    return max_div;
+}
+
+double compute_enstrophy_2d(const Mesh& mesh, const VectorField& vel) {
+    double ens = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Vorticity omega_z = dv/dx - du/dy at cell center
+            double dvdx = (vel.v(i+1, j) - vel.v(i, j)) / mesh.dx;
+            double dudy = (vel.u(i, j+1) - vel.u(i, j)) / mesh.dy;
+            double omega = dvdx - dudy;
+            ens += 0.5 * omega * omega * cell_area;
+        }
+    }
+    return ens;
+}
+
+double compute_mean_u(const Mesh& mesh, const VectorField& vel) {
+    double sum = 0.0;
+    int count = 0;
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum += 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                ++count;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    sum += 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    ++count;
+                }
+            }
+        }
+    }
+    return sum / count;
+}
+
+double compute_pressure_rms(const Mesh& mesh, const ScalarField& p) {
+    double sum_sq = 0.0;
+    double mean = 0.0;
+    int count = 0;
+
+    // First pass: mean
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                mean += p(i, j);
+                ++count;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    mean += p(i, j, k);
+                    ++count;
+                }
+            }
+        }
+    }
+    mean /= count;
+
+    // Second pass: RMS
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double diff = p(i, j) - mean;
+                sum_sq += diff * diff;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double diff = p(i, j, k) - mean;
+                    sum_sq += diff * diff;
+                }
+            }
+        }
+    }
+    return std::sqrt(sum_sq / count);
+}
+
+//=============================================================================
+// Scenario definition
+//=============================================================================
+
+struct Scenario {
+    std::string name;
+    std::string description;
+    std::function<bool()> is_available;
+    std::function<Signature()> run;
+
+    // Per-scenario metric tolerances (can override defaults)
+    std::map<std::string, std::pair<double, double>> tolerances;  // metric -> (abs_tol, rel_tol)
 };
 
-FieldData read_field_data(const std::string& filename) {
-    std::ifstream file(filename);
-    if (!file) {
-        throw std::runtime_error("Cannot open reference file: " + filename);
-    }
-
-    // First pass: determine bounds
-    int i_min = INT_MAX, i_max = INT_MIN;
-    int j_min = INT_MAX, j_max = INT_MIN;
-    int k_min = INT_MAX, k_max = INT_MIN;
-
-    std::string line;
-    std::vector<std::tuple<int, int, int, double>> entries;
-
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-
-        std::istringstream iss(line);
-        int i, j, k;
-        double value;
-        if (!(iss >> i >> j >> k >> value)) continue;
-
-        entries.emplace_back(i, j, k, value);
-        i_min = std::min(i_min, i); i_max = std::max(i_max, i);
-        j_min = std::min(j_min, j); j_max = std::max(j_max, j);
-        k_min = std::min(k_min, k); k_max = std::max(k_max, k);
-    }
-
-    if (entries.empty()) {
-        throw std::runtime_error("No data found in reference file: " + filename);
-    }
-
-    FieldData data;
-    data.i_min = i_min; data.i_max = i_max + 1;
-    data.j_min = j_min; data.j_max = j_max + 1;
-    data.k_min = k_min; data.k_max = k_max + 1;
-    data.ni = data.i_max - i_min;
-    data.nj = data.j_max - j_min;
-    data.nk = data.k_max - k_min;
-
-    data.values.resize(data.ni * data.nj * data.nk, 0.0);
-
-    for (const auto& [i, j, k, value] : entries) {
-        int idx = (k - k_min) * data.ni * data.nj + (j - j_min) * data.ni + (i - i_min);
-        data.values[idx] = value;
-    }
-
-    return data;
-}
-
-// FieldComparison imported from test_utilities.hpp
-
 //=============================================================================
-// Test case: Channel flow with body force (same as original test)
+// Scenario: Channel flow with body force (3D)
 //=============================================================================
 
-void setup_channel_test(Mesh& mesh, Config& config, int NX, int NY, int NZ, int num_iter) {
+Signature run_channel_solver_3d() {
+    const int NX = 32, NY = 32, NZ = 8;
+    const int NUM_STEPS = 20;
+
+    Mesh mesh;
     mesh.init_uniform(NX, NY, NZ, 0.0, 4.0, 0.0, 2.0, 0.0, 1.0);
 
+    Config config;
     config.nu = 0.01;
-    config.dt = 0.0005;
-    config.adaptive_dt = false;  // Fixed dt for reproducibility
-    config.max_steps = num_iter;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
     config.tol = 1e-6;
     config.turb_model = TurbulenceModelType::None;
     config.verbose = false;
-    // IMPORTANT: Force MG solver to validate CPU/GPU determinism.
-    // This test checks that identical code produces identical results on both backends.
-    // FFT solver is GPU-only, so auto-selection would compare different algorithms
-    // rather than testing code sharing. We explicitly use MG on both.
     config.poisson_solver = PoissonSolverType::MG;
-}
 
-void initialize_poiseuille_ic(RANSSolver& solver, const Mesh& mesh) {
-    double H = 1.0;  // Half-height
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            double y = mesh.y(j) - H;
-            double u_val = 0.01 * (H * H - y * y);
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                solver.velocity().u(i, j, k) = u_val;
-            }
-        }
-    }
-}
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.001, 0.0, 0.0);
 
-void set_channel_bcs(RANSSolver& solver) {
     VelocityBC bc;
     bc.x_lo = VelocityBC::Periodic;
     bc.x_hi = VelocityBC::Periodic;
@@ -267,14 +460,298 @@ void set_channel_bcs(RANSSolver& solver) {
     bc.z_lo = VelocityBC::Periodic;
     bc.z_hi = VelocityBC::Periodic;
     solver.set_velocity_bc(bc);
+
+    // Poiseuille IC
+    double H = 1.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j) - H;
+            double u_val = 0.01 * (H*H - y*y);
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                solver.velocity().u(i, j, k) = u_val;
+            }
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    Signature sig;
+    sig.scenario = "channel_solver_3d";
+    sig.backend = get_backend_name();
+
+    // Compute QoIs
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+    sig.metrics["p_rms"] = Metric(compute_pressure_rms(mesh, solver.pressure()));
+
+    // Probes at fixed locations
+    int pi = mesh.i_begin() + NX/2;
+    int pj = mesh.j_begin() + NY/2;
+    int pk = mesh.k_begin() + NZ/2;
+
+    Probe vel_probe;
+    vel_probe.values = {
+        0.5 * (solver.velocity().u(pi, pj, pk) + solver.velocity().u(pi+1, pj, pk)),
+        0.5 * (solver.velocity().v(pi, pj, pk) + solver.velocity().v(pi, pj+1, pk)),
+        0.5 * (solver.velocity().w(pi, pj, pk) + solver.velocity().w(pi, pj, pk+1))
+    };
+    sig.probes["vel_center"] = vel_probe;
+
+    Probe p_probe;
+    p_probe.values = {solver.pressure()(pi, pj, pk)};
+    sig.probes["p_center"] = p_probe;
+
+    return sig;
 }
 
 //=============================================================================
-// NN-MLP Turbulence Model Test
+// Scenario: Taylor-Green Vortex 2D (short run)
 //=============================================================================
 
-// Check if NN-MLP model files exist
-bool nn_mlp_model_available() {
+Signature run_tgv_2d() {
+    const int N = 32;
+    const int NUM_STEPS = 10;
+    const double L = 2.0 * M_PI;
+
+    Mesh mesh;
+    mesh.init_uniform(N, N, 0.0, L, 0.0, L);
+
+    Config config;
+    config.nu = 0.01;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::Periodic;
+    bc.y_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+
+    // TGV IC
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            double x = mesh.xf[i];
+            double y = mesh.y(j);
+            solver.velocity().u(i, j) = std::sin(x) * std::cos(y);
+        }
+    }
+    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double x = mesh.x(i);
+            double y = mesh.yf[j];
+            solver.velocity().v(i, j) = -std::cos(x) * std::sin(y);
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    Signature sig;
+    sig.scenario = "tgv_2d";
+    sig.backend = get_backend_name();
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["enstrophy"] = Metric(compute_enstrophy_2d(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["p_rms"] = Metric(compute_pressure_rms(mesh, solver.pressure()));
+
+    // Probe at center
+    int pi = mesh.i_begin() + N/2;
+    int pj = mesh.j_begin() + N/2;
+
+    Probe vel_probe;
+    vel_probe.values = {
+        0.5 * (solver.velocity().u(pi, pj) + solver.velocity().u(pi+1, pj)),
+        0.5 * (solver.velocity().v(pi, pj) + solver.velocity().v(pi, pj+1))
+    };
+    sig.probes["vel_center"] = vel_probe;
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: Poiseuille 2D (steady-state tendency)
+//=============================================================================
+
+Signature run_poiseuille_2d() {
+    const int NX = 32, NY = 32;
+    const int NUM_STEPS = 15;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, 0.0, 2.0);
+
+    Config config;
+    config.nu = 0.01;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::None;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    solver.set_velocity_bc(bc);
+
+    // Start near analytical Poiseuille
+    double H = 1.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j) - H;
+        double u_exact = 0.5 * 0.01 / config.nu * (H*H - y*y);
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_exact * 0.9;  // Start at 90%
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    Signature sig;
+    sig.scenario = "poiseuille_2d";
+    sig.backend = get_backend_name();
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    // Probe at channel center
+    int pi = mesh.i_begin() + NX/2;
+    int pj = mesh.j_begin() + NY/2;  // center of channel
+
+    Probe vel_probe;
+    vel_probe.values = {
+        0.5 * (solver.velocity().u(pi, pj) + solver.velocity().u(pi+1, pj)),
+        0.5 * (solver.velocity().v(pi, pj) + solver.velocity().v(pi, pj+1))
+    };
+    sig.probes["vel_center"] = vel_probe;
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: Mixing Length turbulence model
+//=============================================================================
+
+Signature run_mixing_length() {
+    const int NX = 24, NY = 32;
+    const int NUM_STEPS = 10;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, 0.0, 2.0);
+
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::Baseline;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    solver.set_velocity_bc(bc);
+
+    // Turbulent-like IC
+    double H = 1.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j) - H;
+        double u_base = H*H - y*y;
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_base;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    Signature sig;
+    sig.scenario = "mixing_length";
+    sig.backend = get_backend_name();
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    // nu_t at probe point
+    int pi = mesh.i_begin() + NX/2;
+    int pj = mesh.j_begin() + NY/4;  // Off-center to get turbulent region
+
+    Probe vel_probe;
+    vel_probe.values = {
+        0.5 * (solver.velocity().u(pi, pj) + solver.velocity().u(pi+1, pj)),
+        0.5 * (solver.velocity().v(pi, pj) + solver.velocity().v(pi, pj+1))
+    };
+    sig.probes["vel_quarter"] = vel_probe;
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: NN-MLP turbulence model
+//=============================================================================
+
+bool nn_mlp_available() {
     std::string path = "data/models/mlp_channel_caseholdout";
     if (file_exists(path + "/layer0_W.txt")) return true;
     path = "../data/models/mlp_channel_caseholdout";
@@ -282,7 +759,6 @@ bool nn_mlp_model_available() {
     return false;
 }
 
-// Get the NN-MLP model path
 std::string get_nn_mlp_model_path() {
     std::string path = "data/models/mlp_channel_caseholdout";
     if (file_exists(path + "/layer0_W.txt")) return path;
@@ -291,182 +767,193 @@ std::string get_nn_mlp_model_path() {
     return "";
 }
 
-// Setup for NN-MLP turbulence test - 2D channel flow
-void setup_nn_mlp_test(Mesh& mesh, Config& config, int NX, int NY, int num_iter) {
-    mesh.init_uniform(NX, NY, 0.0, 4.0, -1.0, 1.0);  // 2D channel, y in [-1, 1]
+Signature run_nn_mlp() {
+    const int NX = 32, NY = 48;
 
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, -1.0, 1.0);
+
+    Config config;
     config.nu = 0.001;
-    config.dt = 0.001;
-    config.adaptive_dt = false;
-    config.max_steps = num_iter;
-    config.tol = 1e-6;
-    config.turb_model = TurbulenceModelType::Baseline;  // Will be overridden
-    config.verbose = false;
-    config.poisson_solver = PoissonSolverType::MG;
-}
 
-// Initialize channel IC for NN-MLP test
-void initialize_channel_ic_nn_mlp(RANSSolver& solver, const Mesh& mesh) {
-    // Parabolic Poiseuille profile
+    std::string model_path = get_nn_mlp_model_path();
+
+    TurbulenceNNMLP nn_model;
+    nn_model.set_nu(config.nu);
+    nn_model.load(model_path, model_path);
+
+    // Create velocity field with shear
+    VectorField vel(mesh);
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         double y = mesh.y(j);
-        double u_val = 1.0 - y * y;  // Parabolic profile, max at y=0
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            solver.velocity().u(i, j) = u_val;
+            vel.u(i, j) = 1.0 - y * y;
         }
     }
-}
 
-// Set BCs for NN-MLP channel test
-void set_channel_bcs_nn_mlp(RANSSolver& solver) {
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
-}
+    ScalarField k(mesh, 0.01);
+    ScalarField omega(mesh, 10.0);
+    ScalarField nu_t(mesh);
 
-// Write scalar field (nu_t) to file
-void write_scalar_field(const std::string& filename,
-                        const Mesh& mesh,
-                        const ScalarField& field) {
-    std::ofstream file(filename);
-    if (!file) {
-        throw std::runtime_error("Cannot open file for writing: " + filename);
-    }
+#ifdef USE_GPU_OFFLOAD
+    TurbulenceDeviceView device_view;
+    nn_model.prepare_gpu_buffers(mesh);
+    nn_model.get_device_view(device_view);
+    nn_model.update(mesh, vel, k, omega, nu_t, &device_view);
+#else
+    nn_model.update(mesh, vel, k, omega, nu_t);
+#endif
 
-    file << std::setprecision(17) << std::scientific;
-    file << "# i j value\n";
+    Signature sig;
+    sig.scenario = "nn_mlp";
+    sig.backend = get_backend_name();
 
+    // Compute nu_t statistics
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            file << i << " " << j << " 0 " << field(i, j) << "\n";
+            nu_t_sum += nu_t(i, j);
+            nu_t_max = std::max(nu_t_max, nu_t(i, j));
+            ++count;
         }
     }
+
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    // Probes at different y locations
+    int pi = mesh.i_begin() + NX/2;
+
+    Probe nu_t_profile;
+    nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + NY/4));
+    nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + NY/2));
+    nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + 3*NY/4));
+    sig.probes["nu_t_profile"] = nu_t_profile;
+
+    return sig;
 }
 
 //=============================================================================
-// Dump mode: Generate CPU reference
+// Scenario registry
 //=============================================================================
 
-int run_dump_mode(const std::string& prefix, bool test_nn_mlp = false) {
+std::vector<Scenario> get_scenarios() {
+    std::vector<Scenario> scenarios;
+
+    scenarios.push_back({
+        "channel_solver_3d",
+        "3D channel flow with body force",
+        []() { return true; },
+        run_channel_solver_3d,
+        {}
+    });
+
+    scenarios.push_back({
+        "tgv_2d",
+        "2D Taylor-Green vortex",
+        []() { return true; },
+        run_tgv_2d,
+        {}
+    });
+
+    scenarios.push_back({
+        "poiseuille_2d",
+        "2D Poiseuille flow development",
+        []() { return true; },
+        run_poiseuille_2d,
+        {}
+    });
+
+    scenarios.push_back({
+        "mixing_length",
+        "Mixing length turbulence model",
+        []() { return true; },
+        run_mixing_length,
+        {}
+    });
+
+    scenarios.push_back({
+        "nn_mlp",
+        "NN-MLP turbulence model",
+        nn_mlp_available,
+        run_nn_mlp,
+        {}
+    });
+
+    return scenarios;
+}
+
+//=============================================================================
+// Dump mode: Generate reference signatures
+//=============================================================================
+
+int run_dump_mode(const std::string& output_file, const std::set<std::string>& filter) {
 #ifdef USE_GPU_OFFLOAD
-    std::cerr << "ERROR: --dump-prefix requires CPU-only build\n";
+    std::cerr << "ERROR: --dump requires CPU-only build\n";
     std::cerr << "       This binary was built with USE_GPU_OFFLOAD=ON\n";
     std::cerr << "       Rebuild with -DUSE_GPU_OFFLOAD=OFF\n";
     return 1;
 #else
     std::cout << "=== CPU Reference Generation Mode ===\n";
     print_backend_identity();
-    std::cout << "Output prefix: " << prefix << "\n";
-    std::cout << "Test NN-MLP: " << (test_nn_mlp ? "YES" : "NO") << "\n\n";
+    std::cout << "Output file: " << output_file << "\n\n";
 
-    // Verify we're actually running on CPU
-    if (!verify_cpu_backend()) {
-        std::cerr << "ERROR: CPU backend verification failed\n";
+    if (!verify_backend()) {
+        std::cerr << "ERROR: Backend verification failed\n";
         return 1;
     }
 
-    // =========================================================================
-    // Part 1: Solver test (existing)
-    // =========================================================================
-    {
-        std::cout << "--- Solver Test ---\n";
-        const int NX = 48, NY = 48, NZ = 8;
-        const int NUM_STEPS = 30;
+    auto scenarios = get_scenarios();
+    std::vector<Signature> signatures;
 
-        Mesh mesh;
-        Config config;
-        setup_channel_test(mesh, config, NX, NY, NZ, NUM_STEPS);
+    int run_count = 0, skip_count = 0;
 
-        RANSSolver solver(mesh, config);
-        solver.set_body_force(0.001, 0.0, 0.0);
-        set_channel_bcs(solver);
-        initialize_poiseuille_ic(solver, mesh);
-
-        std::cout << "Running " << NUM_STEPS << " time steps on CPU...\n";
-        for (int step = 0; step < NUM_STEPS; ++step) {
-            solver.step();
+    for (const auto& scenario : scenarios) {
+        // Check filter
+        if (!filter.empty() && filter.find(scenario.name) == filter.end()) {
+            continue;
         }
 
-        std::cout << "Writing reference fields...\n";
+        std::cout << "--- " << scenario.name << " ---\n";
+        std::cout << "  " << scenario.description << "\n";
 
-        // Write u-velocity (at x-faces, so i goes to i_end inclusive)
-        write_field_data(prefix + "_u.dat", mesh,
-            [&](int i, int j, int k) { return solver.velocity().u(i, j, k); },
-            mesh.i_begin(), mesh.i_end() + 1, mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end());
-        std::cout << "  Wrote: " << prefix << "_u.dat\n";
-
-        // Write v-velocity (at y-faces, so j goes to j_end inclusive)
-        write_field_data(prefix + "_v.dat", mesh,
-            [&](int i, int j, int k) { return solver.velocity().v(i, j, k); },
-            mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end() + 1, mesh.k_begin(), mesh.k_end());
-        std::cout << "  Wrote: " << prefix << "_v.dat\n";
-
-        // Write w-velocity (at z-faces, so k goes to k_end inclusive)
-        if (!mesh.is2D()) {
-            write_field_data(prefix + "_w.dat", mesh,
-                [&](int i, int j, int k) { return solver.velocity().w(i, j, k); },
-                mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end() + 1);
-            std::cout << "  Wrote: " << prefix << "_w.dat\n";
+        if (!scenario.is_available()) {
+            std::cout << "  [SKIPPED] Prerequisites not met\n\n";
+            ++skip_count;
+            continue;
         }
 
-        // Write pressure (cell-centered)
-        write_field_data(prefix + "_p.dat", mesh,
-            [&](int i, int j, int k) { return solver.pressure()(i, j, k); },
-            mesh.i_begin(), mesh.i_end(), mesh.j_begin(), mesh.j_end(), mesh.k_begin(), mesh.k_end());
-        std::cout << "  Wrote: " << prefix << "_p.dat\n";
+        std::cout << "  Running...\n";
+        Signature sig = scenario.run();
+        signatures.push_back(sig);
+
+        std::cout << "  Metrics:\n";
+        for (const auto& [name, m] : sig.metrics) {
+            std::cout << "    " << name << ": " << std::scientific << m.value << "\n";
+        }
+        std::cout << "\n";
+        ++run_count;
     }
 
-    // =========================================================================
-    // Part 2: NN-MLP turbulence test (optional)
-    // =========================================================================
-    if (test_nn_mlp) {
-        std::cout << "\n--- NN-MLP Turbulence Test ---\n";
-
-        std::string model_path = get_nn_mlp_model_path();
-        if (model_path.empty()) {
-            std::cerr << "WARNING: NN-MLP model not found, skipping NN-MLP test\n";
-        } else {
-            const int NX = 32, NY = 64;
-            const int NUM_STEPS = 10;
-
-            Mesh mesh;
-            Config config;
-            setup_nn_mlp_test(mesh, config, NX, NY, NUM_STEPS);
-
-            // Create NN-MLP model
-            TurbulenceNNMLP nn_model;
-            nn_model.set_nu(config.nu);
-            nn_model.load(model_path, model_path);
-
-            // Create velocity field with shear
-            VectorField vel(mesh);
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                double y = mesh.y(j);
-                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                    vel.u(i, j) = 1.0 - y * y;  // Parabolic profile
-                }
-            }
-
-            // Create k, omega, nu_t fields
-            ScalarField k(mesh, 0.01);
-            ScalarField omega(mesh, 10.0);
-            ScalarField nu_t(mesh);
-
-            std::cout << "Running NN-MLP turbulence model on CPU...\n";
-
-            // CPU path: just call update without device_view
-            nn_model.update(mesh, vel, k, omega, nu_t);
-
-            // Write nu_t field
-            write_scalar_field(prefix + "_nn_mlp_nu_t.dat", mesh, nu_t);
-            std::cout << "  Wrote: " << prefix << "_nn_mlp_nu_t.dat\n";
-        }
+    // Write all signatures to file
+    std::ofstream out(output_file);
+    if (!out) {
+        std::cerr << "ERROR: Cannot open output file: " << output_file << "\n";
+        return 1;
     }
 
-    std::cout << "\n[SUCCESS] CPU reference files written\n";
+    out << "[\n";
+    for (size_t i = 0; i < signatures.size(); ++i) {
+        if (i > 0) out << ",\n";
+        out << signatures[i].to_json();
+    }
+    out << "]\n";
+
+    std::cout << "[SUCCESS] Wrote " << run_count << " signatures";
+    if (skip_count > 0) std::cout << " (" << skip_count << " skipped)";
+    std::cout << " to " << output_file << "\n";
+
     return 0;
 #endif
 }
@@ -475,246 +962,172 @@ int run_dump_mode(const std::string& prefix, bool test_nn_mlp = false) {
 // Compare mode: Run GPU and compare against CPU reference
 //=============================================================================
 
-int run_compare_mode([[maybe_unused]] const std::string& prefix,
-                     [[maybe_unused]] bool test_nn_mlp = false) {
+int run_compare_mode(const std::string& ref_file, const std::set<std::string>& filter) {
 #ifndef USE_GPU_OFFLOAD
-    std::cerr << "ERROR: --compare-prefix requires GPU build\n";
+    std::cerr << "ERROR: --compare requires GPU build\n";
     std::cerr << "       This binary was built with USE_GPU_OFFLOAD=OFF\n";
     std::cerr << "       Rebuild with -DUSE_GPU_OFFLOAD=ON\n";
     return 1;
 #else
     std::cout << "=== GPU Comparison Mode ===\n";
     print_backend_identity();
-    std::cout << "Reference prefix: " << prefix << "\n";
-    std::cout << "Test NN-MLP: " << (test_nn_mlp ? "YES" : "NO") << "\n\n";
+    std::cout << "Reference file: " << ref_file << "\n\n";
 
-    // Verify GPU is actually accessible and executing on device
-    if (!verify_gpu_backend()) {
-        std::cerr << "       Check GPU drivers and OMP_TARGET_OFFLOAD settings.\n";
-        return 1;
-    }
-    std::cout << "\n";
-
-    // Verify reference files exist
-    if (!file_exists(prefix + "_u.dat")) {
-        std::cerr << "ERROR: Reference file not found: " << prefix << "_u.dat\n";
-        std::cerr << "       Run CPU build with --dump-prefix first\n";
+    if (!verify_backend()) {
+        std::cerr << "ERROR: Backend verification failed\n";
         return 1;
     }
 
-    const int NX = 48, NY = 48, NZ = 8;
-    const int NUM_STEPS = 30;
-
-    Mesh mesh;
-    Config config;
-    setup_channel_test(mesh, config, NX, NY, NZ, NUM_STEPS);
-
-    RANSSolver solver(mesh, config);
-    solver.set_body_force(0.001, 0.0, 0.0);
-    set_channel_bcs(solver);
-    initialize_poiseuille_ic(solver, mesh);
-
-    // GPU solver automatically initialized in constructor
-    solver.sync_to_gpu();
-
-    std::cout << "Running " << NUM_STEPS << " time steps on GPU...\n";
-    for (int step = 0; step < NUM_STEPS; ++step) {
-        solver.step();
+    // Load reference signatures
+    std::ifstream in(ref_file);
+    if (!in) {
+        std::cerr << "ERROR: Cannot open reference file: " << ref_file << "\n";
+        return 1;
     }
-    solver.sync_solution_from_gpu();
 
-    std::cout << "Loading CPU reference and comparing...\n\n";
+    std::string json_content((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
 
+    // Parse JSON array of signatures (simple parser)
+    std::map<std::string, Signature> ref_sigs;
+    size_t pos = 0;
+    while ((pos = json_content.find("{", pos)) != std::string::npos) {
+        size_t end = pos + 1;
+        int brace_count = 1;
+        while (end < json_content.size() && brace_count > 0) {
+            if (json_content[end] == '{') ++brace_count;
+            else if (json_content[end] == '}') --brace_count;
+            ++end;
+        }
+
+        std::string sig_json = json_content.substr(pos, end - pos);
+        Signature sig = Signature::from_json(sig_json);
+        if (!sig.scenario.empty()) {
+            ref_sigs[sig.scenario] = sig;
+        }
+        pos = end;
+    }
+
+    std::cout << "Loaded " << ref_sigs.size() << " reference signatures\n\n";
+
+    auto scenarios = get_scenarios();
     bool all_passed = true;
-    double u_rel_l2 = 0.0;
-    double p_rel_l2 = 0.0;
+    int pass_count = 0, fail_count = 0, skip_count = 0;
 
-    // Compare u-velocity
-    {
-        auto ref = read_field_data(prefix + "_u.dat");
-        FieldComparison result;
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                    result.update(i, j, k, ref(i, j, k), solver.velocity().u(i, j, k));
-                }
+    for (const auto& scenario : scenarios) {
+        // Check filter
+        if (!filter.empty() && filter.find(scenario.name) == filter.end()) {
+            continue;
+        }
+
+        std::cout << "--- " << scenario.name << " ---\n";
+
+        // Check if reference exists
+        if (ref_sigs.find(scenario.name) == ref_sigs.end()) {
+            std::cout << "  [SKIPPED] No reference signature\n\n";
+            ++skip_count;
+            continue;
+        }
+
+        if (!scenario.is_available()) {
+            std::cout << "  [SKIPPED] Prerequisites not met\n\n";
+            ++skip_count;
+            continue;
+        }
+
+        std::cout << "  Running on GPU...\n";
+        Signature gpu_sig = scenario.run();
+        const Signature& cpu_sig = ref_sigs[scenario.name];
+
+        // Compare metrics
+        bool scenario_passed = true;
+        std::cout << "  Comparing metrics:\n";
+
+        for (const auto& [name, cpu_metric] : cpu_sig.metrics) {
+            if (gpu_sig.metrics.find(name) == gpu_sig.metrics.end()) {
+                std::cout << "    " << name << ": [FAIL] Missing in GPU results\n";
+                scenario_passed = false;
+                continue;
             }
-        }
-        result.finalize();
-        result.print("u-velocity");
-        u_rel_l2 = result.rel_l2();
 
-        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
-            all_passed = false;
-        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
-            // Small diff is fine - canary test verifies backend execution.
-            // This just means computation isn't sensitive to FP reordering.
-            std::cout << "    [PASS] (tiny diff - not sensitive to FP reordering)\n";
-        } else {
-            std::cout << "    [PASS]\n";
-        }
-    }
+            double gpu_val = gpu_sig.metrics[name].value;
+            double cpu_val = cpu_metric.value;
+            double abs_diff = std::abs(gpu_val - cpu_val);
+            double rel_diff = abs_diff / (std::max(std::abs(cpu_val), std::abs(gpu_val)) + 1e-30);
 
-    // Compare v-velocity
-    {
-        auto ref = read_field_data(prefix + "_v.dat");
-        FieldComparison result;
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    result.update(i, j, k, ref(i, j, k), solver.velocity().v(i, j, k));
-                }
+            // Get tolerances (use scenario-specific if available, else defaults)
+            double abs_tol = cpu_metric.abs_tol;
+            double rel_tol = cpu_metric.rel_tol;
+            if (scenario.tolerances.find(name) != scenario.tolerances.end()) {
+                abs_tol = scenario.tolerances.at(name).first;
+                rel_tol = scenario.tolerances.at(name).second;
             }
-        }
-        result.finalize();
-        result.print("v-velocity");
 
-        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
-            all_passed = false;
-        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
-            // Small diff is fine - canary test verifies backend execution.
-            // This just means computation isn't sensitive to FP reordering.
-            std::cout << "    [PASS] (tiny diff - not sensitive to FP reordering)\n";
-        } else {
-            std::cout << "    [PASS]\n";
-        }
-    }
+            bool passed = (abs_diff <= abs_tol + rel_tol * std::max(std::abs(cpu_val), std::abs(gpu_val)));
 
-    // Compare w-velocity (3D only)
-    if (!mesh.is2D() && file_exists(prefix + "_w.dat")) {
-        auto ref = read_field_data(prefix + "_w.dat");
-        FieldComparison result;
-        for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    result.update(i, j, k, ref(i, j, k), solver.velocity().w(i, j, k));
-                }
-            }
-        }
-        result.finalize();
-        result.print("w-velocity");
-
-        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
-            all_passed = false;
-        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
-            // Small diff is fine - canary test verifies backend execution.
-            // This just means computation isn't sensitive to FP reordering.
-            std::cout << "    [PASS] (tiny diff - not sensitive to FP reordering)\n";
-        } else {
-            std::cout << "    [PASS]\n";
-        }
-    }
-
-    // Compare pressure
-    {
-        auto ref = read_field_data(prefix + "_p.dat");
-        FieldComparison result;
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    result.update(i, j, k, ref(i, j, k), solver.pressure()(i, j, k));
-                }
-            }
-        }
-        result.finalize();
-        result.print("pressure");
-        p_rel_l2 = result.rel_l2();
-
-        if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
-            std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
-            all_passed = false;
-        } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
-            // Small diff is fine - canary test verifies backend execution.
-            // This just means computation isn't sensitive to FP reordering.
-            std::cout << "    [PASS] (tiny diff - not sensitive to FP reordering)\n";
-        } else {
-            std::cout << "    [PASS]\n";
-        }
-    }
-
-    // Emit machine-readable QoI for CI metrics
-    nncfd::test::harness::emit_qoi_cpu_gpu(u_rel_l2, p_rel_l2);
-
-    // =========================================================================
-    // Part 2: NN-MLP turbulence test (optional)
-    // =========================================================================
-    if (test_nn_mlp) {
-        std::cout << "\n--- NN-MLP Turbulence Test ---\n";
-
-        std::string nn_mlp_ref = prefix + "_nn_mlp_nu_t.dat";
-        if (!file_exists(nn_mlp_ref)) {
-            std::cerr << "WARNING: NN-MLP reference file not found: " << nn_mlp_ref << "\n";
-            std::cerr << "         Run CPU build with --test-nn-mlp --dump-prefix first\n";
-        } else {
-            std::string model_path = get_nn_mlp_model_path();
-            if (model_path.empty()) {
-                std::cerr << "WARNING: NN-MLP model not found, skipping NN-MLP comparison\n";
+            std::cout << "    " << std::left << std::setw(15) << name << ": ";
+            std::cout << std::scientific << std::setprecision(4);
+            std::cout << "diff=" << abs_diff;
+            if (passed) {
+                std::cout << " [PASS]\n";
             } else {
-                const int NX = 32, NY = 64;
-
-                Mesh mesh;
-                Config config;
-                setup_nn_mlp_test(mesh, config, NX, NY, 10);
-
-                // Create NN-MLP model
-                TurbulenceNNMLP nn_model;
-                nn_model.set_nu(config.nu);
-                nn_model.load(model_path, model_path);
-
-                // Create velocity field with shear
-                VectorField vel(mesh);
-                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                    double y = mesh.y(j);
-                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                        vel.u(i, j) = 1.0 - y * y;  // Parabolic profile
-                    }
-                }
-
-                // Create k, omega, nu_t fields
-                ScalarField k(mesh, 0.01);
-                ScalarField omega(mesh, 10.0);
-                ScalarField nu_t(mesh);
-
-                // GPU path: create device view and run on GPU
-                TurbulenceDeviceView device_view;
-                nn_model.prepare_gpu_buffers(mesh);
-                nn_model.get_device_view(device_view);
-
-                std::cout << "Running NN-MLP turbulence model on GPU...\n";
-                nn_model.update(mesh, vel, k, omega, nu_t, &device_view);
-
-                // Compare nu_t against CPU reference
-                auto ref = read_field_data(nn_mlp_ref);
-                FieldComparison result;
-                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                        result.update(i, j, 0, ref(i, j, 0), nu_t(i, j));
-                    }
-                }
-                result.finalize();
-                result.print("nu_t (NN-MLP)");
-
-                if (!result.within_tolerance(CROSS_BACKEND_TOLERANCE)) {
-                    std::cout << "    [FAIL] Exceeds tolerance " << CROSS_BACKEND_TOLERANCE << "\n";
-                    all_passed = false;
-                } else if (result.max_abs_diff < MIN_EXPECTED_DIFF) {
-                    std::cout << "    [PASS] (tiny diff - not sensitive to FP reordering)\n";
-                } else {
-                    std::cout << "    [PASS]\n";
-                }
+                std::cout << " [FAIL] (tol=" << abs_tol << "+" << rel_tol << "*|ref|)\n";
+                scenario_passed = false;
             }
+        }
+
+        // Compare probes
+        std::cout << "  Comparing probes:\n";
+        for (const auto& [name, cpu_probe] : cpu_sig.probes) {
+            if (gpu_sig.probes.find(name) == gpu_sig.probes.end()) {
+                std::cout << "    " << name << ": [FAIL] Missing in GPU results\n";
+                scenario_passed = false;
+                continue;
+            }
+
+            const auto& gpu_probe = gpu_sig.probes.at(name);
+            if (cpu_probe.values.size() != gpu_probe.values.size()) {
+                std::cout << "    " << name << ": [FAIL] Size mismatch\n";
+                scenario_passed = false;
+                continue;
+            }
+
+            double max_diff = 0.0;
+            for (size_t i = 0; i < cpu_probe.values.size(); ++i) {
+                max_diff = std::max(max_diff, std::abs(cpu_probe.values[i] - gpu_probe.values[i]));
+            }
+
+            bool passed = (max_diff <= CROSS_BACKEND_TOLERANCE);
+            std::cout << "    " << std::left << std::setw(15) << name << ": ";
+            std::cout << "max_diff=" << std::scientific << max_diff;
+            if (passed) {
+                std::cout << " [PASS]\n";
+            } else {
+                std::cout << " [FAIL]\n";
+                scenario_passed = false;
+            }
+        }
+
+        if (scenario_passed) {
+            std::cout << "  [SCENARIO PASS]\n\n";
+            ++pass_count;
+        } else {
+            std::cout << "  [SCENARIO FAIL]\n\n";
+            all_passed = false;
+            ++fail_count;
         }
     }
 
-    std::cout << "\n";
-    if (all_passed) {
-        std::cout << "[SUCCESS] GPU results match CPU reference within tolerance\n";
+    std::cout << "=== Summary ===\n";
+    std::cout << "Passed: " << pass_count << "\n";
+    std::cout << "Failed: " << fail_count << "\n";
+    std::cout << "Skipped: " << skip_count << "\n\n";
+
+    if (all_passed && fail_count == 0) {
+        std::cout << "[SUCCESS] All scenarios passed\n";
         return 0;
     } else {
-        std::cout << "[FAILURE] GPU results differ from CPU reference beyond tolerance\n";
+        std::cout << "[FAILURE] Some scenarios failed\n";
         return 1;
     }
 #endif
@@ -726,33 +1139,45 @@ int run_compare_mode([[maybe_unused]] const std::string& prefix,
 
 void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [OPTIONS]\n\n";
-    std::cout << "This test compares CPU and GPU solver outputs.\n";
-    std::cout << "It requires running BOTH CPU and GPU builds:\n\n";
-    std::cout << "  Step 1: Build and run CPU reference:\n";
-    std::cout << "    cmake .. -DUSE_GPU_OFFLOAD=OFF && make test_cpu_gpu_bitwise\n";
-    std::cout << "    ./test_cpu_gpu_bitwise --dump-prefix /path/to/ref\n\n";
-    std::cout << "  Step 2: Build and run GPU comparison:\n";
-    std::cout << "    cmake .. -DUSE_GPU_OFFLOAD=ON && make test_cpu_gpu_bitwise\n";
-    std::cout << "    ./test_cpu_gpu_bitwise --compare-prefix /path/to/ref\n\n";
+    std::cout << "Cross-backend consistency test using compact signatures.\n\n";
+    std::cout << "Workflow:\n";
+    std::cout << "  1. CPU build: " << prog << " --dump cpu_ref.json\n";
+    std::cout << "  2. GPU build: " << prog << " --compare cpu_ref.json\n\n";
     std::cout << "Options:\n";
-    std::cout << "  --dump-prefix <prefix>     Generate CPU reference files (CPU build only)\n";
-    std::cout << "  --compare-prefix <prefix>  Compare GPU against CPU reference (GPU build only)\n";
-    std::cout << "  --test-nn-mlp              Also test NN-MLP turbulence model (optional)\n";
-    std::cout << "  --help                     Show this message\n";
+    std::cout << "  --dump <file>        Generate CPU reference signatures (CPU build only)\n";
+    std::cout << "  --compare <file>     Compare GPU against CPU reference (GPU build only)\n";
+    std::cout << "  --scenarios <list>   Comma-separated list of scenarios to run\n";
+    std::cout << "  --list               List available scenarios\n";
+    std::cout << "  --help               Show this message\n\n";
+    std::cout << "Scenarios:\n";
+    for (const auto& s : get_scenarios()) {
+        std::cout << "  " << std::left << std::setw(20) << s.name;
+        std::cout << s.description;
+        if (!s.is_available()) std::cout << " (unavailable)";
+        std::cout << "\n";
+    }
 }
 
 int main(int argc, char* argv[]) {
     try {
-        std::string dump_prefix, compare_prefix;
-        bool test_nn_mlp = false;
+        std::string dump_file, compare_file;
+        std::set<std::string> scenario_filter;
+        bool list_scenarios = false;
 
         for (int i = 1; i < argc; ++i) {
-            if (std::strcmp(argv[i], "--dump-prefix") == 0 && i + 1 < argc) {
-                dump_prefix = argv[++i];
-            } else if (std::strcmp(argv[i], "--compare-prefix") == 0 && i + 1 < argc) {
-                compare_prefix = argv[++i];
-            } else if (std::strcmp(argv[i], "--test-nn-mlp") == 0) {
-                test_nn_mlp = true;
+            if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+                dump_file = argv[++i];
+            } else if (std::strcmp(argv[i], "--compare") == 0 && i + 1 < argc) {
+                compare_file = argv[++i];
+            } else if (std::strcmp(argv[i], "--scenarios") == 0 && i + 1 < argc) {
+                std::string list = argv[++i];
+                std::istringstream iss(list);
+                std::string name;
+                while (std::getline(iss, name, ',')) {
+                    scenario_filter.insert(name);
+                }
+            } else if (std::strcmp(argv[i], "--list") == 0) {
+                list_scenarios = true;
             } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
                 print_usage(argv[0]);
                 return 0;
@@ -763,27 +1188,26 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "=== CPU/GPU Cross-Backend Consistency Test ===\n";
-#ifdef USE_GPU_OFFLOAD
-        std::cout << "Build: GPU (USE_GPU_OFFLOAD=ON)\n";
-#else
-        std::cout << "Build: CPU (USE_GPU_OFFLOAD=OFF)\n";
-#endif
-        std::cout << "Tolerance: " << std::scientific << CROSS_BACKEND_TOLERANCE << " (NOT bit-identical; FP order differs)\n\n";
+        if (list_scenarios) {
+            std::cout << "Available scenarios:\n";
+            for (const auto& s : get_scenarios()) {
+                std::cout << "  " << std::left << std::setw(20) << s.name;
+                std::cout << (s.is_available() ? "[available]" : "[unavailable]");
+                std::cout << "  " << s.description << "\n";
+            }
+            return 0;
+        }
 
-        if (!dump_prefix.empty()) {
-#ifdef USE_GPU_OFFLOAD
-            std::cerr << "ERROR: --dump-prefix requires CPU build (USE_GPU_OFFLOAD=OFF)\n";
-            std::cerr << "       GPU builds should use --compare-prefix to compare against CPU reference.\n";
-            std::cerr << "       To generate reference data, rebuild with -DUSE_GPU_OFFLOAD=OFF\n";
-            return 1;
-#else
-            return run_dump_mode(dump_prefix, test_nn_mlp);
-#endif
-        } else if (!compare_prefix.empty()) {
-            return run_compare_mode(compare_prefix, test_nn_mlp);
+        std::cout << "=== Cross-Backend Consistency Test ===\n";
+        std::cout << "Build: " << get_backend_name() << "\n";
+        std::cout << "Tolerance: " << std::scientific << CROSS_BACKEND_TOLERANCE << "\n\n";
+
+        if (!dump_file.empty()) {
+            return run_dump_mode(dump_file, scenario_filter);
+        } else if (!compare_file.empty()) {
+            return run_compare_mode(compare_file, scenario_filter);
         } else {
-            std::cerr << "ERROR: This test requires --dump-prefix or --compare-prefix\n\n";
+            std::cerr << "ERROR: Specify --dump or --compare\n\n";
             print_usage(argv[0]);
             return 1;
         }
