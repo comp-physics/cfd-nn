@@ -710,69 +710,82 @@ fi
 if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "fast" ] || [ "$TEST_SUITE" = "full" ]; then
     log_section "Fast Tests (~1-2 minutes)"
 
-    # Core 3D tests (longer timeouts for CPU Debug builds)
-    run_test "3D Quick Validation" "$BUILD_DIR/test_3d_quick_validation" 120
-    run_test "3D Gradients" "$BUILD_DIR/test_3d_gradients" 60
-    run_test "3D W-Velocity" "$BUILD_DIR/test_3d_w_velocity" 60
-    run_test "3D BC Application" "$BUILD_DIR/test_3d_bc_application" 180
-
-    # Existing fast tests
+    # Core infrastructure tests (very fast)
     run_test "Mesh" "$BUILD_DIR/test_mesh" 30
     run_test "Features" "$BUILD_DIR/test_features" 30
     run_test "NN Core" "$BUILD_DIR/test_nn_core" 30
-
-    # Data-driven test framework demo (24 tests x 2 runs = ~90s)
-    run_test "Data-Driven Demo" "$BUILD_DIR/test_data_driven_demo" 180
-
-    # Configuration and I/O tests (very fast)
     run_test "Config" "$BUILD_DIR/test_config" 30
+    run_test "MPI Guard" "$BUILD_DIR/test_mpi_guard" 30
+    run_test "Numerics" "$BUILD_DIR/test_numerics" 30
+    run_test "VTK Output" "$BUILD_DIR/test_vtk_output" 60
+    run_test "Backend Unified" "$BUILD_DIR/test_backend_unified" 60
+    run_test "Residual Consistency" "$BUILD_DIR/test_residual_consistency" 60
+    run_test "GPU Buffer" "$BUILD_DIR/test_gpu_buffer" 60
+    run_test "GPU Mapping Canary" "$BUILD_DIR/test_gpu_mapping_canary" 60
 
-    # New CI invariant tests (fast: 2D, small grids)
+    # Operator and discretization tests
+    run_test "Operator Convergence" "$BUILD_DIR/test_operator_convergence" 60
+    run_test "Operator Consistency" "$BUILD_DIR/test_operator_consistency" 120
+    run_test "Div Constant" "$BUILD_DIR/test_div_constant" 60
+    run_test "Conv Diff Constant" "$BUILD_DIR/test_conv_diff_constant" 60
+    run_test "Invariant Scaling" "$BUILD_DIR/test_invariant_scaling" 60
+
+    # TGV invariant tests (fast: 2D, small grids)
     run_test "TGV 2D Invariants" "$BUILD_DIR/test_tgv_2d_invariants" 120
     run_test "TGV Repeatability" "$BUILD_DIR/test_tgv_repeatability" 60
-fi
 
-# Medium tests (~2-5 minutes total)
-if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
-    log_section "Medium Tests (~2-5 minutes)"
-
-    run_test "3D Poiseuille Fast" "$BUILD_DIR/test_3d_poiseuille_fast" 300
-    run_test "Poisson Unified" "$BUILD_DIR/test_poisson_unified" 180
-    run_test "Stability" "$BUILD_DIR/test_stability" 120
-    # Unified turbulence test (consolidates 6 turbulence test files)
-    run_test "Turbulence Unified" "$BUILD_DIR/test_turbulence_unified" 300
-
-    # New tests: error handling, adaptive dt, mesh edge cases, 3D BCs, VTK output
+    # Error handling and edge cases
     run_test "Error Recovery" "$BUILD_DIR/test_error_recovery" 120
     run_test "Adaptive Dt" "$BUILD_DIR/test_adaptive_dt" 120
     run_test "Mesh Edge Cases" "$BUILD_DIR/test_mesh_edge_cases" 120
-    run_test "3D BC Corners" "$BUILD_DIR/test_3d_bc_corners" 180
-    run_test "VTK Output" "$BUILD_DIR/test_vtk_output" 60
 
-    # New CI invariant tests (medium: 3D, convergence, RANS)
-    run_test "TGV 3D Invariants" "$BUILD_DIR/test_tgv_3d_invariants" 300
-    run_test "MMS Convergence" "$BUILD_DIR/test_mms_convergence" 300
-    run_test "RANS Channel Sanity" "$BUILD_DIR/test_rans_channel_sanity" 600
-
-    # High-trust physics validation tests
+    # Physics validation (fast)
     run_test "Poiseuille Steady" "$BUILD_DIR/test_poiseuille_steady" 600
     run_test "Energy Budget" "$BUILD_DIR/test_energy_budget_channel" 120
-    run_test "Operator Consistency" "$BUILD_DIR/test_operator_consistency" 120
     run_test "Advection Rotation" "$BUILD_DIR/test_advection_rotation" 60
     run_test "Projection Effectiveness" "$BUILD_DIR/test_projection_effectiveness" 60
-    run_test "Poiseuille Refinement" "$BUILD_DIR/test_poiseuille_refinement" 300
+    run_test "RANS Channel Sanity" "$BUILD_DIR/test_rans_channel_sanity" 600
 
-    # Frame invariance tests (RANS tensor algebra + Galilean invariance)
+    # Frame invariance tests
     run_test "RANS Frame Invariance" "$BUILD_DIR/test_rans_frame_invariance" 60
     run_test "Galilean Invariance" "$BUILD_DIR/test_galilean_invariance" 300
     run_test "Projection Galilean" "$BUILD_DIR/test_projection_galilean" 120
     run_test "Galilean Stage Breakdown" "$BUILD_DIR/test_galilean_stage_breakdown" 120
 
-    # Solver selection matrix test (verifies auto-selection logic)
-    run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120
+    # Diagnostic tests (trace/debug helpers - fast but verbose)
+    run_test "Convection Diagnostic" "$BUILD_DIR/test_convection_diagnostic" 60
+    run_test "MG Ramp Diagnostic" "$BUILD_DIR/test_mg_ramp_diagnostic" 60
+    run_test "Projection Trace" "$BUILD_DIR/test_projection_trace" 60
+    run_test "Step Trace" "$BUILD_DIR/test_step_trace" 60
+    run_test "Term Values" "$BUILD_DIR/test_term_values" 60
+fi
 
-    # Stability sentinel test (aggressive CFL, verifies dt limiter works)
+# Medium tests (~2-5 minutes total)
+# These are tests without explicit labels or labeled as "medium"
+if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
+    log_section "Medium Tests (~2-5 minutes)"
+
+    # Poisson solver tests
+    run_test "Poisson Unified" "$BUILD_DIR/test_poisson_unified" 180
+    run_test "Projection Invariants" "$BUILD_DIR/test_projection_invariants" 180
+
+    # Turbulence and RANS tests
+    run_test "Turbulence Unified" "$BUILD_DIR/test_turbulence_unified" 300
+
+    # Convergence and verification tests
+    run_test "TGV 3D Invariants" "$BUILD_DIR/test_tgv_3d_invariants" 300
+    run_test "MMS Convergence" "$BUILD_DIR/test_mms_convergence" 300
+    run_test "Poiseuille Refinement" "$BUILD_DIR/test_poiseuille_refinement" 300
+    run_test "Fractional Step Temporal Convergence" "$BUILD_DIR/test_fractional_step_temporal_convergence" 300
+
+    # Solver selection and stability
+    run_test "Solver Selection" "$BUILD_DIR/test_solver_selection" 120
     run_test "Stability Sentinel" "$BUILD_DIR/test_stability_sentinel" 120
+    run_test "Perf Sentinel" "$BUILD_DIR/test_perf_sentinel" 120
+
+    # Conservation and integration tests
+    run_test "Conservation Audit" "$BUILD_DIR/test_conservation_audit" 180
+    run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
 fi
 
 # GPU-specific tests
@@ -787,25 +800,19 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
         log_info "Cross-build tests require GPU to compare CPU vs GPU outputs"
     else
         run_cross_build_test "CPU/GPU Bitwise" "test_cpu_gpu_bitwise" 180 "bitwise"
-
-        # Note: test_cpu_gpu_consistency, test_solver_cpu_gpu, test_time_history_consistency
-        # were consolidated into test_cpu_gpu_unified (runs via test_unified_suite)
     fi
 
-    # Non-comparison GPU tests
-    # Backend unified test - consolidates backend_execution and backend_canary
-    # Includes canary test that verifies CPU and GPU produce different FP results
-    run_test "Backend Unified" "$BUILD_DIR/test_backend_unified" 60
-
-    # GPU utilization test - ensures compute runs on GPU, not CPU
-    # Only meaningful for GPU builds (skips gracefully on CPU builds)
-    # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
+    # GPU-specific tests (only meaningful for GPU builds)
     if [[ "$USE_GPU" == "ON" ]]; then
+        # GPU utilization test - ensures compute runs on GPU, not CPU
+        # MANDATORY ensures we fail if GPU offload doesn't work (no silent CPU fallback)
         run_test "GPU Utilization" "$BUILD_DIR/test_gpu_utilization" 300 "OMP_TARGET_OFFLOAD=MANDATORY"
 
-        # V-cycle CUDA Graph stress test - validates graphed MG solver
-        # Tests BC alternation (graph recapture), convergence parity, anisotropic grids
-        run_test "V-cycle Graph Stress" "$BUILD_DIR/test_vcycle_graph_stress" 120 "MG_USE_VCYCLE_GRAPH=1"
+        # CPU/GPU unified comparison test
+        run_test "CPU GPU Unified" "$BUILD_DIR/test_cpu_gpu_unified" 300
+
+        # FFT unified test (requires GPU + FFT)
+        run_test "FFT Unified" "$BUILD_DIR/test_fft_unified" 300
     fi
 fi
 
@@ -816,6 +823,9 @@ if [[ "$USE_HYPRE" == "ON" ]]; then
 
         # HYPRE initialization test (fast)
         run_test "HYPRE All BCs Init" "$BUILD_DIR/test_hypre_all_bcs" 60
+
+        # HYPRE backend test
+        run_test "HYPRE Backend" "$BUILD_DIR/test_hypre_backend" 120
 
         # HYPRE vs Multigrid validation test
         # This compares HYPRE and Multigrid results on the same problem
@@ -875,22 +885,22 @@ if [[ "$USE_HYPRE" == "ON" ]]; then
     fi
 fi
 
-# Longer tests (~3-5 minutes)
-if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "full" ]; then
-    log_section "Longer Tests (~3-5 minutes)"
-
-    run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
-    run_test "Solver" "$BUILD_DIR/test_solver" 900
-    run_test "Divergence All BCs" "$BUILD_DIR/test_divergence_all_bcs" 180
-    run_test "Physics Validation Advanced" "$BUILD_DIR/test_physics_validation_advanced" 600
-    run_test "NN Integration" "$BUILD_DIR/test_nn_integration" 180
-fi
-
-# Slow tests (only with 'full' flag)
+# Slow tests (labeled 'slow' in CMakeLists - run with 'full' flag)
 if [ "$TEST_SUITE" = "full" ]; then
     log_section "Slow Tests (full suite only)"
 
+    # 3D unified tests (consolidated from individual 3D tests)
+    run_test "3D Unified" "$BUILD_DIR/test_3d_unified" 600
+
+    # Comparison and validation tests
+    run_test "2D/3D Comparison" "$BUILD_DIR/test_2d_3d_comparison" 600
+    run_test "Physics Validation Advanced" "$BUILD_DIR/test_physics_validation_advanced" 600
+
+    # Long-running stability and repeatability tests
     run_test "Perturbed Channel" "$BUILD_DIR/test_perturbed_channel" 600
+    run_test "Endurance Stability" "$BUILD_DIR/test_endurance_stability" 900
+    run_test "Repeatability" "$BUILD_DIR/test_repeatability" 600
+    run_test "Kernel Parity Detailed" "$BUILD_DIR/test_kernel_parity_detailed" 600
 fi
 
 # Summary
