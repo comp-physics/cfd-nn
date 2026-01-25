@@ -29,6 +29,51 @@ static std::string trim(const std::string& s) {
     return std::string(start, end);
 }
 
+/// Parse convective scheme from string. Returns Central if unknown.
+static ConvectiveScheme parse_convective_scheme(const std::string& val) {
+    if (val == "upwind") {
+        return ConvectiveScheme::Upwind;
+    } else if (val == "skew" || val == "skew_symmetric" || val == "skewsymmetric") {
+        return ConvectiveScheme::Skew;
+    } else if (val == "upwind2") {
+        return ConvectiveScheme::Upwind2;
+    } else if (val == "conservative" || val == "cons") {
+        std::cerr << "Warning: 'conservative' (flux-form) scheme was removed; mapping to 'skew' (not flux-form).\n";
+        std::cerr << "         Note: skew is energy-conserving but NOT equivalent to flux-form conservative.\n";
+        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
+        return ConvectiveScheme::Skew;
+    } else if (val == "central") {
+        return ConvectiveScheme::Central;
+    } else {
+        std::cerr << "Warning: Unknown convective_scheme '" << val << "'. Using 'central'.\n";
+        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
+        return ConvectiveScheme::Central;
+    }
+}
+
+/// Parse time integrator from string. Returns Euler if unknown.
+static TimeIntegrator parse_time_integrator(const std::string& val) {
+    if (val == "rk2") {
+        return TimeIntegrator::RK2;
+    } else if (val == "rk3") {
+        return TimeIntegrator::RK3;
+    } else if (val == "euler") {
+        return TimeIntegrator::Euler;
+    } else {
+        std::cerr << "Warning: Unknown time_integrator '" << val << "'. Using 'euler'.\n";
+        return TimeIntegrator::Euler;
+    }
+}
+
+/// Parse and validate space_order. Returns 2 if invalid.
+static int parse_space_order(int val) {
+    if (val != 2 && val != 4) {
+        std::cerr << "Warning: space_order must be 2 or 4, got " << val << ". Using 2.\n";
+        return 2;
+    }
+    return val;
+}
+
 std::map<std::string, std::string> parse_config_file(const std::string& filename) {
     std::map<std::string, std::string> result;
     std::ifstream file(filename);
@@ -124,46 +169,13 @@ void Config::load(const std::string& filename) {
     tol = get_double("tol", tol);
     
     // Numerical scheme (advection)
-    auto scheme_str = get_string("convective_scheme", "central");
-    if (scheme_str == "upwind") {
-        convective_scheme = ConvectiveScheme::Upwind;
-    } else if (scheme_str == "skew" || scheme_str == "skew_symmetric" || scheme_str == "skewsymmetric") {
-        convective_scheme = ConvectiveScheme::Skew;
-    } else if (scheme_str == "upwind2") {
-        convective_scheme = ConvectiveScheme::Upwind2;
-    } else if (scheme_str == "conservative" || scheme_str == "cons") {
-        std::cerr << "Warning: 'conservative' (flux-form) scheme was removed; mapping to 'skew' (not flux-form).\n";
-        std::cerr << "         Note: skew is energy-conserving but NOT equivalent to flux-form conservative.\n";
-        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
-        convective_scheme = ConvectiveScheme::Skew;
-    } else if (scheme_str == "central") {
-        convective_scheme = ConvectiveScheme::Central;
-    } else {
-        std::cerr << "Warning: Unknown convective_scheme '" << scheme_str << "'. Using 'central'.\n";
-        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
-        convective_scheme = ConvectiveScheme::Central;
-    }
+    convective_scheme = parse_convective_scheme(get_string("convective_scheme", "central"));
 
     // Spatial order (2 or 4)
-    space_order = get_int("space_order", 2);
-    if (space_order != 2 && space_order != 4) {
-        std::cerr << "Warning: space_order must be 2 or 4, got " << space_order << ". Using 2.\n";
-        space_order = 2;
-    }
+    space_order = parse_space_order(get_int("space_order", 2));
 
     // Time integrator
-    auto integrator_str = get_string("time_integrator", "euler");
-    if (integrator_str == "rk2") {
-        time_integrator = TimeIntegrator::RK2;
-    } else if (integrator_str == "rk3") {
-        time_integrator = TimeIntegrator::RK3;
-    } else if (integrator_str == "euler") {
-        time_integrator = TimeIntegrator::Euler;
-    } else {
-        std::cerr << "Warning: unknown time_integrator '" << integrator_str
-                  << "'. Using euler.\n";
-        time_integrator = TimeIntegrator::Euler;
-    }
+    time_integrator = parse_time_integrator(get_string("time_integrator", "euler"));
     
     // Simulation mode
     auto mode_str = get_string("simulation_mode", "steady");
@@ -405,39 +417,11 @@ void Config::parse_args(int argc, char** argv) {
         } else if ((val = get_value(i, arg, "--CFL")) != "") {
             CFL_max = std::stod(val);
         } else if ((val = get_value(i, arg, "--scheme")) != "") {
-            if (val == "upwind") {
-                convective_scheme = ConvectiveScheme::Upwind;
-            } else if (val == "skew" || val == "skew_symmetric" || val == "skewsymmetric") {
-                convective_scheme = ConvectiveScheme::Skew;
-            } else if (val == "upwind2") {
-                convective_scheme = ConvectiveScheme::Upwind2;
-            } else if (val == "conservative" || val == "cons") {
-                std::cerr << "Warning: 'conservative' (flux-form) removed; mapping to 'skew' (not flux-form).\n";
-                convective_scheme = ConvectiveScheme::Skew;
-            } else if (val == "central") {
-                convective_scheme = ConvectiveScheme::Central;
-            } else {
-                std::cerr << "Warning: Unknown --scheme '" << val << "'. Using 'central'.\n";
-                convective_scheme = ConvectiveScheme::Central;
-            }
+            convective_scheme = parse_convective_scheme(val);
         } else if ((val = get_value(i, arg, "--space-order")) != "") {
-            space_order = std::stoi(val);
-            if (space_order != 2 && space_order != 4) {
-                std::cerr << "Warning: --space-order must be 2 or 4, got " << space_order << ". Using 2.\n";
-                space_order = 2;
-            }
+            space_order = parse_space_order(std::stoi(val));
         } else if ((val = get_value(i, arg, "--integrator")) != "") {
-            if (val == "rk2") {
-                time_integrator = TimeIntegrator::RK2;
-            } else if (val == "rk3") {
-                time_integrator = TimeIntegrator::RK3;
-            } else if (val == "euler") {
-                time_integrator = TimeIntegrator::Euler;
-            } else {
-                std::cerr << "Warning: unknown --integrator '" << val
-                          << "'. Using euler.\n";
-                time_integrator = TimeIntegrator::Euler;
-            }
+            time_integrator = parse_time_integrator(val);
         } else if ((val = get_value(i, arg, "--simulation_mode")) != "") {
             if (val == "unsteady") {
                 simulation_mode = SimulationMode::Unsteady;

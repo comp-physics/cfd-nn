@@ -61,6 +61,7 @@ def read_vtk_legacy(filename):
         dims = None
         spacing = None
         n_points = 0
+        data_type = 'double'  # Default to double
 
         # Read header lines (ASCII portion)
         while True:
@@ -84,6 +85,10 @@ def read_vtk_legacy(filename):
             elif line.startswith('POINT_DATA'):
                 n_points = int(line.split()[1])
             elif line.startswith('VECTORS'):
+                # Parse data type from "VECTORS name type" (e.g., "VECTORS velocity double")
+                parts = line.split()
+                if len(parts) >= 3:
+                    data_type = parts[2].lower()
                 # Data starts after this line
                 break
 
@@ -94,16 +99,26 @@ def read_vtk_legacy(filename):
         expected_values = n_points * 3
 
         if is_binary:
-            # Binary format: big-endian doubles
-            print(f"  Reading binary VTK ({Nx}x{Ny}x{Nz}, {expected_values*8/1e6:.1f} MB)")
+            # Binary format: big-endian, type from VECTORS header
+            # Map VTK type names to numpy dtypes (big-endian)
+            type_map = {
+                'float': ('>f4', 4),   # big-endian float32
+                'double': ('>f8', 8),  # big-endian float64
+            }
+            if data_type not in type_map:
+                raise ValueError(f"Unsupported VTK data type '{data_type}'. Expected 'float' or 'double'.")
+            dtype, byte_size = type_map[data_type]
+            expected_bytes = expected_values * byte_size
 
-            # Read all velocity data as big-endian doubles
-            raw_data = f.read(expected_values * 8)
-            if len(raw_data) < expected_values * 8:
-                raise ValueError(f"Expected {expected_values*8} bytes, got {len(raw_data)}")
+            print(f"  Reading binary VTK ({Nx}x{Ny}x{Nz}, {data_type}, {expected_bytes/1e6:.1f} MB)")
+
+            # Read all velocity data
+            raw_data = f.read(expected_bytes)
+            if len(raw_data) < expected_bytes:
+                raise ValueError(f"Expected {expected_bytes} bytes, got {len(raw_data)}")
 
             # Convert from big-endian to native format
-            velocity_data = np.frombuffer(raw_data, dtype='>f8')  # big-endian float64
+            velocity_data = np.frombuffer(raw_data, dtype=dtype)
             velocity_data = velocity_data.astype(np.float32)  # Convert to float32 for memory
         else:
             # ASCII format: read remaining file as text

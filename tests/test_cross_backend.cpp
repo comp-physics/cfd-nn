@@ -629,6 +629,9 @@ double compute_pressure_rms(const Mesh& mesh, const ScalarField& p) {
             }
         }
     }
+    if (count == 0) {
+        throw std::runtime_error("compute_pressure_rms: empty interior domain (count == 0)");
+    }
     mean /= count;
 
     if (mesh.is2D()) {
@@ -670,6 +673,9 @@ double compute_mean_pressure(const Mesh& mesh, const ScalarField& p) {
                 }
             }
         }
+    }
+    if (count == 0) {
+        throw std::runtime_error("compute_mean_pressure: empty interior domain (count == 0)");
     }
     return sum / count;
 }
@@ -1666,6 +1672,12 @@ int run_compare_mode(const std::string& ref_file, const std::string& test_file) 
     std::cout << "Passed:  " << pass_count << "\n";
     std::cout << "Failed:  " << fail_count << "\n";
     std::cout << "Skipped: " << skip_count << "\n\n";
+
+    // Guard against false positives: if nothing was actually compared, fail
+    if (pass_count == 0 && fail_count == 0) {
+        std::cout << "[FAILURE] No scenarios were compared (all skipped or empty reference file)\n";
+        return 1;
+    }
 
     // Failure details
     if (!all_passed) {
