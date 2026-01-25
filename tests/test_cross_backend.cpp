@@ -1000,9 +1000,11 @@ ScenarioSignature run_poiseuille_2d() {
     sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
 
     // Weighted checksum
+    // Note: v-velocity is ~0 for Poiseuille flow, so use larger abs_tol for checksum_v
+    // to allow for roundoff noise differences between CPU and GPU
     auto cs = compute_weighted_checksum(mesh, solver.velocity());
     sig.metrics["checksum_u"] = Metric(cs.u_weighted);
-    sig.metrics["checksum_v"] = Metric(cs.v_weighted);
+    sig.metrics["checksum_v"] = Metric(cs.v_weighted, 1e-8, 1e-8);  // Looser for ~0 values
 
     int pi = mesh.i_begin() + NX/2;
     int pj = mesh.j_begin() + NY/2;
