@@ -526,6 +526,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
                       << "  --scheme SCHEME   Advection scheme: central (default), upwind, skew, upwind2\n"
                       << "  --integrator I    Time integrator: euler (default), rk2, rk3\n"
+                      << "  --space-order N   Spatial discretization order: 2 (default) or 4\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
                       << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"

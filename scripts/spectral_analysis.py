@@ -46,17 +46,14 @@ matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 
 
-def read_vtk_legacy(filename, downsample=1):
+def read_vtk_legacy(filename):
     """
     Read VTK legacy structured points file (ASCII or BINARY).
     Returns: mesh_dims (Nx, Ny, Nz), spacing (dx, dy, dz), velocity (u, v, w arrays)
 
     Args:
         filename: Path to VTK file
-        downsample: Factor to downsample by (e.g., 2 means 128³ -> 64³)
     """
-    import struct
-
     # First, read header to determine format (ASCII or BINARY)
     with open(filename, 'rb') as f:
         header_lines = []
@@ -67,7 +64,13 @@ def read_vtk_legacy(filename, downsample=1):
 
         # Read header lines (ASCII portion)
         while True:
-            line = f.readline().decode('ascii', errors='ignore').strip()
+            raw_line = f.readline()
+            # EOF check: readline() returns empty bytes at end of file
+            if not raw_line:
+                raise ValueError(f"Unexpected EOF while parsing VTK header in {filename}. "
+                               f"Missing 'VECTORS' line. Parsed {len(header_lines)} lines.")
+
+            line = raw_line.decode('ascii', errors='ignore').strip()
             header_lines.append(line)
 
             if line == 'BINARY':
@@ -223,7 +226,7 @@ def compute_turbulence_diagnostics(u, v, w, nu, L=2*np.pi):
         - lambda_: Taylor microscale
         - k_kolmogorov: Kolmogorov wavenumber
     """
-    Nx, Ny, Nz = u.shape
+    Nx, _, _ = u.shape
     dx = L / Nx
 
     # Turbulent kinetic energy
@@ -235,12 +238,8 @@ def compute_turbulence_diagnostics(u, v, w, nu, L=2*np.pi):
     # Estimate dissipation from velocity gradients
     # epsilon = 2 * nu * <S_ij S_ij>
     # For isotropic turbulence: epsilon ≈ 15 * nu * <(du/dx)^2>
-
+    # This approximation is standard for homogeneous isotropic turbulence
     dudx = np.gradient(u, dx, axis=0)
-    dvdy = np.gradient(v, dx, axis=1)
-    dwdz = np.gradient(w, dx, axis=2)
-
-    # Simplified estimate using longitudinal derivative
     epsilon = 15.0 * nu * np.mean(dudx**2)
 
     # Taylor microscale: lambda = sqrt(15 * nu * u'^2 / epsilon)
@@ -276,7 +275,7 @@ def plot_spectrum(k, E_k, diagnostics, output_file, title="Energy Spectrum"):
     """
     Plot energy spectrum with k^(-5/3) reference line.
     """
-    fig, ax = plt.subplots(figsize=(10, 7))
+    _, ax = plt.subplots(figsize=(10, 7))
 
     # Filter out zero/negative values for log plot
     valid = (k > 0) & (E_k > 0)
@@ -412,8 +411,10 @@ def main():
                 try:
                     analyze_vtk_file(str(vtk_file), args.output,
                                    Re=args.Re, use_gpu=use_gpu)
-                except Exception as e:
+                except (OSError, ValueError) as e:
+                    import traceback
                     print(f"[ERROR] Failed to process {vtk_file}: {e}")
+                    traceback.print_exc()
         else:
             # Process only the last (presumably final) file
             print(f"[INFO] Found {len(vtk_files)} VTK files, processing last one")
