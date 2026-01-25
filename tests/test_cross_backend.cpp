@@ -348,19 +348,16 @@ struct SignatureFile {
                            (metrics_block[val_start] == ' ' || metrics_block[val_start] == '\n'))
                         ++val_start;
 
+                    // Use stod with parsed-length overload to handle NaN/Inf values
+                    // (character-by-character scan would miss these, masking failures)
                     size_t val_end = val_start;
-                    while (val_end < metrics_block.size() &&
-                           (std::isdigit(metrics_block[val_end]) ||
-                            metrics_block[val_end] == '.' ||
-                            metrics_block[val_end] == 'e' ||
-                            metrics_block[val_end] == 'E' ||
-                            metrics_block[val_end] == '+' ||
-                            metrics_block[val_end] == '-'))
-                        ++val_end;
-
-                    if (val_end > val_start) {
-                        double val = std::stod(metrics_block.substr(val_start, val_end - val_start));
-                        sig.metrics[mname] = Metric(val);
+                    size_t parsed = 0;
+                    try {
+                        double val = std::stod(metrics_block.substr(val_start), &parsed);
+                        val_end = val_start + parsed;
+                        sig.metrics[mname] = Metric(val);  // Keeps NaN/Inf visible in comparisons
+                    } catch (...) {
+                        val_end = val_start + 1;  // Advance to avoid stalling
                     }
 
                     mpos = val_end;
@@ -464,6 +461,7 @@ void print_backend_identity() {
 
 bool verify_backend() {
 #ifdef USE_GPU_OFFLOAD
+    #if defined(_OPENMP)
     const int num_devices = omp_get_num_devices();
     if (num_devices == 0) {
         std::cerr << "ERROR: No GPU devices found\n";
@@ -479,6 +477,10 @@ bool verify_backend() {
         return false;
     }
     std::cout << "  GPU execution verified: YES (device " << omp_get_default_device() << ")\n";
+    #else
+    std::cerr << "ERROR: USE_GPU_OFFLOAD requires OpenMP support\n";
+    return false;
+    #endif
 #endif
     return true;
 }
