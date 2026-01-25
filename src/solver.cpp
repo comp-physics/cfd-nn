@@ -6258,6 +6258,36 @@ double RANSSolver::compute_adaptive_dt() const {
     return std::min(dt_cfl, dt_diff);
 }
 
+/// Helper to write a double as big-endian binary
+static void write_double_binary(std::ostream& os, double val) {
+    // VTK binary format requires big-endian
+    // Most systems are little-endian, so we need to swap bytes
+    union {
+        double d;
+        uint64_t u;
+    } conv;
+    conv.d = val;
+
+    // Check if system is little-endian and swap if needed
+    uint32_t test = 1;
+    bool is_little_endian = (*reinterpret_cast<char*>(&test) == 1);
+
+    if (is_little_endian) {
+        // Swap bytes for big-endian output
+        uint64_t swapped = ((conv.u & 0x00000000000000FFULL) << 56) |
+                          ((conv.u & 0x000000000000FF00ULL) << 40) |
+                          ((conv.u & 0x0000000000FF0000ULL) << 24) |
+                          ((conv.u & 0x00000000FF000000ULL) << 8)  |
+                          ((conv.u & 0x000000FF00000000ULL) >> 8)  |
+                          ((conv.u & 0x0000FF0000000000ULL) >> 24) |
+                          ((conv.u & 0x00FF000000000000ULL) >> 40) |
+                          ((conv.u & 0xFF00000000000000ULL) >> 56);
+        os.write(reinterpret_cast<const char*>(&swapped), sizeof(double));
+    } else {
+        os.write(reinterpret_cast<const char*>(&conv.d), sizeof(double));
+    }
+}
+
 void RANSSolver::write_vtk(const std::string& filename) const {
     // NaN/Inf GUARD: Check before writing output
     // Catch NaNs before they're written to files
@@ -6272,22 +6302,66 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     }
 #endif
 
-    std::ofstream file(filename);
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const bool is_2d = mesh_->is2D();
+    const bool use_binary = config_.vtk_binary && !is_2d;  // Binary only for 3D (spectral analysis)
+
+    // Open file in appropriate mode
+    std::ofstream file;
+    if (use_binary) {
+        file.open(filename, std::ios::binary);
+    } else {
+        file.open(filename);
+    }
+
     if (!file) {
         std::cerr << "Error: Cannot open " << filename << " for writing\n";
         return;
     }
 
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Nz = mesh_->Nz;
-    const bool is_2d = mesh_->is2D();
-
-    // VTK header
+    // VTK header (always ASCII)
     file << "# vtk DataFile Version 3.0\n";
     file << "RANS simulation output\n";
-    file << "ASCII\n";
+    file << (use_binary ? "BINARY\n" : "ASCII\n");
     file << "DATASET STRUCTURED_POINTS\n";
+
+    // Binary 3D output - streamlined for spectral analysis
+    if (use_binary) {
+        file << "DIMENSIONS " << Nx << " " << Ny << " " << Nz << "\n";
+        file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " " << mesh_->z_min << "\n";
+        file << "SPACING " << mesh_->dx << " " << mesh_->dy << " " << mesh_->dz << "\n";
+        file << "POINT_DATA " << Nx * Ny * Nz << "\n";
+
+        // Velocity vector field (main data for spectral analysis)
+        file << "VECTORS velocity double\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    write_double_binary(file, velocity_.u_center(i, j, k));
+                    write_double_binary(file, velocity_.v_center(i, j, k));
+                    write_double_binary(file, velocity_.w_center(i, j, k));
+                }
+            }
+        }
+
+        // Pressure scalar field
+        file << "\nSCALARS pressure double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    write_double_binary(file, pressure_(i, j, k));
+                }
+            }
+        }
+
+        file.close();
+        return;
+    }
+
+    // ASCII output (original code for 2D or when --vtk_ascii is specified)
 
     if (is_2d) {
         file << "DIMENSIONS " << Nx << " " << Ny << " 1\n";

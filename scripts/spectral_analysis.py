@@ -46,69 +46,93 @@ matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 
 
-def read_vtk_legacy(filename):
+def read_vtk_legacy(filename, downsample=1):
     """
-    Read VTK legacy structured points file.
+    Read VTK legacy structured points file (ASCII or BINARY).
     Returns: mesh_dims (Nx, Ny, Nz), spacing (dx, dy, dz), velocity (u, v, w arrays)
+
+    Args:
+        filename: Path to VTK file
+        downsample: Factor to downsample by (e.g., 2 means 128³ -> 64³)
     """
-    with open(filename, 'r') as f:
-        lines = f.readlines()
+    import struct
 
-    # Parse header
-    dims = None
-    spacing = None
-    origin = None
-    n_points = 0
-    data_start = 0
+    # First, read header to determine format (ASCII or BINARY)
+    with open(filename, 'rb') as f:
+        header_lines = []
+        is_binary = False
+        dims = None
+        spacing = None
+        n_points = 0
 
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
+        # Read header lines (ASCII portion)
+        while True:
+            line = f.readline().decode('ascii', errors='ignore').strip()
+            header_lines.append(line)
 
-        if line.startswith('DIMENSIONS'):
-            dims = tuple(int(x) for x in line.split()[1:4])
-        elif line.startswith('SPACING') or line.startswith('ASPECT_RATIO'):
-            spacing = tuple(float(x) for x in line.split()[1:4])
-        elif line.startswith('ORIGIN'):
-            origin = tuple(float(x) for x in line.split()[1:4])
-        elif line.startswith('POINT_DATA'):
-            n_points = int(line.split()[1])
-        elif line.startswith('VECTORS'):
-            # Next line(s) contain the data
-            data_start = i + 1
-            break
-        i += 1
+            if line == 'BINARY':
+                is_binary = True
+            elif line == 'ASCII':
+                is_binary = False
+            elif line.startswith('DIMENSIONS'):
+                dims = tuple(int(x) for x in line.split()[1:4])
+            elif line.startswith('SPACING') or line.startswith('ASPECT_RATIO'):
+                spacing = tuple(float(x) for x in line.split()[1:4])
+            elif line.startswith('POINT_DATA'):
+                n_points = int(line.split()[1])
+            elif line.startswith('VECTORS'):
+                # Data starts after this line
+                break
 
-    if dims is None:
-        raise ValueError(f"Could not parse DIMENSIONS from {filename}")
+        if dims is None:
+            raise ValueError(f"Could not parse DIMENSIONS from {filename}")
 
-    # Read velocity data
-    velocity_data = []
-    for j in range(data_start, len(lines)):
-        parts = lines[j].split()
-        for p in parts:
-            try:
-                velocity_data.append(float(p))
-            except ValueError:
-                continue
+        Nx, Ny, Nz = dims
+        expected_values = n_points * 3
 
-    velocity_data = np.array(velocity_data)
-    expected_values = n_points * 3
+        if is_binary:
+            # Binary format: big-endian doubles
+            print(f"  Reading binary VTK ({Nx}x{Ny}x{Nz}, {expected_values*8/1e6:.1f} MB)")
 
-    if len(velocity_data) < expected_values:
-        raise ValueError(f"Expected {expected_values} values, got {len(velocity_data)}")
+            # Read all velocity data as big-endian doubles
+            raw_data = f.read(expected_values * 8)
+            if len(raw_data) < expected_values * 8:
+                raise ValueError(f"Expected {expected_values*8} bytes, got {len(raw_data)}")
 
-    velocity_data = velocity_data[:expected_values]
+            # Convert from big-endian to native format
+            velocity_data = np.frombuffer(raw_data, dtype='>f8')  # big-endian float64
+            velocity_data = velocity_data.astype(np.float32)  # Convert to float32 for memory
+        else:
+            # ASCII format: read remaining file as text
+            print(f"  Reading ASCII VTK ({Nx}x{Ny}x{Nz})")
+            remaining = f.read().decode('ascii', errors='ignore')
+
+            # Parse all numbers
+            velocity_data = []
+            for part in remaining.split():
+                try:
+                    velocity_data.append(float(part))
+                except ValueError:
+                    # Skip non-numeric parts (like "SCALARS", "LOOKUP_TABLE", etc.)
+                    if len(velocity_data) >= expected_values:
+                        break
+
+            velocity_data = np.array(velocity_data[:expected_values], dtype=np.float32)
+
+        if len(velocity_data) < expected_values:
+            raise ValueError(f"Expected {expected_values} values, got {len(velocity_data)}")
 
     # Reshape: VTK uses column-major ordering (Fortran style)
     # Points are ordered x-fastest, then y, then z
-    Nx, Ny, Nz = dims
     velocity = velocity_data.reshape((Nz, Ny, Nx, 3))
 
     # Extract components and transpose to row-major (Nx, Ny, Nz)
-    u = np.ascontiguousarray(velocity[:, :, :, 0].transpose(2, 1, 0))
-    v = np.ascontiguousarray(velocity[:, :, :, 1].transpose(2, 1, 0))
-    w = np.ascontiguousarray(velocity[:, :, :, 2].transpose(2, 1, 0))
+    u = np.ascontiguousarray(velocity[:, :, :, 0].transpose(2, 1, 0), dtype=np.float32)
+    v = np.ascontiguousarray(velocity[:, :, :, 1].transpose(2, 1, 0), dtype=np.float32)
+    w = np.ascontiguousarray(velocity[:, :, :, 2].transpose(2, 1, 0), dtype=np.float32)
+
+    # Free the original array to save memory
+    del velocity, velocity_data
 
     return dims, spacing, (u, v, w)
 
@@ -132,23 +156,31 @@ def compute_energy_spectrum(u, v, w, L=2*np.pi, use_gpu=True):
     assert Nx == Ny == Nz, "Only cubic grids supported"
     N = Nx
 
-    # Transfer to GPU if using cupy
-    if use_gpu and HAS_CUPY:
-        u_gpu = cp.asarray(u)
-        v_gpu = cp.asarray(v)
-        w_gpu = cp.asarray(w)
-    else:
-        u_gpu = u
-        v_gpu = v
-        w_gpu = w
+    # Memory-efficient: process one component at a time
+    # Initialize energy accumulator
+    energy = None
 
-    # 3D FFT
-    u_hat = xp.fft.fftn(u_gpu) / N**3
-    v_hat = xp.fft.fftn(v_gpu) / N**3
-    w_hat = xp.fft.fftn(w_gpu) / N**3
+    for vel_comp in [u, v, w]:
+        if use_gpu and HAS_CUPY:
+            vel_gpu = cp.asarray(vel_comp.astype(np.float32))
+        else:
+            vel_gpu = vel_comp
 
-    # Energy in spectral space: 0.5 * |u_hat|^2
-    energy = 0.5 * (xp.abs(u_hat)**2 + xp.abs(v_hat)**2 + xp.abs(w_hat)**2)
+        # 3D FFT of this component
+        vel_hat = xp.fft.fftn(vel_gpu) / N**3
+
+        # Accumulate energy: 0.5 * |vel_hat|^2
+        comp_energy = 0.5 * xp.abs(vel_hat)**2
+
+        if energy is None:
+            energy = comp_energy
+        else:
+            energy += comp_energy
+
+        # Free memory
+        del vel_hat, vel_gpu
+        if use_gpu and HAS_CUPY:
+            cp.get_default_memory_pool().free_all_blocks()
 
     # Wavenumber grid
     k_max = N // 2

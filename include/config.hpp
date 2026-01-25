@@ -123,6 +123,7 @@ struct Config {
     // - write_fields: VTK/field output via solver.write_fields(...) and snapshots
     bool postprocess = true;
     bool write_fields = true;
+    bool vtk_binary = true;         ///< Use binary VTK format (smaller files, faster I/O)
 
     // Performance benchmarking
     int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)

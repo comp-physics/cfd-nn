@@ -212,7 +212,8 @@ void Config::load(const std::string& filename) {
     verbose = get_bool("verbose", verbose);
     postprocess = get_bool("postprocess", postprocess);
     write_fields = get_bool("write_fields", write_fields);
-    
+    vtk_binary = get_bool("vtk_binary", vtk_binary);
+
     // Poisson
     poisson_tol = get_double("poisson_tol", poisson_tol);
     poisson_max_vcycles = get_int("poisson_max_vcycles", poisson_max_vcycles);
@@ -395,6 +396,8 @@ void Config::parse_args(int argc, char** argv) {
             postprocess = false;
         } else if (is_flag(arg, "--no_write_fields")) {
             write_fields = false;
+        } else if (is_flag(arg, "--vtk_ascii")) {
+            vtk_binary = false;
         } else if (is_flag(arg, "--stretch")) {
             stretch_y = true;
         } else if (is_flag(arg, "--adaptive_dt")) {
@@ -517,6 +520,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --num_snapshots N Number of VTK snapshots (default 10)\n"
                       << "  --no_postprocess  Skip Poiseuille table + profile output\n"
                       << "  --no_write_fields Skip VTK/field output (snapshots + final)\n"
+                      << "  --vtk_ascii       Use ASCII VTK format (default: binary)\n"
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
