@@ -681,9 +681,9 @@ inline void divergence_cell_kernel_staggered_O4_3d(
     // Check if O4 is safe in each direction
     // For periodic: ghost cells have valid data, so O4 is always safe
     // For non-periodic: need faces i-1, i, i+1, i+2 to be valid
-    const bool o4_safe_x = periodic_x || ((i >= Ng + 1) && (i <= Ng + Nx - 2));
-    const bool o4_safe_y = periodic_y || ((j >= Ng + 1) && (j <= Ng + Ny - 2));
-    const bool o4_safe_z = periodic_z || ((k >= Ng + 1) && (k <= Ng + Nz - 2));
+    const bool o4_safe_x = (Ng >= 2) && (periodic_x || ((i >= Ng + 1) && (i <= Ng + Nx - 2)));
+    const bool o4_safe_y = (Ng >= 2) && (periodic_y || ((j >= Ng + 1) && (j <= Ng + Ny - 2)));
+    const bool o4_safe_z = (Ng >= 2) && (periodic_z || ((k >= Ng + 1) && (k <= Ng + Nz - 2)));
 
     // du/dx at cell center i using u at faces
     double dudx;

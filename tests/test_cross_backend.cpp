@@ -601,6 +601,9 @@ double compute_mean_u(const Mesh& mesh, const VectorField& vel) {
             }
         }
     }
+    if (count == 0) {
+        throw std::runtime_error("compute_mean_u: empty interior domain (count == 0)");
+    }
     return sum / count;
 }
 
