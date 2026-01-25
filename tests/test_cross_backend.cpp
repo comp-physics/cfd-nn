@@ -1097,6 +1097,14 @@ ScenarioSignature run_projection_invariants() {
     // Kinetic energy (for stability check)
     sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
 
+    // Weighted checksum - order-sensitive metric
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // Distributed probes
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
+
     return sig;
 }
 
@@ -1159,6 +1167,11 @@ ScenarioSignature run_mixing_length() {
     sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
     sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
 
+    // Weighted checksum - order-sensitive metric
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
     int pi = mesh.i_begin() + NX/2;
     int pj = mesh.j_begin() + NY/4;
 
@@ -1168,6 +1181,7 @@ ScenarioSignature run_mixing_length() {
         0.5 * (solver.velocity().v(pi, pj) + solver.velocity().v(pi, pj+1))
     };
     sig.probes["vel_quarter"] = vel_probe;
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
 
     return sig;
 }
@@ -1265,6 +1279,11 @@ ScenarioSignature run_nn_mlp() {
     sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
     sig.metrics["nu_t_max"] = Metric(nu_t_max);
 
+    // Weighted checksum - order-sensitive metric for velocity field
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
     int pi = mesh.i_begin() + NX/2;
 
     Probe nu_t_profile;
@@ -1272,6 +1291,9 @@ ScenarioSignature run_nn_mlp() {
     nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + NY/2));
     nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + 3*NY/4));
     sig.probes["nu_t_profile"] = nu_t_profile;
+
+    // Distributed velocity probes
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
 
     return sig;
 }
