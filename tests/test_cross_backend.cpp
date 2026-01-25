@@ -194,6 +194,31 @@ struct Metric {
     }
 };
 
+/// Get metric tolerance based on scenario and metric name
+/// This is needed because tolerances are not serialized to JSON
+Metric get_metric_with_tolerance(const std::string& scenario,
+                                  const std::string& metric_name,
+                                  double value) {
+    // Default tolerances
+    double abs_tol = 1e-10;
+    double rel_tol = 1e-8;
+
+    // Special cases for near-zero quantities where CPU/GPU roundoff differs
+    if (scenario == "poiseuille_2d" && metric_name == "checksum_v") {
+        // v-velocity is ~0 in Poiseuille flow, both values are roundoff noise
+        abs_tol = 1e-8;
+        rel_tol = 1e-8;
+    }
+
+    // Looser tolerance for divergence (different Poisson solvers)
+    if (metric_name == "div_max") {
+        abs_tol = 1e-8;
+        rel_tol = 1e-6;
+    }
+
+    return Metric(value, abs_tol, rel_tol);
+}
+
 struct Probe {
     std::vector<double> values;
     double abs_tol = 1e-10;
@@ -355,7 +380,8 @@ struct SignatureFile {
                     try {
                         double val = std::stod(metrics_block.substr(val_start), &parsed);
                         val_end = val_start + parsed;
-                        sig.metrics[mname] = Metric(val);  // Keeps NaN/Inf visible in comparisons
+                        // Apply per-metric tolerances (not serialized in JSON)
+                        sig.metrics[mname] = get_metric_with_tolerance(sig.name, mname, val);
                     } catch (...) {
                         val_end = val_start + 1;  // Advance to avoid stalling
                     }
