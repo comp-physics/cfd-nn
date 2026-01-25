@@ -643,6 +643,116 @@ double compute_mean_pressure(const Mesh& mesh, const ScalarField& p) {
     return sum / count;
 }
 
+/// Weighted checksum - order-sensitive metric to detect field-level differences
+/// Computes sum(u[i] * weight[i]) where weight varies with position
+/// This is sensitive to small perturbations that cancel in mean/RMS metrics
+struct WeightedChecksum {
+    double u_weighted;   // sum(u[i] * (idx+1))
+    double v_weighted;   // sum(v[i] * (idx+1))
+    double u_sq_weighted; // sum(u[i]^2 * (idx+1))
+};
+
+WeightedChecksum compute_weighted_checksum(const Mesh& mesh, const VectorField& vel) {
+    WeightedChecksum cs{0.0, 0.0, 0.0};
+    size_t idx = 1;  // Start at 1 to avoid zero weight
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                double w = static_cast<double>(idx);
+                cs.u_weighted += u * w;
+                cs.v_weighted += v * w;
+                cs.u_sq_weighted += u * u * w;
+                ++idx;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = static_cast<double>(idx);
+                    cs.u_weighted += u * w;
+                    cs.v_weighted += v * w;
+                    cs.u_sq_weighted += u * u * w;
+                    ++idx;
+                }
+            }
+        }
+    }
+    return cs;
+}
+
+/// Collect 16 probes distributed across the 2D domain (4x4 grid)
+/// Returns probe values as flattened array: [u0,v0, u1,v1, ...]
+Probe collect_distributed_probes_2d(const Mesh& mesh, const VectorField& vel) {
+    Probe p;
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+
+    // 4x4 grid of probes, avoiding ghost cells
+    for (int pj = 0; pj < 4; ++pj) {
+        for (int pi = 0; pi < 4; ++pi) {
+            int i = mesh.i_begin() + (pi * Nx) / 4 + Nx / 8;
+            int j = mesh.j_begin() + (pj * Ny) / 4 + Ny / 8;
+            // Clamp to valid range
+            i = std::min(i, mesh.i_end() - 1);
+            j = std::min(j, mesh.j_end() - 1);
+
+            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+            p.values.push_back(u);
+            p.values.push_back(v);
+        }
+    }
+    return p;
+}
+
+/// Collect probes for 3D: 8 corners + center = 9 probes
+Probe collect_distributed_probes_3d(const Mesh& mesh, const VectorField& vel) {
+    Probe p;
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+
+    // 8 corners + center
+    int positions[9][3] = {
+        {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},  // z=0 corners
+        {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1},  // z=1 corners
+        {1, 1, 1}  // center (will be computed differently)
+    };
+
+    for (int n = 0; n < 9; ++n) {
+        int i, j, k;
+        if (n < 8) {
+            // Corners at 1/4 and 3/4 positions
+            i = mesh.i_begin() + (positions[n][0] ? 3*Nx/4 : Nx/4);
+            j = mesh.j_begin() + (positions[n][1] ? 3*Ny/4 : Ny/4);
+            k = mesh.k_begin() + (positions[n][2] ? 3*Nz/4 : Nz/4);
+        } else {
+            // Center
+            i = mesh.i_begin() + Nx/2;
+            j = mesh.j_begin() + Ny/2;
+            k = mesh.k_begin() + Nz/2;
+        }
+        // Clamp
+        i = std::min(i, mesh.i_end() - 1);
+        j = std::min(j, mesh.j_end() - 1);
+        k = std::min(k, mesh.k_end() - 1);
+
+        double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+        double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+        double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+        p.values.push_back(u);
+        p.values.push_back(v);
+        p.values.push_back(w);
+    }
+    return p;
+}
+
 //=============================================================================
 // Scenario definition
 //=============================================================================
@@ -718,6 +828,12 @@ ScenarioSignature run_channel_solver_3d() {
     sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
     sig.metrics["p_rms"] = Metric(compute_pressure_rms(mesh, solver.pressure()));
 
+    // Weighted checksum - sensitive to field-level differences that cancel in mean
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_v"] = Metric(cs.v_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
     int pi = mesh.i_begin() + NX/2;
     int pj = mesh.j_begin() + NY/2;
     int pk = mesh.k_begin() + NZ/2;
@@ -729,6 +845,9 @@ ScenarioSignature run_channel_solver_3d() {
         0.5 * (solver.velocity().w(pi, pj, pk) + solver.velocity().w(pi, pj, pk+1))
     };
     sig.probes["vel_center"] = vel_probe;
+
+    // Distributed probes (9 locations: 8 corners + center)
+    sig.probes["vel_distributed"] = collect_distributed_probes_3d(mesh, solver.velocity());
 
     return sig;
 }
@@ -799,6 +918,12 @@ ScenarioSignature run_tgv_2d() {
     sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
     sig.metrics["p_rms"] = Metric(compute_pressure_rms(mesh, solver.pressure()));
 
+    // Weighted checksum - order-sensitive metric
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_v"] = Metric(cs.v_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
     int pi = mesh.i_begin() + N/2;
     int pj = mesh.j_begin() + N/2;
 
@@ -808,6 +933,9 @@ ScenarioSignature run_tgv_2d() {
         0.5 * (solver.velocity().v(pi, pj) + solver.velocity().v(pi, pj+1))
     };
     sig.probes["vel_center"] = vel_probe;
+
+    // Distributed probes (4x4 grid = 16 locations)
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
 
     return sig;
 }
@@ -871,6 +999,11 @@ ScenarioSignature run_poiseuille_2d() {
     sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
     sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
 
+    // Weighted checksum
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_v"] = Metric(cs.v_weighted);
+
     int pi = mesh.i_begin() + NX/2;
     int pj = mesh.j_begin() + NY/2;
 
@@ -880,6 +1013,7 @@ ScenarioSignature run_poiseuille_2d() {
         0.5 * (solver.velocity().v(pi, pj) + solver.velocity().v(pi, pj+1))
     };
     sig.probes["vel_center"] = vel_probe;
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
 
     return sig;
 }
