@@ -109,12 +109,19 @@ double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, in
 
     RANSSolver solver(mesh, config);
 
-    // Set BCs based on pattern
-    BCPattern pattern = (xbc == VelocityBC::Periodic && ybc == VelocityBC::Periodic)
-                        ? BCPattern::FullyPeriodic
-                        : (xbc == VelocityBC::Periodic && ybc == VelocityBC::NoSlip)
-                          ? BCPattern::Channel2D
-                          : BCPattern::AllNoSlip;
+    // Set BCs based on pattern - explicitly handle valid combinations
+    BCPattern pattern;
+    if (xbc == VelocityBC::Periodic && ybc == VelocityBC::Periodic) {
+        pattern = BCPattern::FullyPeriodic;
+    } else if (xbc == VelocityBC::Periodic && ybc == VelocityBC::NoSlip) {
+        pattern = BCPattern::Channel2D;
+    } else if (xbc == VelocityBC::NoSlip && ybc == VelocityBC::NoSlip) {
+        pattern = BCPattern::AllNoSlip;
+    } else {
+        throw std::invalid_argument(
+            "Unsupported BC combination: xbc=" + std::to_string(static_cast<int>(xbc)) +
+            ", ybc=" + std::to_string(static_cast<int>(ybc)));
+    }
     solver.set_velocity_bc(create_velocity_bc(pattern));
 
     // Initialize with divergent velocity to create Poisson problem

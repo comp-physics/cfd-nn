@@ -793,12 +793,14 @@ void RANSSolver::ssprk3_step(double dt) {
     project_velocity(velocity_, dt);
     apply_velocity_bc();
 
+#ifndef NDEBUG
     // Verify pointer consistency at end of RK3 step
     if (velocity_u_ptr_ != velocity_.u_data().data()) {
         std::cerr << "[ssprk3_step] ERROR: velocity_u_ptr_ mismatch!\n"
                   << "  velocity_u_ptr_ = " << velocity_u_ptr_
                   << "  velocity_.u_data().data() = " << velocity_.u_data().data() << "\n";
     }
+#endif
 }
 
 } // namespace nncfd
