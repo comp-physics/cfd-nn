@@ -15,6 +15,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "gpu_utils.hpp"
+#include "test_utilities.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -23,6 +24,8 @@
 #include <limits>
 
 using namespace nncfd;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 namespace {
 
@@ -57,13 +60,7 @@ bool run_2d_periodic_halo_test() {
 
     // Create solver and set periodic BCs
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Get the velocity field which we'll use for testing
     auto& vel = solver.velocity();
@@ -309,13 +306,7 @@ bool run_divergence_stability_guard() {
 
     // Create solver with periodic BCs
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with Taylor-Green vortex (div-free by construction)
     auto& vel = solver.velocity();

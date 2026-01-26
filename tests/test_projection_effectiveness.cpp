@@ -37,6 +37,8 @@
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // ============================================================================
 // Construct u* = grad(phi) where phi = sin(kx*x)*sin(ky*y)
@@ -142,14 +144,7 @@ ProjectionResult run_projection_effectiveness_test() {
     config.adaptive_dt = false;
 
     RANSSolver solver(mesh, config);
-
-    // Fully periodic BCs (simplest for projection test)
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Construct u* = grad(phi) - highly non-solenoidal
     construct_gradient_velocity(solver.velocity(), mesh);

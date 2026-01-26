@@ -38,6 +38,8 @@ using namespace nncfd::test;
 using nncfd::test::harness::record;
 using nncfd::test::harness::record_ratchet;
 using nncfd::test::harness::record_track;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // Note: compute_mean_velocity_2d and compute_max_divergence_2d are now
 // provided by test_utilities.hpp
@@ -183,14 +185,7 @@ ProjectionGalileanResult run_projection_galilean_test(int N, double U0, double V
         return config;
     };
 
-    auto make_bc = []() {
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        return bc;
-    };
+    auto make_bc = []() { return create_velocity_bc(BCPattern::FullyPeriodic); };
 
     // -------------------------------------------------------------------------
     // Case A: Baseline (no offset)

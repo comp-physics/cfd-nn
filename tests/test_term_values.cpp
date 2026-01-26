@@ -6,8 +6,11 @@
 #include <cmath>
 #include "solver.hpp"
 #include "mesh.hpp"
+#include "test_utilities.hpp"
 
 using namespace nncfd;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 int main() {
     std::cout << "================================================================\n";
@@ -29,13 +32,7 @@ int main() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Constant velocity everywhere (including ghost cells)
     for (int j = 0; j <= mesh.Ny + 1; ++j) {

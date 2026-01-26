@@ -28,6 +28,8 @@
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // ============================================================================
 // Helper: Generate smooth random field (for testing operators)
@@ -211,13 +213,7 @@ DivFreeResult test_projection_divfree() {
     config.adaptive_dt = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Generate non-div-free velocity
     generate_smooth_velocity(solver.velocity(), mesh, 11111);
@@ -265,13 +261,7 @@ DivReductionResult test_divergence_reduction() {
     config.adaptive_dt = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Generate highly non-div-free velocity (large divergence)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {

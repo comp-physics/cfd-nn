@@ -9,8 +9,11 @@
 #include <algorithm>
 #include "solver.hpp"
 #include "mesh.hpp"
+#include "test_utilities.hpp"
 
 using namespace nncfd;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 int main() {
     std::cout << "================================================================\n";
@@ -34,13 +37,7 @@ int main() {
     config.poisson_fixed_cycles = 8;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0);
 
     std::cout << "Setup:\n";
