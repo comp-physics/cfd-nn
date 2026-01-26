@@ -29,23 +29,7 @@ using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
 
-// ============================================================================
-// Helper: Compute 3D kinetic energy
-// ============================================================================
-static double compute_kinetic_energy_3d(const Mesh& mesh, const VectorField& vel) {
-    double KE = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
-                double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
-                double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
-                KE += 0.5 * (u*u + v*v + w*w) * mesh.dx * mesh.dy * mesh.dz;
-            }
-        }
-    }
-    return KE;
-}
+// Note: compute_kinetic_energy_3d is now provided by test_utilities.hpp
 
 // ============================================================================
 // Helper: Initialize 3D Taylor-Green vortex
@@ -417,7 +401,7 @@ void test_skew_energy_3d() {
 #ifdef USE_GPU_OFFLOAD
     double ke_init = solver.compute_kinetic_energy_device();
 #else
-    double ke_init = compute_kinetic_energy_3d(mesh, solver.velocity());
+    double ke_init = compute_kinetic_energy_3d(solver.velocity(), mesh);
 #endif
     double ke_max = ke_init;
     double ke = ke_init;
@@ -429,7 +413,7 @@ void test_skew_energy_3d() {
         ke = solver.compute_kinetic_energy_device();
 #else
         solver.sync_from_gpu();
-        ke = compute_kinetic_energy_3d(mesh, solver.velocity());
+        ke = compute_kinetic_energy_3d(solver.velocity(), mesh);
 #endif
         ke_max = std::max(ke_max, ke);
 

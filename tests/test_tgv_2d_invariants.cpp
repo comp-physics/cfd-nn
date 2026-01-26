@@ -46,25 +46,7 @@ static std::string qoi_pct(double value, double threshold_pct) {
     return ss.str();
 }
 
-// ============================================================================
-// Helper: Compute max divergence (L-infinity norm)
-// ============================================================================
-static double compute_max_divergence_2d(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-    double dx = mesh.dx;
-    double dy = mesh.dy;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // MAC grid: u at x-faces, v at y-faces
-            double du_dx = (vel.u(i+1, j) - vel.u(i, j)) / dx;
-            double dv_dy = (vel.v(i, j+1) - vel.v(i, j)) / dy;
-            double div = std::abs(du_dx + dv_dy);
-            max_div = std::max(max_div, div);
-        }
-    }
-    return max_div;
-}
+// Note: compute_max_divergence_2d is now provided by test_utilities.hpp
 
 // ============================================================================
 // Test: 2D Taylor-Green Vortex Invariants

@@ -51,24 +51,7 @@ static std::string qoi(double value, double threshold) {
     return ss.str();
 }
 
-// ============================================================================
-// Helper: Compute max divergence (L-infinity norm)
-// ============================================================================
-static double compute_max_divergence_2d(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-    const double dx = mesh.dx;
-    const double dy = mesh.dy;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double du_dx = (vel.u(i+1, j) - vel.u(i, j)) / dx;
-            double dv_dy = (vel.v(i, j+1) - vel.v(i, j)) / dy;
-            double div = std::abs(du_dx + dv_dy);
-            max_div = std::max(max_div, div);
-        }
-    }
-    return max_div;
-}
+// Note: compute_max_divergence_2d is now provided by test_utilities.hpp
 
 // ============================================================================
 // Helper: Compute relative L2 velocity difference between two fields

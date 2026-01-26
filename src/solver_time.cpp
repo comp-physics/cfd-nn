@@ -689,86 +689,26 @@ void RANSSolver::ssprk2_step(double dt) {
     [[maybe_unused]] const int v_stride = Nx + 2 * Ng;
     const bool is_2d = mesh_->is2D();
 
-    // Store u^n in velocity_rk_ - use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-    // Member pointers inside target regions get HOST addresses with NVHPC.
+    // Store u^n in velocity_rk_ (use kernel calls to avoid inlining)
     if (is_2d) {
-        // Get device pointers for copy
-        const double* u_src_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_dst_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* v_src_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_dst_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-
-        // Copy u-velocity: velocity_rk_u = velocity_u
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_src_dev, u_dst_dev)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                int idx = j * u_stride + i;
-                u_dst_dev[idx] = u_src_dev[idx];
-            }
-        }
-
-        // Copy v-velocity: velocity_rk_v = velocity_v
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(v_src_dev, v_dst_dev)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                int idx = j * v_stride + i;
-                v_dst_dev[idx] = v_src_dev[idx];
-            }
-        }
+        time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_rk_u_ptr_,
+                                 velocity_v_ptr_, velocity_rk_v_ptr_,
+                                 Nx, Ny, Ng, u_stride, v_stride,
+                                 velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        // 3D INLINE copy: velocity_rk_ = velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
         const int Nz = mesh_->Nz;
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        // Get device pointers for copy
-        const double* u_src_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_dst_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* v_src_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_dst_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        const double* w_src_dev = gpu::dev_ptr(velocity_w_ptr_);
-        double* w_dst_dev = gpu::dev_ptr(velocity_rk_w_ptr_);
-
-        // Copy u-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(u_src_dev, u_dst_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    int idx = k * u_plane + j * u_stride + i;
-                    u_dst_dev[idx] = u_src_dev[idx];
-                }
-            }
-        }
-
-        // Copy v-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(v_src_dev, v_dst_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * v_plane + j * v_stride + i;
-                    v_dst_dev[idx] = v_src_dev[idx];
-                }
-            }
-        }
-
-        // Copy w-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(w_src_dev, w_dst_dev)
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * w_plane + j * w_stride_local + i;
-                    w_dst_dev[idx] = w_src_dev[idx];
-                }
-            }
-        }
+        time_kernels::copy_3d_uvw(velocity_u_ptr_, velocity_rk_u_ptr_,
+                                  velocity_v_ptr_, velocity_rk_v_ptr_,
+                                  velocity_w_ptr_, velocity_rk_w_ptr_,
+                                  Nx, Ny, Nz, Ng,
+                                  u_stride, v_stride, w_stride_local,
+                                  u_plane, v_plane, w_plane,
+                                  velocity_.u_total_size(), velocity_.v_total_size(),
+                                  velocity_.w_total_size());
     }
 
     // Stage 1: u^(1) = u^n + dt * L(u^n)
@@ -780,83 +720,26 @@ void RANSSolver::ssprk2_step(double dt) {
 
     // Blend: u^{n+1} = 0.5 * u^n + 0.5 * temp
     if (is_2d) {
-        // INLINE blend: velocity_ = 0.5 * velocity_rk_ + 0.5 * velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-        const double* u_rk_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-
-        // Blend u-velocity
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_rk_dev, u_dev)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                int idx = j * u_stride + i;
-                u_dev[idx] = 0.5 * u_rk_dev[idx] + 0.5 * u_dev[idx];
-            }
-        }
-
-        // Blend v-velocity
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(v_rk_dev, v_dev)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                int idx = j * v_stride + i;
-                v_dev[idx] = 0.5 * v_rk_dev[idx] + 0.5 * v_dev[idx];
-            }
-        }
+        time_kernels::blend_2d_uv(velocity_rk_u_ptr_, velocity_u_ptr_,
+                                  velocity_rk_v_ptr_, velocity_v_ptr_,
+                                  0.5, 0.5,
+                                  Nx, Ny, Ng, u_stride, v_stride,
+                                  velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        // 3D INLINE blend: velocity_ = 0.5 * velocity_rk_ + 0.5 * velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
         const int Nz = mesh_->Nz;
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        const double* u_rk_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        const double* w_rk_dev = gpu::dev_ptr(velocity_rk_w_ptr_);
-        double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
-
-        // Blend u-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(u_rk_dev, u_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    int idx = k * u_plane + j * u_stride + i;
-                    u_dev[idx] = 0.5 * u_rk_dev[idx] + 0.5 * u_dev[idx];
-                }
-            }
-        }
-
-        // Blend v-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(v_rk_dev, v_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * v_plane + j * v_stride + i;
-                    v_dev[idx] = 0.5 * v_rk_dev[idx] + 0.5 * v_dev[idx];
-                }
-            }
-        }
-
-        // Blend w-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(w_rk_dev, w_dev)
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * w_plane + j * w_stride_local + i;
-                    w_dev[idx] = 0.5 * w_rk_dev[idx] + 0.5 * w_dev[idx];
-                }
-            }
-        }
+        time_kernels::blend_3d_uvw(velocity_rk_u_ptr_, velocity_u_ptr_,
+                                   velocity_rk_v_ptr_, velocity_v_ptr_,
+                                   velocity_rk_w_ptr_, velocity_w_ptr_,
+                                   0.5, 0.5,
+                                   Nx, Ny, Nz, Ng,
+                                   u_stride, v_stride, w_stride_local,
+                                   u_plane, v_plane, w_plane,
+                                   velocity_.u_total_size(), velocity_.v_total_size(),
+                                   velocity_.w_total_size());
     }
 
     project_velocity(velocity_, dt);
@@ -879,86 +762,26 @@ void RANSSolver::ssprk3_step(double dt) {
     [[maybe_unused]] const int v_stride = Nx + 2 * Ng;
     const bool is_2d = mesh_->is2D();
 
-    // Store u^n in velocity_rk_ - use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-    // Member pointers inside target regions get HOST addresses with NVHPC.
+    // Store u^n in velocity_rk_ (use kernel calls to avoid inlining)
     if (is_2d) {
-        // Get device pointers for copy
-        const double* u_src_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_dst_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* v_src_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_dst_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-
-        // Copy u-velocity: velocity_rk_u = velocity_u
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_src_dev, u_dst_dev)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                int idx = j * u_stride + i;
-                u_dst_dev[idx] = u_src_dev[idx];
-            }
-        }
-
-        // Copy v-velocity: velocity_rk_v = velocity_v
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(v_src_dev, v_dst_dev)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                int idx = j * v_stride + i;
-                v_dst_dev[idx] = v_src_dev[idx];
-            }
-        }
+        time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_rk_u_ptr_,
+                                 velocity_v_ptr_, velocity_rk_v_ptr_,
+                                 Nx, Ny, Ng, u_stride, v_stride,
+                                 velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        // 3D INLINE copy: velocity_rk_ = velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
         const int Nz = mesh_->Nz;
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        // Get device pointers for copy
-        const double* u_src_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_dst_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* v_src_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_dst_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        const double* w_src_dev = gpu::dev_ptr(velocity_w_ptr_);
-        double* w_dst_dev = gpu::dev_ptr(velocity_rk_w_ptr_);
-
-        // Copy u-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(u_src_dev, u_dst_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    int idx = k * u_plane + j * u_stride + i;
-                    u_dst_dev[idx] = u_src_dev[idx];
-                }
-            }
-        }
-
-        // Copy v-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(v_src_dev, v_dst_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * v_plane + j * v_stride + i;
-                    v_dst_dev[idx] = v_src_dev[idx];
-                }
-            }
-        }
-
-        // Copy w-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(w_src_dev, w_dst_dev)
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * w_plane + j * w_stride_local + i;
-                    w_dst_dev[idx] = w_src_dev[idx];
-                }
-            }
-        }
+        time_kernels::copy_3d_uvw(velocity_u_ptr_, velocity_rk_u_ptr_,
+                                  velocity_v_ptr_, velocity_rk_v_ptr_,
+                                  velocity_w_ptr_, velocity_rk_w_ptr_,
+                                  Nx, Ny, Nz, Ng,
+                                  u_stride, v_stride, w_stride_local,
+                                  u_plane, v_plane, w_plane,
+                                  velocity_.u_total_size(), velocity_.v_total_size(),
+                                  velocity_.w_total_size());
     }
 
     // Stage 1: u^(1) = u^n + dt * L(u^n)
@@ -968,89 +791,28 @@ void RANSSolver::ssprk3_step(double dt) {
     // Stage 2: u^(2) = 0.75 * u^n + 0.25 * (u^(1) + dt * L(u^(1)))
     euler_substep(velocity_star_, velocity_, dt);
 
+    // Blend to velocity_star_: 0.75 * velocity_rk_ + 0.25 * velocity_
     if (is_2d) {
-        // INLINE blend_to: velocity_star_ = 0.75 * velocity_rk_ + 0.25 * velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-        const double* u_rk_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_star_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-        const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_star_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-
-        // Blend u-velocity to velocity_star_
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_rk_dev, u_dev, u_star_dev)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                int idx = j * u_stride + i;
-                u_star_dev[idx] = 0.75 * u_rk_dev[idx] + 0.25 * u_dev[idx];
-            }
-        }
-
-        // Blend v-velocity to velocity_star_
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(v_rk_dev, v_dev, v_star_dev)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                int idx = j * v_stride + i;
-                v_star_dev[idx] = 0.75 * v_rk_dev[idx] + 0.25 * v_dev[idx];
-            }
-        }
+        time_kernels::blend_to_2d_uv(velocity_rk_u_ptr_, velocity_u_ptr_, velocity_star_u_ptr_,
+                                     velocity_rk_v_ptr_, velocity_v_ptr_, velocity_star_v_ptr_,
+                                     0.75, 0.25,
+                                     Nx, Ny, Ng, u_stride, v_stride,
+                                     velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        // 3D INLINE blend_to: velocity_star_ = 0.75 * velocity_rk_ + 0.25 * velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
         const int Nz = mesh_->Nz;
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        const double* u_rk_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_star_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-        const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_star_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-        const double* w_rk_dev = gpu::dev_ptr(velocity_rk_w_ptr_);
-        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
-        double* w_star_dev = gpu::dev_ptr(velocity_star_w_ptr_);
-
-        // Blend u-velocity to velocity_star_
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(u_rk_dev, u_dev, u_star_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    int idx = k * u_plane + j * u_stride + i;
-                    u_star_dev[idx] = 0.75 * u_rk_dev[idx] + 0.25 * u_dev[idx];
-                }
-            }
-        }
-
-        // Blend v-velocity to velocity_star_
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(v_rk_dev, v_dev, v_star_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * v_plane + j * v_stride + i;
-                    v_star_dev[idx] = 0.75 * v_rk_dev[idx] + 0.25 * v_dev[idx];
-                }
-            }
-        }
-
-        // Blend w-velocity to velocity_star_
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(w_rk_dev, w_dev, w_star_dev)
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * w_plane + j * w_stride_local + i;
-                    w_star_dev[idx] = 0.75 * w_rk_dev[idx] + 0.25 * w_dev[idx];
-                }
-            }
-        }
+        time_kernels::blend_to_3d_uvw(velocity_rk_u_ptr_, velocity_u_ptr_, velocity_star_u_ptr_,
+                                      velocity_rk_v_ptr_, velocity_v_ptr_, velocity_star_v_ptr_,
+                                      velocity_rk_w_ptr_, velocity_w_ptr_, velocity_star_w_ptr_,
+                                      0.75, 0.25,
+                                      Nx, Ny, Nz, Ng,
+                                      u_stride, v_stride, w_stride_local,
+                                      u_plane, v_plane, w_plane,
+                                      velocity_.u_total_size(), velocity_.v_total_size(),
+                                      velocity_.w_total_size());
     }
 
     project_velocity(velocity_star_, dt);
@@ -1058,84 +820,28 @@ void RANSSolver::ssprk3_step(double dt) {
     // Stage 3: u^{n+1} = (1/3) * u^n + (2/3) * (u^(2) + dt * L(u^(2)))
     euler_substep(velocity_star_, velocity_, dt);
 
+    // Final blend: velocity_ = (1/3) * velocity_rk_ + (2/3) * velocity_
     if (is_2d) {
-        // INLINE blend: velocity_ = (1/3) * velocity_rk_ + (2/3) * velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-        const double* u_rk_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-
-        // Blend u-velocity
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_rk_dev, u_dev)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                int idx = j * u_stride + i;
-                u_dev[idx] = (1.0/3.0) * u_rk_dev[idx] + (2.0/3.0) * u_dev[idx];
-            }
-        }
-
-        // Blend v-velocity
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(v_rk_dev, v_dev)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                int idx = j * v_stride + i;
-                v_dev[idx] = (1.0/3.0) * v_rk_dev[idx] + (2.0/3.0) * v_dev[idx];
-            }
-        }
+        time_kernels::blend_2d_uv(velocity_rk_u_ptr_, velocity_u_ptr_,
+                                  velocity_rk_v_ptr_, velocity_v_ptr_,
+                                  1.0/3.0, 2.0/3.0,
+                                  Nx, Ny, Ng, u_stride, v_stride,
+                                  velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        // 3D INLINE blend: velocity_ = (1/3) * velocity_rk_ + (2/3) * velocity_
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
         const int Nz = mesh_->Nz;
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        const double* u_rk_dev = gpu::dev_ptr(velocity_rk_u_ptr_);
-        double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_rk_dev = gpu::dev_ptr(velocity_rk_v_ptr_);
-        double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        const double* w_rk_dev = gpu::dev_ptr(velocity_rk_w_ptr_);
-        double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
-
-        // Blend u-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(u_rk_dev, u_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    int idx = k * u_plane + j * u_stride + i;
-                    u_dev[idx] = (1.0/3.0) * u_rk_dev[idx] + (2.0/3.0) * u_dev[idx];
-                }
-            }
-        }
-
-        // Blend v-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(v_rk_dev, v_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * v_plane + j * v_stride + i;
-                    v_dev[idx] = (1.0/3.0) * v_rk_dev[idx] + (2.0/3.0) * v_dev[idx];
-                }
-            }
-        }
-
-        // Blend w-velocity
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(w_rk_dev, w_dev)
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * w_plane + j * w_stride_local + i;
-                    w_dev[idx] = (1.0/3.0) * w_rk_dev[idx] + (2.0/3.0) * w_dev[idx];
-                }
-            }
-        }
+        time_kernels::blend_3d_uvw(velocity_rk_u_ptr_, velocity_u_ptr_,
+                                   velocity_rk_v_ptr_, velocity_v_ptr_,
+                                   velocity_rk_w_ptr_, velocity_w_ptr_,
+                                   1.0/3.0, 2.0/3.0,
+                                   Nx, Ny, Nz, Ng,
+                                   u_stride, v_stride, w_stride_local,
+                                   u_plane, v_plane, w_plane,
+                                   velocity_.u_total_size(), velocity_.v_total_size(),
+                                   velocity_.w_total_size());
     }
 
     project_velocity(velocity_, dt);

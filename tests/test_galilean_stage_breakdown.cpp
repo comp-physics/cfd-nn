@@ -31,20 +31,7 @@ using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
 
-// ============================================================================
-// Compute max divergence
-// ============================================================================
-static double compute_max_div(const VectorField& v, const Mesh& mesh) {
-    double max_div = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dudx = (v.u(i+1, j) - v.u(i, j)) / mesh.dx;
-            double dvdy = (v.v(i, j+1) - v.v(i, j)) / mesh.dy;
-            max_div = std::max(max_div, std::abs(dudx + dvdy));
-        }
-    }
-    return max_div;
-}
+// Note: compute_max_divergence_2d is now provided by test_utilities.hpp
 
 // ============================================================================
 // Compute mean and L2 of divergence (for solvability check)
@@ -149,29 +136,7 @@ static double compute_projection_residual(const ScalarField& p, const ScalarFiel
     return diff_l2 / rhs_l2;
 }
 
-// ============================================================================
-// Compute mean velocity
-// ============================================================================
-static void compute_mean_velocity(const VectorField& vel, const Mesh& mesh,
-                                   double& u_mean, double& v_mean) {
-    double u_sum = 0.0, v_sum = 0.0;
-    int u_count = 0, v_count = 0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            u_sum += vel.u(i, j);
-            u_count++;
-        }
-    }
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            v_sum += vel.v(i, j);
-            v_count++;
-        }
-    }
-    u_mean = u_sum / u_count;
-    v_mean = v_sum / v_count;
-}
+// Note: compute_mean_velocity_2d is now provided by test_utilities.hpp
 
 // ============================================================================
 // Initialize TGV with offset
@@ -364,8 +329,10 @@ StageResult run_stage_breakdown(int N, double U0, double V0, double dt) {
         }
     }
 
-    result.div_initial = compute_max_div(vel, mesh);
-    compute_mean_velocity(vel, mesh, result.u_mean_initial, result.v_mean_initial);
+    result.div_initial = compute_max_divergence_2d(vel, mesh);
+    auto mean_init = compute_mean_velocity_2d(vel, mesh);
+    result.u_mean_initial = mean_init.u;
+    result.v_mean_initial = mean_init.v;
 
     // Compute advection term manually (upwind, like solver)
     compute_advection_only(vel, adv, mesh, false);  // use_central=false → upwind
@@ -382,8 +349,10 @@ StageResult run_stage_breakdown(int N, double U0, double V0, double dt) {
         }
     }
 
-    result.div_after_adv = compute_max_div(vel_after_adv, mesh);
-    compute_mean_velocity(vel_after_adv, mesh, result.u_mean_after_adv, result.v_mean_after_adv);
+    result.div_after_adv = compute_max_divergence_2d(vel_after_adv, mesh);
+    auto mean_adv = compute_mean_velocity_2d(vel_after_adv, mesh);
+    result.u_mean_after_adv = mean_adv.u;
+    result.v_mean_after_adv = mean_adv.v;
 
     // Now run full solver step for comparison
     Config config;
@@ -408,8 +377,10 @@ StageResult run_stage_breakdown(int N, double U0, double V0, double dt) {
     solver.step();
     solver.sync_from_gpu();
 
-    result.div_after_step = compute_max_div(solver.velocity(), mesh);
-    compute_mean_velocity(solver.velocity(), mesh, result.u_mean_after_step, result.v_mean_after_step);
+    result.div_after_step = compute_max_divergence_2d(solver.velocity(), mesh);
+    auto mean_step = compute_mean_velocity_2d(solver.velocity(), mesh);
+    result.u_mean_after_step = mean_step.u;
+    result.v_mean_after_step = mean_step.v;
 
     return result;
 }
@@ -584,7 +555,7 @@ void test_advection_scheme_comparison() {
             }
         }
 
-        double div_rest = compute_max_div(vel_adv_rest, mesh);
+        double div_rest = compute_max_divergence_2d(vel_adv_rest, mesh);
 
         // Offset frame
         VectorField vel_offset(mesh);
@@ -615,7 +586,7 @@ void test_advection_scheme_comparison() {
             }
         }
 
-        double div_offset = compute_max_div(vel_adv_offset, mesh);
+        double div_offset = compute_max_divergence_2d(vel_adv_offset, mesh);
 
         double ratio = div_offset / (div_rest + 1e-30);
 
@@ -969,7 +940,7 @@ void test_convergence_quality() {
             }
         }
 
-        r.div_before_adv = compute_max_div(vel, mesh);
+        r.div_before_adv = compute_max_divergence_2d(vel, mesh);
 
         compute_advection_only(vel, adv, mesh, false);
 
@@ -984,7 +955,7 @@ void test_convergence_quality() {
             }
         }
 
-        r.div_after_adv = compute_max_div(u_star, mesh);
+        r.div_after_adv = compute_max_divergence_2d(u_star, mesh);
 
         // Step 2: Run actual solver step
         Config config;
@@ -1018,7 +989,7 @@ void test_convergence_quality() {
         solver.step();
         solver.sync_from_gpu();
 
-        r.div_after_proj = compute_max_div(solver.velocity(), mesh);
+        r.div_after_proj = compute_max_divergence_2d(solver.velocity(), mesh);
         r.reduction_factor = r.div_after_adv / (r.div_after_proj + 1e-30);
 
         return r;
@@ -1158,7 +1129,7 @@ void test_absolute_tolerance_fix() {
                 u_star.v(i, j) = vel.v(i, j) - dt * adv.v(i, j);
             }
         }
-        result.div_u_star = compute_max_div(u_star, mesh);
+        result.div_u_star = compute_max_divergence_2d(u_star, mesh);
 
         // Now run solver
         Config config;
@@ -1206,7 +1177,7 @@ void test_absolute_tolerance_fix() {
         solver.step();
         solver.sync_from_gpu();
 
-        result.div_final = compute_max_div(solver.velocity(), mesh);
+        result.div_final = compute_max_divergence_2d(solver.velocity(), mesh);
         return result;
     };
 
@@ -1587,8 +1558,8 @@ void test_advection_momentum_conservation() {
             }
         }
 
-        double u_mean_init, v_mean_init;
-        compute_mean_velocity(vel, mesh, u_mean_init, v_mean_init);
+        auto mean_init_upwind = compute_mean_velocity_2d(vel, mesh);
+        double u_mean_init = mean_init_upwind.u, v_mean_init = mean_init_upwind.v;
 
         // Compute advection using upwind (same as solver)
         compute_advection_only(vel, adv, mesh, false);  // upwind
@@ -1605,8 +1576,8 @@ void test_advection_momentum_conservation() {
             }
         }
 
-        double u_mean_final, v_mean_final;
-        compute_mean_velocity(vel_new, mesh, u_mean_final, v_mean_final);
+        auto mean_final_upwind = compute_mean_velocity_2d(vel_new, mesh);
+        double u_mean_final = mean_final_upwind.u, v_mean_final = mean_final_upwind.v;
 
         double delta_u = u_mean_final - u_mean_init;
         double delta_v = v_mean_final - v_mean_init;
@@ -1671,8 +1642,8 @@ void test_advection_momentum_conservation() {
             }
         }
 
-        double u_mean_init, v_mean_init;
-        compute_mean_velocity(vel, mesh, u_mean_init, v_mean_init);
+        auto mean_init_central = compute_mean_velocity_2d(vel, mesh);
+        double u_mean_init = mean_init_central.u, v_mean_init = mean_init_central.v;
 
         // Compute advection using central differencing
         compute_advection_only(vel, adv, mesh, true);  // central
@@ -1688,8 +1659,8 @@ void test_advection_momentum_conservation() {
             }
         }
 
-        double u_mean_final, v_mean_final;
-        compute_mean_velocity(vel_new, mesh, u_mean_final, v_mean_final);
+        auto mean_final_central = compute_mean_velocity_2d(vel_new, mesh);
+        double u_mean_final = mean_final_central.u, v_mean_final = mean_final_central.v;
 
         double delta_u = u_mean_final - u_mean_init;
         double delta_v = v_mean_final - v_mean_init;
@@ -1720,8 +1691,8 @@ void test_advection_momentum_conservation() {
             }
         }
 
-        double u_mean_init, v_mean_init;
-        compute_mean_velocity(vel, mesh, u_mean_init, v_mean_init);
+        auto mean_init_cons = compute_mean_velocity_2d(vel, mesh);
+        double u_mean_init = mean_init_cons.u, v_mean_init = mean_init_cons.v;
 
         // Compute advection using conservative flux form
         compute_advection_conservative(vel, adv, mesh);
@@ -1737,8 +1708,8 @@ void test_advection_momentum_conservation() {
             }
         }
 
-        double u_mean_final, v_mean_final;
-        compute_mean_velocity(vel_new, mesh, u_mean_final, v_mean_final);
+        auto mean_final_cons = compute_mean_velocity_2d(vel_new, mesh);
+        double u_mean_final = mean_final_cons.u, v_mean_final = mean_final_cons.v;
 
         double delta_u = u_mean_final - u_mean_init;
         double delta_v = v_mean_final - v_mean_init;
@@ -1846,7 +1817,7 @@ void test_vcycle_sweep() {
         solver.step();
         solver.sync_from_gpu();
 
-        double div_offset = compute_max_div(solver.velocity(), mesh);
+        double div_offset = compute_max_divergence_2d(solver.velocity(), mesh);
 
         // Also run rest frame for comparison
         RANSSolver solver_rest(mesh, config);
@@ -1865,7 +1836,7 @@ void test_vcycle_sweep() {
         solver_rest.step();
         solver_rest.sync_from_gpu();
 
-        double div_rest = compute_max_div(solver_rest.velocity(), mesh);
+        double div_rest = compute_max_divergence_2d(solver_rest.velocity(), mesh);
         double ratio = div_offset / (div_rest + 1e-30);
 
         std::cout << "  " << std::left << std::setw(12) << cycles
@@ -1984,7 +1955,7 @@ void test_projection_diagnostics() {
         r.div_u_star_max = max_div;
         r.rhs_mean = sum_rhs / count;
         r.rhs_max = max_rhs;
-        r.div_final_max = compute_max_div(solver.velocity(), mesh);
+        r.div_final_max = compute_max_divergence_2d(solver.velocity(), mesh);
 
         return r;
     };
@@ -2151,7 +2122,7 @@ void test_skew_symmetric_galilean() {
         solver_rest.step();
         solver_rest.sync_from_gpu();
 
-        double div_rest = compute_max_div(solver_rest.velocity(), mesh_rest);
+        double div_rest = compute_max_divergence_2d(solver_rest.velocity(), mesh_rest);
 
         // Run offset frame
         Mesh mesh_offset;
@@ -2184,7 +2155,7 @@ void test_skew_symmetric_galilean() {
         solver_offset.step();
         solver_offset.sync_from_gpu();
 
-        double div_offset = compute_max_div(solver_offset.velocity(), mesh_offset);
+        double div_offset = compute_max_divergence_2d(solver_offset.velocity(), mesh_offset);
 
         double ratio = div_offset / (div_rest + 1e-30);
 

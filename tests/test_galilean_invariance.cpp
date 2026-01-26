@@ -37,57 +37,8 @@ using nncfd::test::harness::record;
 using nncfd::test::harness::record_ratchet;
 using nncfd::test::harness::record_track;
 
-// ============================================================================
-// Compute mean velocity over the domain
-// ============================================================================
-static void compute_mean_velocity(const VectorField& vel, const Mesh& mesh,
-                                   double& u_mean, double& v_mean) {
-    double u_sum = 0.0, v_sum = 0.0;
-    int u_count = 0, v_count = 0;
-
-    // Mean u (on u-faces)
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            u_sum += vel.u(i, j);
-            u_count++;
-        }
-    }
-
-    // Mean v (on v-faces)
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            v_sum += vel.v(i, j);
-            v_count++;
-        }
-    }
-
-    u_mean = u_sum / u_count;
-    v_mean = v_sum / v_count;
-}
-
-// ============================================================================
-// Compute fluctuating kinetic energy: KE' = 0.5 * integral(u'^2 + v'^2) dx dy
-// where u' = u - <u>
-// ============================================================================
-static double compute_fluctuating_KE(const VectorField& vel, const Mesh& mesh,
-                                      double u_mean, double v_mean) {
-    double KE = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // Interpolate to cell center
-            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-
-            // Subtract mean
-            double u_prime = u - u_mean;
-            double v_prime = v - v_mean;
-
-            KE += 0.5 * (u_prime*u_prime + v_prime*v_prime) * mesh.dx * mesh.dy;
-        }
-    }
-    return KE;
-}
+// Note: compute_mean_velocity_2d and compute_fluctuating_ke_2d are now
+// provided by test_utilities.hpp
 
 // ============================================================================
 // Compute relative L2 difference between fluctuating velocities
@@ -144,21 +95,7 @@ static void init_tgv_with_offset(RANSSolver& solver, const Mesh& mesh,
     }
 }
 
-// ============================================================================
-// Compute max divergence
-// ============================================================================
-static double compute_max_divergence(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double du_dx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
-            double dv_dy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
-            double div = std::abs(du_dx + dv_dy);
-            max_div = std::max(max_div, div);
-        }
-    }
-    return max_div;
-}
+// Note: compute_max_divergence_2d is now provided by test_utilities.hpp
 
 // ============================================================================
 // Result structure
@@ -222,20 +159,20 @@ GalileanResult run_galilean_test(int N, double nu, double dt, int nsteps,
     init_tgv_with_offset(solver_rest, mesh_rest, 0.0, 0.0);
     solver_rest.sync_to_gpu();
 
-    double u_mean_rest_init, v_mean_rest_init;
-    compute_mean_velocity(solver_rest.velocity(), mesh_rest, u_mean_rest_init, v_mean_rest_init);
-    result.KE_rest_initial = compute_fluctuating_KE(solver_rest.velocity(), mesh_rest,
-                                                     u_mean_rest_init, v_mean_rest_init);
+    auto mean_rest_init = compute_mean_velocity_2d(solver_rest.velocity(), mesh_rest);
+    double u_mean_rest_init = mean_rest_init.u, v_mean_rest_init = mean_rest_init.v;
+    result.KE_rest_initial = compute_fluctuating_ke_2d(solver_rest.velocity(), mesh_rest,
+                                                        u_mean_rest_init, v_mean_rest_init);
 
     for (int step = 0; step < nsteps; ++step) {
         solver_rest.step();
     }
     solver_rest.sync_from_gpu();
 
-    double u_mean_rest_final, v_mean_rest_final;
-    compute_mean_velocity(solver_rest.velocity(), mesh_rest, u_mean_rest_final, v_mean_rest_final);
-    result.KE_rest_final = compute_fluctuating_KE(solver_rest.velocity(), mesh_rest,
-                                                   u_mean_rest_final, v_mean_rest_final);
+    auto mean_rest_final = compute_mean_velocity_2d(solver_rest.velocity(), mesh_rest);
+    double u_mean_rest_final = mean_rest_final.u, v_mean_rest_final = mean_rest_final.v;
+    result.KE_rest_final = compute_fluctuating_ke_2d(solver_rest.velocity(), mesh_rest,
+                                                      u_mean_rest_final, v_mean_rest_final);
 
     // -------------------------------------------------------------------------
     // Run 2: TGV with velocity offset
@@ -248,20 +185,20 @@ GalileanResult run_galilean_test(int N, double nu, double dt, int nsteps,
     init_tgv_with_offset(solver_offset, mesh_offset, U0, V0);
     solver_offset.sync_to_gpu();
 
-    double u_mean_offset_init, v_mean_offset_init;
-    compute_mean_velocity(solver_offset.velocity(), mesh_offset, u_mean_offset_init, v_mean_offset_init);
-    result.KE_offset_initial = compute_fluctuating_KE(solver_offset.velocity(), mesh_offset,
-                                                       u_mean_offset_init, v_mean_offset_init);
+    auto mean_offset_init = compute_mean_velocity_2d(solver_offset.velocity(), mesh_offset);
+    double u_mean_offset_init = mean_offset_init.u, v_mean_offset_init = mean_offset_init.v;
+    result.KE_offset_initial = compute_fluctuating_ke_2d(solver_offset.velocity(), mesh_offset,
+                                                          u_mean_offset_init, v_mean_offset_init);
 
     for (int step = 0; step < nsteps; ++step) {
         solver_offset.step();
     }
     solver_offset.sync_from_gpu();
 
-    double u_mean_offset_final, v_mean_offset_final;
-    compute_mean_velocity(solver_offset.velocity(), mesh_offset, u_mean_offset_final, v_mean_offset_final);
-    result.KE_offset_final = compute_fluctuating_KE(solver_offset.velocity(), mesh_offset,
-                                                     u_mean_offset_final, v_mean_offset_final);
+    auto mean_offset_final = compute_mean_velocity_2d(solver_offset.velocity(), mesh_offset);
+    double u_mean_offset_final = mean_offset_final.u, v_mean_offset_final = mean_offset_final.v;
+    result.KE_offset_final = compute_fluctuating_ke_2d(solver_offset.velocity(), mesh_offset,
+                                                        u_mean_offset_final, v_mean_offset_final);
 
     // -------------------------------------------------------------------------
     // Compare fluctuating quantities
@@ -284,8 +221,8 @@ GalileanResult run_galilean_test(int N, double nu, double dt, int nsteps,
     result.v_mean_offset_init = v_mean_offset_init;
     result.u_mean_offset_final = u_mean_offset_final;
     result.v_mean_offset_final = v_mean_offset_final;
-    result.div_rest_final = compute_max_divergence(solver_rest.velocity(), mesh_rest);
-    result.div_offset_final = compute_max_divergence(solver_offset.velocity(), mesh_offset);
+    result.div_rest_final = compute_max_divergence_2d(solver_rest.velocity(), mesh_rest);
+    result.div_offset_final = compute_max_divergence_2d(solver_offset.velocity(), mesh_offset);
 
     // Strict physics thresholds for Galilean invariance
     // For incompressible NSE with periodic BCs, adding a uniform velocity offset
@@ -517,7 +454,7 @@ SolverCompareResult run_single_step_with_solver(int N, double U0, double V0,
     solver_rest.sync_to_gpu();
     solver_rest.step();
     solver_rest.sync_from_gpu();
-    result.div_rest = compute_max_divergence(solver_rest.velocity(), mesh_rest);
+    result.div_rest = compute_max_divergence_2d(solver_rest.velocity(), mesh_rest);
 
     // Offset frame
     Mesh mesh_offset;
@@ -525,18 +462,18 @@ SolverCompareResult run_single_step_with_solver(int N, double U0, double V0,
     RANSSolver solver_offset(mesh_offset, make_config());
     solver_offset.set_velocity_bc(make_bc());
 
-    double u_mean_before, v_mean_before;
     init_tgv_with_offset(solver_offset, mesh_offset, U0, V0);
-    compute_mean_velocity(solver_offset.velocity(), mesh_offset, u_mean_before, v_mean_before);
+    auto mean_before = compute_mean_velocity_2d(solver_offset.velocity(), mesh_offset);
+    double u_mean_before = mean_before.u, v_mean_before = mean_before.v;
 
     solver_offset.sync_to_gpu();
     solver_offset.step();
     solver_offset.sync_from_gpu();
 
-    result.div_offset = compute_max_divergence(solver_offset.velocity(), mesh_offset);
+    result.div_offset = compute_max_divergence_2d(solver_offset.velocity(), mesh_offset);
 
-    double u_mean_after, v_mean_after;
-    compute_mean_velocity(solver_offset.velocity(), mesh_offset, u_mean_after, v_mean_after);
+    auto mean_after = compute_mean_velocity_2d(solver_offset.velocity(), mesh_offset);
+    double u_mean_after = mean_after.u, v_mean_after = mean_after.v;
     result.mean_drift_u = u_mean_after - u_mean_before;
     result.mean_drift_v = v_mean_after - v_mean_before;
 

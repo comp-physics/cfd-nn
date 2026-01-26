@@ -39,44 +39,8 @@ using nncfd::test::harness::record;
 using nncfd::test::harness::record_ratchet;
 using nncfd::test::harness::record_track;
 
-// ============================================================================
-// Compute mean velocity over the domain
-// ============================================================================
-static void compute_mean_velocity(const VectorField& vel, const Mesh& mesh,
-                                   double& u_mean, double& v_mean) {
-    double u_sum = 0.0, v_sum = 0.0;
-    int u_count = 0, v_count = 0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            u_sum += vel.u(i, j);
-            u_count++;
-        }
-    }
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            v_sum += vel.v(i, j);
-            v_count++;
-        }
-    }
-    u_mean = u_sum / u_count;
-    v_mean = v_sum / v_count;
-}
-
-// ============================================================================
-// Compute max divergence
-// ============================================================================
-static double compute_max_div(const VectorField& v, const Mesh& mesh) {
-    double max_div = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dudx = (v.u(i+1, j) - v.u(i, j)) / mesh.dx;
-            double dvdy = (v.v(i, j+1) - v.v(i, j)) / mesh.dy;
-            max_div = std::max(max_div, std::abs(dudx + dvdy));
-        }
-    }
-    return max_div;
-}
+// Note: compute_mean_velocity_2d and compute_max_divergence_2d are now
+// provided by test_utilities.hpp
 
 // ============================================================================
 // Compute L2 norm of divergence
@@ -242,16 +206,18 @@ ProjectionGalileanResult run_projection_galilean_test(int N, double U0, double V
         init_tgv_field(solver_A.velocity(), mesh_A, 0.0, 0.0);
     }
 
-    compute_mean_velocity(solver_A.velocity(), mesh_A,
-                          result.u_mean_A_before, result.v_mean_A_before);
+    auto mean_A_before = compute_mean_velocity_2d(solver_A.velocity(), mesh_A);
+    result.u_mean_A_before = mean_A_before.u;
+    result.v_mean_A_before = mean_A_before.v;
 
     solver_A.sync_to_gpu();
     solver_A.step();
     solver_A.sync_from_gpu();
 
-    compute_mean_velocity(solver_A.velocity(), mesh_A,
-                          result.u_mean_A_after, result.v_mean_A_after);
-    result.div_A_max = compute_max_div(solver_A.velocity(), mesh_A);
+    auto mean_A_after = compute_mean_velocity_2d(solver_A.velocity(), mesh_A);
+    result.u_mean_A_after = mean_A_after.u;
+    result.v_mean_A_after = mean_A_after.v;
+    result.div_A_max = compute_max_divergence_2d(solver_A.velocity(), mesh_A);
     result.div_A_L2 = compute_L2_div(solver_A.velocity(), mesh_A);
 
     // -------------------------------------------------------------------------
@@ -268,16 +234,18 @@ ProjectionGalileanResult run_projection_galilean_test(int N, double U0, double V
         init_tgv_field(solver_B.velocity(), mesh_B, U0, V0);
     }
 
-    compute_mean_velocity(solver_B.velocity(), mesh_B,
-                          result.u_mean_B_before, result.v_mean_B_before);
+    auto mean_B_before = compute_mean_velocity_2d(solver_B.velocity(), mesh_B);
+    result.u_mean_B_before = mean_B_before.u;
+    result.v_mean_B_before = mean_B_before.v;
 
     solver_B.sync_to_gpu();
     solver_B.step();
     solver_B.sync_from_gpu();
 
-    compute_mean_velocity(solver_B.velocity(), mesh_B,
-                          result.u_mean_B_after, result.v_mean_B_after);
-    result.div_B_max = compute_max_div(solver_B.velocity(), mesh_B);
+    auto mean_B_after = compute_mean_velocity_2d(solver_B.velocity(), mesh_B);
+    result.u_mean_B_after = mean_B_after.u;
+    result.v_mean_B_after = mean_B_after.v;
+    result.div_B_max = compute_max_divergence_2d(solver_B.velocity(), mesh_B);
     result.div_B_L2 = compute_L2_div(solver_B.velocity(), mesh_B);
 
     // -------------------------------------------------------------------------

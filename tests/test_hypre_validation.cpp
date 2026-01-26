@@ -230,22 +230,7 @@ void set_taylor_green_initial_velocity(RANSSolver& solver, const Mesh& mesh) {
     // w = 0 (already initialized to zero)
 }
 
-// Compute max divergence of velocity field (3D)
-double compute_max_divergence_3d(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
-                double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
-                double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
-                double div = dudx + dvdy + dwdz;
-                max_div = std::max(max_div, std::abs(div));
-            }
-        }
-    }
-    return max_div;
-}
+// Note: compute_max_divergence_3d is now provided by test_utilities.hpp
 
 // Compute relative L2 norm of pressure gradient difference (3D)
 // grad(p) at cell centers, then compare
