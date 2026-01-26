@@ -314,7 +314,7 @@ def plot_spectrum(k, E_k, diagnostics, output_file, title="Energy Spectrum"):
                   label=r'$k^{-5/3}$ (Kolmogorov)')
 
     # Mark Kolmogorov wavenumber if available
-    if not np.isnan(diagnostics['k_kolmogorov']):
+    if len(k_valid) > 0 and not np.isnan(diagnostics['k_kolmogorov']):
         k_eta = diagnostics['k_kolmogorov']
         if k_eta < k_valid[-1]:
             ax.axvline(k_eta, color='g', linestyle=':', linewidth=1.5,
