@@ -49,6 +49,15 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
     get_ptrs(vel_in, u_in, v_in, w_in);
     get_ptrs(vel_out, u_out, v_out, w_out);
 
+    // Guard against unsupported VectorField inputs
+    const bool needs_w = !mesh_->is2D();
+    if (!u_in || !v_in || (needs_w && !w_in) ||
+        !u_out || !v_out || (needs_w && !w_out)) {
+        throw std::invalid_argument(
+            "euler_substep: unsupported VectorField (only velocity_, velocity_star_, "
+            "velocity_old_, velocity_rk_ are supported)");
+    }
+
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Ng = mesh_->Nghost;

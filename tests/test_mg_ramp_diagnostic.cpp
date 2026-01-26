@@ -77,16 +77,17 @@ int main() {
     ScalarField rhs(mesh);
     ScalarField p(mesh);
 
-    // Set RHS = 0 everywhere (including ghost cells)
-    for (int j = 0; j <= mesh.Ny + 1; ++j) {
-        for (int i = 0; i <= mesh.Nx + 1; ++i) {
+    // Set RHS = 0 everywhere (including all ghost cells for Ng >= 2)
+    const int Ng = mesh.Nghost;
+    for (int j = 1 - Ng; j <= mesh.Ny + Ng; ++j) {
+        for (int i = 1 - Ng; i <= mesh.Nx + Ng; ++i) {
             rhs(i, j) = 0.0;
         }
     }
 
     // Set initial guess = 0
-    for (int j = 0; j <= mesh.Ny + 1; ++j) {
-        for (int i = 0; i <= mesh.Nx + 1; ++i) {
+    for (int j = 1 - Ng; j <= mesh.Ny + Ng; ++j) {
+        for (int i = 1 - Ng; i <= mesh.Nx + Ng; ++i) {
             p(i, j) = 0.0;
         }
     }

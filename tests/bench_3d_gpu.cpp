@@ -15,29 +15,33 @@ using namespace nncfd;
 
 void init_tgv_3d(RANSSolver& solver, const Mesh& mesh) {
     auto& vel = solver.velocity();
-    for (int k = 0; k <= mesh.Nz; ++k) {
-        for (int j = 0; j <= mesh.Ny; ++j) {
-            for (int i = 0; i <= mesh.Nx + 1; ++i) {
-                double x = (i - 0.5) * mesh.dx;
-                double y = j * mesh.dy;
-                double z = k * mesh.dz;
+    // Use mesh bounds to properly account for ghost cells
+    // u at x-faces: use xf for x, cell centers for y/z
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i <= mesh.i_end() + 1; ++i) {
+                double x = mesh.xf[i];
+                double y = mesh.y(j);
+                double z = mesh.z(k);
                 vel.u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
             }
         }
     }
-    for (int k = 0; k <= mesh.Nz; ++k) {
-        for (int j = 0; j <= mesh.Ny + 1; ++j) {
-            for (int i = 0; i <= mesh.Nx; ++i) {
-                double x = i * mesh.dx;
-                double y = (j - 0.5) * mesh.dy;
-                double z = k * mesh.dz;
+    // v at y-faces: use cell centers for x/z, yf for y
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j <= mesh.j_end() + 1; ++j) {
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                double x = mesh.x(i);
+                double y = mesh.yf[j];
+                double z = mesh.z(k);
                 vel.v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
             }
         }
     }
-    for (int k = 0; k <= mesh.Nz + 1; ++k) {
-        for (int j = 0; j <= mesh.Ny; ++j) {
-            for (int i = 0; i <= mesh.Nx; ++i) {
+    // w at z-faces: use cell centers for x/y, zf for z
+    for (int k = mesh.k_begin(); k <= mesh.k_end() + 1; ++k) {
+        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                 vel.w(i, j, k) = 0.0;
             }
         }

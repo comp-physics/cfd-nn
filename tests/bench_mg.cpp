@@ -16,6 +16,13 @@ int main(int argc, char** argv) {
     int nsteps = (argc > 2) ? std::atoi(argv[2]) : 50;
     std::string ti_name = (argc > 3) ? argv[3] : "euler";
 
+    // Guard against invalid input
+    if (N <= 0 || nsteps <= 0) {
+        std::cerr << "ERROR: N and nsteps must be positive (got N=" << N
+                  << ", nsteps=" << nsteps << ")\n";
+        return 1;
+    }
+
     TimeIntegrator ti = TimeIntegrator::Euler;
     if (ti_name == "rk2") ti = TimeIntegrator::RK2;
     else if (ti_name == "rk3") ti = TimeIntegrator::RK3;

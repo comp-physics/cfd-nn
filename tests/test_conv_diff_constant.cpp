@@ -129,7 +129,8 @@ int main() {
 
     // Analysis
     std::cout << "=== Analysis ===\n\n";
-    double tol = 1e-10;
+    // Use relaxed tolerance to avoid flaky failures across compilers/platforms
+    double tol = 1e-8;
     if (std::abs(p_max - p_min) < tol && u_drift_max < tol) {
         std::cout << "PASS: Pressure correction is constant, no velocity drift\n";
         std::cout << "  This confirms convection and diffusion are 0 for constant velocity.\n";

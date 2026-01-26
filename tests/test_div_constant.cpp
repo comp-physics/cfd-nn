@@ -57,6 +57,15 @@ int main() {
     }
 
     double mean_div = sum_div / count;
+
+    // Fail fast if divergence is non-zero
+    const double tol = 1e-12;
+    if (max_div > tol || std::abs(mean_div) > tol) {
+        std::cerr << "\n[FAIL] Divergence too large: max=" << max_div
+                  << " mean=" << mean_div << " (tol=" << tol << ")\n";
+        return 1;
+    }
+
     std::cout << "\nMax |div|: " << max_div << "\n";
     std::cout << "Mean div: " << mean_div << "\n";
     std::cout << "Sum div: " << sum_div << "\n\n";

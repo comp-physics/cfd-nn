@@ -555,13 +555,13 @@ run_ctest_suite() {
         summary_line=$(grep -E "[0-9]+% tests passed" "$output_file" 2>/dev/null || true)
         if [ -n "$summary_line" ]; then
             suite_failed=$(echo "$summary_line" | grep -oP '\d+(?= tests failed)' || echo "0")
-            local total_tests pct_passed
+            local total_tests
             total_tests=$(echo "$summary_line" | grep -oP '\d+(?= tests)' | head -1 || echo "0")
             # If we have failed count, passed = total - failed
             if [ -n "$suite_failed" ] && [ "$suite_failed" != "0" ]; then
-                suite_passed=$((test_count - suite_failed))
+                suite_passed=$((total_tests - suite_failed))
             else
-                suite_passed=$test_count
+                suite_passed=$total_tests
                 suite_failed=0
             fi
         fi
