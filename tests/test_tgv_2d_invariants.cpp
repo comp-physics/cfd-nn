@@ -452,8 +452,12 @@ void test_fourier_mode_invariance() {
     record("Max velocity bounded (< 2.0)", bounded,
            qoi(max_vel_final, 2.0));
 
-    // Emit machine-readable QoI for CI metrics
-    harness::emit_qoi_fourier_mode(ke_ratio, max_vel_final);
+    // Note: Skip emit_qoi_fourier_mode on GPU because we can't compute the
+    // max_v/max_u ratio without device functions for separate u/v components.
+    // The ke_ratio alone is emitted for CI tracking.
+    std::cout << "QOI_JSON: {\"test\":\"fourier_mode\""
+              << ",\"ke_ratio\":" << ke_ratio
+              << ",\"gpu\":true}\n" << std::flush;
 #else
     solver.sync_from_gpu();
 
