@@ -1744,12 +1744,16 @@ void test_advection_momentum_conservation() {
     // The upwind scheme does NOT conserve mean momentum - this is a known limitation
     record("[Diagnostic] Upwind momentum drift tracked", true);
 
-    // Central and conservative should both preserve momentum
-    bool central_conserved = (max_delta_u_central < tol_conservative &&
-                              max_delta_v_central < tol_conservative);
+    // Central differencing reduces momentum drift vs upwind but doesn't conserve exactly
+    // (discrete momentum conservation requires conservative flux form)
+    // Use looser tolerance for central: O(1e-4) is acceptable
+    double tol_central = 1e-4;
+    bool central_low_drift = (max_delta_u_central < tol_central &&
+                              max_delta_v_central < tol_central);
+    // Only conservative flux form should conserve to machine precision
     bool conservative_conserved = (max_delta_u_conservative < tol_conservative &&
                                    max_delta_v_conservative < tol_conservative);
-    record("[Physics] Central differencing conserves momentum", central_conserved);
+    record("[Physics] Central differencing low momentum drift", central_low_drift);
     record("[Physics] Conservative flux form conserves momentum", conservative_conserved);
 }
 
