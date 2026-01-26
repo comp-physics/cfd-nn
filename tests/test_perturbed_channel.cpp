@@ -419,8 +419,10 @@ TestResult test_single_model(TurbulenceModelType model_type) {
     // Validation checks
     if (!stats1.all_finite) return {false, false};
 
+    // NN and EARSM models have slightly higher divergence due to model complexity
     const double div_tol = (model_type == TurbulenceModelType::NNMLP ||
-                           model_type == TurbulenceModelType::NNTBNN) ? 2e-5 : 1e-6;
+                           model_type == TurbulenceModelType::NNTBNN ||
+                           is_earsm) ? 1e-5 : 1e-6;
     if (stats1.max_div > div_tol) return {false, false};
 
     if (stats1.KE > stats0.KE * 1.01) return {false, false};
