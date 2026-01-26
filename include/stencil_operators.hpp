@@ -8,6 +8,18 @@
 ///   - D = derivative, I = interpolation
 ///   - cf = center→face, fc = face→center, same = same stagger
 ///   - O2 = 2nd order, O4 = 4th order
+///
+/// Grid indexing (MAC staggered grid):
+///   - Cell centers: indices Ng to Ng + N_interior - 1 (N_interior points)
+///   - Cell faces: indices Ng to Ng + N_interior (N_interior + 1 points)
+///   - Face j is at position j + 0.5, between cells j and j+1
+///
+/// Parameter conventions:
+///   - fm1, fm2: field values at i-1, i-2 (minus direction)
+///   - fp1, fp2: field values at i+1, i+2 (plus direction)
+///   - imh, iph: i-1/2, i+1/2 (half-index positions for faces)
+///   - im3h, ip3h: i-3/2, i+3/2 (extended half-index positions)
+///   - h: uniform grid spacing
 
 #pragma once
 
@@ -91,9 +103,19 @@ inline double Ifc_O4(double u_im3h, double u_imh, double u_iph, double u_ip3h) {
 // ============================================================================
 // Boundary-safe order selection
 // These helpers determine if O4 stencil is safe at a given index
+//
+// Note on different bounds for Dcf vs Dfc:
+//   - Centers: N_interior points (indices Ng to Ng + N_interior - 1)
+//   - Faces: N_interior + 1 points (indices Ng to Ng + N_interior)
+//   - Dcf needs centers up to i+2, so i+2 <= Ng + N_interior - 1
+//   - Dfc needs faces up to i+2, so i+2 <= Ng + N_interior
+//   - This results in Dfc bound being 1 higher than Dcf (correct behavior)
 // ============================================================================
 
 /// Check if O4 same-stagger derivative is safe (needs ±2 neighbors)
+/// @param i      Current index (center or face depending on context)
+/// @param Ng     Number of ghost layers
+/// @param N_interior  Number of interior cells in this direction
 inline bool is_O4_safe_same(int i, int Ng, int N_interior) {
     // Interior indices run from Ng to Ng+N_interior-1
     // Need i-2 >= Ng and i+2 < Ng+N_interior
@@ -101,19 +123,28 @@ inline bool is_O4_safe_same(int i, int Ng, int N_interior) {
 }
 
 /// Check if O4 center→face derivative is safe at face i+1/2
-/// For Dcf at face i+1/2, we need centers at i-1, i, i+1, i+2
+/// @param i      Cell index (output face is at i+1/2)
+/// @param Ng     Number of ghost layers
+/// @param N_interior  Number of interior cells
+/// Needs centers at i-1, i, i+1, i+2 (rightmost center must be < Ng + N_interior)
 inline bool is_O4_safe_Dcf(int i, int Ng, int N_interior) {
     return (i >= Ng + 1) && (i < Ng + N_interior - 2);
 }
 
 /// Check if O4 face→center derivative is safe at center i
-/// For Dfc at center i, we need faces at i-3/2, i-1/2, i+1/2, i+3/2
-/// In integer indexing: faces i-1, i, i+1, i+2 (if face index = left cell index + 1/2)
+/// @param i      Cell center index (output location)
+/// @param Ng     Number of ghost layers
+/// @param N_interior  Number of interior cells
+/// Needs faces at i-3/2, i-1/2, i+1/2, i+3/2 (integer indices: i-1, i, i+1, i+2)
+/// Note: Bound differs from Dcf by 1 because faces extend to index Ng + N_interior
 inline bool is_O4_safe_Dfc(int i, int Ng, int N_interior) {
     return (i >= Ng + 1) && (i < Ng + N_interior - 1);
 }
 
-/// Check if O4 interpolation is safe (same stencil width as derivatives)
+/// Check if O4 interpolation is safe (same stencil width as Dfc)
+/// @param i      Index at output location
+/// @param Ng     Number of ghost layers
+/// @param N_interior  Number of interior cells
 inline bool is_O4_safe_interp(int i, int Ng, int N_interior) {
     return (i >= Ng + 1) && (i < Ng + N_interior - 1);
 }
