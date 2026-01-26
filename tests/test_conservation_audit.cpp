@@ -79,17 +79,8 @@ void test_conservation_periodic_3d() {
     config.postprocess = false;
     config.write_fields = false;
 
-    // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-
     RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0, 0.0);  // No body force for conservation test
 
     // Taylor-Green initial condition
@@ -211,17 +202,8 @@ void test_projection_identity() {
     config.postprocess = false;
     config.write_fields = false;
 
-    // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-
     RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0, 0.0);
 
     // Set up a divergent initial velocity to exercise projection
@@ -529,17 +511,8 @@ void test_constant_field_invariance() {
     config.postprocess = false;
     config.write_fields = false;
 
-    // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-
     RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0, 0.0);  // EXPLICITLY no forcing
 
     // Initialize constant velocity field using fill() which sets ALL cells including ghost
@@ -682,13 +655,7 @@ void test_pressure_gauge_invariance() {
     config.write_fields = false;
 
     // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
 
     // Lambda to initialize TGV velocity
     auto init_tgv = [&](VectorField& vel) {

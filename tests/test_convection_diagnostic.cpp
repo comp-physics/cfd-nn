@@ -6,8 +6,11 @@
 #include <cmath>
 #include "solver.hpp"
 #include "mesh.hpp"
+#include "test_utilities.hpp"
 
 using namespace nncfd;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // Check if convection alone creates spurious v for u=sin(y), v=0
 void test_convection_only() {
@@ -26,12 +29,7 @@ void test_convection_only() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Shear flow: u = sin(y), v = 0 (divergence-free, no convection)
     for (int j = 0; j <= mesh.Ny + 1; ++j) {
@@ -110,12 +108,7 @@ void test_constant_velocity_terms() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Constant velocity everywhere
     for (int j = 0; j <= mesh.Ny + 1; ++j) {
@@ -194,12 +187,7 @@ void test_projection_diagnostic() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // TGV: u = sin(x)cos(y), v = -cos(x)sin(y) (exactly div-free)
     for (int j = 0; j <= mesh.Ny + 1; ++j) {

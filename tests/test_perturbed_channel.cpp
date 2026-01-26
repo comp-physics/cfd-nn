@@ -23,6 +23,8 @@
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 //=============================================================================
 // Path resolution helpers for NN models
@@ -375,13 +377,7 @@ TestResult test_single_model(TurbulenceModelType model_type) {
     }
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     bool has_transport = false;
     if (model_type != TurbulenceModelType::None) {
@@ -459,13 +455,7 @@ bool test_earsm_model(TurbulenceModelType model_type) {
     config.poisson_abs_tol_floor = 1e-6;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     auto turb_model = create_turbulence_model(model_type, "", "");
     solver.set_turbulence_model(std::move(turb_model));

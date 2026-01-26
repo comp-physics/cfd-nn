@@ -98,12 +98,7 @@ void test_poiseuille_flow() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
     solver.set_body_force(-dp_dx, 0.0);
 
     // Initialize close to solution
@@ -170,12 +165,7 @@ void test_grid_consistency() {
         RANSSolver solver(mesh, config);
         solver.set_body_force(-dp_dx, 0.0);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         // Initialize with exact solution
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -224,12 +214,7 @@ void test_vortex_decay() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();
@@ -288,12 +273,7 @@ void test_mms_navier_stokes() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize with exact solution
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -346,12 +326,7 @@ void test_energy_dissipation_rate() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();
@@ -407,12 +382,7 @@ void test_stokes_first_problem() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     solver.initialize_uniform(0.0, 0.0);
     solver.sync_to_gpu();
@@ -471,12 +441,7 @@ void test_vortex_preservation() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();
@@ -538,12 +503,7 @@ void test_lid_driven_cavity_re100() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::NoSlip;
-    bc.x_hi = VelocityBC::NoSlip;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::AllNoSlip));
 
     solver.initialize_uniform(0.0, 0.0);
     solver.sync_to_gpu();
@@ -605,12 +565,7 @@ void test_law_of_wall() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(-dp_dx, 0.0);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     solver.initialize_uniform(0.5, 0.0);
     solver.sync_to_gpu();

@@ -35,6 +35,8 @@ using namespace nncfd;
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
 using nncfd::test::compute_max_divergence_3d;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // Tolerance for HYPRE vs Multigrid comparison
 // Velocities should match closely since both solve the same NS equations
@@ -284,13 +286,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     config.write_fields = false;
 
     // All-periodic BCs for Taylor-Green
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
 
     // Run with Multigrid
     std::cout << "  Running with Multigrid...\n";
@@ -517,13 +513,7 @@ bool test_hypre_vs_multigrid_3d_duct() {
     config.write_fields = false;
 
     // Duct flow: walls on y and z faces, periodic in x
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::NoSlip;
-    bc.z_hi = VelocityBC::NoSlip;
+    auto bc = create_velocity_bc(BCPattern::Duct);
 
     // Run with Multigrid
     std::cout << "  Running with Multigrid...\n";
@@ -676,15 +666,7 @@ int run_dump_mode(const std::string& prefix) {
 
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.001, 0.0, 0.0);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
@@ -735,15 +717,7 @@ int run_compare_mode(const std::string& prefix) {
 
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.001, 0.0, 0.0);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();

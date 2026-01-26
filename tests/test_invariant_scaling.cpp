@@ -10,8 +10,11 @@
 #include <vector>
 #include "solver.hpp"
 #include "mesh.hpp"
+#include "test_utilities.hpp"
 
 using namespace nncfd;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // Test z-invariance scaling with grid size
 void test_z_invariance_scaling() {
@@ -35,12 +38,7 @@ void test_z_invariance_scaling() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = bc.y_hi = VelocityBC::Periodic;
-        bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // 2D extruded TGV IC (z-independent)
         for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
@@ -128,10 +126,7 @@ void test_spurious_v_scaling_dt() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Shear flow: u = sin(y), v = 0
         for (int j = 0; j <= mesh.Ny + 1; ++j) {
@@ -200,10 +195,7 @@ void test_spurious_v_scaling_grid() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Shear flow: u = sin(y), v = 0
         for (int j = 0; j <= mesh.Ny + 1; ++j) {
@@ -269,14 +261,7 @@ void test_const_vel_scaling() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
-
-        // Fully periodic BCs (same as test_tgv_2d_invariants)
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Constant velocity IC
         const double u_const = 1.5, v_const = 0.5;

@@ -364,12 +364,7 @@ void test_rans_channel_sst() {
     auto turb_model = create_turbulence_model(TurbulenceModelType::SSTKOmega, "", "");
     solver.set_turbulence_model(std::move(turb_model));
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     solver.set_body_force(-dp_dx, 0.0);
     solver.initialize_uniform(0.1, 0.0);  // Small initial u
@@ -569,12 +564,7 @@ void test_rans_channel_komega() {
     auto turb_model = create_turbulence_model(TurbulenceModelType::KOmega, "", "");
     solver.set_turbulence_model(std::move(turb_model));
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     solver.set_body_force(-dp_dx, 0.0);
     solver.initialize_uniform(0.1, 0.0);
@@ -691,12 +681,7 @@ void test_rans_models_smoke() {
         auto turb_model = create_turbulence_model(model_type, "", "");
         solver.set_turbulence_model(std::move(turb_model));
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         solver.set_body_force(0.001, 0.0);
         solver.initialize_uniform(0.1, 0.0);

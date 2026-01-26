@@ -172,13 +172,7 @@ void test_mms_spatial_convergence() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         init_mms(solver, mesh, mms_init);
         solver.sync_to_gpu();
@@ -257,13 +251,7 @@ void test_mms_temporal_convergence() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         init_mms(solver, mesh, mms_init);
         solver.sync_to_gpu();
@@ -321,13 +309,7 @@ void test_poisson_projection_quality() {
         config.verbose = false;
 
         RANSSolver solver(mesh, config);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize with Taylor-Green (divergence-free IC)
         init_taylor_green(solver, mesh);
@@ -388,13 +370,7 @@ void test_viscous_decay_rate() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();

@@ -364,12 +364,7 @@ StageResult run_stage_breakdown(int N, double U0, double V0, double dt) {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_tgv_with_offset(solver, mesh, U0, V0);
 
@@ -847,12 +842,7 @@ void test_solver_mean_subtraction() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize TGV + offset
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -967,12 +957,7 @@ void test_convergence_quality() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
@@ -1155,12 +1140,7 @@ void test_absolute_tolerance_fix() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
@@ -1352,12 +1332,7 @@ void test_operator_consistency() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize TGV + offset
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1798,12 +1773,7 @@ void test_vcycle_sweep() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize offset frame
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1825,7 +1795,7 @@ void test_vcycle_sweep() {
 
         // Also run rest frame for comparison
         RANSSolver solver_rest(mesh, config);
-        solver_rest.set_velocity_bc(bc);
+        solver_rest.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
                 solver_rest.velocity().u(i, j) = std::sin(mesh.xf[i]) * std::cos(mesh.yc[j]);
@@ -1909,12 +1879,7 @@ void test_projection_diagnostics() {
 
         RANSSolver solver(mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize TGV + offset
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -2103,12 +2068,7 @@ void test_skew_symmetric_galilean() {
 
         RANSSolver solver_rest(mesh_rest, config_rest);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver_rest.set_velocity_bc(bc);
+        solver_rest.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // TGV in rest frame
         for (int j = mesh_rest.j_begin(); j < mesh_rest.j_end(); ++j) {
@@ -2141,7 +2101,7 @@ void test_skew_symmetric_galilean() {
         config_offset.convective_scheme = scheme_pair.second;
 
         RANSSolver solver_offset(mesh_offset, config_offset);
-        solver_offset.set_velocity_bc(bc);
+        solver_offset.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // TGV in offset frame
         for (int j = mesh_offset.j_begin(); j < mesh_offset.j_end(); ++j) {
@@ -2289,12 +2249,7 @@ void test_frame_invariance_poisson_hardness() {
 
         RANSSolver solver(local_mesh, config);
 
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize with smooth periodic velocity + offset
         VectorField init_vel(local_mesh);
@@ -2483,12 +2438,7 @@ void test_skew_galilean() {
 
             RANSSolver solver(local_mesh, config);
 
-            VelocityBC bc;
-            bc.x_lo = VelocityBC::Periodic;
-            bc.x_hi = VelocityBC::Periodic;
-            bc.y_lo = VelocityBC::Periodic;
-            bc.y_hi = VelocityBC::Periodic;
-            solver.set_velocity_bc(bc);
+            solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
             // Initialize with smooth periodic velocity + offset
             VectorField init_vel(local_mesh);

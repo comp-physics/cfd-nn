@@ -33,6 +33,8 @@
 
 using nncfd::test::file_exists;
 using nncfd::test::CROSS_BACKEND_TOLERANCE;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 #if defined(_OPENMP)
 #include <omp.h>
@@ -825,14 +827,7 @@ ScenarioSignature run_channel_solver_3d() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.001, 0.0, 0.0);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
     double H = 1.0;
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
@@ -913,12 +908,7 @@ ScenarioSignature run_tgv_2d() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
@@ -1001,12 +991,7 @@ ScenarioSignature run_poiseuille_2d() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.01, 0.0, 0.0);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     double H = 1.0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1080,12 +1065,7 @@ ScenarioSignature run_projection_invariants() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initial condition with known mean
     double u_mean_init = 0.5;
@@ -1167,12 +1147,7 @@ ScenarioSignature run_mixing_length() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.01, 0.0, 0.0);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     double H = 1.0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1267,12 +1242,7 @@ ScenarioSignature run_nn_mlp() {
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.01, 0.0, 0.0);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     // Initialize with parabolic profile
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {

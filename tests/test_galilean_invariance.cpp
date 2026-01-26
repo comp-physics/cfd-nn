@@ -140,12 +140,7 @@ GalileanResult run_galilean_test(int N, double nu, double dt, int nsteps,
     };
 
     auto make_bc = []() {
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        return bc;
+        return create_velocity_bc(BCPattern::FullyPeriodic);
     };
 
     // -------------------------------------------------------------------------
@@ -437,12 +432,7 @@ SolverCompareResult run_single_step_with_solver(int N, double U0, double V0,
     };
 
     auto make_bc = []() {
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        return bc;
+        return create_velocity_bc(BCPattern::FullyPeriodic);
     };
 
     // Rest frame
