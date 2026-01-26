@@ -34,6 +34,7 @@
 using namespace nncfd;
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
+using nncfd::test::compute_max_divergence_3d;
 
 // Tolerance for HYPRE vs Multigrid comparison
 // Velocities should match closely since both solve the same NS equations
