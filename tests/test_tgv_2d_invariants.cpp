@@ -79,12 +79,7 @@ void test_tgv_2d_invariants() {
     RANSSolver solver(mesh, config);
 
     // Fully periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with Taylor-Green vortex
     init_taylor_green(solver, mesh);
@@ -216,12 +211,7 @@ void test_tgv_2d_decay_rate() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();
@@ -273,12 +263,7 @@ void test_tgv_2d_initial_divergence() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
 
@@ -324,12 +309,7 @@ void test_constant_velocity_invariance() {
     RANSSolver solver(mesh, config);
 
     // Fully periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with constant velocity everywhere
     for (int j = 0; j <= mesh.Ny + 1; ++j) {
@@ -415,12 +395,7 @@ void test_fourier_mode_invariance() {
     RANSSolver solver(mesh, config);
 
     // Fully periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize: u = sin(y), v = 0
     // Divergence-free: du/dx = 0, dv/dy = 0, so div = 0
@@ -568,12 +543,7 @@ void test_rk_integrator_smoke() {
         RANSSolver solver(mesh, config);
 
         // Fully periodic BCs
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::Periodic;
-        bc.y_hi = VelocityBC::Periodic;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
         // Initialize with Taylor-Green vortex
         init_taylor_green(solver, mesh);

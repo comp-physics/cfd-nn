@@ -275,12 +275,7 @@ PoiseuilleResult run_poiseuille_steady() {
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     // Body force = -dp/dx (pressure gradient drives flow)
     solver.set_body_force(-dp_dx, 0.0);
