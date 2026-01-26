@@ -584,79 +584,25 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     const int u_stride = Nx + 2 * Ng + 1;
     const int v_stride = Nx + 2 * Ng;
 
+    // Copy velocity_ to velocity_star_ using kernel calls
     if (is_2d) {
-        // Get device pointers for copy
-        const double* u_src_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_dst_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-        const double* v_src_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_dst_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-
-        // Copy u-velocity: velocity_star_u = velocity_u
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_src_dev, u_dst_dev)
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                int idx = j * u_stride + i;
-                u_dst_dev[idx] = u_src_dev[idx];
-            }
-        }
-
-        // Copy v-velocity: velocity_star_v = velocity_v
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(v_src_dev, v_dst_dev)
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                int idx = j * v_stride + i;
-                v_dst_dev[idx] = v_src_dev[idx];
-            }
-        }
+        time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_star_u_ptr_,
+                                 velocity_v_ptr_, velocity_star_v_ptr_,
+                                 Nx, Ny, Ng, u_stride, v_stride,
+                                 velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        // 3D INLINE copy: velocity_star_ = velocity_
-        // NVHPC WORKAROUND: Use gpu::dev_ptr to get actual device addresses.
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-
-        const double* u_src_dev = gpu::dev_ptr(velocity_u_ptr_);
-        double* u_dst_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-        const double* v_src_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* v_dst_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-        const double* w_src_dev = gpu::dev_ptr(velocity_w_ptr_);
-        double* w_dst_dev = gpu::dev_ptr(velocity_star_w_ptr_);
-
-        // Copy u-velocity
-        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_src_dev, u_dst_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    int idx = k * u_plane + j * u_stride + i;
-                    u_dst_dev[idx] = u_src_dev[idx];
-                }
-            }
-        }
-
-        // Copy v-velocity
-        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(v_src_dev, v_dst_dev)
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * v_plane + j * v_stride + i;
-                    v_dst_dev[idx] = v_src_dev[idx];
-                }
-            }
-        }
-
-        // Copy w-velocity
-        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(w_src_dev, w_dst_dev)
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    int idx = k * w_plane + j * w_stride_local + i;
-                    w_dst_dev[idx] = w_src_dev[idx];
-                }
-            }
-        }
+        time_kernels::copy_3d_uvw(velocity_u_ptr_, velocity_star_u_ptr_,
+                                  velocity_v_ptr_, velocity_star_v_ptr_,
+                                  velocity_w_ptr_, velocity_star_w_ptr_,
+                                  Nx, Ny, Nz, Ng,
+                                  u_stride, v_stride, w_stride_local,
+                                  u_plane, v_plane, w_plane,
+                                  velocity_.u_total_size(), velocity_.v_total_size(),
+                                  velocity_.w_total_size());
     }
 
     correct_velocity();
