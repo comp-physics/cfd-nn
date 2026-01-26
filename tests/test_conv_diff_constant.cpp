@@ -8,8 +8,11 @@
 #include <cmath>
 #include "solver.hpp"
 #include "mesh.hpp"
+#include "test_utilities.hpp"
 
 using namespace nncfd;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 int main() {
     std::cout << "================================================================\n";
@@ -33,13 +36,7 @@ int main() {
     config.convective_scheme = ConvectiveScheme::Skew;  // Default for periodic
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0);
 
     // Set constant velocity everywhere using fill() to ensure ALL staggered grid

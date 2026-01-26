@@ -10,9 +10,12 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
+#include "test_utilities.hpp"
 
 using namespace nncfd;
 using namespace std::chrono;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 /// Run Taylor-Green for a few steps with specified solver and return avg Poisson time
 double benchmark_solver(int N, PoissonSolverType solver_type, int num_iter, bool fixed_cycles) {
@@ -35,13 +38,7 @@ double benchmark_solver(int N, PoissonSolverType solver_type, int num_iter, bool
     }
 
     RANSSolver solver(mesh, config);
-
-    // Periodic BCs
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize Taylor-Green
     for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {

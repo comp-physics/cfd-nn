@@ -13,6 +13,7 @@
 #include "config.hpp"
 #include "timing.hpp"
 #include "turbulence_baseline.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -22,6 +23,8 @@
 #include <cstdlib>
 
 using namespace nncfd;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // Configuration
 constexpr int NUM_STEPS = 50;        // Steps per model
@@ -123,13 +126,7 @@ ModelResult run_model(TurbulenceModelType type) {
 
         RANSSolver solver(mesh, config);
         solver.set_body_force(0.001, 0.0);
-
-        VelocityBC bc;
-        bc.x_lo = VelocityBC::Periodic;
-        bc.x_hi = VelocityBC::Periodic;
-        bc.y_lo = VelocityBC::NoSlip;
-        bc.y_hi = VelocityBC::NoSlip;
-        solver.set_velocity_bc(bc);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
         if (type != TurbulenceModelType::None) {
             auto model = create_turbulence_model(type, nn_path, nn_path);

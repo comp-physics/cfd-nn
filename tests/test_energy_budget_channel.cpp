@@ -41,6 +41,8 @@
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // ============================================================================
 // Compute kinetic energy: KE = 0.5 * integral(|u|^2 dV)
@@ -244,13 +246,7 @@ EnergyBudgetResult run_energy_budget_test() {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
     solver.set_body_force(fx, 0.0);
 
     // Initialize with small perturbation (not zero, not steady)

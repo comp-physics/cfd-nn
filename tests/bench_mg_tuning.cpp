@@ -15,6 +15,7 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "profiling.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -25,6 +26,8 @@
 
 using namespace nncfd;
 using namespace std::chrono;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 struct TuningConfig {
     std::string name;
@@ -137,16 +140,7 @@ TuningResult run_single_benchmark(const TuningConfig& cfg, int N, int nsteps) {
     config.poisson_check_after = 4;
 
     RANSSolver solver(mesh, config);
-
-    // Channel BCs (walls on y) - PWP configuration
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
     // Initialize Taylor-Green vortex (divergence-free)
     const double U0 = 1.0;

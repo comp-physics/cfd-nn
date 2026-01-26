@@ -5,6 +5,7 @@
 #include "config.hpp"
 #include "mesh.hpp"
 #include "gpu_utils.hpp"
+#include "test_utilities.hpp"
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -12,6 +13,8 @@
 #include <cstdlib>
 
 using namespace nncfd;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 void init_tgv_3d(RANSSolver& solver, const Mesh& mesh) {
     auto& vel = solver.velocity();
@@ -84,12 +87,7 @@ int main(int argc, char** argv) {
     config.time_integrator = ti;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_tgv_3d(solver, mesh);
     solver.sync_to_gpu();

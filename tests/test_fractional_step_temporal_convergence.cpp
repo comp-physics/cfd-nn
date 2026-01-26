@@ -40,6 +40,8 @@
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // ============================================================================
 // Helper: Format QoI output
@@ -99,14 +101,7 @@ static VectorField run_to_time(const Mesh& mesh, double nu, double T, double dt,
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    // Fully periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with Taylor-Green vortex
     init_taylor_green(solver, mesh);

@@ -26,6 +26,7 @@
 #include "solver.hpp"
 #include "features.hpp"
 #include "config.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <fstream>
 #include <cmath>
@@ -34,6 +35,8 @@
 #include <cstring>
 
 using namespace nncfd;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // Dump a scalar field to file
 bool dump_field(const std::string& filename, const ScalarField& f, const Mesh& mesh) {
@@ -188,13 +191,7 @@ int main(int argc, char* argv[]) {
     config.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with smooth trigonometric field (divergence-free)
     VectorField& vel = solver.velocity();

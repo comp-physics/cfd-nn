@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "mesh.hpp"
 #include "gpu_utils.hpp"
+#include "test_utilities.hpp"
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -10,6 +11,8 @@
 #include <cstring>
 
 using namespace nncfd;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 int main(int argc, char** argv) {
     int N = (argc > 1) ? std::atoi(argv[1]) : 64;
@@ -53,13 +56,7 @@ int main(int argc, char** argv) {
     config.poisson_solver = PoissonSolverType::MG;  // Force MG solver for benchmarking
 
     RANSSolver solver(mesh, config);
-
-    // Duct BCs (wall y AND z, periodic x only) - forces MG solver
-    VelocityBC bc;
-    bc.x_lo = bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = bc.z_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
     solver.set_body_force(1.0, 0.0, 0.0);
 
     // Initialize with small perturbation

@@ -18,11 +18,14 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_harness.hpp"
+#include "test_utilities.hpp"
 #include <cmath>
 #include <string>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // Apply discrete 2D Laplacian operator: L(p) = (p_{i+1} - 2p_i + p_{i-1})/dx^2 + ...
 void apply_laplacian_2d(const ScalarField& p, ScalarField& Lp, const Mesh& mesh) {
@@ -106,10 +109,13 @@ double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, in
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = xbc; bc.x_hi = xbc;
-    bc.y_lo = ybc; bc.y_hi = ybc;
-    solver.set_velocity_bc(bc);
+    // Set BCs based on pattern
+    BCPattern pattern = (xbc == VelocityBC::Periodic && ybc == VelocityBC::Periodic)
+                        ? BCPattern::FullyPeriodic
+                        : (xbc == VelocityBC::Periodic && ybc == VelocityBC::NoSlip)
+                          ? BCPattern::Channel2D
+                          : BCPattern::AllNoSlip;
+    solver.set_velocity_bc(create_velocity_bc(pattern));
 
     // Initialize with divergent velocity to create Poisson problem
     VectorField vel(mesh);
