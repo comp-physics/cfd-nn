@@ -96,6 +96,10 @@ def read_vtk_legacy(filename):
             raise ValueError(f"Could not parse DIMENSIONS from {filename}")
 
         Nx, Ny, Nz = dims
+        expected_points = Nx * Ny * Nz
+        if n_points != expected_points:
+            raise ValueError(f"POINT_DATA mismatch in {filename}: expected {expected_points} "
+                           f"(from DIMENSIONS {Nx}x{Ny}x{Nz}), got {n_points}")
         expected_values = n_points * 3
 
         if is_binary:
@@ -433,7 +437,7 @@ def main():
         else:
             # Process only the last (presumably final) file
             print(f"[INFO] Found {len(vtk_files)} VTK files, processing last one")
-            print(f"       Use --batch to process all files")
+            print("       Use --batch to process all files")
             analyze_vtk_file(str(vtk_files[-1]), args.output,
                            Re=args.Re, use_gpu=use_gpu)
     else:
