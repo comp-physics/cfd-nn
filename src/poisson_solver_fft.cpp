@@ -787,54 +787,8 @@ void FFTPoissonSolver::unpack_and_apply_bc(double* p_ptr) {
         }
     }
 
-    // Step 2: Fill ALL Ng ghost layers for each boundary
-    // X boundaries (periodic) - fill all Ng ghost layers
-    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
-    for (int g = 0; g < Ng; ++g) {
-        for (int k = 0; k < Nz; ++k) {
-            for (int j = 0; j < Ny; ++j) {
-                const int kk = k + Ng;
-                const int jj = j + Ng;
-                // x_lo ghost layer g: ghost[g] = interior[Nx + g] (periodic wrap)
-                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + g] =
-                    p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Nx + g)];
-                // x_hi ghost layer g: ghost[Ng + Nx + g] = interior[Ng + g]
-                p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Ng + Nx + g)] =
-                    p_ptr[kk * Nx_full * Ny_full + jj * Nx_full + (Ng + g)];
-            }
-        }
-    }
-
-    // Y boundaries (Neumann dp/dy = 0) - fill all Ng ghost layers
-    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
-    for (int g = 0; g < Ng; ++g) {
-        for (int k = 0; k < Nz; ++k) {
-            for (int i = 0; i < Nx + 2 * Ng; ++i) {
-                const int kk = k + Ng;
-                // y_lo ghost layer g: all ghost layers copy from first interior cell (Neumann)
-                p_ptr[kk * Nx_full * Ny_full + g * Nx_full + i] =
-                    p_ptr[kk * Nx_full * Ny_full + Ng * Nx_full + i];
-                // y_hi ghost layer g: all ghost layers copy from last interior cell
-                p_ptr[kk * Nx_full * Ny_full + (Ng + Ny + g) * Nx_full + i] =
-                    p_ptr[kk * Nx_full * Ny_full + (Ng + Ny - 1) * Nx_full + i];
-            }
-        }
-    }
-
-    // Z boundaries (periodic) - fill all Ng ghost layers
-    #pragma omp target teams distribute parallel for collapse(3) map(present: p_ptr[0:total_size])
-    for (int g = 0; g < Ng; ++g) {
-        for (int j = 0; j < Ny + 2 * Ng; ++j) {
-            for (int i = 0; i < Nx + 2 * Ng; ++i) {
-                // z_lo ghost layer g: ghost[g] = interior[Nz + g] (periodic wrap)
-                p_ptr[g * Nx_full * Ny_full + j * Nx_full + i] =
-                    p_ptr[(Nz + g) * Nx_full * Ny_full + j * Nx_full + i];
-                // z_hi ghost layer g: ghost[Ng + Nz + g] = interior[Ng + g]
-                p_ptr[(Ng + Nz + g) * Nx_full * Ny_full + j * Nx_full + i] =
-                    p_ptr[(Ng + g) * Nx_full * Ny_full + j * Nx_full + i];
-            }
-        }
-    }
+    // Step 2: Apply boundary conditions (reuse apply_bc_device)
+    apply_bc_device(p_ptr);
 }
 
 void FFTPoissonSolver::apply_bc_device(double* p_ptr) {
