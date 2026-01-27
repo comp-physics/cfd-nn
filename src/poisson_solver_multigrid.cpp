@@ -286,16 +286,16 @@ void MultigridPoissonSolver::apply_bc(int level) {
                         u_ptr[idx_lo] = u_ptr[j * stride + Nx + g];
                     } else if (bc_x_lo == 1) {
                         u_ptr[idx_lo] = u_ptr[j * stride + Ng];
-                    } else {
-                        u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + Ng];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                        u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + (Ng + g)];
                     }
 
                     if (bc_x_hi == 2) {
                         u_ptr[idx_hi] = u_ptr[j * stride + Ng + g];
                     } else if (bc_x_hi == 1) {
                         u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
-                    } else {
-                        u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1)];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nx+Ng-1-g)
+                        u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1 - g)];
                     }
                 }
             }
@@ -310,16 +310,16 @@ void MultigridPoissonSolver::apply_bc(int level) {
                         u_ptr[idx_lo] = u_ptr[(Ny + g) * stride + i];
                     } else if (bc_y_lo == 1) {
                         u_ptr[idx_lo] = u_ptr[Ng * stride + i];
-                    } else {
-                        u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * stride + i];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                        u_ptr[idx_lo] = 2.0 * dval - u_ptr[(Ng + g) * stride + i];
                     }
 
                     if (bc_y_hi == 2) {
                         u_ptr[idx_hi] = u_ptr[(Ng + g) * stride + i];
                     } else if (bc_y_hi == 1) {
                         u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
-                    } else {
-                        u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell (Ny+Ng-1-g)
+                        u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1 - g) * stride + i];
                     }
                 }
             }
