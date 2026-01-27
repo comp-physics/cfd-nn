@@ -23,21 +23,8 @@ using namespace nncfd::test;
 
 // ============================================================================
 // Additional Helper Functions (not in framework)
+// Note: compute_enstrophy_2d is now in test_utilities.hpp
 // ============================================================================
-
-/// Compute enstrophy (0.5 * integral of omega^2) for 2D
-double compute_enstrophy_2d(const Mesh& mesh, const VectorField& vel) {
-    double ens = 0.0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dvdx = (vel.v(i+1, j) - vel.v(i, j)) / mesh.dx;
-            double dudy = (vel.u(i, j+1) - vel.u(i, j)) / mesh.dy;
-            double omega = dvdx - dudy;
-            ens += 0.5 * omega * omega * mesh.dx * mesh.dy;
-        }
-    }
-    return ens;
-}
 
 /// L2 error for u-velocity against analytical solution
 double compute_l2_error_u(const VectorField& vel, const Mesh& mesh,

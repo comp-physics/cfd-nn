@@ -1534,6 +1534,48 @@ inline double compute_enstrophy_3d(const VectorField& vel, const Mesh& mesh) {
 }
 
 //-----------------------------------------------------------------------------
+// Combined 2D/3D Helper Functions
+//-----------------------------------------------------------------------------
+
+/// Compute maximum divergence (combined 2D/3D dispatch)
+/// Use this when the same code path handles both dimensionalities
+inline double compute_max_divergence(const VectorField& vel, const Mesh& mesh) {
+    return mesh.is2D() ? compute_max_divergence_2d(vel, mesh)
+                       : compute_max_divergence_3d(vel, mesh);
+}
+
+/// Compute mean kinetic energy (combined 2D/3D)
+/// Returns ke/count (average per cell) - suitable for invariant checking
+inline double compute_mean_kinetic_energy(const VectorField& vel, const Mesh& mesh) {
+    double ke = 0.0;
+    int count = 0;
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                ke += 0.5 * (u*u + v*v);
+                ++count;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                    ke += 0.5 * (u*u + v*v + w*w);
+                    ++count;
+                }
+            }
+        }
+    }
+    return ke / count;
+}
+
+//-----------------------------------------------------------------------------
 // Taylor-Green Vortex Initialization
 //-----------------------------------------------------------------------------
 
@@ -1551,17 +1593,47 @@ inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
     }
 }
 
-/// Compute kinetic energy: 0.5 * integral(u^2 + v^2) dx dy
+/// Compute total kinetic energy (combined 2D/3D)
+/// Returns 0.5 * integral(u^2 + v^2 [+ w^2]) with cell volume weighting
 inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
-    double KE = 0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-            KE += 0.5 * (u*u + v*v) * mesh.dx * mesh.dy;
+    double KE = 0.0;
+    if (mesh.is2D()) {
+        const double cell_area = mesh.dx * mesh.dy;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                KE += 0.5 * (u*u + v*v) * cell_area;
+            }
+        }
+    } else {
+        const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                    KE += 0.5 * (u*u + v*v + w*w) * cell_vol;
+                }
+            }
         }
     }
     return KE;
+}
+
+//-----------------------------------------------------------------------------
+// Backward-Compatible Overloads (Mesh, VectorField order)
+//-----------------------------------------------------------------------------
+
+/// compute_max_divergence with (Mesh, VectorField) parameter order
+inline double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
+    return compute_max_divergence(vel, mesh);
+}
+
+/// compute_enstrophy_2d with (Mesh, VectorField) parameter order
+inline double compute_enstrophy_2d(const Mesh& mesh, const VectorField& vel) {
+    return compute_enstrophy_2d(vel, mesh);
 }
 
 //=============================================================================

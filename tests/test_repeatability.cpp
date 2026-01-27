@@ -18,11 +18,13 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_harness.hpp"
+#include "test_utilities.hpp"
 #include <cmath>
 #include <string>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::compute_mean_kinetic_energy;
 
 // ============================================================================
 // Metric computation
@@ -36,35 +38,6 @@ struct SimulationMetrics {
     double w_max;
     int steps_completed;
 };
-
-double compute_kinetic_energy(const VectorField& vel, const Mesh& mesh) {
-    double ke = 0.0;
-    int count = 0;
-
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-                ke += 0.5 * (u*u + v*v);
-                ++count;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
-                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
-                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
-                    ke += 0.5 * (u*u + v*v + w*w);
-                    ++count;
-                }
-            }
-        }
-    }
-    return ke / count;
-}
 
 double compute_pressure_variance(const ScalarField& p, const Mesh& mesh) {
     double p_mean = 0.0;
@@ -154,7 +127,7 @@ SimulationMetrics run_simulation(const Mesh& mesh, const Config& config,
 
     // Collect metrics
     SimulationMetrics metrics;
-    metrics.kinetic_energy = compute_kinetic_energy(solver.velocity(), mesh);
+    metrics.kinetic_energy = compute_mean_kinetic_energy(solver.velocity(), mesh);
     metrics.pressure_variance = compute_pressure_variance(solver.pressure(), mesh);
     metrics.u_max = compute_max_velocity(solver.velocity(), mesh, 'u');
     metrics.v_max = compute_max_velocity(solver.velocity(), mesh, 'v');

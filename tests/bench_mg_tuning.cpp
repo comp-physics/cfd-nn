@@ -28,6 +28,7 @@ using namespace nncfd;
 using namespace std::chrono;
 using nncfd::test::BCPattern;
 using nncfd::test::create_velocity_bc;
+using nncfd::test::compute_kinetic_energy;
 
 struct TuningConfig {
     std::string name;
@@ -94,23 +95,7 @@ double compute_divergence_inf(const Mesh& mesh, const VectorField& vel) {
     return div_max;
 }
 
-double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
-    double ke = 0.0;
-
-    // Sum 0.5 * (u^2 + v^2 + w^2) over cell centers
-    for (int k = 1; k <= mesh.Nz; ++k) {
-        for (int j = 1; j <= mesh.Ny; ++j) {
-            for (int i = 1; i <= mesh.Nx; ++i) {
-                double u_c = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
-                double v_c = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
-                double w_c = (mesh.Nz > 1) ?
-                    0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1)) : 0.0;
-                ke += 0.5 * (u_c*u_c + v_c*v_c + w_c*w_c);
-            }
-        }
-    }
-    return ke;
-}
+// Note: compute_kinetic_energy is from test_utilities.hpp
 
 TuningResult run_single_benchmark(const TuningConfig& cfg, int N, int nsteps) {
     // Set up mesh and solver

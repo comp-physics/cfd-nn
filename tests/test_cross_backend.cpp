@@ -35,6 +35,9 @@ using nncfd::test::file_exists;
 using nncfd::test::CROSS_BACKEND_TOLERANCE;
 using nncfd::test::create_velocity_bc;
 using nncfd::test::BCPattern;
+using nncfd::test::compute_kinetic_energy;
+using nncfd::test::compute_max_divergence;
+using nncfd::test::compute_enstrophy_2d;
 
 #if defined(_OPENMP)
 #include <omp.h>
@@ -514,74 +517,9 @@ bool verify_backend() {
 }
 
 //=============================================================================
-// QoI computation helpers
+// QoI computation helpers (note: compute_kinetic_energy, compute_max_divergence,
+// compute_enstrophy_2d are from test_utilities.hpp)
 //=============================================================================
-
-double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
-    double KE = 0.0;
-    if (mesh.is2D()) {
-        const double cell_area = mesh.dx * mesh.dy;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-                KE += 0.5 * (u*u + v*v) * cell_area;
-            }
-        }
-    } else {
-        const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
-                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
-                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
-                    KE += 0.5 * (u*u + v*v + w*w) * cell_vol;
-                }
-            }
-        }
-    }
-    return KE;
-}
-
-double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
-    double max_div = 0.0;
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
-                double dvdy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
-                max_div = std::max(max_div, std::abs(dudx + dvdy));
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
-                    double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
-                    double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
-                    max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
-                }
-            }
-        }
-    }
-    return max_div;
-}
-
-double compute_enstrophy_2d(const Mesh& mesh, const VectorField& vel) {
-    double ens = 0.0;
-    const double cell_area = mesh.dx * mesh.dy;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dvdx = (vel.v(i+1, j) - vel.v(i, j)) / mesh.dx;
-            double dudy = (vel.u(i, j+1) - vel.u(i, j)) / mesh.dy;
-            double omega = dvdx - dudy;
-            ens += 0.5 * omega * omega * cell_area;
-        }
-    }
-    return ens;
-}
 
 double compute_mean_u(const Mesh& mesh, const VectorField& vel) {
     double sum = 0.0;
