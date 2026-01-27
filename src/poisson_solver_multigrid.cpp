@@ -1871,6 +1871,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
             // Compute ||b||_2 BEFORE running any V-cycles (RHS is still pristine)
             // This matches the convergence mode pattern
+            // CRITICAL: Sync to ensure data copy is complete before reading
+            CUDA_CHECK_SYNC(cudaDeviceSynchronize());
             {
                 auto& finest = *levels_[0];
                 const int Ng = finest.Ng;
@@ -1881,9 +1883,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                 const int plane_stride = finest.plane_stride;
                 const bool is_2d = finest.is2D();
 
-                // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+                // NVHPC WORKAROUND: Use member pointer f_level0_ptr_ instead of vector element f_ptrs_[0]
+                // Vector element access can return stale addresses in NVHPC
                 int device = omp_get_default_device();
-                const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[0], device));
+                const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
 
                 double b_sum_sq = 0.0;
 
@@ -1911,6 +1914,15 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                     }
                 }
                 b_l2_ = std::sqrt(b_sum_sq);
+
+                // Sanity check: if ||b||_2 is invalid or garbage, fall back to all cycles
+                // This prevents early exit on bad reduction results
+                // - NaN/Inf: obviously invalid
+                // - Very small (<1e-30): likely zeros from wrong memory location
+                // - Very large (>1e15): likely garbage from bad reduction
+                if (!std::isfinite(b_l2_) || b_l2_ < 1e-30 || b_l2_ > 1e15) {
+                    b_l2_ = 0.0;  // Force rel_res check to use raw residual
+                }
             }
 
             // First batch of cycles
