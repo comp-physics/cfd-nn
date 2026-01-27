@@ -11,21 +11,6 @@ namespace nncfd {
 namespace time_kernels {
 
 // ============================================================================
-// Copy kernels
-// ============================================================================
-
-void copy_2d_uv(double* u_src, double* u_dst, double* v_src, double* v_dst,
-                int Nx, int Ny, int Ng, int u_stride, int v_stride,
-                size_t u_total, size_t v_total);
-
-void copy_3d_uvw(double* u_src, double* u_dst, double* v_src, double* v_dst,
-                 double* w_src, double* w_dst,
-                 int Nx, int Ny, int Nz, int Ng,
-                 int u_stride, int v_stride, int w_stride,
-                 int u_plane, int v_plane, int w_plane,
-                 size_t u_total, size_t v_total, size_t w_total);
-
-// ============================================================================
 // Blend kernels: b = a1*a + a2*b
 // ============================================================================
 
@@ -40,6 +25,28 @@ void blend_3d_uvw(double* u_a, double* u_b, double* v_a, double* v_b,
                   int u_stride, int v_stride, int w_stride,
                   int u_plane, int v_plane, int w_plane,
                   size_t u_total, size_t v_total, size_t w_total);
+
+// ============================================================================
+// Copy kernels: implemented as blend with a1=1, a2=0
+// ============================================================================
+
+inline void copy_2d_uv(double* u_src, double* u_dst, double* v_src, double* v_dst,
+                       int Nx, int Ny, int Ng, int u_stride, int v_stride,
+                       size_t u_total, size_t v_total) {
+    blend_2d_uv(u_src, u_dst, v_src, v_dst, 1.0, 0.0,
+                Nx, Ny, Ng, u_stride, v_stride, u_total, v_total);
+}
+
+inline void copy_3d_uvw(double* u_src, double* u_dst, double* v_src, double* v_dst,
+                        double* w_src, double* w_dst,
+                        int Nx, int Ny, int Nz, int Ng,
+                        int u_stride, int v_stride, int w_stride,
+                        int u_plane, int v_plane, int w_plane,
+                        size_t u_total, size_t v_total, size_t w_total) {
+    blend_3d_uvw(u_src, u_dst, v_src, v_dst, w_src, w_dst, 1.0, 0.0,
+                 Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride,
+                 u_plane, v_plane, w_plane, u_total, v_total, w_total);
+}
 
 // ============================================================================
 // Blend-to kernels: c = a1*a + a2*b

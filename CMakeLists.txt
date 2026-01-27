@@ -232,7 +232,6 @@ set(LIB_SOURCES
     src/solver.cpp
     src/solver_vtk.cpp
     src/solver_time.cpp
-    src/solver_time_kernels_copy.cpp
     src/solver_time_kernels_blend.cpp
     src/solver_time_kernels_euler.cpp
     src/solver_time_kernels_periodic.cpp
