@@ -1869,18 +1869,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             const int check_after = cfg.check_after;
             const double target_tol = cfg.tol_rhs;
 
-            // First batch of cycles
-            int batch = std::min(check_after, max_cycles);
-            run_cycles(batch);
-            cycles_run = batch;
-
-            // CRITICAL: Sync all device work before OpenMP target reduction
-            // Both CUDA graph and OpenMP target regions may use different streams.
-            // DeviceSynchronize ensures all async GPU work completes before reduction.
-            CUDA_CHECK_SYNC(cudaDeviceSynchronize());
-
-            // Compute initial ||b||_2 for relative residual check
-            // Use GPU reduction - only transfers 8 bytes (the sum) instead of 17.5 MB array
+            // Compute ||b||_2 BEFORE running any V-cycles (RHS is still pristine)
+            // This matches the convergence mode pattern
             {
                 auto& finest = *levels_[0];
                 const int Ng = finest.Ng;
@@ -1891,30 +1881,30 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                 const int plane_stride = finest.plane_stride;
                 const bool is_2d = finest.is2D();
 
-                double b_sum_sq = 0.0;
-
                 // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
                 int device = omp_get_default_device();
-                const double* f_dev = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[0], device));
+                const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[0], device));
+
+                double b_sum_sq = 0.0;
 
                 if (is_2d) {
                     #pragma omp target teams distribute parallel for collapse(2) \
-                        is_device_ptr(f_dev) reduction(+: b_sum_sq)
+                        is_device_ptr(f_ptr) reduction(+: b_sum_sq)
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
                             int idx = j * stride + i;
-                            double val = f_dev[idx];
+                            double val = f_ptr[idx];
                             b_sum_sq += val * val;
                         }
                     }
                 } else {
                     #pragma omp target teams distribute parallel for collapse(3) \
-                        is_device_ptr(f_dev) reduction(+: b_sum_sq)
+                        is_device_ptr(f_ptr) reduction(+: b_sum_sq)
                     for (int k = Ng; k < Nz + Ng; ++k) {
                         for (int j = Ng; j < Ny + Ng; ++j) {
                             for (int i = Ng; i < Nx + Ng; ++i) {
                                 int idx = k * plane_stride + j * stride + i;
-                                double val = f_dev[idx];
+                                double val = f_ptr[idx];
                                 b_sum_sq += val * val;
                             }
                         }
@@ -1922,6 +1912,14 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                 }
                 b_l2_ = std::sqrt(b_sum_sq);
             }
+
+            // First batch of cycles
+            int batch = std::min(check_after, max_cycles);
+            run_cycles(batch);
+            cycles_run = batch;
+
+            // Sync after V-cycles before checking residual
+            CUDA_CHECK_SYNC(cudaDeviceSynchronize());
 
             // Helper: sync all device work if graph mode was used
             auto sync_if_graphed = [&]() {
