@@ -435,11 +435,23 @@ void FFTPoissonSolver::compute_eigenvalues() {
     const double pi = M_PI;
 
     if (space_order_ == 4) {
-        // O4 MAC-consistent eigenvalues: λ = symbol of (Dfc_O4 ∘ Dcf_O4)
-        // For Dcf_O4 = (1, -27, 27, -1)/(24h) and Dfc_O4 = (1, -27, 27, -1)/(24h),
-        // the composed Laplacian symbol is:
+        // O4 MAC-consistent eigenvalues for staggered (MAC) grid Laplacian.
+        //
+        // Derivation: On a MAC grid, the Laplacian is ∇²p = div(grad(p)) where:
+        //   - grad (cell→face): Dcf with stencil (1, -27, 27, -1)/(24h)
+        //   - div (face→cell):  Dfc with stencil (1, -27, 27, -1)/(24h)
+        //
+        // The Fourier symbol of the composed operator Dfc ∘ Dcf is:
+        //   σ_Dcf(θ) = (1 - 27*e^{-iθ} + 27 - e^{iθ}) / (24h)  [evaluated at half-shift]
+        //   σ_Dfc(θ) = (e^{iθ} - 27 + 27*e^{-iθ} - e^{-2iθ}) / (24h)
+        //
+        // After simplification (product of symbols, using e^{iθ} + e^{-iθ} = 2cos(θ)):
         //   λ(θ) = (1460 - 1566*cos(θ) + 108*cos(2θ) - 2*cos(3θ)) / (576*h²)
-        // This gives an exact FFT solve consistent with O4 grad/div projection.
+        //
+        // This matches the exact discrete Laplacian used by the O4 projection,
+        // ensuring the FFT Poisson solve is spectrally consistent with the
+        // finite-difference operators. See: Morinishi et al. (1998) JCP 143:90-124
+        // for MAC-consistent discrete operators on staggered grids.
         std::cout << "[FFTPoissonSolver] Using O4 MAC-consistent eigenvalues\n";
 
         for (int kx = 0; kx < Nx; ++kx) {
@@ -517,6 +529,12 @@ void FFTPoissonSolver::initialize_cusparse() {
     const int Nz = mesh_->Nz;
     const int Nz_complex = Nz / 2 + 1;
     const int n_modes = Nx * Nz_complex;
+
+    // Free existing buffers if reinitializing (e.g., after set_space_order)
+    if (tri_dl_) { cudaFree(tri_dl_); tri_dl_ = nullptr; }
+    if (tri_d_) { cudaFree(tri_d_); tri_d_ = nullptr; }
+    if (tri_du_) { cudaFree(tri_du_); tri_du_ = nullptr; }
+    if (cusparse_buffer_) { cudaFree(cusparse_buffer_); cusparse_buffer_ = nullptr; }
 
     // Create cuSPARSE handle
     cusparseStatus_t status = cusparseCreate(&cusparse_handle_);
