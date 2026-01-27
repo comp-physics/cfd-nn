@@ -230,6 +230,7 @@ set(LIB_SOURCES
     src/poisson_solver.cpp
     src/poisson_solver_multigrid.cpp
     src/solver.cpp
+    src/solver_vtk.cpp
     src/solver_time.cpp
     src/solver_time_kernels_copy.cpp
     src/solver_time_kernels_blend.cpp
