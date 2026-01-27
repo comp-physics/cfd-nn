@@ -20,6 +20,7 @@
 #include "numerics.hpp"
 #include "stencil_operators.hpp"
 #include "solver_kernels.hpp"
+#include "solver_time_kernels.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -1951,131 +1952,23 @@ double RANSSolver::step() {
     const int v_stride = Nx + 2 * Ng;
 
     if (mesh_->is2D()) {
-#ifdef USE_GPU_OFFLOAD
-        // Local aliases to avoid implicit 'this' mapping (NVHPC workaround)
-        double* u = velocity_u_ptr_;
-        double* uo = velocity_old_u_ptr_;
-        double* v = velocity_v_ptr_;
-        double* vo = velocity_old_v_ptr_;
-        const size_t n_u = u_total_size;
-        const size_t n_v = v_total_size;
-
-        #pragma omp target data map(present: u[0:n_u], uo[0:n_u], v[0:n_v], vo[0:n_v])
-        {
-            // Copy u-velocity (2D)
-            #pragma omp target teams distribute parallel for 
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    const int idx = j * u_stride + i;
-                    uo[idx] = u[idx];
-                }
-            }
-
-            // Copy v-velocity (2D)
-            #pragma omp target teams distribute parallel for 
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    const int idx = j * v_stride + i;
-                    vo[idx] = v[idx];
-                }
-            }
-        }
-#else
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i <= Ng + Nx; ++i) {
-                const int idx = j * u_stride + i;
-                velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
-            }
-        }
-        for (int j = Ng; j <= Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                const int idx = j * v_stride + i;
-                velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
-            }
-        }
-#endif
+        time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_old_u_ptr_,
+                                 velocity_v_ptr_, velocity_old_v_ptr_,
+                                 Nx, Ny, Ng, u_stride, v_stride,
+                                 u_total_size, v_total_size);
     } else {
-        // 3D path - copy u, v, AND w
         const int Nz = mesh_->Nz;
-        const int u_plane_stride = u_stride * (Ny + 2*Ng);
-        const int v_plane_stride = v_stride * (Ny + 2*Ng + 1);
-        [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
-        const int w_stride = Nx + 2*Ng;
-        const int w_plane_stride = w_stride * (Ny + 2*Ng);
-
-#ifdef USE_GPU_OFFLOAD
-        // Local aliases to avoid implicit 'this' mapping (NVHPC workaround)
-        double* u = velocity_u_ptr_;
-        double* uo = velocity_old_u_ptr_;
-        double* v = velocity_v_ptr_;
-        double* vo = velocity_old_v_ptr_;
-        double* w = velocity_w_ptr_;
-        double* wo = velocity_old_w_ptr_;
-        const size_t n_u = u_total_size;
-        const size_t n_v = v_total_size;
-        const size_t n_w = w_total_size;
-
-        #pragma omp target data map(present: u[0:n_u], uo[0:n_u], v[0:n_v], vo[0:n_v], w[0:n_w], wo[0:n_w])
-        {
-            // Copy u-velocity (3D)
-            #pragma omp target teams distribute parallel for collapse(3)
-            for (int k = Ng; k < Ng + Nz; ++k) {
-                for (int j = Ng; j < Ng + Ny; ++j) {
-                    for (int i = Ng; i <= Ng + Nx; ++i) {
-                        const int idx = k * u_plane_stride + j * u_stride + i;
-                        uo[idx] = u[idx];
-                    }
-                }
-            }
-
-            // Copy v-velocity (3D)
-            #pragma omp target teams distribute parallel for collapse(3)
-            for (int k = Ng; k < Ng + Nz; ++k) {
-                for (int j = Ng; j <= Ng + Ny; ++j) {
-                    for (int i = Ng; i < Ng + Nx; ++i) {
-                        const int idx = k * v_plane_stride + j * v_stride + i;
-                        vo[idx] = v[idx];
-                    }
-                }
-            }
-
-            // Copy w-velocity (3D)
-            #pragma omp target teams distribute parallel for collapse(3)
-            for (int k = Ng; k <= Ng + Nz; ++k) {
-                for (int j = Ng; j < Ng + Ny; ++j) {
-                    for (int i = Ng; i < Ng + Nx; ++i) {
-                        const int idx = k * w_plane_stride + j * w_stride + i;
-                        wo[idx] = w[idx];
-                    }
-                }
-            }
-        }
-#else
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i <= Ng + Nx; ++i) {
-                    const int idx = k * u_plane_stride + j * u_stride + i;
-                    velocity_old_u_ptr_[idx] = velocity_u_ptr_[idx];
-                }
-            }
-        }
-        for (int k = Ng; k < Ng + Nz; ++k) {
-            for (int j = Ng; j <= Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    const int idx = k * v_plane_stride + j * v_stride + i;
-                    velocity_old_v_ptr_[idx] = velocity_v_ptr_[idx];
-                }
-            }
-        }
-        for (int k = Ng; k <= Ng + Nz; ++k) {
-            for (int j = Ng; j < Ng + Ny; ++j) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    const int idx = k * w_plane_stride + j * w_stride + i;
-                    velocity_old_w_ptr_[idx] = velocity_w_ptr_[idx];
-                }
-            }
-        }
-#endif
+        const int u_plane = u_stride * (Ny + 2 * Ng);
+        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane = w_stride * (Ny + 2 * Ng);
+        time_kernels::copy_3d_uvw(velocity_u_ptr_, velocity_old_u_ptr_,
+                                  velocity_v_ptr_, velocity_old_v_ptr_,
+                                  velocity_w_ptr_, velocity_old_w_ptr_,
+                                  Nx, Ny, Nz, Ng,
+                                  u_stride, v_stride, w_stride,
+                                  u_plane, v_plane, w_plane,
+                                  u_total_size, v_total_size, velocity_.w_total_size());
     }
     NVTX_POP();
     }
