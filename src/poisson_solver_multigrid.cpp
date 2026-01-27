@@ -1889,32 +1889,32 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                 const int Nz = finest.Nz;
                 const int stride = finest.stride;
                 const int plane_stride = finest.plane_stride;
-                [[maybe_unused]] const size_t f_size = finest.total_size;
-                const double* f_ptr = f_ptrs_[0];
                 const bool is_2d = finest.is2D();
 
                 double b_sum_sq = 0.0;
 
+                // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+                int device = omp_get_default_device();
+                const double* f_dev = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[0], device));
+
                 if (is_2d) {
                     #pragma omp target teams distribute parallel for collapse(2) \
-                        map(present: f_ptr[0:f_size]) \
-                        reduction(+: b_sum_sq)
+                        is_device_ptr(f_dev) reduction(+: b_sum_sq)
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
                             int idx = j * stride + i;
-                            double val = f_ptr[idx];
+                            double val = f_dev[idx];
                             b_sum_sq += val * val;
                         }
                     }
                 } else {
                     #pragma omp target teams distribute parallel for collapse(3) \
-                        map(present: f_ptr[0:f_size]) \
-                        reduction(+: b_sum_sq)
+                        is_device_ptr(f_dev) reduction(+: b_sum_sq)
                     for (int k = Ng; k < Nz + Ng; ++k) {
                         for (int j = Ng; j < Ny + Ng; ++j) {
                             for (int i = Ng; i < Nx + Ng; ++i) {
                                 int idx = k * plane_stride + j * stride + i;
-                                double val = f_ptr[idx];
+                                double val = f_dev[idx];
                                 b_sum_sq += val * val;
                             }
                         }
