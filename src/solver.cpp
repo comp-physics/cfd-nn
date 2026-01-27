@@ -297,7 +297,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
               << " dims=" << mesh.Nx << "x" << mesh.Ny << "x" << mesh.Nz << "\n";
 
     // Safety check: O4 spatial order requires Nghost >= 2, but MG is currently ng=1 only
-    if (config.space_order == 4 && selected_solver_ == PoissonSolverType::MG) {
+    // Note: use config_ (member) not config (parameter) since space_order may have been downgraded
+    if (config_.space_order == 4 && selected_solver_ == PoissonSolverType::MG) {
         std::cerr << "[Solver] ERROR: space_order=4 requires Nghost >= 2, but MG backend is ng=1 only.\n";
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
@@ -1067,8 +1068,54 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
         const int conv_w_stride = w_stride;
         const int conv_w_plane_stride = w_plane_stride;
 
-        if (use_skew) {
-            // Skew-symmetric (energy-conserving) advection
+        if (use_O4 && use_skew) {
+            // O4 Skew-symmetric advection (energy-conserving with 4th-order advective derivatives)
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+
+                convective_u_face_kernel_skew_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, u_stride, u_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_u_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                convective_v_face_kernel_skew_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, v_stride, v_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_v_ptr);
+            }
+
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+
+                convective_w_face_kernel_skew_O4_3d(i, j, k,
+                    u_stride, u_plane_stride, v_stride, v_plane_stride,
+                    w_stride, w_plane_stride, w_stride, w_plane_stride,
+                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
+                    u_ptr, v_ptr, w_ptr, conv_w_ptr);
+            }
+        } else if (use_skew) {
+            // O2 Skew-symmetric (energy-conserving) advection
             #pragma omp target teams distribute parallel for \
                 map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
                 firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, conv_u_stride, conv_u_plane_stride, Nx, Ny, Ng)
@@ -1194,52 +1241,6 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
                 int k = idx / (Nx * Ny) + Ng;
 
                 convective_w_face_kernel_central_O4_3d(i, j, k,
-                    u_stride, u_plane_stride, v_stride, v_plane_stride,
-                    w_stride, w_plane_stride, w_stride, w_plane_stride,
-                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
-                    u_ptr, v_ptr, w_ptr, conv_w_ptr);
-            }
-        } else if (use_O4 && use_skew) {
-            // O4 Skew-symmetric advection (energy-conserving with 4th-order advective derivatives)
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_u_ptr[0:u_total_size]) \
-                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
-            for (int idx = 0; idx < n_u_faces; ++idx) {
-                int i = idx % (Nx + 1) + Ng;
-                int j = (idx / (Nx + 1)) % Ny + Ng;
-                int k = idx / ((Nx + 1) * Ny) + Ng;
-
-                convective_u_face_kernel_skew_O4_3d(i, j, k,
-                    u_stride, u_plane_stride, v_stride, v_plane_stride,
-                    w_stride, w_plane_stride, u_stride, u_plane_stride,
-                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
-                    u_ptr, v_ptr, w_ptr, conv_u_ptr);
-            }
-
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_v_ptr[0:v_total_size]) \
-                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
-            for (int idx = 0; idx < n_v_faces; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = (idx / Nx) % (Ny + 1) + Ng;
-                int k = idx / (Nx * (Ny + 1)) + Ng;
-
-                convective_v_face_kernel_skew_O4_3d(i, j, k,
-                    u_stride, u_plane_stride, v_stride, v_plane_stride,
-                    w_stride, w_plane_stride, v_stride, v_plane_stride,
-                    dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,
-                    u_ptr, v_ptr, w_ptr, conv_v_ptr);
-            }
-
-            #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], conv_w_ptr[0:w_total_size]) \
-                firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic)
-            for (int idx = 0; idx < n_w_faces; ++idx) {
-                int i = idx % Nx + Ng;
-                int j = (idx / Nx) % Ny + Ng;
-                int k = idx / (Nx * Ny) + Ng;
-
-                convective_w_face_kernel_skew_O4_3d(i, j, k,
                     u_stride, u_plane_stride, v_stride, v_plane_stride,
                     w_stride, w_plane_stride, w_stride, w_plane_stride,
                     dx, dy, dz, Ng, Nx, Ny, Nz, x_periodic, y_periodic, z_periodic,

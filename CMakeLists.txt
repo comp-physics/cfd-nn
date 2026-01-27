@@ -548,6 +548,10 @@ if(BUILD_TESTS)
         target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
     endif()
 
+    # Performance benchmark for branch comparisons
+    add_executable(perf_bench perf_bench.cpp)
+    target_link_libraries(perf_bench PRIVATE nn_cfd_core)
+
     # =========================================================================
     # Convenience targets for running tests
     # =========================================================================

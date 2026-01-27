@@ -230,8 +230,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_lo] = u_ptr[j * stride + Nx + g];
                 } else if (bc_x_lo == 1) { // Neumann (zero gradient)
                     u_ptr[idx_lo] = u_ptr[j * stride + Ng];
-                } else { // Dirichlet
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + Ng];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + (Ng + g)];
                 }
 
                 // Right boundary - periodic wraps to left interior
@@ -239,8 +239,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_hi] = u_ptr[j * stride + Ng + g];
                 } else if (bc_x_hi == 1) { // Neumann (zero gradient)
                     u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
-                } else { // Dirichlet
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1)];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nx+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1 - g)];
                 }
             }
         }
@@ -257,8 +257,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_lo] = u_ptr[(Ny + g) * stride + i];
                 } else if (bc_y_lo == 1) { // Neumann (zero gradient)
                     u_ptr[idx_lo] = u_ptr[Ng * stride + i];
-                } else { // Dirichlet
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[(Ng + g) * stride + i];
                 }
 
                 // Top boundary - periodic wraps to bottom interior
@@ -266,8 +266,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_hi] = u_ptr[(Ng + g) * stride + i];
                 } else if (bc_y_hi == 1) { // Neumann (zero gradient)
                     u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
-                } else { // Dirichlet
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Ny+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1 - g) * stride + i];
                 }
             }
         }
@@ -345,8 +345,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Nx + g];
                 } else if (bc_x_lo == 1) {
                     u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Ng];
-                } else {
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + Ng];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Ng + g)];
                 }
 
                 // Right boundary - periodic wraps to left interior
@@ -354,8 +354,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + Ng + g];
                 } else if (bc_x_hi == 1) {
                     u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
-                } else {
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nx+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1 - g)];
                 }
             }
         }
@@ -374,8 +374,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_lo] = u_ptr[k * plane_stride + (Ny + g) * stride + i];
                 } else if (bc_y_lo == 1) {
                     u_ptr[idx_lo] = u_ptr[k * plane_stride + Ng * stride + i];
-                } else {
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + (Ng + g) * stride + i];
                 }
 
                 // Top boundary - periodic wraps to bottom interior
@@ -383,8 +383,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ng + g) * stride + i];
                 } else if (bc_y_hi == 1) {
                     u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
-                } else {
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Ny+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1 - g) * stride + i];
                 }
             }
         }
@@ -403,8 +403,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_lo] = u_ptr[(Nz + g) * plane_stride + j * stride + i];
                 } else if (bc_z_lo == 1) {
                     u_ptr[idx_lo] = u_ptr[Ng * plane_stride + j * stride + i];
-                } else {
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[(Ng + g) * plane_stride + j * stride + i];
                 }
 
                 // Front boundary - periodic wraps to back interior
@@ -412,8 +412,8 @@ void MultigridPoissonSolver::apply_bc(int level) {
                     u_ptr[idx_hi] = u_ptr[(Ng + g) * plane_stride + j * stride + i];
                 } else if (bc_z_hi == 1) {
                     u_ptr[idx_hi] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
-                } else {
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nz+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1 - g) * plane_stride + j * stride + i];
                 }
             }
         }
@@ -1669,20 +1669,21 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Compute reference norms for relative tolerances (CPU path)
     // ||b||_∞ = max|f| and ||b||_2 = sqrt(sum(f^2)) on finest level - store in member for diagnostics
     auto& finest_cpu = *levels_[0];
+    const int Ng_f = finest_cpu.Ng;  // Use actual Ng for correct interior indexing (O4 has Ng=2)
     b_inf_ = 0.0;
     double b_sum_sq = 0.0;
     if (mesh_->is2D()) {
-        for (int j = 1; j <= finest_cpu.Ny; ++j) {
-            for (int i = 1; i <= finest_cpu.Nx; ++i) {
+        for (int j = Ng_f; j < Ng_f + finest_cpu.Ny; ++j) {
+            for (int i = Ng_f; i < Ng_f + finest_cpu.Nx; ++i) {
                 double val = finest_cpu.f(i, j);
                 b_inf_ = std::max(b_inf_, std::abs(val));
                 b_sum_sq += val * val;
             }
         }
     } else {
-        for (int k = 1; k <= finest_cpu.Nz; ++k) {
-            for (int j = 1; j <= finest_cpu.Ny; ++j) {
-                for (int i = 1; i <= finest_cpu.Nx; ++i) {
+        for (int k = Ng_f; k < Ng_f + finest_cpu.Nz; ++k) {
+            for (int j = Ng_f; j < Ng_f + finest_cpu.Ny; ++j) {
+                for (int i = Ng_f; i < Ng_f + finest_cpu.Nx; ++i) {
                     double val = finest_cpu.f(i, j, k);
                     b_inf_ = std::max(b_inf_, std::abs(val));
                     b_sum_sq += val * val;
@@ -2279,7 +2280,7 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2, int degre
         cfg.Nx = grid.Nx;
         cfg.Ny = grid.Ny;
         cfg.Nz = grid.Nz;
-        cfg.Ng = 1;
+        cfg.Ng = grid.Ng;  // Use actual Ng (finest level may have Ng=2 for O4 stencils)
         cfg.dx2 = grid.dx * grid.dx;
         cfg.dy2 = grid.dy * grid.dy;
         cfg.dz2 = grid.dz * grid.dz;
