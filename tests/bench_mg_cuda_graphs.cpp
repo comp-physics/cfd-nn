@@ -13,6 +13,7 @@
 #include <iostream>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <vector>
 #include "mesh.hpp"

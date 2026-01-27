@@ -113,13 +113,6 @@ void run_profile(const ProfileConfig& cfg) {
 
     print_config(cfg);
 
-    // Set environment for MG graph mode
-    if (cfg.use_vcycle_graph) {
-        setenv("MG_USE_VCYCLE_GRAPH", "1", 1);
-    } else {
-        unsetenv("MG_USE_VCYCLE_GRAPH");
-    }
-
     // Create mesh - cubic domain for simplicity
     const double L = 2.0 * M_PI;
 
@@ -142,6 +135,7 @@ void run_profile(const ProfileConfig& cfg) {
 
     // Use fixed V-cycle count to enable CUDA Graph path for MG+Graph configs
     config.poisson_fixed_cycles = 10;  // 10 V-cycles per solve (no convergence check)
+    config.poisson_use_vcycle_graph = cfg.use_vcycle_graph;
 
     // Create solver
     RANSSolver solver(mesh, config);
@@ -202,13 +196,18 @@ void run_profile(const ProfileConfig& cfg) {
     auto end = high_resolution_clock::now();
 
     double elapsed_ms = duration_cast<microseconds>(end - start).count() / 1000.0;
-    double ms_per_step = elapsed_ms / (cfg.nsteps - 1);
+    int timed_steps = cfg.nsteps - 1;  // First step is warmup
 
     std::cout << "\n  Results:\n";
     std::cout << "    Total time: " << std::fixed << std::setprecision(2) << elapsed_ms << " ms\n";
-    std::cout << "    Per step:   " << std::setprecision(3) << ms_per_step << " ms\n";
-    std::cout << "    Throughput: " << std::setprecision(2)
-              << (cfg.Nx * cfg.Ny * cfg.Nz) / (ms_per_step * 1000.0) << " Mcells/s\n";
+    if (timed_steps > 0) {
+        double ms_per_step = elapsed_ms / timed_steps;
+        std::cout << "    Per step:   " << std::setprecision(3) << ms_per_step << " ms\n";
+        std::cout << "    Throughput: " << std::setprecision(2)
+                  << (cfg.Nx * cfg.Ny * cfg.Nz) / (ms_per_step * 1000.0) << " Mcells/s\n";
+    } else {
+        std::cout << "    (nsteps=1: only warmup, no timed steps)\n";
+    }
 }
 
 // ============================================================================
