@@ -1878,30 +1878,44 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             // DeviceSynchronize ensures all async GPU work completes before reduction.
             CUDA_CHECK_SYNC(cudaDeviceSynchronize());
 
-            // Compute initial b_l2 for relative residual check
-            // Use CPU reduction on device data to avoid OpenMP target reduction issues
-            // with mixed CUDA/OpenMP environments
+            // Compute initial ||b||_2 for relative residual check
+            // Use GPU reduction - only transfers 8 bytes (the sum) instead of 17.5 MB array
             {
                 auto& finest = *levels_[0];
-                const int Ng = finest.Ng;  // Use level's ghost width
+                const int Ng = finest.Ng;
                 const int Nx = finest.Nx;
                 const int Ny = finest.Ny;
                 const int Nz = finest.Nz;
                 const int stride = finest.stride;
                 const int plane_stride = finest.plane_stride;
-                const size_t f_size = finest.total_size;
+                [[maybe_unused]] const size_t f_size = finest.total_size;
+                const double* f_ptr = f_ptrs_[0];
+                const bool is_2d = finest.is2D();
 
-                // Sync f data from device to get b_l2
-                // This is a one-time overhead for adaptive mode startup
-                #pragma omp target update from(f_ptrs_[0][0:f_size])
-
-                // Compute on CPU (f data is now in host buffer)
                 double b_sum_sq = 0.0;
-                for (int k = Ng; k < Nz + Ng; ++k) {
+
+                if (is_2d) {
+                    #pragma omp target teams distribute parallel for collapse(2) \
+                        map(present: f_ptr[0:f_size]) \
+                        reduction(+: b_sum_sq)
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
-                            double val = f_ptrs_[0][k * plane_stride + j * stride + i];
+                            int idx = j * stride + i;
+                            double val = f_ptr[idx];
                             b_sum_sq += val * val;
+                        }
+                    }
+                } else {
+                    #pragma omp target teams distribute parallel for collapse(3) \
+                        map(present: f_ptr[0:f_size]) \
+                        reduction(+: b_sum_sq)
+                    for (int k = Ng; k < Nz + Ng; ++k) {
+                        for (int j = Ng; j < Ny + Ng; ++j) {
+                            for (int i = Ng; i < Nx + Ng; ++i) {
+                                int idx = k * plane_stride + j * stride + i;
+                                double val = f_ptr[idx];
+                                b_sum_sq += val * val;
+                            }
                         }
                     }
                 }

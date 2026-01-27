@@ -145,9 +145,8 @@ struct Config {
     int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
 
     // Adaptive fixed-cycle mode: run check_after cycles, check residual, add 2 more if needed
-    // DEFAULT ON: ensures Galilean invariance by checking convergence, adds ~1% overhead
-    // The solver runs check_after cycles fast, then checks ||r||/||b|| < tol_rhs, adds more if needed
-    bool poisson_adaptive_cycles = true;   ///< Enable adaptive checking within fixed-cycle mode (default: ON for robustness)
+    // When enabled, checks ||r||/||b|| < tol_rhs after check_after cycles, adds more if needed
+    bool poisson_adaptive_cycles = true;   ///< Enable adaptive checking within fixed-cycle mode
     int poisson_check_after = 4;           ///< Check residual after this many cycles
 
     // MG smoother tuning parameters
