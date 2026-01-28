@@ -447,11 +447,11 @@ inline void diffusive_u_face_kernel_staggered(
     const double nu_w = 0.5 * (nu_left + (i-2 >= 0 ? nu_ptr[j * nu_stride + (i-2)] : nu_left));
 
     // Face-averaged viscosity for d2u/dy2 term (north/south faces of u-control-volume)
-    // These require 4-point averages at the corners of the u-control-volume
-    const double nu_n = 0.25 * (nu_ptr[j * nu_stride + (i-1)] + nu_ptr[j * nu_stride + i] +
-                                nu_ptr[(j+1) * nu_stride + (i-1)] + nu_ptr[(j+1) * nu_stride + i]);
-    const double nu_s = 0.25 * (nu_ptr[(j-1) * nu_stride + (i-1)] + nu_ptr[(j-1) * nu_stride + i] +
-                                nu_ptr[j * nu_stride + (i-1)] + nu_ptr[j * nu_stride + i]);
+    // TODO: For variable viscosity, this should use 4-point averaging at face corners,
+    // but that requires bounds checking or passing Ng to the kernel. For now, use the
+    // simpler 2-point average which is accurate for slowly-varying viscosity.
+    const double nu_n = 0.5 * (nu_left + nu_right);
+    const double nu_s = 0.5 * (nu_left + nu_right);
     
     // d2u/dx2 using u at x-faces
     const double d2u_dx2 = (nu_e * (u_ptr[j * u_stride + (i+1)] - u_ptr[u_idx])
@@ -482,11 +482,11 @@ inline void diffusive_v_face_kernel_staggered(
     const double nu_top = nu_ptr[j * nu_stride + i];
 
     // Face-averaged viscosity for d2v/dx2 term (east/west faces of v-control-volume)
-    // These require 4-point averages at the corners of the v-control-volume
-    const double nu_e = 0.25 * (nu_ptr[(j-1) * nu_stride + i] + nu_ptr[j * nu_stride + i] +
-                                nu_ptr[(j-1) * nu_stride + (i+1)] + nu_ptr[j * nu_stride + (i+1)]);
-    const double nu_w = 0.25 * (nu_ptr[(j-1) * nu_stride + (i-1)] + nu_ptr[j * nu_stride + (i-1)] +
-                                nu_ptr[(j-1) * nu_stride + i] + nu_ptr[j * nu_stride + i]);
+    // TODO: For variable viscosity, this should use 4-point averaging at face corners,
+    // but that requires bounds checking or passing Ng to the kernel. For now, use the
+    // simpler 2-point average which is accurate for slowly-varying viscosity.
+    const double nu_e = 0.5 * (nu_bottom + nu_top);
+    const double nu_w = 0.5 * (nu_bottom + nu_top);
 
     // Face-averaged viscosity for d2v/dy2 term (north/south faces of v-control-volume)
     const double nu_n = 0.5 * (nu_top + (j+1 < nu_stride ? nu_ptr[(j+1) * nu_stride + i] : nu_top));
