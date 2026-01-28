@@ -363,30 +363,33 @@ static void test_upwind2_specific() {
 
         RANSSolver solver(mesh3d, config);
 
-        // Initialize with TGV 3D - use proper Ng-based indexing
+        // Initialize with TGV 3D (w=0 by default from VectorField constructor)
+        // Use < bounds consistent with validity check patterns
         const int Ng = mesh3d.Nghost;
         const int N = 16;
-        for (int k = Ng; k <= N + Ng; ++k) {
+        // u on x-faces
+        for (int k = Ng; k < N + Ng; ++k) {
             double z = mesh3d.z(k);
-            for (int j = Ng; j <= N + Ng; ++j) {
+            for (int j = Ng; j < N + Ng; ++j) {
                 double y = mesh3d.y(j);
-                for (int i = Ng; i <= N + Ng + 1; ++i) {
+                for (int i = Ng; i < N + Ng + 1; ++i) {
                     double x = mesh3d.xf[i];
                     solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
                 }
             }
         }
-        for (int k = Ng; k <= N + Ng; ++k) {
+        // v on y-faces
+        for (int k = Ng; k < N + Ng; ++k) {
             double z = mesh3d.z(k);
-            for (int j = Ng; j <= N + Ng + 1; ++j) {
+            for (int j = Ng; j < N + Ng + 1; ++j) {
                 double y = mesh3d.yf[j];
-                for (int i = Ng; i <= N + Ng; ++i) {
+                for (int i = Ng; i < N + Ng; ++i) {
                     double x = mesh3d.x(i);
                     solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
                 }
             }
         }
-        // w = 0
+        // w = 0 (already zero from VectorField init)
 
         bool valid_3d = true;
         for (int step = 0; step < 50; ++step) {

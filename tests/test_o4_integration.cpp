@@ -156,28 +156,32 @@ static void test_o4_initialization() {
 
         RANSSolver solver(mesh, config);
 
-        // Initialize TGV 3D manually
-        for (int k = 2; k <= 16 + 1; ++k) {
+        // Initialize TGV 3D manually (w=0 by default from VectorField constructor)
+        const int Ng_init = mesh.Nghost;
+        const int N_init = 16;
+        // u on x-faces
+        for (int k = Ng_init; k <= N_init + Ng_init; ++k) {
             double z = mesh.z(k);
-            for (int j = 2; j <= 16 + 1; ++j) {
+            for (int j = Ng_init; j <= N_init + Ng_init; ++j) {
                 double y = mesh.y(j);
-                for (int i = 2; i <= 17 + 1; ++i) {
+                for (int i = Ng_init; i <= N_init + Ng_init + 1; ++i) {
                     double x = mesh.xf[i];
                     solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
                 }
             }
         }
-        for (int k = 2; k <= 16 + 1; ++k) {
+        // v on y-faces
+        for (int k = Ng_init; k <= N_init + Ng_init; ++k) {
             double z = mesh.z(k);
-            for (int j = 2; j <= 17 + 1; ++j) {
+            for (int j = Ng_init; j <= N_init + Ng_init + 1; ++j) {
                 double y = mesh.yf[j];
-                for (int i = 2; i <= 16 + 1; ++i) {
+                for (int i = Ng_init; i <= N_init + Ng_init; ++i) {
                     double x = mesh.x(i);
                     solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
                 }
             }
         }
-        // w = 0 for 2D TGV projected to 3D
+        // w = 0 for 2D TGV projected to 3D (already zero from VectorField init)
 
         solver.step();
 
@@ -578,29 +582,32 @@ static void test_o4_3d_tgv() {
 
     RANSSolver solver(mesh, config);
 
-    // Initialize 3D TGV
+    // Initialize 3D TGV (w=0 by default from VectorField constructor)
+    // Use < bounds consistent with validity check patterns
     const int Ng = mesh.Nghost;
-    for (int k = Ng; k <= N + Ng; ++k) {
+    // u on x-faces
+    for (int k = Ng; k < N + Ng; ++k) {
         double z = mesh.z(k);
-        for (int j = Ng; j <= N + Ng; ++j) {
+        for (int j = Ng; j < N + Ng; ++j) {
             double y = mesh.y(j);
-            for (int i = Ng; i <= N + Ng + 1; ++i) {
+            for (int i = Ng; i < N + Ng + 1; ++i) {
                 double x = mesh.xf[i];
                 solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
             }
         }
     }
-    for (int k = Ng; k <= N + Ng; ++k) {
+    // v on y-faces
+    for (int k = Ng; k < N + Ng; ++k) {
         double z = mesh.z(k);
-        for (int j = Ng; j <= N + Ng + 1; ++j) {
+        for (int j = Ng; j < N + Ng + 1; ++j) {
             double y = mesh.yf[j];
-            for (int i = Ng; i <= N + Ng; ++i) {
+            for (int i = Ng; i < N + Ng; ++i) {
                 double x = mesh.x(i);
                 solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
             }
         }
     }
-    // w = 0 initially
+    // w = 0 initially (already zero from VectorField init)
 
     double ke_init = compute_ke_3d(solver.velocity(), mesh);
     bool valid = true;
