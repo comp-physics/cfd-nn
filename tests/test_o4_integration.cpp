@@ -610,14 +610,27 @@ static void test_o4_3d_tgv() {
         solver.step();
         steps_completed++;
 
-        // Check all velocity components for NaN
-        for (int k = Ng; k <= N + Ng && valid; ++k) {
-            for (int j = Ng; j <= N + Ng && valid; ++j) {
-                for (int i = Ng; i <= N + Ng + 1 && valid; ++i) {
+        // Check all velocity components for NaN with correct staggered bounds
+        // Check u component (x-faces)
+        for (int k = Ng; k < N + Ng && valid; ++k) {
+            for (int j = Ng; j < N + Ng && valid; ++j) {
+                for (int i = Ng; i < N + Ng + 1 && valid; ++i) {
                     if (!std::isfinite(solver.velocity().u(i, j, k))) valid = false;
                 }
-                for (int i = Ng; i <= N + Ng && valid; ++i) {
+            }
+        }
+        // Check v component (y-faces)
+        for (int k = Ng; k < N + Ng && valid; ++k) {
+            for (int j = Ng; j < N + Ng + 1 && valid; ++j) {
+                for (int i = Ng; i < N + Ng && valid; ++i) {
                     if (!std::isfinite(solver.velocity().v(i, j, k))) valid = false;
+                }
+            }
+        }
+        // Check w component (z-faces)
+        for (int k = Ng; k < N + Ng + 1 && valid; ++k) {
+            for (int j = Ng; j < N + Ng && valid; ++j) {
+                for (int i = Ng; i < N + Ng && valid; ++i) {
                     if (!std::isfinite(solver.velocity().w(i, j, k))) valid = false;
                 }
             }

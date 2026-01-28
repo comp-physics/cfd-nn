@@ -393,14 +393,28 @@ static void test_upwind2_specific() {
             solver.step();
         }
 
-        // Check all velocity components for NaN
-        for (int k = Ng; k <= N + Ng && valid_3d; ++k) {
-            for (int j = Ng; j <= N + Ng && valid_3d; ++j) {
-                for (int i = Ng; i <= N + Ng + 1 && valid_3d; ++i) {
+        // Check all velocity components for NaN with correct staggered bounds
+        // u is on x-faces (i extended), v is on y-faces (j extended), w is on z-faces (k extended)
+        // Check u component (x-faces)
+        for (int k = Ng; k < N + Ng && valid_3d; ++k) {
+            for (int j = Ng; j < N + Ng && valid_3d; ++j) {
+                for (int i = Ng; i < N + Ng + 1 && valid_3d; ++i) {
                     if (!std::isfinite(solver.velocity().u(i, j, k))) valid_3d = false;
                 }
-                for (int i = Ng; i <= N + Ng && valid_3d; ++i) {
+            }
+        }
+        // Check v component (y-faces)
+        for (int k = Ng; k < N + Ng && valid_3d; ++k) {
+            for (int j = Ng; j < N + Ng + 1 && valid_3d; ++j) {
+                for (int i = Ng; i < N + Ng && valid_3d; ++i) {
                     if (!std::isfinite(solver.velocity().v(i, j, k))) valid_3d = false;
+                }
+            }
+        }
+        // Check w component (z-faces)
+        for (int k = Ng; k < N + Ng + 1 && valid_3d; ++k) {
+            for (int j = Ng; j < N + Ng && valid_3d; ++j) {
+                for (int i = Ng; i < N + Ng && valid_3d; ++i) {
                     if (!std::isfinite(solver.velocity().w(i, j, k))) valid_3d = false;
                 }
             }
