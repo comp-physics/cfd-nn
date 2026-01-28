@@ -510,10 +510,6 @@ if(BUILD_TESTS)
     target_link_libraries(test_cross_backend nn_cfd_core)
 
     if(USE_GPU_OFFLOAD)
-        # TODO: CPUGPUUnifiedTest fails with "NN-MLP GPU pipeline requires device_view and GPU buffers initialized"
-        # This test was never run in CI before - needs investigation and fix
-        # Label as "needs-fix" to exclude from regular CI runs
-        add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS needs-fix)
         # CrossBackendTest requires cross-build orchestration (CPU reference generation)
         # Label as "cross-build" so it's not picked up by "ctest -L gpu"
         # This test is run manually by ci.sh via run_cross_build_test()
