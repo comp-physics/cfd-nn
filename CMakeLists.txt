@@ -484,6 +484,12 @@ if(BUILD_TESTS)
     add_nncfd_test(test_solver_selection LABELS medium)
     add_nncfd_test(test_stability_sentinel LABELS medium)
 
+    # Comprehensive scheme/integrator tests (new coverage for Upwind2, O4, RK2/RK3 combos)
+    add_nncfd_test(test_scheme_comprehensive TEST_NAME_SUFFIX SchemeComprehensiveTest LABELS medium)
+    add_nncfd_test(test_o4_integration TEST_NAME_SUFFIX O4IntegrationTest LABELS medium)
+    add_nncfd_test(test_time_integrators TEST_NAME_SUFFIX TimeIntegratorsTest LABELS medium)
+    add_nncfd_test(test_scheme_combinations TEST_NAME_SUFFIX SchemeCombinationsTest LABELS medium)
+
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
     # =========================================================================
