@@ -95,10 +95,27 @@ static bool check_field_validity_3d(const VectorField& vel, const Mesh& mesh) {
     const int Nz = mesh.Nz;
     const int Ng = mesh.Nghost;
 
+    // Check u component
     for (int k = Ng; k < Nz + Ng; ++k) {
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i < Nx + Ng + 1; ++i) {
                 if (!std::isfinite(vel.u(i, j, k))) return false;
+            }
+        }
+    }
+    // Check v component
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng + 1; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (!std::isfinite(vel.v(i, j, k))) return false;
+            }
+        }
+    }
+    // Check w component
+    for (int k = Ng; k < Nz + Ng + 1; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (!std::isfinite(vel.w(i, j, k))) return false;
             }
         }
     }

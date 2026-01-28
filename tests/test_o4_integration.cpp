@@ -181,12 +181,31 @@ static void test_o4_initialization() {
 
         solver.step();
 
-        // Check validity of a sample of points
+        // Check validity of all velocity components
+        const int Ng_check = mesh.Nghost;
+        const int N_check = 16;
         bool valid = true;
-        for (int k = 2; k <= 17 && valid; ++k) {
-            for (int j = 2; j <= 17 && valid; ++j) {
-                for (int i = 2; i <= 17 && valid; ++i) {
+        // Check u
+        for (int k = Ng_check; k <= N_check + Ng_check && valid; ++k) {
+            for (int j = Ng_check; j <= N_check + Ng_check && valid; ++j) {
+                for (int i = Ng_check; i <= N_check + Ng_check + 1 && valid; ++i) {
                     if (!std::isfinite(solver.velocity().u(i, j, k))) valid = false;
+                }
+            }
+        }
+        // Check v
+        for (int k = Ng_check; k <= N_check + Ng_check && valid; ++k) {
+            for (int j = Ng_check; j <= N_check + Ng_check + 1 && valid; ++j) {
+                for (int i = Ng_check; i <= N_check + Ng_check && valid; ++i) {
+                    if (!std::isfinite(solver.velocity().v(i, j, k))) valid = false;
+                }
+            }
+        }
+        // Check w
+        for (int k = Ng_check; k <= N_check + Ng_check + 1 && valid; ++k) {
+            for (int j = Ng_check; j <= N_check + Ng_check && valid; ++j) {
+                for (int i = Ng_check; i <= N_check + Ng_check && valid; ++i) {
+                    if (!std::isfinite(solver.velocity().w(i, j, k))) valid = false;
                 }
             }
         }
@@ -591,11 +610,15 @@ static void test_o4_3d_tgv() {
         solver.step();
         steps_completed++;
 
-        // Check a few points for NaN
+        // Check all velocity components for NaN
         for (int k = Ng; k <= N + Ng && valid; ++k) {
             for (int j = Ng; j <= N + Ng && valid; ++j) {
-                for (int i = Ng; i <= N + Ng && valid; ++i) {
+                for (int i = Ng; i <= N + Ng + 1 && valid; ++i) {
                     if (!std::isfinite(solver.velocity().u(i, j, k))) valid = false;
+                }
+                for (int i = Ng; i <= N + Ng && valid; ++i) {
+                    if (!std::isfinite(solver.velocity().v(i, j, k))) valid = false;
+                    if (!std::isfinite(solver.velocity().w(i, j, k))) valid = false;
                 }
             }
         }

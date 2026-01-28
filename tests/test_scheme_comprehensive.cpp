@@ -362,22 +362,24 @@ static void test_upwind2_specific() {
 
         RANSSolver solver(mesh3d, config);
 
-        // Initialize with TGV 3D
-        for (int k = 1; k <= 16; ++k) {
+        // Initialize with TGV 3D - use proper Ng-based indexing
+        const int Ng = mesh3d.Nghost;
+        const int N = 16;
+        for (int k = Ng; k <= N + Ng; ++k) {
             double z = mesh3d.z(k);
-            for (int j = 1; j <= 16; ++j) {
+            for (int j = Ng; j <= N + Ng; ++j) {
                 double y = mesh3d.y(j);
-                for (int i = 1; i <= 17; ++i) {
+                for (int i = Ng; i <= N + Ng + 1; ++i) {
                     double x = mesh3d.xf[i];
                     solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
                 }
             }
         }
-        for (int k = 1; k <= 16; ++k) {
+        for (int k = Ng; k <= N + Ng; ++k) {
             double z = mesh3d.z(k);
-            for (int j = 1; j <= 17; ++j) {
+            for (int j = Ng; j <= N + Ng + 1; ++j) {
                 double y = mesh3d.yf[j];
-                for (int i = 1; i <= 16; ++i) {
+                for (int i = Ng; i <= N + Ng; ++i) {
                     double x = mesh3d.x(i);
                     solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
                 }
@@ -390,11 +392,15 @@ static void test_upwind2_specific() {
             solver.step();
         }
 
-        // Check for NaN
-        for (int k = 1; k <= 16 && valid_3d; ++k) {
-            for (int j = 1; j <= 16 && valid_3d; ++j) {
-                for (int i = 1; i <= 17 && valid_3d; ++i) {
+        // Check all velocity components for NaN
+        for (int k = Ng; k <= N + Ng && valid_3d; ++k) {
+            for (int j = Ng; j <= N + Ng && valid_3d; ++j) {
+                for (int i = Ng; i <= N + Ng + 1 && valid_3d; ++i) {
                     if (!std::isfinite(solver.velocity().u(i, j, k))) valid_3d = false;
+                }
+                for (int i = Ng; i <= N + Ng && valid_3d; ++i) {
+                    if (!std::isfinite(solver.velocity().v(i, j, k))) valid_3d = false;
+                    if (!std::isfinite(solver.velocity().w(i, j, k))) valid_3d = false;
                 }
             }
         }
