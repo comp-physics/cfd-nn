@@ -22,105 +22,10 @@
 
 using namespace nncfd;
 using namespace nncfd::test::harness;
-
-// ============================================================================
-// Helper: Compute kinetic energy for 2D field
-// ============================================================================
-static double compute_ke_2d(const VectorField& vel, const Mesh& mesh) {
-    double ke = 0.0;
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int Ng = mesh.Nghost;
-    const double dx = mesh.dx;
-    const double dy = mesh.dy;
-
-    for (int j = Ng; j < Ny + Ng; ++j) {
-        for (int i = Ng; i < Nx + Ng; ++i) {
-            double u_c = 0.5 * (vel.u(i, j) + vel.u(i + 1, j));
-            double v_c = 0.5 * (vel.v(i, j) + vel.v(i, j + 1));
-            ke += 0.5 * (u_c * u_c + v_c * v_c) * dx * dy;
-        }
-    }
-    return ke;
-}
-
-// ============================================================================
-// Helper: Compute kinetic energy for 3D field
-// ============================================================================
-static double compute_ke_3d(const VectorField& vel, const Mesh& mesh) {
-    double ke = 0.0;
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int Nz = mesh.Nz;
-    const int Ng = mesh.Nghost;
-    const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
-
-    for (int k = Ng; k < Nz + Ng; ++k) {
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            for (int i = Ng; i < Nx + Ng; ++i) {
-                double u_c = 0.5 * (vel.u(i, j, k) + vel.u(i + 1, j, k));
-                double v_c = 0.5 * (vel.v(i, j, k) + vel.v(i, j + 1, k));
-                double w_c = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k + 1));
-                ke += 0.5 * (u_c * u_c + v_c * v_c + w_c * w_c) * cell_vol;
-            }
-        }
-    }
-    return ke;
-}
-
-// ============================================================================
-// Helper: Check if velocity field contains NaN or Inf
-// ============================================================================
-static bool check_field_validity_2d(const VectorField& vel, const Mesh& mesh) {
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int Ng = mesh.Nghost;
-
-    for (int j = Ng; j < Ny + Ng; ++j) {
-        for (int i = Ng; i < Nx + Ng + 1; ++i) {
-            if (!std::isfinite(vel.u(i, j))) return false;
-        }
-    }
-    for (int j = Ng; j < Ny + Ng + 1; ++j) {
-        for (int i = Ng; i < Nx + Ng; ++i) {
-            if (!std::isfinite(vel.v(i, j))) return false;
-        }
-    }
-    return true;
-}
-
-static bool check_field_validity_3d(const VectorField& vel, const Mesh& mesh) {
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int Nz = mesh.Nz;
-    const int Ng = mesh.Nghost;
-
-    // Check u component
-    for (int k = Ng; k < Nz + Ng; ++k) {
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            for (int i = Ng; i < Nx + Ng + 1; ++i) {
-                if (!std::isfinite(vel.u(i, j, k))) return false;
-            }
-        }
-    }
-    // Check v component
-    for (int k = Ng; k < Nz + Ng; ++k) {
-        for (int j = Ng; j < Ny + Ng + 1; ++j) {
-            for (int i = Ng; i < Nx + Ng; ++i) {
-                if (!std::isfinite(vel.v(i, j, k))) return false;
-            }
-        }
-    }
-    // Check w component
-    for (int k = Ng; k < Nz + Ng + 1; ++k) {
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            for (int i = Ng; i < Nx + Ng; ++i) {
-                if (!std::isfinite(vel.w(i, j, k))) return false;
-            }
-        }
-    }
-    return true;
-}
+using nncfd::test::compute_ke_2d;
+using nncfd::test::compute_ke_3d;
+using nncfd::test::check_field_validity_2d;
+using nncfd::test::check_field_validity_3d;
 
 // ============================================================================
 // Test 1: DNS Configuration - O4 + Skew + RK3

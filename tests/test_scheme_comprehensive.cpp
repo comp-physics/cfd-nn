@@ -23,49 +23,9 @@
 
 using namespace nncfd;
 using namespace nncfd::test::harness;
-
-// ============================================================================
-// Helper: Check if velocity field contains NaN or Inf
-// ============================================================================
-static bool check_field_validity(const VectorField& vel, const Mesh& mesh) {
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int Ng = mesh.Nghost;
-
-    for (int j = Ng; j < Ny + Ng; ++j) {
-        for (int i = Ng; i < Nx + Ng + 1; ++i) {
-            if (!std::isfinite(vel.u(i, j))) return false;
-        }
-    }
-    for (int j = Ng; j < Ny + Ng + 1; ++j) {
-        for (int i = Ng; i < Nx + Ng; ++i) {
-            if (!std::isfinite(vel.v(i, j))) return false;
-        }
-    }
-    return true;
-}
-
-// ============================================================================
-// Helper: Compute kinetic energy for 2D field
-// ============================================================================
-static double compute_ke_2d(const VectorField& vel, const Mesh& mesh) {
-    double ke = 0.0;
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int Ng = mesh.Nghost;
-    const double dx = mesh.dx;
-    const double dy = mesh.dy;
-
-    for (int j = Ng; j < Ny + Ng; ++j) {
-        for (int i = Ng; i < Nx + Ng; ++i) {
-            // Interpolate u and v to cell centers
-            double u_c = 0.5 * (vel.u(i, j) + vel.u(i + 1, j));
-            double v_c = 0.5 * (vel.v(i, j) + vel.v(i, j + 1));
-            ke += 0.5 * (u_c * u_c + v_c * v_c) * dx * dy;
-        }
-    }
-    return ke;
-}
+using nncfd::test::compute_ke_2d;
+using nncfd::test::check_field_validity;
+using nncfd::test::check_field_validity_3d;
 
 // ============================================================================
 // Helper: Run simulation and return energy metrics

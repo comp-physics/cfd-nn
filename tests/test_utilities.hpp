@@ -1636,6 +1636,93 @@ inline double compute_enstrophy_2d(const Mesh& mesh, const VectorField& vel) {
     return compute_enstrophy_2d(vel, mesh);
 }
 
+//-----------------------------------------------------------------------------
+// Convenience KE helpers with (VectorField, Mesh) parameter order
+//-----------------------------------------------------------------------------
+
+/// Compute 2D kinetic energy: 0.5 * integral(u^2 + v^2) * cell_area
+inline double compute_ke_2d(const VectorField& vel, const Mesh& mesh) {
+    double ke = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+            ke += 0.5 * (u*u + v*v) * cell_area;
+        }
+    }
+    return ke;
+}
+
+/// Compute 3D kinetic energy: 0.5 * integral(u^2 + v^2 + w^2) * cell_volume
+inline double compute_ke_3d(const VectorField& vel, const Mesh& mesh) {
+    return compute_kinetic_energy_3d(vel, mesh);
+}
+
+//-----------------------------------------------------------------------------
+// Field Validity Checks (NaN/Inf detection)
+//-----------------------------------------------------------------------------
+
+/// Check if 2D velocity field contains NaN or Inf
+inline bool check_field_validity(const VectorField& vel, const Mesh& mesh) {
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Ng = mesh.Nghost;
+
+    // Check u on x-faces
+    for (int j = Ng; j < Ny + Ng; ++j) {
+        for (int i = Ng; i < Nx + Ng + 1; ++i) {
+            if (!std::isfinite(vel.u(i, j))) return false;
+        }
+    }
+    // Check v on y-faces
+    for (int j = Ng; j < Ny + Ng + 1; ++j) {
+        for (int i = Ng; i < Nx + Ng; ++i) {
+            if (!std::isfinite(vel.v(i, j))) return false;
+        }
+    }
+    return true;
+}
+
+/// Alias for 2D validity check
+inline bool check_field_validity_2d(const VectorField& vel, const Mesh& mesh) {
+    return check_field_validity(vel, mesh);
+}
+
+/// Check if 3D velocity field contains NaN or Inf (correct staggered bounds)
+inline bool check_field_validity_3d(const VectorField& vel, const Mesh& mesh) {
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+
+    // Check u on x-faces
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng + 1; ++i) {
+                if (!std::isfinite(vel.u(i, j, k))) return false;
+            }
+        }
+    }
+    // Check v on y-faces
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng + 1; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (!std::isfinite(vel.v(i, j, k))) return false;
+            }
+        }
+    }
+    // Check w on z-faces
+    for (int k = Ng; k < Nz + Ng + 1; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (!std::isfinite(vel.w(i, j, k))) return false;
+            }
+        }
+    }
+    return true;
+}
+
 //=============================================================================
 // CI Metrics and JSON Artifact Support
 //=============================================================================
