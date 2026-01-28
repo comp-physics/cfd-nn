@@ -863,7 +863,7 @@ if [ "$TEST_SUITE" = "all" ] || [ "$TEST_SUITE" = "gpu" ] || [ "$TEST_SUITE" = "
         log_info "Skipping GPU tests in CPU-only mode (--cpu flag)"
     else
         # Run all GPU-labeled tests via ctest
-        # Includes: test_cpu_gpu_unified, test_gpu_utilization, test_fft_unified
+        # Includes: test_gpu_utilization, test_fft_unified
         # Note: test_gpu_utilization has ENVIRONMENT property set in CMakeLists.txt
         run_ctest_suite "gpu" 300
 
