@@ -1299,6 +1299,16 @@ void RANSSolver::compute_convective_term(const VectorField& vel, VectorField& co
     const int conv_u_stride = u_stride;
     const int conv_v_stride = v_stride;
 
+    // Warn once if O4 requested but not implemented for 2D advection
+    if (use_O4 && (use_skew || use_central)) {
+        static bool warned_o4_2d = false;
+        if (!warned_o4_2d) {
+            std::cerr << "[Solver] WARNING: space_order=4 requested but O4 advection kernels "
+                      << "are not implemented for 2D. Using O2 advection.\n";
+            warned_o4_2d = true;
+        }
+    }
+
     if (use_skew) {
         // Skew-symmetric (energy-conserving) advection - 2D
         #pragma omp target teams distribute parallel for \
