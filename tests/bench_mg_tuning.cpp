@@ -15,6 +15,7 @@
 #include "fields.hpp"
 #include "solver.hpp"
 #include "profiling.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -25,6 +26,9 @@
 
 using namespace nncfd;
 using namespace std::chrono;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::compute_kinetic_energy;
 
 struct TuningConfig {
     std::string name;
@@ -91,23 +95,7 @@ double compute_divergence_inf(const Mesh& mesh, const VectorField& vel) {
     return div_max;
 }
 
-double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
-    double ke = 0.0;
-
-    // Sum 0.5 * (u^2 + v^2 + w^2) over cell centers
-    for (int k = 1; k <= mesh.Nz; ++k) {
-        for (int j = 1; j <= mesh.Ny; ++j) {
-            for (int i = 1; i <= mesh.Nx; ++i) {
-                double u_c = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
-                double v_c = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
-                double w_c = (mesh.Nz > 1) ?
-                    0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1)) : 0.0;
-                ke += 0.5 * (u_c*u_c + v_c*v_c + w_c*w_c);
-            }
-        }
-    }
-    return ke;
-}
+// Note: compute_kinetic_energy is from test_utilities.hpp
 
 TuningResult run_single_benchmark(const TuningConfig& cfg, int N, int nsteps) {
     // Set up mesh and solver
@@ -137,16 +125,7 @@ TuningResult run_single_benchmark(const TuningConfig& cfg, int N, int nsteps) {
     config.poisson_check_after = 4;
 
     RANSSolver solver(mesh, config);
-
-    // Channel BCs (walls on y) - PWP configuration
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
     // Initialize Taylor-Green vortex (divergence-free)
     const double U0 = 1.0;

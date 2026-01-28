@@ -248,12 +248,20 @@ int main(int argc, char** argv) {
         std::cout << "Expected centerline velocity (approx): " << u_center_approx << "\n\n";
     }
 
+    // Determine required ghost cells based on scheme requirements
+    // O4 spatial operators and Upwind2 both need 5-point stencils (i±2), requiring Nghost >= 2
+    int nghost = 1;  // Default for O2 schemes
+    if (config.space_order == 4 || config.convective_scheme == ConvectiveScheme::Upwind2) {
+        nghost = 2;
+        std::cout << "Using Nghost = 2 for higher-order stencils\n";
+    }
+
     // Create 3D mesh
     Mesh mesh;
     mesh.init_uniform(config.Nx, config.Ny, config.Nz,
                       config.x_min, config.x_max,
                       config.y_min, config.y_max,
-                      config.z_min, config.z_max);
+                      config.z_min, config.z_max, nghost);
 
     std::cout << "Mesh: " << mesh.Nx << " x " << mesh.Ny << " x " << mesh.Nz << " cells (3D)\n";
     std::cout << "dx = " << mesh.dx << ", dy = " << mesh.dy << ", dz = " << mesh.dz << "\n\n";

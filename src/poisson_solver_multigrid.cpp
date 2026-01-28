@@ -138,11 +138,16 @@ void MultigridPoissonSolver::create_hierarchy() {
     double dz = mesh_->dz;
     const bool is_2d = mesh_->is2D();
 
+    // Finest level uses mesh's ghost width (may be >1 for O4 schemes)
+    // Coarse levels use Ng=1 since MG internally uses O2 stencils
+    const int ng_fine = mesh_->Nghost;
+    constexpr int ng_coarse = 1;
+
     // Finest level
     if (is_2d) {
-        levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy));
+        levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy, ng_fine));
     } else {
-        levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz));
+        levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz, ng_fine));
     }
 
     // Coarsen until we reach minimum grid size
@@ -156,7 +161,7 @@ void MultigridPoissonSolver::create_hierarchy() {
             Ny /= 2;
             dx *= 2.0;
             dy *= 2.0;
-            levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy));
+            levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy, ng_coarse));
         }
     } else {
         while (Nx > MIN_COARSE_SIZE && Ny > MIN_COARSE_SIZE && Nz > MIN_COARSE_SIZE) {
@@ -166,7 +171,7 @@ void MultigridPoissonSolver::create_hierarchy() {
             dx *= 2.0;
             dy *= 2.0;
             dz *= 2.0;
-            levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz));
+            levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz, ng_coarse));
         }
     }
 }
@@ -179,10 +184,10 @@ void MultigridPoissonSolver::apply_bc(int level) {
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int Ng = 1;  // Ghost cells
+    const int Ng = grid.Ng;  // Ghost cells from level (may be >1 for finest level)
     const bool is_2d = grid.is2D();
-    const int stride = Nx + 2*Ng;
-    const int plane_stride = stride * (Ny + 2*Ng);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
 
     // Convert BCs to integers for branchless GPU code
     const int bc_x_lo = static_cast<int>(bc_x_lo_);
@@ -193,17 +198,18 @@ void MultigridPoissonSolver::apply_bc(int level) {
     const int bc_z_hi = static_cast<int>(bc_z_hi_);
     const double dval = dirichlet_val_;
 
-    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
-    double* u_ptr = u_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
 #ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
     #define BC_TARGET_FOR_X \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr)")
     #define BC_TARGET_FOR_Y \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr)")
     #define BC_TARGET_FOR_Z \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size])")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr)")
 #else
+    double* u_ptr = u_ptrs_[level];
     #define BC_TARGET_FOR_X
     #define BC_TARGET_FOR_Y
     #define BC_TARGET_FOR_Z
@@ -211,53 +217,58 @@ void MultigridPoissonSolver::apply_bc(int level) {
 
     if (is_2d) {
         // ========== 2D BOUNDARY CONDITIONS ==========
-        // Pass 1: x-direction boundaries (loop over j)
+        // Fill ALL Ng ghost layers (important when Ng > 1 for O4 stencils)
+        // Pass 1: x-direction boundaries (loop over j and all ghost layers)
         BC_TARGET_FOR_X
         for (int j = 0; j < Ny + 2*Ng; ++j) {
-            int idx_lo = j * stride + 0;           // Left ghost (i=0)
-            int idx_hi = j * stride + (Nx + Ng);   // Right ghost (i=Nx+1)
+            for (int g = 0; g < Ng; ++g) {
+                int idx_lo = j * stride + g;               // Left ghosts (i=0,1,...,Ng-1)
+                int idx_hi = j * stride + (Nx + Ng + g);   // Right ghosts (i=Nx+Ng,...,Nx+2Ng-1)
 
-            // Left boundary (i=0)
-            if (bc_x_lo == 2) { // Periodic
-                u_ptr[idx_lo] = u_ptr[j * stride + Nx];
-            } else if (bc_x_lo == 1) { // Neumann
-                u_ptr[idx_lo] = u_ptr[j * stride + Ng];
-            } else { // Dirichlet
-                u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + Ng];
-            }
+                // Left boundary - periodic wraps to right interior
+                if (bc_x_lo == 2) { // Periodic
+                    u_ptr[idx_lo] = u_ptr[j * stride + Nx + g];
+                } else if (bc_x_lo == 1) { // Neumann (zero gradient)
+                    u_ptr[idx_lo] = u_ptr[j * stride + Ng];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + (Ng + g)];
+                }
 
-            // Right boundary (i=Nx+1)
-            if (bc_x_hi == 2) { // Periodic
-                u_ptr[idx_hi] = u_ptr[j * stride + Ng];
-            } else if (bc_x_hi == 1) { // Neumann
-                u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
-            } else { // Dirichlet
-                u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1)];
+                // Right boundary - periodic wraps to left interior
+                if (bc_x_hi == 2) { // Periodic
+                    u_ptr[idx_hi] = u_ptr[j * stride + Ng + g];
+                } else if (bc_x_hi == 1) { // Neumann (zero gradient)
+                    u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nx+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1 - g)];
+                }
             }
         }
 
-        // Pass 2: y-direction boundaries (loop over i)
+        // Pass 2: y-direction boundaries (loop over i and all ghost layers)
         BC_TARGET_FOR_Y
         for (int i = 0; i < Nx + 2*Ng; ++i) {
-            int idx_lo = 0 * stride + i;               // Bottom ghost (j=0)
-            int idx_hi = (Ny + Ng) * stride + i;       // Top ghost (j=Ny+1)
+            for (int g = 0; g < Ng; ++g) {
+                int idx_lo = g * stride + i;               // Bottom ghosts (j=0,1,...,Ng-1)
+                int idx_hi = (Ny + Ng + g) * stride + i;   // Top ghosts (j=Ny+Ng,...,Ny+2Ng-1)
 
-            // Bottom boundary (j=0)
-            if (bc_y_lo == 2) { // Periodic
-                u_ptr[idx_lo] = u_ptr[Ny * stride + i];
-            } else if (bc_y_lo == 1) { // Neumann
-                u_ptr[idx_lo] = u_ptr[Ng * stride + i];
-            } else { // Dirichlet
-                u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * stride + i];
-            }
+                // Bottom boundary - periodic wraps to top interior
+                if (bc_y_lo == 2) { // Periodic
+                    u_ptr[idx_lo] = u_ptr[(Ny + g) * stride + i];
+                } else if (bc_y_lo == 1) { // Neumann (zero gradient)
+                    u_ptr[idx_lo] = u_ptr[Ng * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[(Ng + g) * stride + i];
+                }
 
-            // Top boundary (j=Ny+1)
-            if (bc_y_hi == 2) { // Periodic
-                u_ptr[idx_hi] = u_ptr[Ng * stride + i];
-            } else if (bc_y_hi == 1) { // Neumann
-                u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
-            } else { // Dirichlet
-                u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                // Top boundary - periodic wraps to bottom interior
+                if (bc_y_hi == 2) { // Periodic
+                    u_ptr[idx_hi] = u_ptr[(Ng + g) * stride + i];
+                } else if (bc_y_hi == 1) { // Neumann (zero gradient)
+                    u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Ny+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1 - g) * stride + i];
+                }
             }
         }
 
@@ -267,133 +278,143 @@ void MultigridPoissonSolver::apply_bc(int level) {
         if (needs_corner_fix) {
             BC_TARGET_FOR_X
             for (int j = 0; j < Ny + 2*Ng; ++j) {
-                int idx_lo = j * stride + 0;
-                int idx_hi = j * stride + (Nx + Ng);
+                for (int g = 0; g < Ng; ++g) {
+                    int idx_lo = j * stride + g;
+                    int idx_hi = j * stride + (Nx + Ng + g);
 
-                if (bc_x_lo == 2) {
-                    u_ptr[idx_lo] = u_ptr[j * stride + Nx];
-                } else if (bc_x_lo == 1) {
-                    u_ptr[idx_lo] = u_ptr[j * stride + Ng];
-                } else {
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + Ng];
-                }
+                    if (bc_x_lo == 2) {
+                        u_ptr[idx_lo] = u_ptr[j * stride + Nx + g];
+                    } else if (bc_x_lo == 1) {
+                        u_ptr[idx_lo] = u_ptr[j * stride + Ng];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                        u_ptr[idx_lo] = 2.0 * dval - u_ptr[j * stride + (Ng + g)];
+                    }
 
-                if (bc_x_hi == 2) {
-                    u_ptr[idx_hi] = u_ptr[j * stride + Ng];
-                } else if (bc_x_hi == 1) {
-                    u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
-                } else {
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1)];
+                    if (bc_x_hi == 2) {
+                        u_ptr[idx_hi] = u_ptr[j * stride + Ng + g];
+                    } else if (bc_x_hi == 1) {
+                        u_ptr[idx_hi] = u_ptr[j * stride + (Nx + Ng - 1)];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nx+Ng-1-g)
+                        u_ptr[idx_hi] = 2.0 * dval - u_ptr[j * stride + (Nx + Ng - 1 - g)];
+                    }
                 }
             }
 
             BC_TARGET_FOR_Y
             for (int i = 0; i < Nx + 2*Ng; ++i) {
-                int idx_lo = 0 * stride + i;
-                int idx_hi = (Ny + Ng) * stride + i;
+                for (int g = 0; g < Ng; ++g) {
+                    int idx_lo = g * stride + i;
+                    int idx_hi = (Ny + Ng + g) * stride + i;
 
-                if (bc_y_lo == 2) {
-                    u_ptr[idx_lo] = u_ptr[Ny * stride + i];
-                } else if (bc_y_lo == 1) {
-                    u_ptr[idx_lo] = u_ptr[Ng * stride + i];
-                } else {
-                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * stride + i];
-                }
+                    if (bc_y_lo == 2) {
+                        u_ptr[idx_lo] = u_ptr[(Ny + g) * stride + i];
+                    } else if (bc_y_lo == 1) {
+                        u_ptr[idx_lo] = u_ptr[Ng * stride + i];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                        u_ptr[idx_lo] = 2.0 * dval - u_ptr[(Ng + g) * stride + i];
+                    }
 
-                if (bc_y_hi == 2) {
-                    u_ptr[idx_hi] = u_ptr[Ng * stride + i];
-                } else if (bc_y_hi == 1) {
-                    u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
-                } else {
-                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1) * stride + i];
+                    if (bc_y_hi == 2) {
+                        u_ptr[idx_hi] = u_ptr[(Ng + g) * stride + i];
+                    } else if (bc_y_hi == 1) {
+                        u_ptr[idx_hi] = u_ptr[(Ny + Ng - 1) * stride + i];
+                    } else { // Dirichlet - mirror ghost g through boundary using interior cell (Ny+Ng-1-g)
+                        u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Ny + Ng - 1 - g) * stride + i];
+                    }
                 }
             }
         }
     } else {
         // ========== 3D BOUNDARY CONDITIONS ==========
-        // Use face-by-face approach matching 2D structure for consistency
+        // Fill ALL Ng ghost layers (important when Ng > 1 for O4 stencils)
         const int n_jk = (Ny + 2*Ng) * (Nz + 2*Ng);
         const int n_ik = (Nx + 2*Ng) * (Nz + 2*Ng);
         const int n_ij = (Nx + 2*Ng) * (Ny + 2*Ng);
 
-        // Pass 1: x-direction boundaries (loop over j,k faces)
+        // Pass 1: x-direction boundaries (loop over j,k faces and all ghost layers)
         BC_TARGET_FOR_X
         for (int jk = 0; jk < n_jk; ++jk) {
             int j = jk % (Ny + 2*Ng);
             int k = jk / (Ny + 2*Ng);
-            int idx_lo = k * plane_stride + j * stride + 0;
-            int idx_hi = k * plane_stride + j * stride + (Nx + Ng);
+            for (int g = 0; g < Ng; ++g) {
+                int idx_lo = k * plane_stride + j * stride + g;
+                int idx_hi = k * plane_stride + j * stride + (Nx + Ng + g);
 
-            // Left boundary (i=0)
-            if (bc_x_lo == 2) {
-                u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Nx];
-            } else if (bc_x_lo == 1) {
-                u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Ng];
-            } else {
-                u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + Ng];
-            }
+                // Left boundary - periodic wraps to right interior
+                if (bc_x_lo == 2) {
+                    u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Nx + g];
+                } else if (bc_x_lo == 1) {
+                    u_ptr[idx_lo] = u_ptr[k * plane_stride + j * stride + Ng];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Ng + g)];
+                }
 
-            // Right boundary (i=Nx+1)
-            if (bc_x_hi == 2) {
-                u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + Ng];
-            } else if (bc_x_hi == 1) {
-                u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
-            } else {
-                u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+                // Right boundary - periodic wraps to left interior
+                if (bc_x_hi == 2) {
+                    u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + Ng + g];
+                } else if (bc_x_hi == 1) {
+                    u_ptr[idx_hi] = u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1)];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nx+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + j * stride + (Nx + Ng - 1 - g)];
+                }
             }
         }
 
-        // Pass 2: y-direction boundaries (loop over i,k faces)
+        // Pass 2: y-direction boundaries (loop over i,k faces and all ghost layers)
         BC_TARGET_FOR_Y
         for (int ik = 0; ik < n_ik; ++ik) {
             int i = ik % (Nx + 2*Ng);
             int k = ik / (Nx + 2*Ng);
-            int idx_lo = k * plane_stride + 0 * stride + i;
-            int idx_hi = k * plane_stride + (Ny + Ng) * stride + i;
+            for (int g = 0; g < Ng; ++g) {
+                int idx_lo = k * plane_stride + g * stride + i;
+                int idx_hi = k * plane_stride + (Ny + Ng + g) * stride + i;
 
-            // Bottom boundary (j=0)
-            if (bc_y_lo == 2) {
-                u_ptr[idx_lo] = u_ptr[k * plane_stride + Ny * stride + i];
-            } else if (bc_y_lo == 1) {
-                u_ptr[idx_lo] = u_ptr[k * plane_stride + Ng * stride + i];
-            } else {
-                u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + Ng * stride + i];
-            }
+                // Bottom boundary - periodic wraps to top interior
+                if (bc_y_lo == 2) {
+                    u_ptr[idx_lo] = u_ptr[k * plane_stride + (Ny + g) * stride + i];
+                } else if (bc_y_lo == 1) {
+                    u_ptr[idx_lo] = u_ptr[k * plane_stride + Ng * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[k * plane_stride + (Ng + g) * stride + i];
+                }
 
-            // Top boundary (j=Ny+1)
-            if (bc_y_hi == 2) {
-                u_ptr[idx_hi] = u_ptr[k * plane_stride + Ng * stride + i];
-            } else if (bc_y_hi == 1) {
-                u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
-            } else {
-                u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                // Top boundary - periodic wraps to bottom interior
+                if (bc_y_hi == 2) {
+                    u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ng + g) * stride + i];
+                } else if (bc_y_hi == 1) {
+                    u_ptr[idx_hi] = u_ptr[k * plane_stride + (Ny + Ng - 1) * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Ny+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[k * plane_stride + (Ny + Ng - 1 - g) * stride + i];
+                }
             }
         }
 
-        // Pass 3: z-direction boundaries (loop over i,j faces)
+        // Pass 3: z-direction boundaries (loop over i,j faces and all ghost layers)
         BC_TARGET_FOR_Z
         for (int ij = 0; ij < n_ij; ++ij) {
             int i = ij % (Nx + 2*Ng);
             int j = ij / (Nx + 2*Ng);
-            int idx_lo = 0 * plane_stride + j * stride + i;
-            int idx_hi = (Nz + Ng) * plane_stride + j * stride + i;
+            for (int g = 0; g < Ng; ++g) {
+                int idx_lo = g * plane_stride + j * stride + i;
+                int idx_hi = (Nz + Ng + g) * plane_stride + j * stride + i;
 
-            // Back boundary (k=0)
-            if (bc_z_lo == 2) {
-                u_ptr[idx_lo] = u_ptr[Nz * plane_stride + j * stride + i];
-            } else if (bc_z_lo == 1) {
-                u_ptr[idx_lo] = u_ptr[Ng * plane_stride + j * stride + i];
-            } else {
-                u_ptr[idx_lo] = 2.0 * dval - u_ptr[Ng * plane_stride + j * stride + i];
-            }
+                // Back boundary - periodic wraps to front interior
+                if (bc_z_lo == 2) {
+                    u_ptr[idx_lo] = u_ptr[(Nz + g) * plane_stride + j * stride + i];
+                } else if (bc_z_lo == 1) {
+                    u_ptr[idx_lo] = u_ptr[Ng * plane_stride + j * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell Ng+g
+                    u_ptr[idx_lo] = 2.0 * dval - u_ptr[(Ng + g) * plane_stride + j * stride + i];
+                }
 
-            // Front boundary (k=Nz+1)
-            if (bc_z_hi == 2) {
-                u_ptr[idx_hi] = u_ptr[Ng * plane_stride + j * stride + i];
-            } else if (bc_z_hi == 1) {
-                u_ptr[idx_hi] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
-            } else {
-                u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                // Front boundary - periodic wraps to back interior
+                if (bc_z_hi == 2) {
+                    u_ptr[idx_hi] = u_ptr[(Ng + g) * plane_stride + j * stride + i];
+                } else if (bc_z_hi == 1) {
+                    u_ptr[idx_hi] = u_ptr[(Nz + Ng - 1) * plane_stride + j * stride + i];
+                } else { // Dirichlet - mirror ghost g through boundary using interior cell (Nz+Ng-1-g)
+                    u_ptr[idx_hi] = 2.0 * dval - u_ptr[(Nz + Ng - 1 - g) * plane_stride + j * stride + i];
+                }
             }
         }
     }
@@ -412,15 +433,17 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const bool is_2d = grid.is2D();
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path for residual BCs
     if (gpu_ready_) {
-        const size_t total_size = level_sizes_[level];
-        double* r_ptr = r_ptrs_[level];
         const int stride = Nx + 2*Ng;
+
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+        int device = omp_get_default_device();
+        double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
 
         // Convert BCs to integers for GPU
         const int bc_x_lo = static_cast<int>(bc_x_lo_);
@@ -431,41 +454,43 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
         const int bc_z_hi = static_cast<int>(bc_z_hi_);
 
         if (is_2d) {
-            // 2D GPU path for residual
+            // 2D GPU path for residual - fill ALL Ng ghost layers
             // x-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size])
-            for (int j = 0; j < Ny + 2; ++j) {
+            #pragma omp target teams distribute parallel for is_device_ptr(r_ptr)
+            for (int j = 0; j < Ny + 2*Ng; ++j) {
                 int idx = j * stride;
-                // Left boundary (i=0)
-                if (bc_x_lo == 2) { // Periodic
-                    r_ptr[idx] = r_ptr[idx + Nx];
-                } else { // Neumann/Dirichlet: zero ghost
-                    r_ptr[idx] = 0.0;
-                }
-                // Right boundary (i=Nx+1)
-                if (bc_x_hi == 2) { // Periodic
-                    r_ptr[idx + Nx + Ng] = r_ptr[idx + Ng];
-                } else {
-                    r_ptr[idx + Nx + Ng] = 0.0;
+                for (int g = 0; g < Ng; ++g) {
+                    // Left ghost at position g
+                    if (bc_x_lo == 2) { // Periodic
+                        r_ptr[idx + g] = r_ptr[idx + Nx + g];
+                    } else { // Neumann/Dirichlet: zero ghost
+                        r_ptr[idx + g] = 0.0;
+                    }
+                    // Right ghost at position Nx+Ng+g
+                    if (bc_x_hi == 2) { // Periodic
+                        r_ptr[idx + Nx + Ng + g] = r_ptr[idx + Ng + g];
+                    } else {
+                        r_ptr[idx + Nx + Ng + g] = 0.0;
+                    }
                 }
             }
 
             // y-direction boundaries
-            #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size])
-            for (int i = 0; i < Nx + 2; ++i) {
-                // Bottom boundary (j=0)
-                if (bc_y_lo == 2) { // Periodic
-                    r_ptr[i] = r_ptr[Ny * stride + i];
-                } else {
-                    r_ptr[i] = 0.0;
-                }
-                // Top boundary (j=Ny+1)
-                if (bc_y_hi == 2) { // Periodic
-                    r_ptr[(Ny + Ng) * stride + i] = r_ptr[Ng * stride + i];
-                } else {
-                    r_ptr[(Ny + Ng) * stride + i] = 0.0;
+            #pragma omp target teams distribute parallel for is_device_ptr(r_ptr)
+            for (int i = 0; i < Nx + 2*Ng; ++i) {
+                for (int g = 0; g < Ng; ++g) {
+                    // Bottom ghost at position g
+                    if (bc_y_lo == 2) { // Periodic
+                        r_ptr[g * stride + i] = r_ptr[(Ny + g) * stride + i];
+                    } else {
+                        r_ptr[g * stride + i] = 0.0;
+                    }
+                    // Top ghost at position Ny+Ng+g
+                    if (bc_y_hi == 2) { // Periodic
+                        r_ptr[(Ny + Ng + g) * stride + i] = r_ptr[(Ng + g) * stride + i];
+                    } else {
+                        r_ptr[(Ny + Ng + g) * stride + i] = 0.0;
+                    }
                 }
             }
         } else {
@@ -476,8 +501,7 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
             const int Nz_g = Nz + 2*Ng;
             const int n_total_g = Nx_g * Ny_g * Nz_g;
 
-            #pragma omp target teams distribute parallel for \
-                map(present: r_ptr[0:total_size]) \
+            #pragma omp target teams distribute parallel for is_device_ptr(r_ptr) \
                 firstprivate(Nx, Ny, Nz, Ng, stride, plane_stride, bc_x_lo, bc_x_hi, bc_y_lo, bc_y_hi, bc_z_lo, bc_z_hi)
             for (int idx_g = 0; idx_g < n_total_g; ++idx_g) {
                 int i = idx_g % Nx_g;
@@ -543,52 +567,57 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
 
     // CPU fallback path
     // Similar logic to apply_bc but on grid.r instead of grid.u
+    // Fill ALL Ng ghost layers for each boundary
     if (is_2d) {
         // 2D CPU path for residual
         // x-direction boundaries
         for (int j = 0; j < Ny + 2*Ng; ++j) {
-            // Left boundary
-            switch (bc_x_lo_) {
-                case PoissonBC::Periodic:
-                    grid.r(0, j) = grid.r(Nx, j);
-                    break;
-                case PoissonBC::Neumann:
-                case PoissonBC::Dirichlet:
-                    grid.r(0, j) = 0.0;  // Zero ghost for Neumann/Dirichlet residual
-                    break;
-            }
-            // Right boundary
-            switch (bc_x_hi_) {
-                case PoissonBC::Periodic:
-                    grid.r(Nx + Ng, j) = grid.r(Ng, j);
-                    break;
-                case PoissonBC::Neumann:
-                case PoissonBC::Dirichlet:
-                    grid.r(Nx + Ng, j) = 0.0;
-                    break;
+            for (int g = 0; g < Ng; ++g) {
+                // Left ghosts
+                switch (bc_x_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.r(g, j) = grid.r(Nx + g, j);
+                        break;
+                    case PoissonBC::Neumann:
+                    case PoissonBC::Dirichlet:
+                        grid.r(g, j) = 0.0;  // Zero ghost for Neumann/Dirichlet residual
+                        break;
+                }
+                // Right ghosts
+                switch (bc_x_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.r(Nx + Ng + g, j) = grid.r(Ng + g, j);
+                        break;
+                    case PoissonBC::Neumann:
+                    case PoissonBC::Dirichlet:
+                        grid.r(Nx + Ng + g, j) = 0.0;
+                        break;
+                }
             }
         }
         // y-direction boundaries
         for (int i = 0; i < Nx + 2*Ng; ++i) {
-            // Bottom boundary
-            switch (bc_y_lo_) {
-                case PoissonBC::Periodic:
-                    grid.r(i, 0) = grid.r(i, Ny);
-                    break;
-                case PoissonBC::Neumann:
-                case PoissonBC::Dirichlet:
-                    grid.r(i, 0) = 0.0;
-                    break;
-            }
-            // Top boundary
-            switch (bc_y_hi_) {
-                case PoissonBC::Periodic:
-                    grid.r(i, Ny + Ng) = grid.r(i, Ng);
-                    break;
-                case PoissonBC::Neumann:
-                case PoissonBC::Dirichlet:
-                    grid.r(i, Ny + Ng) = 0.0;
-                    break;
+            for (int g = 0; g < Ng; ++g) {
+                // Bottom ghosts
+                switch (bc_y_lo_) {
+                    case PoissonBC::Periodic:
+                        grid.r(i, g) = grid.r(i, Ny + g);
+                        break;
+                    case PoissonBC::Neumann:
+                    case PoissonBC::Dirichlet:
+                        grid.r(i, g) = 0.0;
+                        break;
+                }
+                // Top ghosts
+                switch (bc_y_hi_) {
+                    case PoissonBC::Periodic:
+                        grid.r(i, Ny + Ng + g) = grid.r(i, Ng + g);
+                        break;
+                    case PoissonBC::Neumann:
+                    case PoissonBC::Dirichlet:
+                        grid.r(i, Ny + Ng + g) = 0.0;
+                        break;
+                }
             }
         }
     } else {
@@ -596,63 +625,69 @@ void MultigridPoissonSolver::apply_bc_to_residual(int level) {
         // x-direction
         for (int k = 0; k < Nz + 2*Ng; ++k) {
             for (int j = 0; j < Ny + 2*Ng; ++j) {
-                switch (bc_x_lo_) {
-                    case PoissonBC::Periodic:
-                        grid.r(0, j, k) = grid.r(Nx, j, k);
-                        break;
-                    default:
-                        grid.r(0, j, k) = 0.0;
-                        break;
-                }
-                switch (bc_x_hi_) {
-                    case PoissonBC::Periodic:
-                        grid.r(Nx + Ng, j, k) = grid.r(Ng, j, k);
-                        break;
-                    default:
-                        grid.r(Nx + Ng, j, k) = 0.0;
-                        break;
+                for (int g = 0; g < Ng; ++g) {
+                    switch (bc_x_lo_) {
+                        case PoissonBC::Periodic:
+                            grid.r(g, j, k) = grid.r(Nx + g, j, k);
+                            break;
+                        default:
+                            grid.r(g, j, k) = 0.0;
+                            break;
+                    }
+                    switch (bc_x_hi_) {
+                        case PoissonBC::Periodic:
+                            grid.r(Nx + Ng + g, j, k) = grid.r(Ng + g, j, k);
+                            break;
+                        default:
+                            grid.r(Nx + Ng + g, j, k) = 0.0;
+                            break;
+                    }
                 }
             }
         }
         // y-direction
         for (int k = 0; k < Nz + 2*Ng; ++k) {
             for (int i = 0; i < Nx + 2*Ng; ++i) {
-                switch (bc_y_lo_) {
-                    case PoissonBC::Periodic:
-                        grid.r(i, 0, k) = grid.r(i, Ny, k);
-                        break;
-                    default:
-                        grid.r(i, 0, k) = 0.0;
-                        break;
-                }
-                switch (bc_y_hi_) {
-                    case PoissonBC::Periodic:
-                        grid.r(i, Ny + Ng, k) = grid.r(i, Ng, k);
-                        break;
-                    default:
-                        grid.r(i, Ny + Ng, k) = 0.0;
-                        break;
+                for (int g = 0; g < Ng; ++g) {
+                    switch (bc_y_lo_) {
+                        case PoissonBC::Periodic:
+                            grid.r(i, g, k) = grid.r(i, Ny + g, k);
+                            break;
+                        default:
+                            grid.r(i, g, k) = 0.0;
+                            break;
+                    }
+                    switch (bc_y_hi_) {
+                        case PoissonBC::Periodic:
+                            grid.r(i, Ny + Ng + g, k) = grid.r(i, Ng + g, k);
+                            break;
+                        default:
+                            grid.r(i, Ny + Ng + g, k) = 0.0;
+                            break;
+                    }
                 }
             }
         }
         // z-direction
         for (int j = 0; j < Ny + 2*Ng; ++j) {
             for (int i = 0; i < Nx + 2*Ng; ++i) {
-                switch (bc_z_lo_) {
-                    case PoissonBC::Periodic:
-                        grid.r(i, j, 0) = grid.r(i, j, Nz);
-                        break;
-                    default:
-                        grid.r(i, j, 0) = 0.0;
-                        break;
-                }
-                switch (bc_z_hi_) {
-                    case PoissonBC::Periodic:
-                        grid.r(i, j, Nz + Ng) = grid.r(i, j, Ng);
-                        break;
-                    default:
-                        grid.r(i, j, Nz + Ng) = 0.0;
-                        break;
+                for (int g = 0; g < Ng; ++g) {
+                    switch (bc_z_lo_) {
+                        case PoissonBC::Periodic:
+                            grid.r(i, j, g) = grid.r(i, j, Nz + g);
+                            break;
+                        default:
+                            grid.r(i, j, g) = 0.0;
+                            break;
+                    }
+                    switch (bc_z_hi_) {
+                        case PoissonBC::Periodic:
+                            grid.r(i, j, Nz + Ng + g) = grid.r(i, j, Ng + g);
+                            break;
+                        default:
+                            grid.r(i, j, Nz + Ng + g) = 0.0;
+                            break;
+                    }
                 }
             }
         }
@@ -682,34 +717,36 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
                                : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
 
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = (Nx + 2) * (Ny + 2);
-    const size_t total_size = static_cast<size_t>(Nx + 2) *
-                              static_cast<size_t>(Ny + 2) *
-                              static_cast<size_t>(Nz + 2);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+    const size_t total_size = grid.total_size;
 
     // Chebyshev eigenvalue bounds (see constants at top of file)
     const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
     const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
 
-    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
-    double* u_ptr = u_ptrs_[level];
-    const double* f_ptr = f_ptrs_[level];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
+    // Local pointer copies with map(present:) get HOST addresses in NVHPC.
 #ifdef USE_GPU_OFFLOAD
-    double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* tmp_ptr = tmp_ptrs_[level];  // Already a raw device pointer (omp_target_alloc)
     // Note: Cannot use nowait here - Chebyshev iterations have data dependencies
     // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define CHEBY_TARGET_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define CHEBY_TARGET_COPY \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr, tmp_ptr)")
 #else
+    double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     #define CHEBY_TARGET_2D
     #define CHEBY_TARGET_3D
@@ -786,34 +823,36 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
                                : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
 
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = (Nx + 2) * (Ny + 2);
-    const size_t total_size = static_cast<size_t>(Nx + 2) *
-                              static_cast<size_t>(Ny + 2) *
-                              static_cast<size_t>(Nz + 2);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+    [[maybe_unused]] const size_t total_size = grid.total_size;
 
-    // Set up pointers - unified for CPU/GPU (both use cached raw pointers)
+#ifdef USE_GPU_OFFLOAD
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
+    // Local pointer copies with map(present:) get HOST addresses in NVHPC.
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* tmp_ptr = tmp_ptrs_[level];  // Already a raw device pointer (omp_target_alloc)
+    // All pointers are now device pointers - use is_device_ptr for all
+    #define JACOBI_TARGET_U_TO_TMP_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_2D \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_U_TO_TMP_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_3D \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_COPY \
+        _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr, tmp_ptr)")
+#else
+    // CPU path: use host pointers directly
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
-#ifdef USE_GPU_OFFLOAD
-    double* tmp_ptr = tmp_ptrs_[level];  // Separate scratch buffer on GPU
-    // tmp_ptr is device-only (omp_target_alloc), use is_device_ptr
-    // Note: Cannot use nowait here - Jacobi iterations have data dependencies
-    #define JACOBI_TARGET_U_TO_TMP_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_TMP_TO_U_2D \
-        _Pragma("omp target teams distribute parallel for collapse(2) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_U_TO_TMP_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_TMP_TO_U_3D \
-        _Pragma("omp target teams distribute parallel for collapse(3) map(present: u_ptr[0:total_size], f_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-    #define JACOBI_TARGET_COPY \
-        _Pragma("omp target teams distribute parallel for map(present: u_ptr[0:total_size]) is_device_ptr(tmp_ptr)")
-#else
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
     // CPU: no pragmas needed
     #define JACOBI_TARGET_U_TO_TMP_2D
@@ -926,23 +965,28 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const double dz2 = grid.dz * grid.dz;
     const bool is_2d = grid.is2D();
 
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = (Nx + 2) * (Ny + 2);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+#ifdef USE_GPU_OFFLOAD
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+    int device = omp_get_default_device();
+    const double* u_ptr = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+#else
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+#endif
 
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr)
 #endif
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i < Nx + Ng; ++i) {
@@ -955,8 +999,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
     } else {
         // 3D path
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, r_ptr)
 #endif
         for (int k = Ng; k < Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
@@ -984,17 +1027,24 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     const double dz2 = grid.dz * grid.dz;
     const bool is_2d = grid.is2D();
 
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = (Nx + 2) * (Ny + 2);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
 
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* u_ptr = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+#else
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+#endif
 
     double max_res = 0.0;
     double sum_sq = 0.0;
@@ -1002,8 +1052,7 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     if (is_2d) {
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
-            reduction(max: max_res) reduction(+: sum_sq)
+            is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
 #endif
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i < Nx + Ng; ++i) {
@@ -1022,8 +1071,7 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
         // 3D path
 #ifdef USE_GPU_OFFLOAD
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_ptr[0:total_size], f_ptr[0:total_size], r_ptr[0:total_size]) \
-            reduction(max: max_res) reduction(+: sum_sq)
+            is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
 #endif
         for (int k = Ng; k < Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
@@ -1056,31 +1104,37 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     auto& coarse = *levels_[fine_level + 1];
     const bool is_2d = fine.is2D();
 
-    const int Ng = 1;
+    // Each level has its own ghost width (finest may have Ng>1 for O4, coarse levels use Ng=1)
+    const int Ng_f = fine.Ng;    // Fine level ghost width
+    const int Ng_c = coarse.Ng;  // Coarse level ghost width
     const int Nx_c = coarse.Nx;
     const int Ny_c = coarse.Ny;
     const int Nz_c = coarse.Nz;
-    const int stride_f = fine.Nx + 2;
-    const int stride_c = coarse.Nx + 2;
-    const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
-    const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
+    const int stride_f = fine.stride;
+    const int stride_c = coarse.stride;
+    const int plane_stride_f = fine.plane_stride;
+    const int plane_stride_c = coarse.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+#ifdef USE_GPU_OFFLOAD
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+    int device = omp_get_default_device();
+    const double* r_fine = static_cast<const double*>(omp_get_mapped_ptr(r_ptrs_[fine_level], device));
+    double* f_coarse = static_cast<double*>(omp_get_mapped_ptr(f_ptrs_[fine_level + 1], device));
+#else
     const double* r_fine = r_ptrs_[fine_level];
     double* f_coarse = f_ptrs_[fine_level + 1];
-    [[maybe_unused]] const size_t size_f = level_sizes_[fine_level];
-    [[maybe_unused]] const size_t size_c = level_sizes_[fine_level + 1];
+#endif
 
     if (is_2d) {
         // 2D: 9-point stencil
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(r_fine, f_coarse)
 #endif
-        for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
-            for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
-                int i_f = 2 * (i_c - Ng) + Ng;
-                int j_f = 2 * (j_c - Ng) + Ng;
+        for (int j_c = Ng_c; j_c < Ny_c + Ng_c; ++j_c) {
+            for (int i_c = Ng_c; i_c < Nx_c + Ng_c; ++i_c) {
+                // Map coarse index to fine index: i_f = Ng_f + 2*(i_c - Ng_c)
+                int i_f = Ng_f + 2 * (i_c - Ng_c);
+                int j_f = Ng_f + 2 * (j_c - Ng_c);
                 int idx_c = j_c * stride_c + i_c;
                 int idx_f = j_f * stride_f + i_f;
 
@@ -1094,15 +1148,15 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
     } else {
         // 3D: 27-point stencil
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: r_fine[0:size_f], f_coarse[0:size_c])
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(r_fine, f_coarse)
 #endif
-        for (int k_c = Ng; k_c < Nz_c + Ng; ++k_c) {
-            for (int j_c = Ng; j_c < Ny_c + Ng; ++j_c) {
-                for (int i_c = Ng; i_c < Nx_c + Ng; ++i_c) {
-                    int i_f = 2 * (i_c - Ng) + Ng;
-                    int j_f = 2 * (j_c - Ng) + Ng;
-                    int k_f = 2 * (k_c - Ng) + Ng;
+        for (int k_c = Ng_c; k_c < Nz_c + Ng_c; ++k_c) {
+            for (int j_c = Ng_c; j_c < Ny_c + Ng_c; ++j_c) {
+                for (int i_c = Ng_c; i_c < Nx_c + Ng_c; ++i_c) {
+                    // Map coarse index to fine index: i_f = Ng_f + 2*(i_c - Ng_c)
+                    int i_f = Ng_f + 2 * (i_c - Ng_c);
+                    int j_f = Ng_f + 2 * (j_c - Ng_c);
+                    int k_f = Ng_f + 2 * (k_c - Ng_c);
                     int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
                     int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
 
@@ -1148,35 +1202,41 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     auto& fine = *levels_[coarse_level - 1];
     const bool is_2d = fine.is2D();
 
-    const int Ng = 1;
+    // Each level has its own ghost width (finest may have Ng>1 for O4, coarse levels use Ng=1)
+    const int Ng_f = fine.Ng;    // Fine level ghost width
+    const int Ng_c = coarse.Ng;  // Coarse level ghost width
     const int Nx_f = fine.Nx;
     const int Ny_f = fine.Ny;
     const int Nz_f = fine.Nz;
-    const int stride_f = fine.Nx + 2;
-    const int stride_c = coarse.Nx + 2;
-    const int plane_stride_f = (fine.Nx + 2) * (fine.Ny + 2);
-    const int plane_stride_c = (coarse.Nx + 2) * (coarse.Ny + 2);
+    const int stride_f = fine.stride;
+    const int stride_c = coarse.stride;
+    const int plane_stride_f = fine.plane_stride;
+    const int plane_stride_c = coarse.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* u_coarse = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[coarse_level], device));
+    double* u_fine = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[coarse_level - 1], device));
+#else
     const double* u_coarse = u_ptrs_[coarse_level];
     double* u_fine = u_ptrs_[coarse_level - 1];
-    [[maybe_unused]] const size_t size_f = level_sizes_[coarse_level - 1];
-    [[maybe_unused]] const size_t size_c = level_sizes_[coarse_level];
+#endif
 
     if (is_2d) {
         // 2D owner-computes bilinear interpolation
         // Each fine cell reads from up to 4 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_coarse, u_fine)
 #endif
-        for (int j_f = Ng; j_f < Ny_f + Ng; ++j_f) {
-            for (int i_f = Ng; i_f < Nx_f + Ng; ++i_f) {
+        for (int j_f = Ng_f; j_f < Ny_f + Ng_f; ++j_f) {
+            for (int i_f = Ng_f; i_f < Nx_f + Ng_f; ++i_f) {
                 // Find base coarse cell and position within coarse cell pair
-                int i_c = (i_f - Ng) / 2 + Ng;
-                int j_c = (j_f - Ng) / 2 + Ng;
-                int di = (i_f - Ng) & 1;  // 0 = coincident, 1 = midpoint
-                int dj = (j_f - Ng) & 1;
+                // Map fine to coarse: i_c = (i_f - Ng_f) / 2 + Ng_c
+                int i_c = (i_f - Ng_f) / 2 + Ng_c;
+                int j_c = (j_f - Ng_f) / 2 + Ng_c;
+                int di = (i_f - Ng_f) & 1;  // 0 = coincident, 1 = midpoint
+                int dj = (j_f - Ng_f) & 1;
 
                 // Interpolation weights: 0.5*d gives 0.0 or 0.5
                 double wx1 = 0.5 * di;
@@ -1200,19 +1260,19 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
         // 3D owner-computes trilinear interpolation
         // Each fine cell reads from up to 8 coarse neighbors
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u_coarse[0:size_c], u_fine[0:size_f])
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_coarse, u_fine)
 #endif
-        for (int k_f = Ng; k_f < Nz_f + Ng; ++k_f) {
-            for (int j_f = Ng; j_f < Ny_f + Ng; ++j_f) {
-                for (int i_f = Ng; i_f < Nx_f + Ng; ++i_f) {
+        for (int k_f = Ng_f; k_f < Nz_f + Ng_f; ++k_f) {
+            for (int j_f = Ng_f; j_f < Ny_f + Ng_f; ++j_f) {
+                for (int i_f = Ng_f; i_f < Nx_f + Ng_f; ++i_f) {
                     // Find base coarse cell and position within coarse cell pair
-                    int i_c = (i_f - Ng) / 2 + Ng;
-                    int j_c = (j_f - Ng) / 2 + Ng;
-                    int k_c = (k_f - Ng) / 2 + Ng;
-                    int di = (i_f - Ng) & 1;  // 0 = coincident, 1 = midpoint
-                    int dj = (j_f - Ng) & 1;
-                    int dk = (k_f - Ng) & 1;
+                    // Map fine to coarse: i_c = (i_f - Ng_f) / 2 + Ng_c
+                    int i_c = (i_f - Ng_f) / 2 + Ng_c;
+                    int j_c = (j_f - Ng_f) / 2 + Ng_c;
+                    int k_c = (k_f - Ng_f) / 2 + Ng_c;
+                    int di = (i_f - Ng_f) & 1;  // 0 = coincident, 1 = midpoint
+                    int dj = (j_f - Ng_f) & 1;
+                    int dk = (k_f - Ng_f) & 1;
 
                     // Interpolation weights
                     double wx1 = 0.5 * di;
@@ -1315,18 +1375,19 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 #ifdef USE_GPU_OFFLOAD
         assert(gpu_ready_ && "GPU must be initialized");
         const size_t size_c = level_sizes_[level + 1];
-        double* u_coarse = u_ptrs_[level + 1];
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+        int device = omp_get_default_device();
+        double* u_coarse = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level + 1], device));
 
-        #pragma omp target teams distribute parallel for \
-            map(present: u_coarse[0:size_c])
+        #pragma omp target teams distribute parallel for is_device_ptr(u_coarse)
         for (int idx = 0; idx < (int)size_c; ++idx) {
             u_coarse[idx] = 0.0;
         }
 #else
-        const int Ng = 1;
-        for (int k = 0; k < coarse.Nz + 2*Ng; ++k) {
-            for (int j = 0; j < coarse.Ny + 2*Ng; ++j) {
-                for (int i = 0; i < coarse.Nx + 2*Ng; ++i) {
+        // Zero the coarse grid (CPU path)
+        for (int k = 0; k < coarse.Sz; ++k) {
+            for (int j = 0; j < coarse.Sy; ++j) {
+                for (int i = 0; i < coarse.Sx; ++i) {
                     coarse.u(i, j, k) = 0.0;
                 }
             }
@@ -1354,22 +1415,25 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
 
     auto& grid = *levels_[level];
     double max_res = 0.0;
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = stride * (Ny + 2);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* r_ptr = static_cast<const double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+#else
     const double* r_ptr = r_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+#endif
 
     if (Nz == 1) {
         // 2D case
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(max:max_res) is_device_ptr(r_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1387,8 +1451,7 @@ double MultigridPoissonSolver::compute_max_residual(int level) {
     } else {
         // 3D case
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(max:max_res) \
-            map(present: r_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(max:max_res) is_device_ptr(r_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1437,22 +1500,25 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     // UNIFIED CODE: Same arithmetic for CPU and GPU, pragma handles offloading
     auto& grid = *levels_[level];
     double sum = 0.0;
-    const int Ng = 1;
+    const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
     const int Nz = grid.Nz;
-    const int stride = Nx + 2;
-    const int plane_stride = stride * (Ny + 2);
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
 
-    // Use raw pointers for unified CPU/GPU code (both paths now set these in initialize_gpu_buffers)
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+#else
     double* u_ptr = u_ptrs_[level];
-    [[maybe_unused]] const size_t total_size = level_sizes_[level];
+#endif
 
     if (Nz == 1) {
         // 2D case - compute sum
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(+:sum) is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1464,8 +1530,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 
         // 2D case - subtract mean
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny; ++idx) {
             int i = idx % Nx + Ng;
@@ -1475,8 +1540,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
     } else {
         // 3D case - compute sum
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for reduction(+:sum) \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for reduction(+:sum) is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1489,8 +1553,7 @@ void MultigridPoissonSolver::subtract_mean(int level) {
 
         // 3D case - subtract mean
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:total_size])
+        #pragma omp target teams distribute parallel for is_device_ptr(u_ptr)
 #endif
         for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
             int i = idx % Nx + Ng;
@@ -1506,7 +1569,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 
     // Copy RHS and initial guess to finest level (CPU side)
     auto& finest = *levels_[0];
-    const int Ng = 1;
+    const int Ng = finest.Ng;  // Use level's ghost width
 
     // 3D-aware data copy
     if (mesh_->is2D()) {
@@ -1606,20 +1669,21 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     // Compute reference norms for relative tolerances (CPU path)
     // ||b||_∞ = max|f| and ||b||_2 = sqrt(sum(f^2)) on finest level - store in member for diagnostics
     auto& finest_cpu = *levels_[0];
+    const int Ng_f = finest_cpu.Ng;  // Use actual Ng for correct interior indexing (O4 has Ng=2)
     b_inf_ = 0.0;
     double b_sum_sq = 0.0;
     if (mesh_->is2D()) {
-        for (int j = 1; j <= finest_cpu.Ny; ++j) {
-            for (int i = 1; i <= finest_cpu.Nx; ++i) {
+        for (int j = Ng_f; j < Ng_f + finest_cpu.Ny; ++j) {
+            for (int i = Ng_f; i < Ng_f + finest_cpu.Nx; ++i) {
                 double val = finest_cpu.f(i, j);
                 b_inf_ = std::max(b_inf_, std::abs(val));
                 b_sum_sq += val * val;
             }
         }
     } else {
-        for (int k = 1; k <= finest_cpu.Nz; ++k) {
-            for (int j = 1; j <= finest_cpu.Ny; ++j) {
-                for (int i = 1; i <= finest_cpu.Nx; ++i) {
+        for (int k = Ng_f; k < Ng_f + finest_cpu.Nz; ++k) {
+            for (int j = Ng_f; j < Ng_f + finest_cpu.Ny; ++j) {
+                for (int i = Ng_f; i < Ng_f + finest_cpu.Nx; ++i) {
                     double val = finest_cpu.f(i, j, k);
                     b_inf_ = std::max(b_inf_, std::abs(val));
                     b_sum_sq += val * val;
@@ -1714,35 +1778,47 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
 }
 
 #ifdef USE_GPU_OFFLOAD
+/// GPU Multigrid Solver - Device-Resident Implementation
+///
+/// CONTRACT: All device kernels in this section MUST use one of these patterns:
+///   1. gpu::dev_ptr(host_ptr) + is_device_ptr(dev_ptr)
+///   2. omp_get_mapped_ptr() + is_device_ptr()
+///   3. Member pointers with map(present:) for simple kernels
+///
+/// FORBIDDEN: Local pointer aliases without explicit device address resolution.
+/// See gpu_utils.hpp for full NVHPC workaround documentation.
+///
 int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg) {
     NVTX_SCOPE_POISSON("poisson:solve_device");
 
     assert(gpu_ready_ && "GPU must be initialized in constructor");
-    
+
     // Device-resident solve using Model 1 (host pointer + present mapping)
     // Parameters are host pointers that caller has already mapped via `target enter data`.
-    // We use map(present: ...) to access the device copies without additional transfers.
-    
+    // NVHPC WORKAROUND: Use member pointers directly instead of local copies from vectors.
+    // Local pointer copies get HOST addresses in NVHPC target regions.
+
     auto& finest = *levels_[0];
     const int Nx = finest.Nx;
     const int Ny = finest.Ny;
     const int Nz = finest.Nz;
-    // Total size includes ghost cells: (Nx+2)*(Ny+2)*(Nz+2) for 3D, or *3 for 2D (Nz=1)
-    const size_t total_size = static_cast<size_t>(Nx + 2) *
-                              static_cast<size_t>(Ny + 2) *
-                              static_cast<size_t>(Nz + 2);
-
-    // Get device pointers for finest level multigrid buffers
-    double* u_dev = u_ptrs_[0];
-    double* f_dev = f_ptrs_[0];
+    // Total size includes ghost cells: Sx * Sy * Sz (accounts for level's Ng)
+    const size_t total_size = finest.total_size;
 
     // Copy RHS and initial guess from caller's present-mapped arrays to multigrid level-0 buffers
-    // This is device-to-device copy via present mappings (no host staging)
-    #pragma omp target teams distribute parallel for \
-        map(present: rhs_present[0:total_size], p_present[0:total_size], f_dev[0:total_size], u_dev[0:total_size])
-    for (size_t idx = 0; idx < total_size; ++idx) {
-        f_dev[idx] = rhs_present[idx];
-        u_dev[idx] = p_present[idx];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses, then use is_device_ptr.
+    {
+        int device = omp_get_default_device();
+        double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_present, device));
+        double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_present, device));
+        double* f_dev = static_cast<double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
+        double* u_dev = static_cast<double*>(omp_get_mapped_ptr(u_level0_ptr_, device));
+
+        #pragma omp target teams distribute parallel for is_device_ptr(rhs_dev, p_dev, f_dev, u_dev)
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            f_dev[idx] = rhs_dev[idx];
+            u_dev[idx] = p_dev[idx];
+        }
     }
 
     apply_bc(0);
@@ -1793,45 +1869,72 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             const int check_after = cfg.check_after;
             const double target_tol = cfg.tol_rhs;
 
+            // Compute ||b||_2 BEFORE running any V-cycles (RHS is still pristine)
+            // This matches the convergence mode pattern
+            // CRITICAL: Sync to ensure data copy is complete before reading
+            CUDA_CHECK_SYNC(cudaDeviceSynchronize());
+            {
+                auto& finest = *levels_[0];
+                const int Ng = finest.Ng;
+                const int Nx = finest.Nx;
+                const int Ny = finest.Ny;
+                const int Nz = finest.Nz;
+                const int stride = finest.stride;
+                const int plane_stride = finest.plane_stride;
+                const bool is_2d = finest.is2D();
+
+                // NVHPC WORKAROUND: Use member pointer f_level0_ptr_ instead of vector element f_ptrs_[0]
+                // Vector element access can return stale addresses in NVHPC
+                int device = omp_get_default_device();
+                const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
+
+                double b_sum_sq = 0.0;
+
+                if (is_2d) {
+                    // 2D data lives at plane k=Ng (middle z-plane), not k=0
+                    // Memory layout: Sz = 1 + 2*Ng, data at plane Ng
+                    const int k_plane_offset = Ng * plane_stride;
+                    #pragma omp target teams distribute parallel for collapse(2) \
+                        is_device_ptr(f_ptr) reduction(+: b_sum_sq)
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            int idx = k_plane_offset + j * stride + i;
+                            double val = f_ptr[idx];
+                            b_sum_sq += val * val;
+                        }
+                    }
+                } else {
+                    #pragma omp target teams distribute parallel for collapse(3) \
+                        is_device_ptr(f_ptr) reduction(+: b_sum_sq)
+                    for (int k = Ng; k < Nz + Ng; ++k) {
+                        for (int j = Ng; j < Ny + Ng; ++j) {
+                            for (int i = Ng; i < Nx + Ng; ++i) {
+                                int idx = k * plane_stride + j * stride + i;
+                                double val = f_ptr[idx];
+                                b_sum_sq += val * val;
+                            }
+                        }
+                    }
+                }
+                b_l2_ = std::sqrt(b_sum_sq);
+
+                // Sanity check: if ||b||_2 is invalid or garbage, fall back to all cycles
+                // This prevents early exit on bad reduction results
+                // - NaN/Inf: obviously invalid
+                // - Very small (<1e-30): likely zeros from wrong memory location
+                // - Very large (>1e15): likely garbage from bad reduction
+                if (!std::isfinite(b_l2_) || b_l2_ < 1e-30 || b_l2_ > 1e15) {
+                    b_l2_ = 0.0;  // Force rel_res check to use raw residual
+                }
+            }
+
             // First batch of cycles
             int batch = std::min(check_after, max_cycles);
             run_cycles(batch);
             cycles_run = batch;
 
-            // CRITICAL: Sync all device work before OpenMP target reduction
-            // Both CUDA graph and OpenMP target regions may use different streams.
-            // DeviceSynchronize ensures all async GPU work completes before reduction.
+            // Sync after V-cycles before checking residual
             CUDA_CHECK_SYNC(cudaDeviceSynchronize());
-
-            // Compute initial b_l2 for relative residual check
-            // Use CPU reduction on device data to avoid OpenMP target reduction issues
-            // with mixed CUDA/OpenMP environments
-            {
-                auto& finest = *levels_[0];
-                const int Ng = 1;
-                const int Nx = finest.Nx;
-                const int Ny = finest.Ny;
-                const int Nz = finest.Nz;
-                const int stride = Nx + 2 * Ng;
-                const int plane_stride = stride * (Ny + 2 * Ng);
-                const size_t f_size = level_sizes_[0];
-
-                // Sync f data from device to get b_l2
-                // This is a one-time overhead for adaptive mode startup
-                #pragma omp target update from(f_ptrs_[0][0:f_size])
-
-                // Compute on CPU (f data is now in host buffer)
-                double b_sum_sq = 0.0;
-                for (int k = Ng; k < Nz + Ng; ++k) {
-                    for (int j = Ng; j < Ny + Ng; ++j) {
-                        for (int i = Ng; i < Nx + Ng; ++i) {
-                            double val = f_ptrs_[0][k * plane_stride + j * stride + i];
-                            b_sum_sq += val * val;
-                        }
-                    }
-                }
-                b_l2_ = std::sqrt(b_sum_sq);
-            }
 
             // Helper: sync all device work if graph mode was used
             auto sync_if_graphed = [&]() {
@@ -1878,10 +1981,15 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         fix_nullspace(0);
 
         // Copy result from multigrid buffer back to caller's present-mapped array (D-to-D)
-        #pragma omp target teams distribute parallel for \
-            map(present: p_present[0:total_size], u_dev[0:total_size])
-        for (size_t idx = 0; idx < total_size; ++idx) {
-            p_present[idx] = u_dev[idx];
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+        {
+            int device = omp_get_default_device();
+            double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_present, device));
+            double* u_dev = static_cast<double*>(omp_get_mapped_ptr(u_level0_ptr_, device));
+            #pragma omp target teams distribute parallel for is_device_ptr(p_dev, u_dev)
+            for (size_t idx = 0; idx < total_size; ++idx) {
+                p_dev[idx] = u_dev[idx];
+            }
         }
 
         return cycles_run;
@@ -1907,37 +2015,45 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
 
     // Compute ||b||_∞ and ||b||_2 on device via fused reduction - store in members for diagnostics
     auto& finest_gpu = *levels_[0];
-    const int Ng = 1;
+    const int Ng = finest_gpu.Ng;  // Use level's ghost width
     const int Nx_g = finest_gpu.Nx;
     const int Ny_g = finest_gpu.Ny;
     const int Nz_g = finest_gpu.Nz;
-    const int stride_gpu = Nx_g + 2 * Ng;
-    const int plane_stride_gpu = stride_gpu * (Ny_g + 2 * Ng);
+    const int stride_gpu = finest_gpu.stride;
+    const int plane_stride_gpu = finest_gpu.plane_stride;
     const bool is_2d_gpu = finest_gpu.is2D();
 
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
     double b_inf_local = 0.0;
     double b_sum_sq = 0.0;
-    if (is_2d_gpu) {
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
-        for (int j = Ng; j < Ny_g + Ng; ++j) {
-            for (int i = Ng; i < Nx_g + Ng; ++i) {
-                int idx = j * stride_gpu + i;
-                double val = f_dev[idx];
-                b_inf_local = std::max(b_inf_local, std::abs(val));
-                b_sum_sq += val * val;
-            }
-        }
-    } else {
-        #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: f_dev[0:total_size]) reduction(max: b_inf_local) reduction(+: b_sum_sq)
-        for (int k = Ng; k < Nz_g + Ng; ++k) {
+    {
+        int device = omp_get_default_device();
+        const double* f_dev = static_cast<const double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
+        if (is_2d_gpu) {
+            // 2D data lives at plane k=Ng (middle z-plane), not k=0
+            // Memory layout: Sz = 1 + 2*Ng, data at plane Ng
+            const int k_plane_offset = Ng * plane_stride_gpu;
+            #pragma omp target teams distribute parallel for collapse(2) \
+                is_device_ptr(f_dev) reduction(max: b_inf_local) reduction(+: b_sum_sq)
             for (int j = Ng; j < Ny_g + Ng; ++j) {
                 for (int i = Ng; i < Nx_g + Ng; ++i) {
-                    int idx = k * plane_stride_gpu + j * stride_gpu + i;
+                    int idx = k_plane_offset + j * stride_gpu + i;
                     double val = f_dev[idx];
                     b_inf_local = std::max(b_inf_local, std::abs(val));
                     b_sum_sq += val * val;
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) \
+                is_device_ptr(f_dev) reduction(max: b_inf_local) reduction(+: b_sum_sq)
+            for (int k = Ng; k < Nz_g + Ng; ++k) {
+                for (int j = Ng; j < Ny_g + Ng; ++j) {
+                    for (int i = Ng; i < Nx_g + Ng; ++i) {
+                        int idx = k * plane_stride_gpu + j * stride_gpu + i;
+                        double val = f_dev[idx];
+                        b_inf_local = std::max(b_inf_local, std::abs(val));
+                        b_sum_sq += val * val;
+                    }
                 }
             }
         }
@@ -2002,11 +2118,15 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     fix_nullspace(0);
 
     // Copy result from multigrid level-0 buffer back to caller's present-mapped pointer
-    // This is device-to-device copy via present mappings (no host staging)
-    #pragma omp target teams distribute parallel for \
-        map(present: p_present[0:total_size], u_dev[0:total_size])
-    for (size_t idx = 0; idx < total_size; ++idx) {
-        p_present[idx] = u_dev[idx];
+    // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+    {
+        int device = omp_get_default_device();
+        double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_present, device));
+        double* u_dev = static_cast<double*>(omp_get_mapped_ptr(u_level0_ptr_, device));
+        #pragma omp target teams distribute parallel for is_device_ptr(p_dev, u_dev)
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            p_dev[idx] = u_dev[idx];
+        }
     }
 
     return cycles_used;  // Actual number of V-cycles executed
@@ -2028,10 +2148,8 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     
     for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
         auto& grid = *levels_[lvl];
-        // 3D: include Nz+2 in size calculation
-        const size_t total_size = static_cast<size_t>(grid.Nx + 2) *
-                                  static_cast<size_t>(grid.Ny + 2) *
-                                  static_cast<size_t>(grid.Nz + 2);
+        // Use grid's total_size which accounts for its ghost width (Ng)
+        const size_t total_size = grid.total_size;
         level_sizes_[lvl] = total_size;
         
         // Get pointers to CPU data
@@ -2053,10 +2171,10 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         }
 
         // Zero-initialize residual and scratch arrays to avoid garbage
-        double* r_ptr = r_ptrs_[lvl];
-        double* tmp_ptr = tmp_ptrs_[lvl];
-        #pragma omp target teams distribute parallel for \
-            map(present: r_ptr[0:total_size]) is_device_ptr(tmp_ptr)
+        // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
+        double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[lvl], device_id));
+        double* tmp_ptr = tmp_ptrs_[lvl];  // Already a device pointer (omp_target_alloc)
+        #pragma omp target teams distribute parallel for is_device_ptr(r_ptr, tmp_ptr)
         for (size_t idx = 0; idx < total_size; ++idx) {
             r_ptr[idx] = 0.0;
             tmp_ptr[idx] = 0.0;
@@ -2067,7 +2185,16 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
     if (!u_ptrs_.empty() && !gpu::is_pointer_present(u_ptrs_[0])) {
         throw std::runtime_error("GPU mapping failed despite device availability");
     }
-    
+
+    // NVHPC WORKAROUND: Set level-0 member pointers for direct use in target regions.
+    // Local pointer copies from vectors get HOST addresses in NVHPC target regions.
+    if (!u_ptrs_.empty()) {
+        u_level0_ptr_ = u_ptrs_[0];
+        f_level0_ptr_ = f_ptrs_[0];
+        r_level0_ptr_ = r_ptrs_[0];
+        level0_size_ = level_sizes_[0];
+    }
+
     gpu_ready_ = true;
 }
 
@@ -2169,7 +2296,7 @@ void MultigridPoissonSolver::initialize_vcycle_graph(int nu1, int nu2, int degre
         cfg.Nx = grid.Nx;
         cfg.Ny = grid.Ny;
         cfg.Nz = grid.Nz;
-        cfg.Ng = 1;
+        cfg.Ng = grid.Ng;  // Use actual Ng (finest level may have Ng=2 for O4 stencils)
         cfg.dx2 = grid.dx * grid.dx;
         cfg.dy2 = grid.dy * grid.dy;
         cfg.dz2 = grid.dz * grid.dz;
@@ -2262,9 +2389,8 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
 
     for (size_t lvl = 0; lvl < levels_.size(); ++lvl) {
         auto& grid = *levels_[lvl];
-        level_sizes_[lvl] = static_cast<size_t>(grid.Nx + 2) *
-                           static_cast<size_t>(grid.Ny + 2) *
-                           static_cast<size_t>(grid.Nz + 2);
+        // Use grid's total_size which accounts for its ghost width (Ng)
+        level_sizes_[lvl] = grid.total_size;
         u_ptrs_[lvl] = grid.u.data().data();
         f_ptrs_[lvl] = grid.f.data().data();
         r_ptrs_[lvl] = grid.r.data().data();

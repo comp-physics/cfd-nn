@@ -1321,6 +1321,264 @@ inline void remove_mean(FieldT& f, const MeshT& mesh) {
 // Physics Test Utilities
 //=============================================================================
 
+//-----------------------------------------------------------------------------
+// Mean Velocity Computation
+//-----------------------------------------------------------------------------
+
+/// Result structure for mean velocity computation
+struct MeanVelocity {
+    double u = 0.0;
+    double v = 0.0;
+    double w = 0.0;
+    int count = 0;
+};
+
+/// Compute mean velocity over interior cells (2D)
+/// Interpolates staggered velocities to cell centers before averaging
+inline MeanVelocity compute_mean_velocity_2d(const VectorField& vel, const Mesh& mesh) {
+    MeanVelocity m;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Interpolate to cell center
+            m.u += 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            m.v += 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+            m.count++;
+        }
+    }
+    if (m.count > 0) {
+        m.u /= m.count;
+        m.v /= m.count;
+    }
+    return m;
+}
+
+/// Compute mean velocity over interior cells (3D)
+/// Interpolates staggered velocities to cell centers before averaging
+inline MeanVelocity compute_mean_velocity_3d(const VectorField& vel, const Mesh& mesh) {
+    MeanVelocity m;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                // Interpolate to cell center
+                m.u += 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                m.v += 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                m.w += 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                m.count++;
+            }
+        }
+    }
+    if (m.count > 0) {
+        m.u /= m.count;
+        m.v /= m.count;
+        m.w /= m.count;
+    }
+    return m;
+}
+
+//-----------------------------------------------------------------------------
+// Divergence Computation (Direct Field Access - No GPU Sync)
+//-----------------------------------------------------------------------------
+
+/// Compute max |div(u)| over interior cells (2D) - direct field access
+/// Use this when you've already synced from GPU or are on CPU
+inline double compute_max_divergence_2d(const VectorField& vel, const Mesh& mesh) {
+    double max_div = 0.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double dudx = (vel.u(i+1, j) - vel.u(i, j)) / mesh.dx;
+            double dvdy = (vel.v(i, j+1) - vel.v(i, j)) / mesh.dy;
+            max_div = std::max(max_div, std::abs(dudx + dvdy));
+        }
+    }
+    return max_div;
+}
+
+/// Compute max |div(u)| over interior cells (3D) - direct field access
+/// Use this when you've already synced from GPU or are on CPU
+inline double compute_max_divergence_3d(const VectorField& vel, const Mesh& mesh) {
+    double max_div = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
+                double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
+                double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
+                max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
+            }
+        }
+    }
+    return max_div;
+}
+
+/// Compute mean divergence over interior cells (3D)
+inline double compute_mean_divergence_3d(const VectorField& vel, const Mesh& mesh) {
+    double sum_div = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
+                double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
+                double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
+                sum_div += std::abs(dudx + dvdy + dwdz);
+                count++;
+            }
+        }
+    }
+    return count > 0 ? sum_div / count : 0.0;
+}
+
+//-----------------------------------------------------------------------------
+// Kinetic Energy Computation
+//-----------------------------------------------------------------------------
+
+/// Compute total kinetic energy (3D): sum of 0.5 * (u^2 + v^2 + w^2) * cell_volume
+/// Direct field access version (no GPU sync)
+inline double compute_kinetic_energy_3d(const VectorField& vel, const Mesh& mesh) {
+    double ke = 0.0;
+    const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                ke += 0.5 * (u*u + v*v + w*w) * cell_vol;
+            }
+        }
+    }
+    return ke;
+}
+
+/// Compute fluctuating kinetic energy (2D): KE with mean velocity subtracted
+/// Useful for Galilean invariance tests
+inline double compute_fluctuating_ke_2d(const VectorField& vel, const Mesh& mesh,
+                                         double u_mean, double v_mean) {
+    double ke = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j)) - u_mean;
+            double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1)) - v_mean;
+            ke += 0.5 * (u*u + v*v) * cell_area;
+        }
+    }
+    return ke;
+}
+
+/// Compute fluctuating kinetic energy (3D): KE with mean velocity subtracted
+inline double compute_fluctuating_ke_3d(const VectorField& vel, const Mesh& mesh,
+                                         double u_mean, double v_mean, double w_mean) {
+    double ke = 0.0;
+    const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k)) - u_mean;
+                double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k)) - v_mean;
+                double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1)) - w_mean;
+                ke += 0.5 * (u*u + v*v + w*w) * cell_vol;
+            }
+        }
+    }
+    return ke;
+}
+
+//-----------------------------------------------------------------------------
+// Enstrophy Computation
+//-----------------------------------------------------------------------------
+
+/// Compute enstrophy (2D): 0.5 * integral(omega^2) dx dy
+/// where omega = dv/dx - du/dy (z-component of vorticity)
+inline double compute_enstrophy_2d(const VectorField& vel, const Mesh& mesh) {
+    double enstrophy = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            // Compute vorticity at cell center using central differences
+            double dvdx = (vel.v(i+1, j) - vel.v(i-1, j)) / (2.0 * mesh.dx);
+            double dudy = (vel.u(i, j+1) - vel.u(i, j-1)) / (2.0 * mesh.dy);
+            double omega = dvdx - dudy;
+            enstrophy += 0.5 * omega * omega * cell_area;
+        }
+    }
+    return enstrophy;
+}
+
+/// Compute enstrophy (3D): 0.5 * integral(|omega|^2) dx dy dz
+/// where omega = curl(u)
+inline double compute_enstrophy_3d(const VectorField& vel, const Mesh& mesh) {
+    double enstrophy = 0.0;
+    const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                // Vorticity components (central differences)
+                double dwdy = (vel.w(i, j+1, k) - vel.w(i, j-1, k)) / (2.0 * mesh.dy);
+                double dvdz = (vel.v(i, j, k+1) - vel.v(i, j, k-1)) / (2.0 * mesh.dz);
+                double omega_x = dwdy - dvdz;
+
+                double dudz = (vel.u(i, j, k+1) - vel.u(i, j, k-1)) / (2.0 * mesh.dz);
+                double dwdx = (vel.w(i+1, j, k) - vel.w(i-1, j, k)) / (2.0 * mesh.dx);
+                double omega_y = dudz - dwdx;
+
+                double dvdx = (vel.v(i+1, j, k) - vel.v(i-1, j, k)) / (2.0 * mesh.dx);
+                double dudy = (vel.u(i, j+1, k) - vel.u(i, j-1, k)) / (2.0 * mesh.dy);
+                double omega_z = dvdx - dudy;
+
+                enstrophy += 0.5 * (omega_x*omega_x + omega_y*omega_y + omega_z*omega_z) * cell_vol;
+            }
+        }
+    }
+    return enstrophy;
+}
+
+//-----------------------------------------------------------------------------
+// Combined 2D/3D Helper Functions
+//-----------------------------------------------------------------------------
+
+/// Compute maximum divergence (combined 2D/3D dispatch)
+/// Use this when the same code path handles both dimensionalities
+inline double compute_max_divergence(const VectorField& vel, const Mesh& mesh) {
+    return mesh.is2D() ? compute_max_divergence_2d(vel, mesh)
+                       : compute_max_divergence_3d(vel, mesh);
+}
+
+/// Compute mean kinetic energy (combined 2D/3D)
+/// Returns ke/count (average per cell) - suitable for invariant checking
+inline double compute_mean_kinetic_energy(const VectorField& vel, const Mesh& mesh) {
+    double ke = 0.0;
+    int count = 0;
+
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                ke += 0.5 * (u*u + v*v);
+                ++count;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                    ke += 0.5 * (u*u + v*v + w*w);
+                    ++count;
+                }
+            }
+        }
+    }
+    return ke / count;
+}
+
+//-----------------------------------------------------------------------------
+// Taylor-Green Vortex Initialization
+//-----------------------------------------------------------------------------
+
 /// Initialize Taylor-Green vortex (MAC grid: u at x-faces, v at y-faces)
 inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1335,17 +1593,134 @@ inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
     }
 }
 
-/// Compute kinetic energy: 0.5 * integral(u^2 + v^2) dx dy
+/// Compute total kinetic energy (combined 2D/3D)
+/// Returns 0.5 * integral(u^2 + v^2 [+ w^2]) with cell volume weighting
 inline double compute_kinetic_energy(const Mesh& mesh, const VectorField& vel) {
-    double KE = 0;
+    double KE = 0.0;
+    if (mesh.is2D()) {
+        const double cell_area = mesh.dx * mesh.dy;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
+                KE += 0.5 * (u*u + v*v) * cell_area;
+            }
+        }
+    } else {
+        const double cell_vol = mesh.dx * mesh.dy * mesh.dz;
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
+                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
+                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
+                    KE += 0.5 * (u*u + v*v + w*w) * cell_vol;
+                }
+            }
+        }
+    }
+    return KE;
+}
+
+//-----------------------------------------------------------------------------
+// Backward-Compatible Overloads (Mesh, VectorField order)
+//-----------------------------------------------------------------------------
+
+/// compute_max_divergence with (Mesh, VectorField) parameter order
+inline double compute_max_divergence(const Mesh& mesh, const VectorField& vel) {
+    return compute_max_divergence(vel, mesh);
+}
+
+/// compute_enstrophy_2d with (Mesh, VectorField) parameter order
+inline double compute_enstrophy_2d(const Mesh& mesh, const VectorField& vel) {
+    return compute_enstrophy_2d(vel, mesh);
+}
+
+//-----------------------------------------------------------------------------
+// Convenience KE helpers with (VectorField, Mesh) parameter order
+//-----------------------------------------------------------------------------
+
+/// Compute 2D kinetic energy: 0.5 * integral(u^2 + v^2) * cell_area
+inline double compute_ke_2d(const VectorField& vel, const Mesh& mesh) {
+    double ke = 0.0;
+    const double cell_area = mesh.dx * mesh.dy;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
             double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-            KE += 0.5 * (u*u + v*v) * mesh.dx * mesh.dy;
+            ke += 0.5 * (u*u + v*v) * cell_area;
         }
     }
-    return KE;
+    return ke;
+}
+
+/// Compute 3D kinetic energy: 0.5 * integral(u^2 + v^2 + w^2) * cell_volume
+inline double compute_ke_3d(const VectorField& vel, const Mesh& mesh) {
+    return compute_kinetic_energy_3d(vel, mesh);
+}
+
+//-----------------------------------------------------------------------------
+// Field Validity Checks (NaN/Inf detection)
+//-----------------------------------------------------------------------------
+
+/// Check if 2D velocity field contains NaN or Inf
+inline bool check_field_validity(const VectorField& vel, const Mesh& mesh) {
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Ng = mesh.Nghost;
+
+    // Check u on x-faces
+    for (int j = Ng; j < Ny + Ng; ++j) {
+        for (int i = Ng; i < Nx + Ng + 1; ++i) {
+            if (!std::isfinite(vel.u(i, j))) return false;
+        }
+    }
+    // Check v on y-faces
+    for (int j = Ng; j < Ny + Ng + 1; ++j) {
+        for (int i = Ng; i < Nx + Ng; ++i) {
+            if (!std::isfinite(vel.v(i, j))) return false;
+        }
+    }
+    return true;
+}
+
+/// Alias for 2D validity check
+inline bool check_field_validity_2d(const VectorField& vel, const Mesh& mesh) {
+    return check_field_validity(vel, mesh);
+}
+
+/// Check if 3D velocity field contains NaN or Inf (correct staggered bounds)
+inline bool check_field_validity_3d(const VectorField& vel, const Mesh& mesh) {
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+
+    // Check u on x-faces
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng + 1; ++i) {
+                if (!std::isfinite(vel.u(i, j, k))) return false;
+            }
+        }
+    }
+    // Check v on y-faces
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng + 1; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (!std::isfinite(vel.v(i, j, k))) return false;
+            }
+        }
+    }
+    // Check w on z-faces
+    for (int k = Ng; k < Nz + Ng + 1; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (!std::isfinite(vel.w(i, j, k))) return false;
+            }
+        }
+    }
+    return true;
 }
 
 //=============================================================================

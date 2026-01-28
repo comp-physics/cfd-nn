@@ -111,15 +111,15 @@ run_profile() {
     # --trace=nvtx,cuda: Capture NVTX ranges and CUDA API/kernels/memory
     # --cuda-memory-usage=true: Track DtoH/HtoD transfers
     # --stats=true: Generate summary statistics
-    nsys profile \
+    # Note: wrap in 'if' because set -e would exit before we can check $?
+    if nsys profile \
         --trace=nvtx,cuda \
         --cuda-memory-usage=true \
         --stats=true \
         --force-overwrite=true \
         --output="$output_base" \
-        "$exe_path" --config "$config_path"
+        "$exe_path" --config "$config_path"; then
 
-    if [ $? -eq 0 ]; then
         print_status "Profile completed: ${output_base}.nsys-rep"
 
         # Generate stats report

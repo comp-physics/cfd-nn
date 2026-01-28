@@ -24,6 +24,7 @@ build*/compare_channel_cpu_gpu
 build*/profile_solver
 /test_*
 build*/test_*
+build-*
 
 # Python
 venv/
@@ -122,3 +123,4 @@ mcconkey_npz/
 profile_*
 profiles/
 
+bench_*

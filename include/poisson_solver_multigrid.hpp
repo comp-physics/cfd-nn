@@ -90,34 +90,52 @@ public:
 private:
     /// Grid level in multigrid hierarchy
     struct GridLevel {
-        int Nx, Ny, Nz;           // Grid size (Nz=1 for 2D)
+        int Nx, Ny, Nz;           // Interior grid size (Nz=1 for 2D)
+        int Ng;                   // Ghost cell width (>=1)
+        int Sx, Sy, Sz;           // Total size including ghosts: S = N + 2*Ng
+        int stride;               // Row stride = Sx
+        int plane_stride;         // Plane stride = Sx * Sy
+        size_t total_size;        // Total array size = Sx * Sy * Sz
         double dx, dy, dz;        // Grid spacing (dz=1.0 for 2D)
         Mesh mesh;                // Mesh for this level
         ScalarField u;            // Solution
         ScalarField f;            // RHS
         ScalarField r;            // Residual
 
-        /// 2D constructor (backward compatible)
-        GridLevel(int nx, int ny, double dx_, double dy_)
-            : Nx(nx), Ny(ny), Nz(1), dx(dx_), dy(dy_), dz(1.0), mesh()
+        /// 2D constructor (backward compatible, Ng=1)
+        GridLevel(int nx, int ny, double dx_, double dy_, int ng = 1)
+            : Nx(nx), Ny(ny), Nz(1), Ng(ng),
+              Sx(nx + 2*ng), Sy(ny + 2*ng), Sz(1 + 2*ng),
+              stride(nx + 2*ng), plane_stride((nx + 2*ng) * (ny + 2*ng)),
+              total_size(static_cast<size_t>(nx + 2*ng) * (ny + 2*ng) * (1 + 2*ng)),
+              dx(dx_), dy(dy_), dz(1.0), mesh()
         {
-            mesh.init_uniform(nx, ny, 0.0, nx*dx_, 0.0, ny*dy_);
+            mesh.init_uniform(nx, ny, 0.0, nx*dx_, 0.0, ny*dy_, ng);
             u = ScalarField(mesh);
             f = ScalarField(mesh);
             r = ScalarField(mesh);
         }
 
         /// 3D constructor
-        GridLevel(int nx, int ny, int nz, double dx_, double dy_, double dz_)
-            : Nx(nx), Ny(ny), Nz(nz), dx(dx_), dy(dy_), dz(dz_), mesh()
+        GridLevel(int nx, int ny, int nz, double dx_, double dy_, double dz_, int ng = 1)
+            : Nx(nx), Ny(ny), Nz(nz), Ng(ng),
+              Sx(nx + 2*ng), Sy(ny + 2*ng), Sz(nz + 2*ng),
+              stride(nx + 2*ng), plane_stride((nx + 2*ng) * (ny + 2*ng)),
+              total_size(static_cast<size_t>(nx + 2*ng) * (ny + 2*ng) * (nz + 2*ng)),
+              dx(dx_), dy(dy_), dz(dz_), mesh()
         {
-            mesh.init_uniform(nx, ny, nz, 0.0, nx*dx_, 0.0, ny*dy_, 0.0, nz*dz_);
+            mesh.init_uniform(nx, ny, nz, 0.0, nx*dx_, 0.0, ny*dy_, 0.0, nz*dz_, ng);
             u = ScalarField(mesh);
             f = ScalarField(mesh);
             r = ScalarField(mesh);
         }
 
         bool is2D() const { return Nz == 1; }
+
+        /// Index helper for 3D (k,j,i) -> linear index
+        inline int idx(int i, int j, int k = 0) const {
+            return k * plane_stride + j * stride + i;
+        }
     };
     
     const Mesh* mesh_;
@@ -203,7 +221,15 @@ private:
     std::vector<double*> r_ptrs_;  // Device pointers for r at each level
     std::vector<double*> tmp_ptrs_;  // Scratch buffer for Jacobi ping-pong
     std::vector<size_t> level_sizes_;  // Total size for each level
-    
+
+    // NVHPC WORKAROUND: Level-0 member pointers for direct use in target regions.
+    // Local pointer copies from vectors get HOST addresses in NVHPC target regions.
+    // Using member pointers directly works around this bug.
+    double* u_level0_ptr_ = nullptr;
+    double* f_level0_ptr_ = nullptr;
+    double* r_level0_ptr_ = nullptr;
+    size_t level0_size_ = 0;
+
     void initialize_gpu_buffers();
     void cleanup_gpu_buffers();
 };

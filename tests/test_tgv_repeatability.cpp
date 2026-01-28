@@ -27,6 +27,8 @@
 using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // ============================================================================
 // Helper: Run TGV simulation and return final metrics
@@ -49,13 +51,7 @@ static TGVMetrics run_tgv_2d(int N, int nsteps, double nu, double dt) {
     config.verbose = false;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     init_taylor_green(solver, mesh);
     solver.sync_to_gpu();
@@ -105,12 +101,7 @@ static double compute_velocity_rel_l2(int N, double nu, double dt) {
 
     // Run 1
     RANSSolver solver1(mesh, config);
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver1.set_velocity_bc(bc);
+    solver1.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     init_taylor_green(solver1, mesh);
     solver1.sync_to_gpu();
     for (int step = 0; step < 50; ++step) solver1.step();
@@ -118,7 +109,7 @@ static double compute_velocity_rel_l2(int N, double nu, double dt) {
 
     // Run 2
     RANSSolver solver2(mesh, config);
-    solver2.set_velocity_bc(bc);
+    solver2.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     init_taylor_green(solver2, mesh);
     solver2.sync_to_gpu();
     for (int step = 0; step < 50; ++step) solver2.step();

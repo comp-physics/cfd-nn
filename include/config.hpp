@@ -23,12 +23,12 @@ enum class TurbulenceModelType {
     EARSM_Pope      ///< SST k-ω + Pope quadratic model
 };
 
-/// Convective scheme selection
+/// Convective/advection scheme selection
 enum class ConvectiveScheme {
-    Central,        ///< Central differencing (2nd order, energy conserving for div-free flow)
-    Upwind,         ///< First-order upwind (stable but diffusive, NOT Galilean invariant)
-    SkewSymmetric,  ///< Skew-symmetric form: ½[(u·∇)u + ∇·(u⊗u)] (Galilean invariant, energy stable)
-    Conservative    ///< Conservative flux form: ∇·(u⊗u) - discretely Galilean invariant
+    Central,    ///< 2nd-order central (advective form) - original default
+    Upwind,     ///< 1st-order upwind (advective form) - dissipative, stable
+    Skew,       ///< Skew-symmetric/split form - energy conserving (DNS/LES)
+    Upwind2     ///< 2nd-order upwind (advective form) - less dissipative than 1st-order
 };
 
 /// Simulation mode selection
@@ -45,6 +45,13 @@ enum class PoissonSolverType {
     FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z) - 3D only
     HYPRE,      ///< HYPRE PFMG solver (requires USE_HYPRE build)
     MG          ///< Native geometric multigrid
+};
+
+/// Time integration scheme selection
+enum class TimeIntegrator {
+    Euler,      ///< Forward Euler (1st order) - current default, for debugging/RANS
+    RK2,        ///< SSP-RK2 (2nd order) - solid baseline
+    RK3         ///< SSP-RK3 (3rd order) - recommended for LES/DNS
 };
 
 /// Simulation configuration
@@ -84,10 +91,12 @@ struct Config {
     int max_steps = 10000;      ///< Maximum time steps for simulation
     double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_steps)
     double tol = 1e-6;          ///< Convergence tolerance for steady-state
+    TimeIntegrator time_integrator = TimeIntegrator::Euler;  ///< Time integration scheme
     
     // Numerical schemes
     ConvectiveScheme convective_scheme = ConvectiveScheme::Central;
-    
+    int space_order = 2;        ///< Spatial discretization order (2 or 4)
+
     // Simulation mode
     SimulationMode simulation_mode = SimulationMode::Steady;
 
@@ -114,6 +123,7 @@ struct Config {
     // - write_fields: VTK/field output via solver.write_fields(...) and snapshots
     bool postprocess = true;
     bool write_fields = true;
+    bool vtk_binary = true;         ///< Use binary VTK format (smaller files, faster I/O)
 
     // Performance benchmarking
     int warmup_steps = 0;           ///< Steps to run before resetting timers (excluded from timing)
@@ -135,9 +145,8 @@ struct Config {
     int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
 
     // Adaptive fixed-cycle mode: run check_after cycles, check residual, add 2 more if needed
-    // DEFAULT ON: ensures Galilean invariance by checking convergence, adds ~1% overhead
-    // The solver runs check_after cycles fast, then checks ||r||/||b|| < tol_rhs, adds more if needed
-    bool poisson_adaptive_cycles = true;   ///< Enable adaptive checking within fixed-cycle mode (default: ON for robustness)
+    // When enabled, checks ||r||/||b|| < tol_rhs after check_after cycles, adds more if needed
+    bool poisson_adaptive_cycles = true;   ///< Enable adaptive checking within fixed-cycle mode
     int poisson_check_after = 4;           ///< Check residual after this many cycles
 
     // MG smoother tuning parameters

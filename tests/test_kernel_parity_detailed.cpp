@@ -26,6 +26,7 @@
 #include "solver.hpp"
 #include "features.hpp"
 #include "config.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <fstream>
 #include <cmath>
@@ -34,6 +35,8 @@
 #include <cstring>
 
 using namespace nncfd;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // Dump a scalar field to file
 bool dump_field(const std::string& filename, const ScalarField& f, const Mesh& mesh) {
@@ -188,13 +191,7 @@ int main(int argc, char* argv[]) {
     config.poisson_solver = PoissonSolverType::MG;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
 
     // Initialize with smooth trigonometric field (divergence-free)
     VectorField& vel = solver.velocity();
@@ -247,7 +244,15 @@ int main(int argc, char* argv[]) {
                 all_passed = false;
             }
         } else {
-            // Verify gradients analytically
+#ifdef USE_GPU_OFFLOAD
+            // GPU standalone mode: skip analytical verification because
+            // compute_gradients_from_mac requires pre-mapped GPU data via
+            // solver-managed buffers. Use --dump-prefix / --compare-prefix
+            // for CPU/GPU parity testing.
+            std::cout << "  [SKIP] Standalone gradient verification not supported on GPU\n";
+            std::cout << "         (use --dump-prefix / --compare-prefix for parity testing)\n";
+#else
+            // CPU: Verify gradients analytically
             // u = sin(x)*cos(y) -> dudx = cos(x)*cos(y), dudy = -sin(x)*sin(y)
             double max_err = 0.0;
             for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -268,6 +273,7 @@ int main(int argc, char* argv[]) {
                           << std::scientific << max_err << ")\n";
                 all_passed = false;
             }
+#endif
         }
     }
 

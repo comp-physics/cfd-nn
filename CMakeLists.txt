@@ -230,6 +230,13 @@ set(LIB_SOURCES
     src/poisson_solver.cpp
     src/poisson_solver_multigrid.cpp
     src/solver.cpp
+    src/solver_vtk.cpp
+    src/solver_time.cpp
+    src/solver_time_kernels_blend.cpp
+    src/solver_time_kernels_euler.cpp
+    src/solver_time_kernels_periodic.cpp
+    src/solver_time_kernels_projection.cpp
+    src/solver_periodic_halos.cpp
     src/timing.cpp
     src/config.cpp
     src/features.cpp
@@ -423,9 +430,29 @@ if(BUILD_TESTS)
     add_nncfd_test(test_error_recovery LABELS fast)
     add_nncfd_test(test_adaptive_dt LABELS fast)
     add_nncfd_test(test_numerics LABELS fast)
-    add_nncfd_test(test_gpu_buffer TEST_NAME_SUFFIX GPUBufferTest LABELS fast)
+    add_nncfd_test(test_operator_convergence LABELS fast)
+    # GPU-specific tests (only build when GPU offload is enabled)
+    if(USE_GPU_OFFLOAD)
+        add_nncfd_test(test_gpu_buffer TEST_NAME_SUFFIX GPUBufferTest LABELS fast)
+        add_nncfd_test(test_gpu_mapping_canary TEST_NAME_SUFFIX GPUMappingCanaryTest LABELS fast)
+
+        # GPU performance benchmark
+        add_executable(bench_3d_gpu tests/bench_3d_gpu.cpp)
+        target_link_libraries(bench_3d_gpu PRIVATE nn_cfd_core)
+        target_include_directories(bench_3d_gpu PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
+    endif()
+
+    # MG benchmark (works on both CPU and GPU)
+    add_executable(bench_mg tests/bench_mg.cpp)
+    target_link_libraries(bench_mg PRIVATE nn_cfd_core)
+    target_include_directories(bench_mg PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests)
     add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
     add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
+    add_nncfd_test(test_invariant_scaling TEST_NAME_SUFFIX InvariantScalingTest LABELS fast)
+    add_nncfd_test(test_convection_diagnostic TEST_NAME_SUFFIX ConvectionDiagnosticTest LABELS fast)
+    add_nncfd_test(test_step_trace TEST_NAME_SUFFIX StepTraceTest LABELS fast)
+    add_nncfd_test(test_term_values TEST_NAME_SUFFIX TermValuesTest LABELS fast)
+    add_nncfd_test(test_div_constant TEST_NAME_SUFFIX DivConstantTest LABELS fast)
     add_nncfd_test(test_rans_channel_sanity TEST_NAME_SUFFIX RANSChannelSanityTest LABELS fast)
     add_nncfd_test(test_poiseuille_steady TEST_NAME_SUFFIX PoiseuilleTest LABELS fast)
     add_nncfd_test(test_energy_budget_channel TEST_NAME_SUFFIX EnergyBudgetTest LABELS fast)
@@ -437,20 +464,31 @@ if(BUILD_TESTS)
     add_nncfd_test(test_galilean_invariance TEST_NAME_SUFFIX GalileanInvarianceTest LABELS fast)
     add_nncfd_test(test_projection_galilean TEST_NAME_SUFFIX ProjectionGalileanTest LABELS fast)
     add_nncfd_test(test_galilean_stage_breakdown TEST_NAME_SUFFIX GalileanStageBreakdownTest LABELS fast)
+    add_nncfd_test(test_mg_ramp_diagnostic TEST_NAME_SUFFIX MGRampDiagnosticTest LABELS fast)
+    add_nncfd_test(test_projection_trace TEST_NAME_SUFFIX ProjectionTraceTest LABELS fast)
+    add_nncfd_test(test_conv_diff_constant TEST_NAME_SUFFIX ConvDiffConstantTest LABELS fast)
 
     # =========================================================================
-    # Medium tests (30-120s)
+    # Medium tests (30-120s) - run with: ctest -L medium
     # =========================================================================
-    add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest)
-    add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest)
-    add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest)
-    add_nncfd_test(test_poisson_unified)
-    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest)
-    add_nncfd_test(test_turbulence_unified)
-    add_nncfd_test(test_projection_invariants)
-    add_nncfd_test(test_perf_sentinel)
-    add_nncfd_test(test_solver_selection)
-    add_nncfd_test(test_stability_sentinel)
+    add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest LABELS medium)
+    add_nncfd_test(test_skew_energy_conservation TEST_NAME_SUFFIX SkewEnergyTest LABELS medium)
+    add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest LABELS medium)
+    add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest LABELS medium)
+    add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest LABELS medium)
+    add_nncfd_test(test_poisson_unified LABELS medium)
+    add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest LABELS medium)
+    add_nncfd_test(test_turbulence_unified LABELS medium)
+    add_nncfd_test(test_projection_invariants LABELS medium)
+    add_nncfd_test(test_perf_sentinel LABELS medium)
+    add_nncfd_test(test_solver_selection LABELS medium)
+    add_nncfd_test(test_stability_sentinel LABELS medium)
+
+    # Comprehensive scheme/integrator tests (new coverage for Upwind2, O4, RK2/RK3 combos)
+    add_nncfd_test(test_scheme_comprehensive TEST_NAME_SUFFIX SchemeComprehensiveTest LABELS medium)
+    add_nncfd_test(test_o4_integration TEST_NAME_SUFFIX O4IntegrationTest LABELS medium)
+    add_nncfd_test(test_time_integrators TEST_NAME_SUFFIX TimeIntegratorsTest LABELS medium)
+    add_nncfd_test(test_scheme_combinations TEST_NAME_SUFFIX SchemeCombinationsTest LABELS medium)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
@@ -466,16 +504,20 @@ if(BUILD_TESTS)
     # =========================================================================
     # GPU-specific tests - run with: ctest -L gpu
     # =========================================================================
-    # test_cpu_gpu_bitwise must be built unconditionally (used by both CPU and GPU CI builds)
+    # test_cross_backend must be built unconditionally (used by both CPU and GPU CI builds)
     # but only registered as a test when GPU offload is enabled
-    add_executable(test_cpu_gpu_bitwise tests/test_cpu_gpu_bitwise.cpp)
-    target_link_libraries(test_cpu_gpu_bitwise nn_cfd_core)
+    add_executable(test_cross_backend tests/test_cross_backend.cpp)
+    target_link_libraries(test_cross_backend nn_cfd_core)
 
     if(USE_GPU_OFFLOAD)
-        add_nncfd_test(test_cpu_gpu_unified TEST_NAME_SUFFIX CPUGPUUnifiedTest LABELS gpu)
-        add_test(NAME CPUGPUBitwiseTest COMMAND test_cpu_gpu_bitwise)
-        set_tests_properties(CPUGPUBitwiseTest PROPERTIES LABELS "gpu")
+        # CrossBackendTest requires cross-build orchestration (CPU reference generation)
+        # Label as "cross-build" so it's not picked up by "ctest -L gpu"
+        # This test is run manually by ci.sh via run_cross_build_test()
+        add_test(NAME CrossBackendTest COMMAND test_cross_backend)
+        set_tests_properties(CrossBackendTest PROPERTIES LABELS "cross-build")
         add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
+        # MANDATORY ensures GPU offload actually happens (no silent CPU fallback)
+        set_tests_properties(GPUUtilizationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
     endif()
 
     # =========================================================================

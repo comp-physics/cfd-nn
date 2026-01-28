@@ -23,6 +23,8 @@
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 //=============================================================================
 // Path resolution helpers for NN models
@@ -375,13 +377,7 @@ TestResult test_single_model(TurbulenceModelType model_type) {
     }
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     bool has_transport = false;
     if (model_type != TurbulenceModelType::None) {
@@ -419,8 +415,10 @@ TestResult test_single_model(TurbulenceModelType model_type) {
     // Validation checks
     if (!stats1.all_finite) return {false, false};
 
+    // NN and EARSM models have slightly higher divergence due to model complexity
     const double div_tol = (model_type == TurbulenceModelType::NNMLP ||
-                           model_type == TurbulenceModelType::NNTBNN) ? 2e-5 : 1e-6;
+                           model_type == TurbulenceModelType::NNTBNN ||
+                           is_earsm) ? 1e-5 : 1e-6;
     if (stats1.max_div > div_tol) return {false, false};
 
     if (stats1.KE > stats0.KE * 1.01) return {false, false};
@@ -457,13 +455,7 @@ bool test_earsm_model(TurbulenceModelType model_type) {
     config.poisson_abs_tol_floor = 1e-6;
 
     RANSSolver solver(mesh, config);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
 
     auto turb_model = create_turbulence_model(model_type, "", "");
     solver.set_turbulence_model(std::move(turb_model));

@@ -25,74 +25,8 @@ using nncfd::test::harness::record;
 // ============================================================================
 // Helper: Compute mean velocity components (momentum per unit volume)
 // ============================================================================
-struct MeanVelocity {
-    double u, v, w;
-    int count;
-};
-
-static MeanVelocity compute_mean_velocity_3d(const VectorField& vel, const Mesh& mesh) {
-    MeanVelocity m = {0, 0, 0, 0};
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                // Interpolate staggered velocities to cell center
-                double u_cc = 0.5 * (vel.u(i,j,k) + vel.u(i+1,j,k));
-                double v_cc = 0.5 * (vel.v(i,j,k) + vel.v(i,j+1,k));
-                double w_cc = 0.5 * (vel.w(i,j,k) + vel.w(i,j,k+1));
-                m.u += u_cc;
-                m.v += v_cc;
-                m.w += w_cc;
-                m.count++;
-            }
-        }
-    }
-    if (m.count > 0) {
-        m.u /= m.count;
-        m.v /= m.count;
-        m.w /= m.count;
-    }
-    return m;
-}
-
-
-// ============================================================================
-// Helper: Compute mean divergence (should be ~machine zero for periodic BCs)
-// ============================================================================
-static double compute_mean_divergence_3d(const VectorField& vel, const Mesh& mesh) {
-    double sum = 0.0;
-    int count = 0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx = (vel.u(i+1,j,k) - vel.u(i,j,k)) / mesh.dx;
-                double dvdy = (vel.v(i,j+1,k) - vel.v(i,j,k)) / mesh.dy;
-                double dwdz = (vel.w(i,j,k+1) - vel.w(i,j,k)) / mesh.dz;
-                sum += dudx + dvdy + dwdz;
-                count++;
-            }
-        }
-    }
-    return count > 0 ? sum / count : 0.0;
-}
-
-
-// ============================================================================
-// Helper: Compute max divergence (max-norm)
-// ============================================================================
-static double compute_max_divergence_3d(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx = (vel.u(i+1,j,k) - vel.u(i,j,k)) / mesh.dx;
-                double dvdy = (vel.v(i,j+1,k) - vel.v(i,j,k)) / mesh.dy;
-                double dwdz = (vel.w(i,j,k+1) - vel.w(i,j,k)) / mesh.dz;
-                max_div = std::max(max_div, std::abs(dudx + dvdy + dwdz));
-            }
-        }
-    }
-    return max_div;
-}
+// Note: MeanVelocity, compute_mean_velocity_3d, compute_mean_divergence_3d,
+// and compute_max_divergence_3d are now provided by test_utilities.hpp
 
 // ============================================================================
 // Helper: Compute div(grad(p)) at cell centers (for projection consistency)
@@ -145,17 +79,8 @@ void test_conservation_periodic_3d() {
     config.postprocess = false;
     config.write_fields = false;
 
-    // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-
     RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0, 0.0);  // No body force for conservation test
 
     // Taylor-Green initial condition
@@ -277,17 +202,8 @@ void test_projection_identity() {
     config.postprocess = false;
     config.write_fields = false;
 
-    // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-
     RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0, 0.0);
 
     // Set up a divergent initial velocity to exercise projection
@@ -595,17 +511,8 @@ void test_constant_field_invariance() {
     config.postprocess = false;
     config.write_fields = false;
 
-    // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-
     RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
     solver.set_body_force(0.0, 0.0, 0.0);  // EXPLICITLY no forcing
 
     // Initialize constant velocity field using fill() which sets ALL cells including ghost
@@ -748,13 +655,7 @@ void test_pressure_gauge_invariance() {
     config.write_fields = false;
 
     // All-periodic BCs
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
 
     // Lambda to initialize TGV velocity
     auto init_tgv = [&](VectorField& vel) {

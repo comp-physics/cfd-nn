@@ -6,6 +6,7 @@
 #include "mesh.hpp"
 #include "fields.hpp"
 #include "solver.hpp"
+#include "test_utilities.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -13,6 +14,8 @@
 
 using namespace nncfd;
 using namespace std::chrono;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 enum class BCType { Channel_PWP, Duct_PWW };
 
@@ -72,20 +75,9 @@ Result run_test(int N, int nsteps, BCType bc_type, int nu1, int nu2, int cycles)
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-
-    if (bc_type == BCType::Channel_PWP) {
-        bc.z_lo = VelocityBC::Periodic;
-        bc.z_hi = VelocityBC::Periodic;
-    } else { // Duct_PWW
-        bc.z_lo = VelocityBC::NoSlip;
-        bc.z_hi = VelocityBC::NoSlip;
-    }
-    solver.set_velocity_bc(bc);
+    // Set BCs based on type
+    BCPattern pattern = (bc_type == BCType::Channel_PWP) ? BCPattern::Channel3D : BCPattern::Duct;
+    solver.set_velocity_bc(create_velocity_bc(pattern));
 
     // Initialize Taylor-Green vortex
     const double U0 = 1.0;

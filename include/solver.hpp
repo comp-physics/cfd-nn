@@ -182,6 +182,11 @@ public:
     
     /// Compute friction Reynolds number Re_tau
     double Re_tau() const;
+
+    /// Compute convective KE production rate: <u, conv(u)>
+    /// Returns the rate of KE change due to advection (should be ~0 for skew-symmetric form)
+    /// Call this after compute_convective_term() to get meaningful results
+    double compute_convective_ke_production() const;
     
     /// Print velocity profile at x = x_loc
     void print_velocity_profile(double x_loc = 0.0) const;
@@ -198,6 +203,20 @@ public:
     void sync_solution_from_gpu();      // Sync only solution fields (u,v,p,nu_t) - use for diagnostics/I/O
     void sync_transport_from_gpu();     // Sync transport fields (k,omega) only if needed - guards laminar runs
 
+    /// Verify all GPU-mapped fields are present on device (for testing/debugging)
+    /// Returns true if all critical fields pass omp_target_is_present() check.
+    /// Use this after sync_to_gpu() to catch missing field mappings early.
+    bool verify_gpu_field_presence() const;
+
+    /// Device-side QOI computation (avoids broken D2H sync in NVHPC)
+    /// These compute quantities directly on GPU and return scalars via reduction.
+    /// Use these for GPU tests instead of syncing full fields.
+    double compute_kinetic_energy_device() const;   // Total KE = 0.5 * integral(u^2 + v^2 + w^2) dV
+    double compute_max_velocity_device() const;     // max(|u|, |v|, |w|) over domain
+    double compute_divergence_linf_device() const;  // L-inf norm of divergence
+    double compute_divergence_l2_device() const;    // L2 norm of divergence
+    double compute_max_conv_device() const;         // max(|conv_u|, |conv_v|, |conv_w|) - verify convection active
+
     /// Check for NaN/Inf in solution fields and abort if detected
     /// @param step Current step number (used for guard interval checking)
     /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
@@ -210,7 +229,9 @@ private:
     
     // Solution fields
     VectorField velocity_;
-    VectorField velocity_star_;  // Provisional velocity
+    /// Scratch buffer for predictor velocity. NEVER assumed valid unless explicitly
+    /// filled immediately before use. Used by correct_velocity() as input source.
+    VectorField velocity_star_;
     ScalarField pressure_;
     ScalarField pressure_correction_;
     ScalarField nu_t_;           // Eddy viscosity
@@ -227,6 +248,7 @@ private:
     VectorField conv_;           // Convective term
     VectorField diff_;           // Diffusive term
     VectorField velocity_old_;   // Previous velocity for residual (GPU-resident when offload enabled)
+    VectorField velocity_rk_;    // Work buffer for RK stages (stores u^n during multi-stage update)
     
     // Gradient scratch buffers for turbulence models (GPU-resident)
     ScalarField dudx_, dudy_, dvdx_, dvdy_;
@@ -269,7 +291,15 @@ private:
     void compute_convective_term(const VectorField& vel, VectorField& conv);
     void compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, VectorField& diff);
     void compute_divergence(VelocityWhich which, ScalarField& div);
+
+    /// Correct velocity using pressure gradient: vel_out = vel_in - dt * grad(p_correction)
+    /// @param vel_in  Input velocity field (unprojected)
+    /// @param vel_out Output velocity field (projected, can alias vel_in for in-place)
+    void correct_velocity(const VectorField& vel_in, VectorField& vel_out);
+
+    /// Legacy wrapper: correct_velocity(velocity_star_, velocity_)
     void correct_velocity();
+
     double compute_residual();
     
     // IMEX methods
@@ -277,8 +307,14 @@ private:
                                   VectorField& u_new, double dt);
     
     // Time integration methods
-    void project_velocity(VectorField& vel_star, double dt);
+    void euler_substep(VectorField& vel_in, VectorField& vel_out, double dt);
+    void project_velocity(VectorField& vel, double dt);
+    void ssprk2_step(double dt);
     void ssprk3_step(double dt);
+
+    /// Fill periodic ghost layers on device for a velocity field (GPU-resident, no swaps)
+    /// This is called after predictor and after correction to ensure halos are consistent.
+    void enforce_periodic_halos_device(double* u_ptr, double* v_ptr, double* w_ptr = nullptr);
     
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
@@ -299,6 +335,9 @@ private:
     double* velocity_old_u_ptr_ = nullptr;  // Device-resident old velocity for residual
     double* velocity_old_v_ptr_ = nullptr;  // Device-resident old velocity for residual
     double* velocity_old_w_ptr_ = nullptr;  // 3D w-velocity
+    double* velocity_rk_u_ptr_ = nullptr;   // RK work buffer for u
+    double* velocity_rk_v_ptr_ = nullptr;   // RK work buffer for v
+    double* velocity_rk_w_ptr_ = nullptr;   // RK work buffer for w (3D)
     double* pressure_ptr_ = nullptr;
     double* pressure_corr_ptr_ = nullptr;
     double* nu_t_ptr_ = nullptr;
@@ -336,9 +375,24 @@ private:
     
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
 
+    // Scratch buffer for sync_from_gpu workaround (NVHPC member pointer requirement)
+    mutable std::vector<double> sync_scratch_;
+    mutable double* sync_scratch_ptr_ = nullptr;
+
     void extract_field_pointers();  // Set raw pointers to field data (shared by CPU/GPU paths)
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)
     void cleanup_gpu_buffers();     // Unmap and copy results back (called in destructor)
+
+    /// Map VectorField reference to its corresponding raw pointer triplet
+    /// This enables compute functions to use argument-based device pointers
+    /// instead of always using member pointers (critical for RK stages)
+    void get_velocity_ptrs(const VectorField& vel,
+                           double*& u_ptr, double*& v_ptr, double*& w_ptr) const;
+
+#ifndef NDEBUG
+    /// Verify field pointers haven't changed since GPU mapping (catches std::vector reallocation)
+    void verify_mapping_integrity() const;
+#endif
     
 public:
     /// Get device view for turbulence models (GPU-resident pointers)

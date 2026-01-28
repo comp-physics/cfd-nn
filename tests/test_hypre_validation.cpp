@@ -34,6 +34,9 @@
 using namespace nncfd;
 using nncfd::test::FieldComparison;
 using nncfd::test::file_exists;
+using nncfd::test::compute_max_divergence_3d;
+using nncfd::test::create_velocity_bc;
+using nncfd::test::BCPattern;
 
 // Tolerance for HYPRE vs Multigrid comparison
 // Velocities should match closely since both solve the same NS equations
@@ -230,22 +233,7 @@ void set_taylor_green_initial_velocity(RANSSolver& solver, const Mesh& mesh) {
     // w = 0 (already initialized to zero)
 }
 
-// Compute max divergence of velocity field (3D)
-double compute_max_divergence_3d(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double dudx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / mesh.dx;
-                double dvdy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / mesh.dy;
-                double dwdz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / mesh.dz;
-                double div = dudx + dvdy + dwdz;
-                max_div = std::max(max_div, std::abs(div));
-            }
-        }
-    }
-    return max_div;
-}
+// Note: compute_max_divergence_3d is now provided by test_utilities.hpp
 
 // Compute relative L2 norm of pressure gradient difference (3D)
 // grad(p) at cell centers, then compare
@@ -298,13 +286,7 @@ bool test_hypre_vs_multigrid_3d_channel() {
     config.write_fields = false;
 
     // All-periodic BCs for Taylor-Green
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::Periodic;
-    bc.y_hi = VelocityBC::Periodic;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
+    auto bc = create_velocity_bc(BCPattern::FullyPeriodic);
 
     // Run with Multigrid
     std::cout << "  Running with Multigrid...\n";
@@ -531,13 +513,7 @@ bool test_hypre_vs_multigrid_3d_duct() {
     config.write_fields = false;
 
     // Duct flow: walls on y and z faces, periodic in x
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::NoSlip;
-    bc.z_hi = VelocityBC::NoSlip;
+    auto bc = create_velocity_bc(BCPattern::Duct);
 
     // Run with Multigrid
     std::cout << "  Running with Multigrid...\n";
@@ -690,15 +666,7 @@ int run_dump_mode(const std::string& prefix) {
 
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.001, 0.0, 0.0);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
@@ -749,15 +717,7 @@ int run_compare_mode(const std::string& prefix) {
 
     RANSSolver solver(mesh, config);
     solver.set_body_force(0.001, 0.0, 0.0);
-
-    VelocityBC bc;
-    bc.x_lo = VelocityBC::Periodic;
-    bc.x_hi = VelocityBC::Periodic;
-    bc.y_lo = VelocityBC::NoSlip;
-    bc.y_hi = VelocityBC::NoSlip;
-    bc.z_lo = VelocityBC::Periodic;
-    bc.z_hi = VelocityBC::Periodic;
-    solver.set_velocity_bc(bc);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();

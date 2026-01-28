@@ -18,11 +18,14 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_harness.hpp"
+#include "test_utilities.hpp"
 #include <cmath>
 #include <string>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::BCPattern;
+using nncfd::test::create_velocity_bc;
 
 // Apply discrete 2D Laplacian operator: L(p) = (p_{i+1} - 2p_i + p_{i-1})/dx^2 + ...
 void apply_laplacian_2d(const ScalarField& p, ScalarField& Lp, const Mesh& mesh) {
@@ -106,10 +109,20 @@ double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, in
 
     RANSSolver solver(mesh, config);
 
-    VelocityBC bc;
-    bc.x_lo = xbc; bc.x_hi = xbc;
-    bc.y_lo = ybc; bc.y_hi = ybc;
-    solver.set_velocity_bc(bc);
+    // Set BCs based on pattern - explicitly handle valid combinations
+    BCPattern pattern;
+    if (xbc == VelocityBC::Periodic && ybc == VelocityBC::Periodic) {
+        pattern = BCPattern::FullyPeriodic;
+    } else if (xbc == VelocityBC::Periodic && ybc == VelocityBC::NoSlip) {
+        pattern = BCPattern::Channel2D;
+    } else if (xbc == VelocityBC::NoSlip && ybc == VelocityBC::NoSlip) {
+        pattern = BCPattern::AllNoSlip;
+    } else {
+        throw std::invalid_argument(
+            "Unsupported BC combination: xbc=" + std::to_string(static_cast<int>(xbc)) +
+            ", ybc=" + std::to_string(static_cast<int>(ybc)));
+    }
+    solver.set_velocity_bc(create_velocity_bc(pattern));
 
     // Initialize with divergent velocity to create Poisson problem
     VectorField vel(mesh);
@@ -131,6 +144,11 @@ double run_residual_test_2d([[maybe_unused]] const std::string& name, int Nx, in
 
     // Run one step to solve Poisson
     solver.step();
+
+#ifdef USE_GPU_OFFLOAD
+    // Sync pressure from GPU to host for inspection
+    solver.sync_from_gpu();
+#endif
 
     // Compute residual: L(p) - rhs (where rhs = div(u*)/dt)
     // After projection, the pressure should satisfy the discrete Poisson equation

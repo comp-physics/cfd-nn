@@ -29,6 +29,51 @@ static std::string trim(const std::string& s) {
     return std::string(start, end);
 }
 
+/// Parse convective scheme from string. Returns Central if unknown.
+static ConvectiveScheme parse_convective_scheme(const std::string& val) {
+    if (val == "upwind") {
+        return ConvectiveScheme::Upwind;
+    } else if (val == "skew" || val == "skew_symmetric" || val == "skewsymmetric") {
+        return ConvectiveScheme::Skew;
+    } else if (val == "upwind2") {
+        return ConvectiveScheme::Upwind2;
+    } else if (val == "conservative" || val == "cons") {
+        std::cerr << "Warning: 'conservative' (flux-form) scheme was removed; mapping to 'skew' (not flux-form).\n";
+        std::cerr << "         Note: skew is energy-conserving but NOT equivalent to flux-form conservative.\n";
+        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
+        return ConvectiveScheme::Skew;
+    } else if (val == "central") {
+        return ConvectiveScheme::Central;
+    } else {
+        std::cerr << "Warning: Unknown convective_scheme '" << val << "'. Using 'central'.\n";
+        std::cerr << "         Available schemes: central, upwind, skew, upwind2\n";
+        return ConvectiveScheme::Central;
+    }
+}
+
+/// Parse time integrator from string. Returns Euler if unknown.
+static TimeIntegrator parse_time_integrator(const std::string& val) {
+    if (val == "rk2") {
+        return TimeIntegrator::RK2;
+    } else if (val == "rk3") {
+        return TimeIntegrator::RK3;
+    } else if (val == "euler") {
+        return TimeIntegrator::Euler;
+    } else {
+        std::cerr << "Warning: Unknown time_integrator '" << val << "'. Using 'euler'.\n";
+        return TimeIntegrator::Euler;
+    }
+}
+
+/// Parse and validate space_order. Returns 2 if invalid.
+static int parse_space_order(int val) {
+    if (val != 2 && val != 4) {
+        std::cerr << "Warning: space_order must be 2 or 4, got " << val << ". Using 2.\n";
+        return 2;
+    }
+    return val;
+}
+
 std::map<std::string, std::string> parse_config_file(const std::string& filename) {
     std::map<std::string, std::string> result;
     std::ifstream file(filename);
@@ -123,17 +168,14 @@ void Config::load(const std::string& filename) {
     T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);
     
-    // Numerical scheme
-    auto scheme_str = get_string("convective_scheme", "central");
-    if (scheme_str == "upwind") {
-        convective_scheme = ConvectiveScheme::Upwind;
-    } else if (scheme_str == "skew" || scheme_str == "skew_symmetric" || scheme_str == "skewsymmetric") {
-        convective_scheme = ConvectiveScheme::SkewSymmetric;
-    } else if (scheme_str == "conservative" || scheme_str == "cons") {
-        convective_scheme = ConvectiveScheme::Conservative;
-    } else {
-        convective_scheme = ConvectiveScheme::Central;
-    }
+    // Numerical scheme (advection)
+    convective_scheme = parse_convective_scheme(get_string("convective_scheme", "central"));
+
+    // Spatial order (2 or 4)
+    space_order = parse_space_order(get_int("space_order", 2));
+
+    // Time integrator
+    time_integrator = parse_time_integrator(get_string("time_integrator", "euler"));
     
     // Simulation mode
     auto mode_str = get_string("simulation_mode", "steady");
@@ -182,7 +224,8 @@ void Config::load(const std::string& filename) {
     verbose = get_bool("verbose", verbose);
     postprocess = get_bool("postprocess", postprocess);
     write_fields = get_bool("write_fields", write_fields);
-    
+    vtk_binary = get_bool("vtk_binary", vtk_binary);
+
     // Poisson
     poisson_tol = get_double("poisson_tol", poisson_tol);
     poisson_max_vcycles = get_int("poisson_max_vcycles", poisson_max_vcycles);
@@ -365,6 +408,8 @@ void Config::parse_args(int argc, char** argv) {
             postprocess = false;
         } else if (is_flag(arg, "--no_write_fields")) {
             write_fields = false;
+        } else if (is_flag(arg, "--vtk_ascii")) {
+            vtk_binary = false;
         } else if (is_flag(arg, "--stretch")) {
             stretch_y = true;
         } else if (is_flag(arg, "--adaptive_dt")) {
@@ -372,15 +417,11 @@ void Config::parse_args(int argc, char** argv) {
         } else if ((val = get_value(i, arg, "--CFL")) != "") {
             CFL_max = std::stod(val);
         } else if ((val = get_value(i, arg, "--scheme")) != "") {
-            if (val == "upwind") {
-                convective_scheme = ConvectiveScheme::Upwind;
-            } else if (val == "skew" || val == "skew_symmetric" || val == "skewsymmetric") {
-                convective_scheme = ConvectiveScheme::SkewSymmetric;
-            } else if (val == "conservative" || val == "cons") {
-                convective_scheme = ConvectiveScheme::Conservative;
-            } else {
-                convective_scheme = ConvectiveScheme::Central;
-            }
+            convective_scheme = parse_convective_scheme(val);
+        } else if ((val = get_value(i, arg, "--space-order")) != "") {
+            space_order = parse_space_order(std::stoi(val));
+        } else if ((val = get_value(i, arg, "--integrator")) != "") {
+            time_integrator = parse_time_integrator(val);
         } else if ((val = get_value(i, arg, "--simulation_mode")) != "") {
             if (val == "unsteady") {
                 simulation_mode = SimulationMode::Unsteady;
@@ -463,10 +504,13 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --num_snapshots N Number of VTK snapshots (default 10)\n"
                       << "  --no_postprocess  Skip Poiseuille table + profile output\n"
                       << "  --no_write_fields Skip VTK/field output (snapshots + final)\n"
+                      << "  --vtk_ascii       Use ASCII VTK format (default: binary)\n"
                       << "  --stretch         Use stretched mesh in y\n"
                       << "  --adaptive_dt     Enable adaptive time stepping\n"
                       << "  --CFL VALUE       Max CFL number for adaptive dt (default 0.5)\n"
-                      << "  --scheme SCHEME   Convective scheme: central (default), upwind\n"
+                      << "  --scheme SCHEME   Advection scheme: central (default), upwind, skew, upwind2\n"
+                      << "  --integrator I    Time integrator: euler (default), rk2, rk3\n"
+                      << "  --space-order N   Spatial discretization order: 2 (default) or 4\n"
                       << "  --simulation_mode MODE  Simulation mode: steady (default), unsteady\n"
                       << "  --perturbation_amplitude A  Initial perturbation amplitude for DNS (default 1e-2)\n"
                       << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
@@ -888,7 +932,13 @@ void Config::print() const {
     }
     std::cout << "Physical: Re = " << Re << " (actual: " << Re_actual << "), nu = " << nu << "\n"
               << "dp/dx: " << dp_dx << "\n"
-              << "Time stepping: Explicit Euler + Projection\n"
+              << "Time integrator: ";
+    switch (time_integrator) {
+        case TimeIntegrator::Euler: std::cout << "Euler (1st order)"; break;
+        case TimeIntegrator::RK2: std::cout << "SSP-RK2 (2nd order)"; break;
+        case TimeIntegrator::RK3: std::cout << "SSP-RK3 (3rd order)"; break;
+    }
+    std::cout << " + Projection\n"
               << "Poisson solver: ";
     switch (poisson_solver) {
         case PoissonSolverType::Auto: std::cout << "Auto"; break;
@@ -899,14 +949,15 @@ void Config::print() const {
         case PoissonSolverType::MG: std::cout << "Multigrid"; break;
     }
     std::cout << "\n"
-              << "Convective scheme: ";
+              << "Advection scheme: ";
     switch (convective_scheme) {
-        case ConvectiveScheme::Upwind: std::cout << "Upwind"; break;
-        case ConvectiveScheme::SkewSymmetric: std::cout << "SkewSymmetric"; break;
-        case ConvectiveScheme::Conservative: std::cout << "Conservative"; break;
-        default: std::cout << "Central"; break;
+        case ConvectiveScheme::Central: std::cout << "Central (2nd-order)"; break;
+        case ConvectiveScheme::Upwind: std::cout << "Upwind (1st-order)"; break;
+        case ConvectiveScheme::Skew: std::cout << "Skew-symmetric (energy-conserving)"; break;
+        case ConvectiveScheme::Upwind2: std::cout << "Upwind (2nd-order)"; break;
     }
     std::cout << "\n"
+              << "Spatial order: O" << space_order << "\n"
               << "dt: " << dt << ", max_steps: " << max_steps << ", tol: " << tol << "\n"
               << "Turbulence model: ";
     

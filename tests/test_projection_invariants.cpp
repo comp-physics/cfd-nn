@@ -24,79 +24,18 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "test_harness.hpp"
+#include "test_utilities.hpp"
 #include <cmath>
 #include <string>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
+using nncfd::test::compute_max_divergence;
+using nncfd::test::compute_mean_kinetic_energy;
 
 // ============================================================================
 // Helper functions
 // ============================================================================
-
-double compute_max_divergence(const VectorField& vel, const Mesh& mesh) {
-    double max_div = 0.0;
-
-    if (mesh.is2D()) {
-        double dx = (mesh.x_max - mesh.x_min) / mesh.Nx;
-        double dy = (mesh.y_max - mesh.y_min) / mesh.Ny;
-
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double du_dx = (vel.u(i+1, j) - vel.u(i, j)) / dx;
-                double dv_dy = (vel.v(i, j+1) - vel.v(i, j)) / dy;
-                double div = std::abs(du_dx + dv_dy);
-                max_div = std::max(max_div, div);
-            }
-        }
-    } else {
-        double dx = (mesh.x_max - mesh.x_min) / mesh.Nx;
-        double dy = (mesh.y_max - mesh.y_min) / mesh.Ny;
-        double dz = (mesh.z_max - mesh.z_min) / mesh.Nz;
-
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double du_dx = (vel.u(i+1, j, k) - vel.u(i, j, k)) / dx;
-                    double dv_dy = (vel.v(i, j+1, k) - vel.v(i, j, k)) / dy;
-                    double dw_dz = (vel.w(i, j, k+1) - vel.w(i, j, k)) / dz;
-                    double div = std::abs(du_dx + dv_dy + dw_dz);
-                    max_div = std::max(max_div, div);
-                }
-            }
-        }
-    }
-    return max_div;
-}
-
-double compute_kinetic_energy(const VectorField& vel, const Mesh& mesh) {
-    double ke = 0.0;
-    int count = 0;
-
-    if (mesh.is2D()) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double u = 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-                double v = 0.5 * (vel.v(i, j) + vel.v(i, j+1));
-                ke += 0.5 * (u*u + v*v);
-                ++count;
-            }
-        }
-    } else {
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    double u = 0.5 * (vel.u(i, j, k) + vel.u(i+1, j, k));
-                    double v = 0.5 * (vel.v(i, j, k) + vel.v(i, j+1, k));
-                    double w = 0.5 * (vel.w(i, j, k) + vel.w(i, j, k+1));
-                    ke += 0.5 * (u*u + v*v + w*w);
-                    ++count;
-                }
-            }
-        }
-    }
-    return ke / count;
-}
 
 double compute_max_pressure(const ScalarField& p, const Mesh& mesh) {
     double max_p = 0.0;
@@ -197,7 +136,7 @@ bool run_invariant_test(const InvariantTestCase& tc) {
     solver.set_body_force(0.001, 0.0, 0.0);
 
     // Record initial state
-    double initial_ke = compute_kinetic_energy(solver.velocity(), mesh);
+    double initial_ke = compute_mean_kinetic_energy(solver.velocity(), mesh);
     PoissonSolverType initial_type = solver.poisson_solver_type();
 
     // Run simulation and check invariants
@@ -209,7 +148,7 @@ bool run_invariant_test(const InvariantTestCase& tc) {
         if (div > tc.div_bound) return false;
 
         // Check kinetic energy
-        double ke = compute_kinetic_energy(solver.velocity(), mesh);
+        double ke = compute_mean_kinetic_energy(solver.velocity(), mesh);
         if (!is_finite(ke)) return false;
         double ke_ref = std::max(initial_ke, 1e-10);  // Avoid div by zero
         if (ke > ke_ref * tc.ke_growth_max && ke > 1.0) return false;
