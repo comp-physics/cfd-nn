@@ -4769,13 +4769,13 @@ SolverDeviceView RANSSolver::get_solver_view() const {
 #endif
 
 //==============================================================================
-// Energy balance diagnostics
+// Energy balance diagnostics (GPU-compatible)
 //==============================================================================
 
 double RANSSolver::compute_kinetic_energy() const {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Nz = mesh_->Nz;
     const int Ng = mesh_->Nghost;
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
@@ -4783,13 +4783,57 @@ double RANSSolver::compute_kinetic_energy() const {
     const double dV = dx * dy * dz;
 
     double ke = 0.0;
-    for (int k = 0; k < Nz; ++k) {
+
+#ifdef USE_GPU_OFFLOAD
+    const int u_stride = velocity_.u_stride();
+    const int v_stride = velocity_.v_stride();
+
+    if (mesh_->is2D()) {
+        const int n_cells = Nx * Ny;
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:ke) is_device_ptr(u_dev, v_dev) \
+            firstprivate(Nx, Ny, Ng, u_stride, v_stride, dV)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double u = 0.5 * (u_dev[j * u_stride + i] + u_dev[j * u_stride + (i + 1)]);
+            double v = 0.5 * (v_dev[j * v_stride + i] + v_dev[(j + 1) * v_stride + i]);
+            ke += 0.5 * (u * u + v * v) * dV;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:ke) is_device_ptr(u_dev, v_dev, w_dev) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, dV)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double u = 0.5 * (u_dev[k * u_plane + j * u_stride + i] + u_dev[k * u_plane + j * u_stride + (i + 1)]);
+            double v = 0.5 * (v_dev[k * v_plane + j * v_stride + i] + v_dev[k * v_plane + (j + 1) * v_stride + i]);
+            double w = 0.5 * (w_dev[k * w_plane + j * w_stride + i] + w_dev[(k + 1) * w_plane + j * w_stride + i]);
+            ke += 0.5 * (u * u + v * v + w * w) * dV;
+        }
+    }
+#else
+    // CPU path
+    const int Nz_loop = mesh_->is2D() ? 1 : Nz;
+    for (int k = 0; k < Nz_loop; ++k) {
         int kg = k + Ng;
         for (int j = 0; j < Ny; ++j) {
             int jg = j + Ng;
             for (int i = 0; i < Nx; ++i) {
                 int ig = i + Ng;
-                // Interpolate velocities to cell center
                 double u = 0.5 * (velocity_.u(ig, jg, kg) + velocity_.u(ig + 1, jg, kg));
                 double v = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
                 double w = mesh_->is2D() ? 0.0 :
@@ -4798,32 +4842,67 @@ double RANSSolver::compute_kinetic_energy() const {
             }
         }
     }
+#endif
+
     return ke;
 }
 
 double RANSSolver::compute_bulk_velocity() const {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Nz = mesh_->Nz;
     const int Ng = mesh_->Nghost;
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
     const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
 
-    // Compute integral of u over the domain
     double sum_u = 0.0;
-    for (int k = 0; k < Nz; ++k) {
+
+#ifdef USE_GPU_OFFLOAD
+    const int u_stride = velocity_.u_stride();
+
+    if (mesh_->is2D()) {
+        const int n_cells = Nx * Ny;
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:sum_u) is_device_ptr(u_dev) \
+            firstprivate(Nx, Ny, Ng, u_stride)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double u_cc = 0.5 * (u_dev[j * u_stride + i] + u_dev[j * u_stride + (i + 1)]);
+            sum_u += u_cc;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:sum_u) is_device_ptr(u_dev) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, u_plane)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double u_cc = 0.5 * (u_dev[k * u_plane + j * u_stride + i] + u_dev[k * u_plane + j * u_stride + (i + 1)]);
+            sum_u += u_cc;
+        }
+    }
+#else
+    // CPU path
+    const int Nz_loop = mesh_->is2D() ? 1 : Nz;
+    for (int k = 0; k < Nz_loop; ++k) {
         int kg = k + Ng;
         for (int j = 0; j < Ny; ++j) {
             int jg = j + Ng;
             for (int i = 0; i < Nx; ++i) {
                 int ig = i + Ng;
-                // Interpolate u to cell center
                 double u_cc = 0.5 * (velocity_.u(ig, jg, kg) + velocity_.u(ig + 1, jg, kg));
                 sum_u += u_cc;
             }
         }
     }
+#endif
 
     double volume = (mesh_->x_max - mesh_->x_min) *
                     (mesh_->y_max - mesh_->y_min) *
@@ -4833,19 +4912,64 @@ double RANSSolver::compute_bulk_velocity() const {
 }
 
 double RANSSolver::compute_power_input() const {
-    // P_in = f_x * integral(u) dV = f_x * U_b * V
+    // P_in = integral(f_i * u_i) dV
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Nz = mesh_->Nz;
     const int Ng = mesh_->Nghost;
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
     const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
     const double dV = dx * dy * dz;
+    const double fx = fx_, fy = fy_, fz = fz_;
 
-    // Compute integral of (fx*u + fy*v + fz*w) over the domain
     double power = 0.0;
-    for (int k = 0; k < Nz; ++k) {
+
+#ifdef USE_GPU_OFFLOAD
+    const int u_stride = velocity_.u_stride();
+    const int v_stride = velocity_.v_stride();
+
+    if (mesh_->is2D()) {
+        const int n_cells = Nx * Ny;
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:power) is_device_ptr(u_dev, v_dev) \
+            firstprivate(Nx, Ny, Ng, u_stride, v_stride, dV, fx, fy)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            double u_cc = 0.5 * (u_dev[j * u_stride + i] + u_dev[j * u_stride + (i + 1)]);
+            double v_cc = 0.5 * (v_dev[j * v_stride + i] + v_dev[(j + 1) * v_stride + i]);
+            power += (fx * u_cc + fy * v_cc) * dV;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:power) is_device_ptr(u_dev, v_dev, w_dev) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, dV, fx, fy, fz)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            double u_cc = 0.5 * (u_dev[k * u_plane + j * u_stride + i] + u_dev[k * u_plane + j * u_stride + (i + 1)]);
+            double v_cc = 0.5 * (v_dev[k * v_plane + j * v_stride + i] + v_dev[k * v_plane + (j + 1) * v_stride + i]);
+            double w_cc = 0.5 * (w_dev[k * w_plane + j * w_stride + i] + w_dev[(k + 1) * w_plane + j * w_stride + i]);
+            power += (fx * u_cc + fy * v_cc + fz * w_cc) * dV;
+        }
+    }
+#else
+    // CPU path
+    const int Nz_loop = mesh_->is2D() ? 1 : Nz;
+    for (int k = 0; k < Nz_loop; ++k) {
         int kg = k + Ng;
         for (int j = 0; j < Ny; ++j) {
             int jg = j + Ng;
@@ -4855,51 +4979,143 @@ double RANSSolver::compute_power_input() const {
                 double v_cc = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
                 double w_cc = mesh_->is2D() ? 0.0 :
                               0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
-                power += (fx_ * u_cc + fy_ * v_cc + fz_ * w_cc) * dV;
+                power += (fx * u_cc + fy * v_cc + fz * w_cc) * dV;
             }
         }
     }
+#endif
+
     return power;
 }
 
 double RANSSolver::compute_viscous_dissipation() const {
     // epsilon = 2*nu * integral(S_ij * S_ij) dV
     // where S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
-    // For incompressible: 2*S_ij*S_ij = (du/dx)^2 + (dv/dy)^2 + (dw/dz)^2
-    //                                  + 0.5*(du/dy + dv/dx)^2
-    //                                  + 0.5*(du/dz + dw/dx)^2
-    //                                  + 0.5*(dv/dz + dw/dy)^2
-    // Actually: 2*S_ij*S_ij = 2*[(du/dx)^2 + (dv/dy)^2 + (dw/dz)^2]
-    //                       + (du/dy + dv/dx)^2 + (du/dz + dw/dx)^2 + (dv/dz + dw/dy)^2
+    // 2*S_ij*S_ij = 2*[(du/dx)^2 + (dv/dy)^2 + (dw/dz)^2]
+    //            + (du/dy + dv/dx)^2 + (du/dz + dw/dx)^2 + (dv/dz + dw/dy)^2
 
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Nz = mesh_->Nz;
     const int Ng = mesh_->Nghost;
     const double dx = mesh_->dx;
     const double dy = mesh_->dy;
     const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
     const double dV = dx * dy * dz;
+    const double nu = config_.nu;
 
     double dissipation = 0.0;
 
-    for (int k = 0; k < Nz; ++k) {
+#ifdef USE_GPU_OFFLOAD
+    const int u_stride = velocity_.u_stride();
+    const int v_stride = velocity_.v_stride();
+
+    if (mesh_->is2D()) {
+        const int n_cells = Nx * Ny;
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:dissipation) is_device_ptr(u_dev, v_dev) \
+            firstprivate(Nx, Ny, Ng, u_stride, v_stride, dx, dy, dV, nu)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+
+            // du/dx, dv/dy
+            double dudx = (u_dev[j * u_stride + (i + 1)] - u_dev[j * u_stride + i]) / dx;
+            double dvdy = (v_dev[(j + 1) * v_stride + i] - v_dev[j * v_stride + i]) / dy;
+
+            // du/dy
+            double u_jm = 0.5 * (u_dev[(j - 1) * u_stride + i] + u_dev[(j - 1) * u_stride + (i + 1)]);
+            double u_jp = 0.5 * (u_dev[(j + 1) * u_stride + i] + u_dev[(j + 1) * u_stride + (i + 1)]);
+            double dudy = (u_jp - u_jm) / (2.0 * dy);
+
+            // dv/dx
+            double v_im = 0.5 * (v_dev[j * v_stride + (i - 1)] + v_dev[(j + 1) * v_stride + (i - 1)]);
+            double v_ip = 0.5 * (v_dev[j * v_stride + (i + 1)] + v_dev[(j + 1) * v_stride + (i + 1)]);
+            double dvdx = (v_ip - v_im) / (2.0 * dx);
+
+            double two_SijSij = 2.0 * (dudx * dudx + dvdy * dvdy) + (dudy + dvdx) * (dudy + dvdx);
+            dissipation += nu * two_SijSij * dV;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+        const int n_cells = Nx * Ny * Nz;
+
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:dissipation) \
+            is_device_ptr(u_dev, v_dev, w_dev) \
+            firstprivate(Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, dx, dy, dz, dV, nu)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+
+            // Diagonal terms: du/dx, dv/dy, dw/dz
+            double dudx = (u_dev[k * u_plane + j * u_stride + (i + 1)] - u_dev[k * u_plane + j * u_stride + i]) / dx;
+            double dvdy = (v_dev[k * v_plane + (j + 1) * v_stride + i] - v_dev[k * v_plane + j * v_stride + i]) / dy;
+            double dwdz = (w_dev[(k + 1) * w_plane + j * w_stride + i] - w_dev[k * w_plane + j * w_stride + i]) / dz;
+
+            // du/dy
+            double u_jm = 0.5 * (u_dev[k * u_plane + (j - 1) * u_stride + i] + u_dev[k * u_plane + (j - 1) * u_stride + (i + 1)]);
+            double u_jp = 0.5 * (u_dev[k * u_plane + (j + 1) * u_stride + i] + u_dev[k * u_plane + (j + 1) * u_stride + (i + 1)]);
+            double dudy = (u_jp - u_jm) / (2.0 * dy);
+
+            // dv/dx
+            double v_im = 0.5 * (v_dev[k * v_plane + j * v_stride + (i - 1)] + v_dev[k * v_plane + (j + 1) * v_stride + (i - 1)]);
+            double v_ip = 0.5 * (v_dev[k * v_plane + j * v_stride + (i + 1)] + v_dev[k * v_plane + (j + 1) * v_stride + (i + 1)]);
+            double dvdx = (v_ip - v_im) / (2.0 * dx);
+
+            // du/dz
+            double u_km = 0.5 * (u_dev[(k - 1) * u_plane + j * u_stride + i] + u_dev[(k - 1) * u_plane + j * u_stride + (i + 1)]);
+            double u_kp = 0.5 * (u_dev[(k + 1) * u_plane + j * u_stride + i] + u_dev[(k + 1) * u_plane + j * u_stride + (i + 1)]);
+            double dudz = (u_kp - u_km) / (2.0 * dz);
+
+            // dw/dx
+            double w_im = 0.5 * (w_dev[k * w_plane + j * w_stride + (i - 1)] + w_dev[(k + 1) * w_plane + j * w_stride + (i - 1)]);
+            double w_ip = 0.5 * (w_dev[k * w_plane + j * w_stride + (i + 1)] + w_dev[(k + 1) * w_plane + j * w_stride + (i + 1)]);
+            double dwdx = (w_ip - w_im) / (2.0 * dx);
+
+            // dv/dz
+            double v_km = 0.5 * (v_dev[(k - 1) * v_plane + j * v_stride + i] + v_dev[(k - 1) * v_plane + (j + 1) * v_stride + i]);
+            double v_kp = 0.5 * (v_dev[(k + 1) * v_plane + j * v_stride + i] + v_dev[(k + 1) * v_plane + (j + 1) * v_stride + i]);
+            double dvdz = (v_kp - v_km) / (2.0 * dz);
+
+            // dw/dy
+            double w_jm = 0.5 * (w_dev[k * w_plane + (j - 1) * w_stride + i] + w_dev[(k + 1) * w_plane + (j - 1) * w_stride + i]);
+            double w_jp = 0.5 * (w_dev[k * w_plane + (j + 1) * w_stride + i] + w_dev[(k + 1) * w_plane + (j + 1) * w_stride + i]);
+            double dwdy = (w_jp - w_jm) / (2.0 * dy);
+
+            double two_SijSij = 2.0 * (dudx * dudx + dvdy * dvdy + dwdz * dwdz)
+                              + (dudy + dvdx) * (dudy + dvdx)
+                              + (dudz + dwdx) * (dudz + dwdx)
+                              + (dvdz + dwdy) * (dvdz + dwdy);
+            dissipation += nu * two_SijSij * dV;
+        }
+    }
+#else
+    // CPU path
+    const int Nz_loop = mesh_->is2D() ? 1 : Nz;
+    for (int k = 0; k < Nz_loop; ++k) {
         int kg = k + Ng;
         for (int j = 0; j < Ny; ++j) {
             int jg = j + Ng;
             for (int i = 0; i < Nx; ++i) {
                 int ig = i + Ng;
 
-                // Velocity gradients at cell center (using central differences)
                 double dudx = (velocity_.u(ig + 1, jg, kg) - velocity_.u(ig, jg, kg)) / dx;
                 double dvdy = (velocity_.v(ig, jg + 1, kg) - velocity_.v(ig, jg, kg)) / dy;
 
-                // du/dy: average u to cell-center y-locations, then differentiate
                 double u_jm = 0.5 * (velocity_.u(ig, jg - 1, kg) + velocity_.u(ig + 1, jg - 1, kg));
                 double u_jp = 0.5 * (velocity_.u(ig, jg + 1, kg) + velocity_.u(ig + 1, jg + 1, kg));
                 double dudy = (u_jp - u_jm) / (2.0 * dy);
 
-                // dv/dx: average v to cell-center x-locations, then differentiate
                 double v_im = 0.5 * (velocity_.v(ig - 1, jg, kg) + velocity_.v(ig - 1, jg + 1, kg));
                 double v_ip = 0.5 * (velocity_.v(ig + 1, jg, kg) + velocity_.v(ig + 1, jg + 1, kg));
                 double dvdx = (v_ip - v_im) / (2.0 * dx);
@@ -4910,22 +5126,18 @@ double RANSSolver::compute_viscous_dissipation() const {
                 } else {
                     double dwdz = (velocity_.w(ig, jg, kg + 1) - velocity_.w(ig, jg, kg)) / dz;
 
-                    // du/dz
                     double u_km = 0.5 * (velocity_.u(ig, jg, kg - 1) + velocity_.u(ig + 1, jg, kg - 1));
                     double u_kp = 0.5 * (velocity_.u(ig, jg, kg + 1) + velocity_.u(ig + 1, jg, kg + 1));
                     double dudz = (u_kp - u_km) / (2.0 * dz);
 
-                    // dw/dx
                     double w_im = 0.5 * (velocity_.w(ig - 1, jg, kg) + velocity_.w(ig - 1, jg, kg + 1));
                     double w_ip = 0.5 * (velocity_.w(ig + 1, jg, kg) + velocity_.w(ig + 1, jg, kg + 1));
                     double dwdx = (w_ip - w_im) / (2.0 * dx);
 
-                    // dv/dz
                     double v_km = 0.5 * (velocity_.v(ig, jg, kg - 1) + velocity_.v(ig, jg + 1, kg - 1));
                     double v_kp = 0.5 * (velocity_.v(ig, jg, kg + 1) + velocity_.v(ig, jg + 1, kg + 1));
                     double dvdz = (v_kp - v_km) / (2.0 * dz);
 
-                    // dw/dy
                     double w_jm = 0.5 * (velocity_.w(ig, jg - 1, kg) + velocity_.w(ig, jg - 1, kg + 1));
                     double w_jp = 0.5 * (velocity_.w(ig, jg + 1, kg) + velocity_.w(ig, jg + 1, kg + 1));
                     double dwdy = (w_jp - w_jm) / (2.0 * dy);
@@ -4936,10 +5148,12 @@ double RANSSolver::compute_viscous_dissipation() const {
                                + (dvdz + dwdy) * (dvdz + dwdy);
                 }
 
-                dissipation += config_.nu * two_SijSij * dV;
+                dissipation += nu * two_SijSij * dV;
             }
         }
     }
+#endif
+
     return dissipation;
 }
 
@@ -4947,21 +5161,64 @@ RANSSolver::PlaneStats RANSSolver::compute_plane_stats(int i_global) const {
     PlaneStats stats = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Nz = mesh_->Nz;
     const int Ng = mesh_->Nghost;
     const int ig = i_global + Ng;
 
-    const int n_points = Ny * Nz;
+    const int Nz_loop = mesh_->is2D() ? 1 : Nz;
+    const int n_points = Ny * Nz_loop;
     if (n_points == 0) return stats;
 
-    // First pass: compute means
     double sum_u = 0.0, sum_v = 0.0, sum_w = 0.0;
-    for (int k = 0; k < Nz; ++k) {
+
+#ifdef USE_GPU_OFFLOAD
+    const int u_stride = velocity_.u_stride();
+    const int v_stride = velocity_.v_stride();
+
+    if (mesh_->is2D()) {
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:sum_u, sum_v) \
+            is_device_ptr(u_dev, v_dev) firstprivate(Ny, Ng, ig, u_stride, v_stride)
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            double u = u_dev[jg * u_stride + ig];
+            double v = 0.5 * (v_dev[jg * v_stride + ig] + v_dev[(jg + 1) * v_stride + ig]);
+            sum_u += u;
+            sum_v += v;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:sum_u, sum_v, sum_w) \
+            is_device_ptr(u_dev, v_dev, w_dev) \
+            firstprivate(Ny, Nz_loop, Ng, ig, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane)
+        for (int idx = 0; idx < n_points; ++idx) {
+            int j = idx % Ny + Ng;
+            int k = idx / Ny + Ng;
+            double u = u_dev[k * u_plane + j * u_stride + ig];
+            double v = 0.5 * (v_dev[k * v_plane + j * v_stride + ig] + v_dev[k * v_plane + (j + 1) * v_stride + ig]);
+            double w = 0.5 * (w_dev[k * w_plane + j * w_stride + ig] + w_dev[(k + 1) * w_plane + j * w_stride + ig]);
+            sum_u += u;
+            sum_v += v;
+            sum_w += w;
+        }
+    }
+#else
+    // CPU path - first pass: means
+    for (int k = 0; k < Nz_loop; ++k) {
         int kg = k + Ng;
         for (int j = 0; j < Ny; ++j) {
             int jg = j + Ng;
-            // Interpolate to cell center at x-face location
-            double u = velocity_.u(ig, jg, kg);  // u is at x-face, no interp needed in x
+            double u = velocity_.u(ig, jg, kg);
             double v = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
             double w = mesh_->is2D() ? 0.0 :
                        0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
@@ -4970,13 +5227,66 @@ RANSSolver::PlaneStats RANSSolver::compute_plane_stats(int i_global) const {
             sum_w += w;
         }
     }
+#endif
+
     stats.u_mean = sum_u / n_points;
     stats.v_mean = sum_v / n_points;
     stats.w_mean = sum_w / n_points;
 
-    // Second pass: compute fluctuations and Reynolds stress
+    // Second pass: fluctuations and Reynolds stress
     double sum_uu = 0.0, sum_vv = 0.0, sum_ww = 0.0, sum_uv = 0.0;
-    for (int k = 0; k < Nz; ++k) {
+    const double u_mean = stats.u_mean;
+    const double v_mean = stats.v_mean;
+    const double w_mean = stats.w_mean;
+
+#ifdef USE_GPU_OFFLOAD
+    if (mesh_->is2D()) {
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:sum_uu, sum_vv, sum_uv) \
+            is_device_ptr(u_dev, v_dev) firstprivate(Ny, Ng, ig, u_stride, v_stride, u_mean, v_mean)
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            double u = u_dev[jg * u_stride + ig];
+            double v = 0.5 * (v_dev[jg * v_stride + ig] + v_dev[(jg + 1) * v_stride + ig]);
+            double u_prime = u - u_mean;
+            double v_prime = v - v_mean;
+            sum_uu += u_prime * u_prime;
+            sum_vv += v_prime * v_prime;
+            sum_uv += u_prime * v_prime;
+        }
+    } else {
+        const int u_plane = velocity_.u_plane_stride();
+        const int v_plane = velocity_.v_plane_stride();
+        const int w_stride = velocity_.w_stride();
+        const int w_plane = velocity_.w_plane_stride();
+
+        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
+        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
+        const double* w_dev = gpu::dev_ptr(velocity_w_ptr_);
+
+        #pragma omp target teams distribute parallel for reduction(+:sum_uu, sum_vv, sum_ww, sum_uv) \
+            is_device_ptr(u_dev, v_dev, w_dev) \
+            firstprivate(Ny, Nz_loop, Ng, ig, u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, u_mean, v_mean, w_mean)
+        for (int idx = 0; idx < n_points; ++idx) {
+            int j = idx % Ny + Ng;
+            int k = idx / Ny + Ng;
+            double u = u_dev[k * u_plane + j * u_stride + ig];
+            double v = 0.5 * (v_dev[k * v_plane + j * v_stride + ig] + v_dev[k * v_plane + (j + 1) * v_stride + ig]);
+            double w = 0.5 * (w_dev[k * w_plane + j * w_stride + ig] + w_dev[(k + 1) * w_plane + j * w_stride + ig]);
+            double u_prime = u - u_mean;
+            double v_prime = v - v_mean;
+            double w_prime = w - w_mean;
+            sum_uu += u_prime * u_prime;
+            sum_vv += v_prime * v_prime;
+            sum_ww += w_prime * w_prime;
+            sum_uv += u_prime * v_prime;
+        }
+    }
+#else
+    // CPU path - second pass: fluctuations
+    for (int k = 0; k < Nz_loop; ++k) {
         int kg = k + Ng;
         for (int j = 0; j < Ny; ++j) {
             int jg = j + Ng;
@@ -4985,9 +5295,9 @@ RANSSolver::PlaneStats RANSSolver::compute_plane_stats(int i_global) const {
             double w = mesh_->is2D() ? 0.0 :
                        0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
 
-            double u_prime = u - stats.u_mean;
-            double v_prime = v - stats.v_mean;
-            double w_prime = w - stats.w_mean;
+            double u_prime = u - u_mean;
+            double v_prime = v - v_mean;
+            double w_prime = w - w_mean;
 
             sum_uu += u_prime * u_prime;
             sum_vv += v_prime * v_prime;
@@ -4995,6 +5305,8 @@ RANSSolver::PlaneStats RANSSolver::compute_plane_stats(int i_global) const {
             sum_uv += u_prime * v_prime;
         }
     }
+#endif
+
     stats.u_rms = std::sqrt(sum_uu / n_points);
     stats.v_rms = std::sqrt(sum_vv / n_points);
     stats.w_rms = std::sqrt(sum_ww / n_points);
