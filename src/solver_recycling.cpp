@@ -29,6 +29,57 @@
 namespace nncfd {
 
 //==============================================================================
+// Diagnostics helper functions (L2 norms, stats)
+//==============================================================================
+
+namespace {
+
+/// Compute area-weighted L2 norm of a plane array: sqrt(sum(u^2 * A))
+/// For uniform grid, A = dy * dz cancels in relative comparisons
+double plane_L2_norm(const double* data, int n, double cell_area = 1.0) {
+    double sum_sq = 0.0;
+    for (int i = 0; i < n; ++i) {
+        sum_sq += data[i] * data[i] * cell_area;
+    }
+    return std::sqrt(sum_sq);
+}
+
+/// Compute L2 difference between two plane arrays: ||a - b||_2
+double plane_L2_diff(const double* a, const double* b, int n, double cell_area = 1.0) {
+    double sum_sq = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double diff = a[i] - b[i];
+        sum_sq += diff * diff * cell_area;
+    }
+    return std::sqrt(sum_sq);
+}
+
+/// Compute mean and RMS of fluctuations: mean = sum(u)/n, rms = sqrt(sum((u-mean)^2)/n)
+void plane_mean_rms(const double* data, int n, double& mean, double& rms) {
+    double sum = 0.0;
+    for (int i = 0; i < n; ++i) {
+        sum += data[i];
+    }
+    mean = sum / static_cast<double>(n);
+
+    double sum_sq = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double diff = data[i] - mean;
+        sum_sq += diff * diff;
+    }
+    rms = std::sqrt(sum_sq / static_cast<double>(n));
+}
+
+/// Copy plane array to destination
+void copy_plane(const double* src, double* dst, int n) {
+    for (int i = 0; i < n; ++i) {
+        dst[i] = src[i];
+    }
+}
+
+} // anonymous namespace
+
+//==============================================================================
 // Initialization
 //==============================================================================
 
@@ -180,6 +231,13 @@ void RANSSolver::initialize_recycling_inflow() {
     #pragma omp target enter data map(alloc: inlet_v_ptr_[0:recycle_v_size_])
     #pragma omp target enter data map(alloc: inlet_w_ptr_[0:recycle_w_size_])
 #endif
+
+    // Allocate diagnostic buffers if L2 breakdown is enabled
+    if (config_.recycle_diag_interval > 0) {
+        diag_u_copy_.resize(recycle_u_size_, 0.0);
+        diag_u_ar1_.resize(recycle_u_size_, 0.0);
+        diag_u_mean_.resize(recycle_u_size_, 0.0);
+    }
 
     if (config_.verbose) {
         std::printf("\n=== Recycling Inflow Configuration ===\n");
@@ -434,7 +492,11 @@ void RANSSolver::process_recycle_inflow() {
 
 #else
     // CPU path
-    // Step 1: Spanwise shift
+    const bool track_diag = (config_.recycle_diag_interval > 0) && !diag_u_copy_.empty();
+    const int n_u = static_cast<int>(recycle_u_size_);
+    const double eps = 1e-14;  // Safe denominator for relative L2
+
+    // Step 1: Spanwise shift (copy + shift from recycle plane)
     for (int k = 0; k < Nz; ++k) {
         int k_src = (k + shift_k) % Nz;
         for (int j = 0; j < Ny; ++j) {
@@ -454,6 +516,12 @@ void RANSSolver::process_recycle_inflow() {
         }
     }
 
+    // [Diag] Capture state after copy+shift
+    if (track_diag) {
+        copy_plane(inlet_u_buf_.data(), diag_u_copy_.data(), n_u);
+        recycle_diag_.L2_copy = plane_L2_norm(inlet_u_buf_.data(), n_u);
+    }
+
     // Step 2: Temporal filtering (if enabled)
     if (use_filter) {
         for (size_t i = 0; i < recycle_u_size_; ++i) {
@@ -470,7 +538,23 @@ void RANSSolver::process_recycle_inflow() {
         }
     }
 
+    // [Diag] Capture state after AR1 filter
+    if (track_diag) {
+        copy_plane(inlet_u_buf_.data(), diag_u_ar1_.data(), n_u);
+        recycle_diag_.L2_ar1 = plane_L2_norm(inlet_u_buf_.data(), n_u);
+        double L2_diff = plane_L2_diff(inlet_u_buf_.data(), diag_u_copy_.data(), n_u);
+        recycle_diag_.rel_d_copy_ar1 = L2_diff / (recycle_diag_.L2_copy + eps);
+    }
+
     // Step 3: Mass flux correction
+    // [Diag] Capture u_mean and u'_rms BEFORE mean correction
+    double u_mean_before = 0.0, u_rms_before = 0.0;
+    if (track_diag) {
+        plane_mean_rms(inlet_u_buf_.data(), n_u, u_mean_before, u_rms_before);
+        recycle_diag_.u_mean_before_corr = u_mean_before;
+        recycle_diag_.u_rms_before_corr = u_rms_before;
+    }
+
     double sum_u = 0.0;
     for (size_t i = 0; i < recycle_u_size_; ++i) {
         sum_u += inlet_u_buf_[i];
@@ -494,7 +578,26 @@ void RANSSolver::process_recycle_inflow() {
         inlet_u_buf_[i] += mean_adjust;
     }
 
+    // [Diag] Capture state after mean correction
+    if (track_diag) {
+        copy_plane(inlet_u_buf_.data(), diag_u_mean_.data(), n_u);
+        recycle_diag_.L2_mean = plane_L2_norm(inlet_u_buf_.data(), n_u);
+        double L2_diff = plane_L2_diff(inlet_u_buf_.data(), diag_u_ar1_.data(), n_u);
+        recycle_diag_.rel_d_ar1_mean = L2_diff / (recycle_diag_.L2_ar1 + eps);
+
+        // Check invariant: u'_rms should be unchanged by mean correction
+        double u_mean_after = 0.0, u_rms_after = 0.0;
+        plane_mean_rms(inlet_u_buf_.data(), n_u, u_mean_after, u_rms_after);
+        recycle_diag_.u_mean_after_corr = u_mean_after;
+        recycle_diag_.u_rms_after_corr = u_rms_after;
+
+        // Clamp telemetry
+        recycle_diag_.scale_factor = scale;
+        recycle_diag_.clamp_hit = (raw_scale != scale);
+    }
+
     // Step 4: Remove net transverse flow
+    double mean_v_final = 0.0, mean_w_final = 0.0;
     if (config_.recycle_remove_transverse_mean) {
         double sum_v = 0.0, sum_w = 0.0;
         for (size_t i = 0; i < recycle_v_size_; ++i) sum_v += inlet_v_buf_[i];
@@ -503,6 +606,26 @@ void RANSSolver::process_recycle_inflow() {
         double mean_w = sum_w / static_cast<double>(recycle_w_size_);
         for (size_t i = 0; i < recycle_v_size_; ++i) inlet_v_buf_[i] -= mean_v;
         for (size_t i = 0; i < recycle_w_size_; ++i) inlet_w_buf_[i] -= mean_w;
+    }
+
+    // [Diag] Final diagnostics
+    if (track_diag) {
+        recycle_diag_.L2_final = plane_L2_norm(inlet_u_buf_.data(), n_u);
+        double L2_diff_final = plane_L2_diff(inlet_u_buf_.data(), diag_u_mean_.data(), n_u);
+        recycle_diag_.rel_d_mean_final = L2_diff_final / (recycle_diag_.L2_mean + eps);
+        double L2_diff_total = plane_L2_diff(inlet_u_buf_.data(), diag_u_copy_.data(), n_u);
+        recycle_diag_.rel_d_total = L2_diff_total / (recycle_diag_.L2_copy + eps);
+
+        // Compute final transverse means (should be ~0 after removal)
+        double v_mean_tmp = 0.0, w_mean_tmp = 0.0, dummy = 0.0;
+        plane_mean_rms(inlet_v_buf_.data(), static_cast<int>(recycle_v_size_), v_mean_tmp, dummy);
+        plane_mean_rms(inlet_w_buf_.data(), static_cast<int>(recycle_w_size_), w_mean_tmp, dummy);
+        recycle_diag_.v_mean_final = v_mean_tmp;
+        recycle_diag_.w_mean_final = w_mean_tmp;
+
+        // Metadata
+        recycle_diag_.step = iter_;
+        recycle_diag_.shift_k = shift_k;
     }
 #endif
 
@@ -808,6 +931,51 @@ void RANSSolver::apply_fringe_blending() {
         }
     }
 #endif
+}
+
+//==============================================================================
+// Diagnostics logging
+//==============================================================================
+
+void RANSSolver::log_recycle_diagnostics() const {
+    if (config_.recycle_diag_interval <= 0) return;
+
+    const auto& d = recycle_diag_;
+
+    // Print header on first call (step == 0 or first enabled step)
+    static bool header_printed = false;
+    if (!header_printed) {
+        std::printf("\n=== Recycling Inflow Diagnostics ===\n");
+        std::printf("%-8s %-6s %-12s %-12s %-12s %-12s | %-12s %-12s %-12s %-12s | %-12s %-12s %-12s %-12s | %-8s %-5s\n",
+                    "step", "shft_k",
+                    "L2_copy", "L2_ar1", "L2_mean", "L2_final",
+                    "d_copy_ar1", "d_ar1_mean", "d_mean_fin", "d_total",
+                    "u_m_bef", "u_m_aft", "u'_bef", "u'_aft",
+                    "scale", "clamp");
+        std::printf("=========================================================================================================================================================================\n");
+        header_printed = true;
+    }
+
+    // Print data line
+    std::printf("%-8d %-6d %12.4e %12.4e %12.4e %12.4e | %12.4e %12.4e %12.4e %12.4e | %12.4e %12.4e %12.4e %12.4e | %8.5f %-5s\n",
+                d.step, d.shift_k,
+                d.L2_copy, d.L2_ar1, d.L2_mean, d.L2_final,
+                d.rel_d_copy_ar1, d.rel_d_ar1_mean, d.rel_d_mean_final, d.rel_d_total,
+                d.u_mean_before_corr, d.u_mean_after_corr, d.u_rms_before_corr, d.u_rms_after_corr,
+                d.scale_factor, d.clamp_hit ? "YES" : "no");
+
+    // Print invariant warnings if applicable
+    double rms_rel_change = std::abs(d.u_rms_after_corr - d.u_rms_before_corr) /
+                            (d.u_rms_before_corr + 1e-14);
+    if (rms_rel_change > 1e-10) {
+        std::printf("  [WARN] u'_rms changed by %.2e%% after mean correction (should be ~0)\n",
+                    rms_rel_change * 100.0);
+    }
+    if (config_.recycle_remove_transverse_mean &&
+        (std::abs(d.v_mean_final) > 1e-10 || std::abs(d.w_mean_final) > 1e-10)) {
+        std::printf("  [WARN] Transverse means not zero: v_mean=%.2e, w_mean=%.2e\n",
+                    d.v_mean_final, d.w_mean_final);
+    }
 }
 
 } // namespace nncfd

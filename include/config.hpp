@@ -175,6 +175,7 @@ struct Config {
     double recycle_fringe_length = -1.0;    ///< Fringe blending zone length (-1 = auto: 2*delta)
     double recycle_target_bulk_u = -1.0;    ///< Target bulk velocity (-1 = from initial condition)
     bool recycle_remove_transverse_mean = true; ///< Remove mean v,w at inlet (enforce zero net transverse flow)
+    int recycle_diag_interval = 0;          ///< Log recycling diagnostics every N steps (0 = disabled)
 
     /// Load configuration from file
     void load(const std::string& filename);

@@ -783,6 +783,205 @@ bool test_x_homogeneity() {
 }
 
 //==============================================================================
+// Test: L2 Diagnostics Validation
+// Verifies that the stage-by-stage L2 tracking works correctly:
+// - L2 norms are computed at each stage
+// - Relative deltas match expected behavior
+// - Invariants hold (u'_rms unchanged by mean correction)
+//==============================================================================
+bool test_l2_diagnostics() {
+    std::cout << "\n=== Test: L2 Diagnostics ===\n";
+
+    // Create mesh and config
+    Mesh mesh;
+    mesh.init_uniform(32, 32, 16, 0.0, 2 * M_PI, -1.0, 1.0, 0.0, M_PI);
+
+    Config config;
+    config.nu = 0.001;
+    config.Re = 5000;
+    config.dp_dx = -1.0;
+    config.recycling_inflow = true;
+    config.recycle_shift_z = 0;  // No shift for predictable test
+    config.recycle_remove_transverse_mean = true;
+    config.recycle_diag_interval = 1;  // Enable diagnostics
+    config.verbose = false;
+    config.dt = 0.001;
+    config.max_steps = 10;
+
+    RANSSolver solver(mesh, config);
+
+    // Set up BCs (triggers recycling initialization)
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;  // Will be overridden to Inflow
+    bc.x_hi = VelocityBC::Periodic;  // Will be overridden to Outflow
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    bc.z_lo = VelocityBC::Periodic;
+    bc.z_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+
+    // Initialize with Poiseuille profile
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+    const double u_max = 50.0;
+
+    VectorField vel(mesh);
+    for (int k = 0; k < Nz + 2*Ng; ++k) {
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            double y = mesh.yc[j];
+            double u_pois = u_max * (1.0 - y * y);
+            for (int i = 0; i <= mesh.Nx + 2*Ng; ++i) {
+                vel.u(i, j, k) = u_pois;
+            }
+        }
+    }
+    solver.initialize(vel);
+
+    // Run a few steps to populate diagnostics
+    for (int step = 0; step < 5; ++step) {
+        solver.extract_recycle_plane();
+        solver.process_recycle_inflow();
+        solver.apply_recycling_inlet_bc();
+    }
+
+    // Get diagnostics
+    const auto& diag = solver.get_recycle_diagnostics();
+
+    bool pass = true;
+
+    // Check 1: L2 norms should be positive and reasonable
+    std::cout << "  L2_copy:  " << diag.L2_copy << "\n";
+    std::cout << "  L2_ar1:   " << diag.L2_ar1 << "\n";
+    std::cout << "  L2_mean:  " << diag.L2_mean << "\n";
+    std::cout << "  L2_final: " << diag.L2_final << "\n";
+
+    bool l2_positive = (diag.L2_copy > 0) && (diag.L2_ar1 > 0) &&
+                       (diag.L2_mean > 0) && (diag.L2_final > 0);
+    std::cout << "  L2 norms positive: " << (l2_positive ? "OK" : "FAIL") << "\n";
+    pass = pass && l2_positive;
+
+    // Check 2: Without AR1 filter, copy->ar1 delta should be zero
+    std::cout << "  rel_d_copy_ar1:  " << diag.rel_d_copy_ar1 << "\n";
+    bool ar1_delta_ok = (diag.rel_d_copy_ar1 < 1e-10);  // Should be zero (no filter)
+    std::cout << "  AR1 delta (no filter): " << (ar1_delta_ok ? "OK" : "FAIL") << "\n";
+    pass = pass && ar1_delta_ok;
+
+    // Check 3: u'_rms should be unchanged by mean correction (invariant)
+    double rms_rel_change = std::abs(diag.u_rms_after_corr - diag.u_rms_before_corr) /
+                            (diag.u_rms_before_corr + 1e-14);
+    std::cout << "  u'_rms before: " << diag.u_rms_before_corr << "\n";
+    std::cout << "  u'_rms after:  " << diag.u_rms_after_corr << "\n";
+    std::cout << "  u'_rms relative change: " << rms_rel_change * 100.0 << "%\n";
+    bool rms_invariant = (rms_rel_change < 1e-10);
+    std::cout << "  RMS invariant: " << (rms_invariant ? "OK" : "FAIL") << "\n";
+    pass = pass && rms_invariant;
+
+    // Check 4: After transverse mean removal, v_mean and w_mean should be ~0
+    std::cout << "  v_mean_final: " << diag.v_mean_final << "\n";
+    std::cout << "  w_mean_final: " << diag.w_mean_final << "\n";
+    bool transverse_ok = (std::abs(diag.v_mean_final) < 1e-10) &&
+                         (std::abs(diag.w_mean_final) < 1e-10);
+    std::cout << "  Transverse means zero: " << (transverse_ok ? "OK" : "FAIL") << "\n";
+    pass = pass && transverse_ok;
+
+    // Check 5: Scale factor should be ~1.0 for Poiseuille (already at target)
+    std::cout << "  scale_factor: " << diag.scale_factor << "\n";
+    std::cout << "  clamp_hit: " << (diag.clamp_hit ? "YES" : "no") << "\n";
+
+    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
+}
+
+//==============================================================================
+// Test: L2 Diagnostics with Mean Correction
+// Verifies that mean correction changes u_mean but not u'_rms
+//==============================================================================
+bool test_l2_mean_correction_invariant() {
+    std::cout << "\n=== Test: Mean Correction Invariant ===\n";
+
+    Mesh mesh;
+    mesh.init_uniform(32, 32, 16, 0.0, 2 * M_PI, -1.0, 1.0, 0.0, M_PI);
+
+    Config config;
+    config.nu = 0.001;
+    config.Re = 5000;
+    config.dp_dx = -1.0;
+    config.recycling_inflow = true;
+    config.recycle_shift_z = 0;
+    config.recycle_remove_transverse_mean = true;
+    config.recycle_diag_interval = 1;
+    config.recycle_target_bulk_u = 40.0;  // Different from actual Poiseuille bulk
+    config.verbose = false;
+    config.dt = 0.001;
+    config.max_steps = 10;
+
+    RANSSolver solver(mesh, config);
+
+    // Set up BCs (triggers recycling initialization)
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    bc.z_lo = VelocityBC::Periodic;
+    bc.z_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+
+    // Initialize with Poiseuille (bulk velocity ~33)
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+    const double u_max = 50.0;
+
+    VectorField vel(mesh);
+    for (int k = 0; k < Nz + 2*Ng; ++k) {
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            double y = mesh.yc[j];
+            double u_pois = u_max * (1.0 - y * y);
+            for (int i = 0; i <= mesh.Nx + 2*Ng; ++i) {
+                vel.u(i, j, k) = u_pois;
+            }
+        }
+    }
+    solver.initialize(vel);
+
+    // Run recycling pipeline
+    solver.extract_recycle_plane();
+    solver.process_recycle_inflow();
+
+    const auto& diag = solver.get_recycle_diagnostics();
+
+    bool pass = true;
+
+    // Mean should change (target != actual)
+    double mean_change = std::abs(diag.u_mean_after_corr - diag.u_mean_before_corr);
+    std::cout << "  u_mean_before: " << diag.u_mean_before_corr << "\n";
+    std::cout << "  u_mean_after:  " << diag.u_mean_after_corr << "\n";
+    std::cout << "  Mean change:   " << mean_change << "\n";
+    bool mean_changed = (mean_change > 0.1);  // Should have notable change
+    std::cout << "  Mean correction applied: " << (mean_changed ? "OK" : "FAIL") << "\n";
+    pass = pass && mean_changed;
+
+    // But u'_rms should still be invariant
+    double rms_rel_change = std::abs(diag.u_rms_after_corr - diag.u_rms_before_corr) /
+                            (diag.u_rms_before_corr + 1e-14);
+    std::cout << "  u'_rms relative change: " << rms_rel_change * 100.0 << "%\n";
+    bool rms_invariant = (rms_rel_change < 1e-10);
+    std::cout << "  RMS invariant despite mean change: " << (rms_invariant ? "OK" : "FAIL") << "\n";
+    pass = pass && rms_invariant;
+
+    // rel_d_ar1_mean should reflect the scaling
+    std::cout << "  rel_d_ar1_mean: " << diag.rel_d_ar1_mean << "\n";
+    bool delta_nonzero = (diag.rel_d_ar1_mean > 1e-6);  // Should see some change
+    std::cout << "  Non-zero ar1->mean delta: " << (delta_nonzero ? "OK" : "FAIL") << "\n";
+    pass = pass && delta_nonzero;
+
+    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
+}
+
+//==============================================================================
 // Main
 //==============================================================================
 
@@ -817,6 +1016,12 @@ int main() {
 
     if (test_energy_balance()) passed++; else failed++;
     if (test_x_homogeneity()) passed++; else failed++;
+
+    // Stage D: L2 Diagnostics tests (regression detection)
+    std::cout << "\n*** Stage D: L2 Diagnostics Tests ***\n";
+
+    if (test_l2_diagnostics()) passed++; else failed++;
+    if (test_l2_mean_correction_invariant()) passed++; else failed++;
 
     // Summary
     std::cout << "\n========================================\n";

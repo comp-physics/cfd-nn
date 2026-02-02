@@ -237,6 +237,44 @@ public:
     };
     PlaneStats compute_plane_stats(int i_global) const;  // i_global is x-index (0 to Nx-1)
 
+    /// Stage-by-stage diagnostics for recycling inflow pipeline
+    /// Tracks L2 norms and invariants to catch regressions
+    struct RecycleDiagnostics {
+        // Stage L2 norms (u-component, area-weighted)
+        double L2_copy = 0.0;      // After copy+shift from recycle plane
+        double L2_ar1 = 0.0;       // After AR1 filter (or =L2_copy if disabled)
+        double L2_mean = 0.0;      // After mean correction
+        double L2_final = 0.0;     // After transverse mean removal (final inlet)
+
+        // Stage-to-stage relative deltas (for regression detection)
+        double rel_d_copy_ar1 = 0.0;    // |u_ar1 - u_copy| / |u_copy|
+        double rel_d_ar1_mean = 0.0;    // |u_mean - u_ar1| / |u_ar1|
+        double rel_d_mean_final = 0.0;  // |u_final - u_mean| / |u_mean|
+        double rel_d_total = 0.0;       // |u_final - u_copy| / |u_copy|
+
+        // Invariants
+        double u_mean_before_corr = 0.0;  // Mean u before mean correction
+        double u_mean_after_corr = 0.0;   // Mean u after mean correction
+        double u_rms_before_corr = 0.0;   // u' RMS before mean correction
+        double u_rms_after_corr = 0.0;    // u' RMS after mean correction (should match)
+        double v_mean_final = 0.0;        // Mean v after transverse removal (should be ~0)
+        double w_mean_final = 0.0;        // Mean w after transverse removal (should be ~0)
+
+        // Clamp/scale telemetry
+        double scale_factor = 1.0;      // Applied scale for mean correction
+        bool clamp_hit = false;         // Whether scale was clamped
+
+        // Metadata
+        int step = 0;
+        int shift_k = 0;
+    };
+
+    /// Get the most recent recycling diagnostics (call after process_recycle_inflow)
+    const RecycleDiagnostics& get_recycle_diagnostics() const { return recycle_diag_; }
+
+    /// Log recycling diagnostics to stdout (called every recycle_diag_interval steps)
+    void log_recycle_diagnostics() const;
+
     /// Check for NaN/Inf in solution fields and abort if detected
     /// @param step Current step number (used for guard interval checking)
     /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
@@ -332,7 +370,13 @@ private:
     std::vector<double> inlet_u_filt_;     ///< Temporally filtered u (for AR1)
     std::vector<double> inlet_v_filt_;     ///< Temporally filtered v
     std::vector<double> inlet_w_filt_;     ///< Temporally filtered w
-    
+
+    // Diagnostics staging buffers (for L2 breakdown - only allocated if diag enabled)
+    std::vector<double> diag_u_copy_;      ///< u after copy+shift stage
+    std::vector<double> diag_u_ar1_;       ///< u after AR1 stage
+    std::vector<double> diag_u_mean_;      ///< u after mean correction stage
+    RecycleDiagnostics recycle_diag_;      ///< Most recent diagnostics snapshot
+
     // State
     int iter_ = 0;
     int step_count_ = 0;  // Track current step for guard
