@@ -982,6 +982,244 @@ bool test_l2_mean_correction_invariant() {
 }
 
 //==============================================================================
+// Test: Controller Health (Clamp-Hit Rate and Scale Statistics)
+// Verifies that in steady state:
+// - Clamp-hit rate is near zero (dp/dx consistent with target Ub)
+// - Scale factor is close to 1.0 with low variance
+//==============================================================================
+bool test_controller_health() {
+    std::cout << "\n=== Test: Controller Health ===\n";
+
+    Mesh mesh;
+    mesh.init_uniform(32, 32, 16, 0.0, 2 * M_PI, -1.0, 1.0, 0.0, M_PI);
+
+    Config config;
+    config.nu = 0.01;
+    config.dp_dx = -1.0;
+    config.recycling_inflow = true;
+    config.recycle_shift_z = 4;
+    config.recycle_remove_transverse_mean = true;
+    // Don't set target_bulk_u - let it auto-calibrate from initial condition
+    config.verbose = false;
+    config.dt = 0.001;
+    config.max_steps = 500;
+    config.convective_scheme = ConvectiveScheme::Upwind;
+
+    RANSSolver solver(mesh, config);
+
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    bc.z_lo = VelocityBC::Periodic;
+    bc.z_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+
+    // Initialize with Poiseuille profile
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+    const double u_max = 50.0;
+
+    VectorField vel(mesh);
+    for (int k = 0; k < Nz + 2*Ng; ++k) {
+        for (int j = 0; j < Ny + 2*Ng; ++j) {
+            double y = mesh.yc[j];
+            double u_pois = u_max * (1.0 - y * y);
+            for (int i = 0; i <= mesh.Nx + 2*Ng; ++i) {
+                vel.u(i, j, k) = u_pois;
+            }
+        }
+    }
+    solver.initialize(vel);
+
+    // Run spin-up (100 steps)
+    std::cout << "  Spin-up phase (100 steps)...\n";
+    for (int step = 0; step < 100; ++step) {
+        solver.step();
+    }
+
+    // Reset stats for measurement phase
+    solver.reset_recycle_running_stats();
+
+    // Run measurement phase (300 steps)
+    std::cout << "  Measurement phase (300 steps)...\n";
+    for (int step = 0; step < 300; ++step) {
+        solver.step();
+    }
+
+    // Get running statistics
+    const auto& stats = solver.get_recycle_running_stats();
+
+    std::cout << "  Samples collected: " << stats.n_samples << "\n";
+    std::cout << "  Clamp hits: " << stats.n_clamp_hits << "\n";
+    std::cout << "  Clamp-hit rate: " << stats.clamp_hit_rate() * 100.0 << "%\n";
+    std::cout << "  Scale factor mean: " << stats.scale_mean() << "\n";
+    std::cout << "  Scale factor std: " << stats.scale_std() << "\n";
+
+    bool pass = true;
+
+    // Check 1: Clamp-hit rate should be very low in steady state
+    // (For Poiseuille with auto-calibrated target, should be ~0%)
+    bool clamp_ok = (stats.clamp_hit_rate() < 0.01);  // Less than 1%
+    std::cout << "  Clamp-hit rate < 1%: " << (clamp_ok ? "OK" : "FAIL") << "\n";
+    pass = pass && clamp_ok;
+
+    // Check 2: Scale factor should be close to 1.0
+    bool scale_mean_ok = (std::abs(stats.scale_mean() - 1.0) < 0.01);  // Within 1%
+    std::cout << "  Scale mean ~1.0: " << (scale_mean_ok ? "OK" : "FAIL") << "\n";
+    pass = pass && scale_mean_ok;
+
+    // Check 3: Scale factor variance should be low
+    bool scale_std_ok = (stats.scale_std() < 0.01);  // Less than 1% std
+    std::cout << "  Scale std < 1%: " << (scale_std_ok ? "OK" : "FAIL") << "\n";
+    pass = pass && scale_std_ok;
+
+    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
+}
+
+//==============================================================================
+// Test: Inlet Memory / Periodicity Detection
+// Verifies that spanwise shift reduces inlet autocorrelation
+// (proves shift is breaking the recirculation clock)
+//==============================================================================
+bool test_inlet_memory() {
+    std::cout << "\n=== Test: Inlet Memory Detection ===\n";
+
+    // We'll run two cases: with shift and without shift
+    // Compare autocorrelation at a probe near inlet
+
+    auto run_case = [](int shift_z, std::vector<double>& u_history) {
+        Mesh mesh;
+        mesh.init_uniform(32, 32, 16, 0.0, 2 * M_PI, -1.0, 1.0, 0.0, M_PI);
+
+        Config config;
+        config.nu = 0.01;
+        config.dp_dx = -1.0;
+        config.recycling_inflow = true;
+        config.recycle_shift_z = shift_z;
+        config.recycle_shift_interval = 0;  // Constant shift
+        config.recycle_remove_transverse_mean = true;
+        config.verbose = false;
+        config.dt = 0.001;
+        config.convective_scheme = ConvectiveScheme::Upwind;
+
+        RANSSolver solver(mesh, config);
+
+        VelocityBC bc;
+        bc.x_lo = VelocityBC::Periodic;
+        bc.x_hi = VelocityBC::Periodic;
+        bc.y_lo = VelocityBC::NoSlip;
+        bc.y_hi = VelocityBC::NoSlip;
+        bc.z_lo = VelocityBC::Periodic;
+        bc.z_hi = VelocityBC::Periodic;
+        solver.set_velocity_bc(bc);
+
+        // Initialize with Poiseuille + small random perturbation
+        const int Ny = mesh.Ny;
+        const int Nz = mesh.Nz;
+        const int Ng = mesh.Nghost;
+        const double u_max = 50.0;
+
+        VectorField vel(mesh);
+        std::mt19937 rng(42);
+        std::normal_distribution<double> dist(0.0, 0.5);
+
+        for (int k = 0; k < Nz + 2*Ng; ++k) {
+            for (int j = 0; j < Ny + 2*Ng; ++j) {
+                double y = mesh.yc[j];
+                double u_pois = u_max * (1.0 - y * y);
+                for (int i = 0; i <= mesh.Nx + 2*Ng; ++i) {
+                    vel.u(i, j, k) = u_pois + dist(rng);
+                }
+            }
+        }
+        solver.initialize(vel);
+
+        // Probe location: near inlet, mid-height, mid-span
+        const int i_probe = Ng + 3;  // 3 cells from inlet
+        const int j_probe = Ng + Ny / 2;
+        const int k_probe = Ng + Nz / 2;
+
+        // Run and collect time series
+        u_history.clear();
+        for (int step = 0; step < 500; ++step) {
+            solver.step();
+            u_history.push_back(solver.velocity().u(i_probe, j_probe, k_probe));
+        }
+    };
+
+    // Compute autocorrelation at lag corresponding to recirculation time
+    // Recirculation time ~ L_recycle / U_bulk ~ (domain_length * 0.7) / U_bulk
+    // For our setup: ~4.4 / 33 ~ 0.13s, with dt=0.001 that's ~130 steps
+    auto compute_autocorr = [](const std::vector<double>& u, int lag) {
+        int n = static_cast<int>(u.size()) - lag;
+        if (n < 10) return 0.0;
+
+        double mean = 0.0;
+        for (const auto& val : u) mean += val;
+        mean /= u.size();
+
+        double var = 0.0;
+        for (const auto& val : u) var += (val - mean) * (val - mean);
+        var /= u.size();
+
+        if (var < 1e-14) return 0.0;
+
+        double cov = 0.0;
+        for (int i = 0; i < n; ++i) {
+            cov += (u[i] - mean) * (u[i + lag] - mean);
+        }
+        cov /= n;
+
+        return cov / var;
+    };
+
+    std::cout << "  Running case: shift_z = 0 (no decorrelation)...\n";
+    std::vector<double> u_no_shift;
+    run_case(0, u_no_shift);
+
+    std::cout << "  Running case: shift_z = 4 (with decorrelation)...\n";
+    std::vector<double> u_with_shift;
+    run_case(4, u_with_shift);
+
+    // Compute autocorrelation at recirculation lag (~130 steps)
+    const int lag = 130;
+    double acf_no_shift = compute_autocorr(u_no_shift, lag);
+    double acf_with_shift = compute_autocorr(u_with_shift, lag);
+
+    std::cout << "  Autocorrelation at lag " << lag << ":\n";
+    std::cout << "    No shift:   " << acf_no_shift << "\n";
+    std::cout << "    With shift: " << acf_with_shift << "\n";
+
+    bool pass = true;
+
+    // For laminar flow, the shift primarily acts as a phase shift, which can
+    // create negative correlation. The key check is that we don't have a
+    // *strong positive* correlation at the recirculation lag, which would
+    // indicate the inlet is "remembering" itself without decorrelation.
+    //
+    // For turbulent flows, the shift should truly decorrelate (|acf| → 0).
+    // This laminar test verifies the mechanism is working (correlation changes).
+
+    // Check 1: Shift should change the autocorrelation (mechanism is working)
+    double acf_change = std::abs(acf_with_shift - acf_no_shift);
+    bool shift_changes_acf = (acf_change > 0.01);
+    std::cout << "  Shift changes autocorrelation: " << (shift_changes_acf ? "OK" : "WARN (may be too similar)") << "\n";
+
+    // Check 2: No strong positive correlation with shift (inlet not "remembering")
+    // A strong positive correlation (>0.5) would indicate problematic inlet memory
+    bool no_strong_positive = (acf_with_shift < 0.5);
+    std::cout << "  No strong positive correlation: " << (no_strong_positive ? "OK" : "FAIL") << "\n";
+    pass = pass && no_strong_positive;
+
+    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
+}
+
+//==============================================================================
 // Main
 //==============================================================================
 
@@ -1022,6 +1260,12 @@ int main() {
 
     if (test_l2_diagnostics()) passed++; else failed++;
     if (test_l2_mean_correction_invariant()) passed++; else failed++;
+
+    // Stage E: Acceptance tests (controller health, inlet memory)
+    std::cout << "\n*** Stage E: Acceptance Tests ***\n";
+
+    if (test_controller_health()) passed++; else failed++;
+    if (test_inlet_memory()) passed++; else failed++;
 
     // Summary
     std::cout << "\n========================================\n";

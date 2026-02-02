@@ -275,6 +275,42 @@ public:
     /// Log recycling diagnostics to stdout (called every recycle_diag_interval steps)
     void log_recycle_diagnostics() const;
 
+    /// Running statistics for recycling controller health monitoring
+    struct RecycleRunningStats {
+        int n_samples = 0;           // Number of samples collected
+        int n_clamp_hits = 0;        // Number of times clamp was hit
+        double scale_sum = 0.0;      // Sum of scale factors
+        double scale_sum_sq = 0.0;   // Sum of scale factors squared
+
+        void reset() {
+            n_samples = 0;
+            n_clamp_hits = 0;
+            scale_sum = 0.0;
+            scale_sum_sq = 0.0;
+        }
+
+        double clamp_hit_rate() const {
+            return (n_samples > 0) ? static_cast<double>(n_clamp_hits) / n_samples : 0.0;
+        }
+
+        double scale_mean() const {
+            return (n_samples > 0) ? scale_sum / n_samples : 1.0;
+        }
+
+        double scale_std() const {
+            if (n_samples < 2) return 0.0;
+            double mean = scale_mean();
+            double var = scale_sum_sq / n_samples - mean * mean;
+            return (var > 0.0) ? std::sqrt(var) : 0.0;
+        }
+    };
+
+    /// Get running statistics for recycling controller
+    const RecycleRunningStats& get_recycle_running_stats() const { return recycle_stats_; }
+
+    /// Reset running statistics (call after spin-up to measure steady-state behavior)
+    void reset_recycle_running_stats() { recycle_stats_.reset(); }
+
     /// Check for NaN/Inf in solution fields and abort if detected
     /// @param step Current step number (used for guard interval checking)
     /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
@@ -376,6 +412,7 @@ private:
     std::vector<double> diag_u_ar1_;       ///< u after AR1 stage
     std::vector<double> diag_u_mean_;      ///< u after mean correction stage
     RecycleDiagnostics recycle_diag_;      ///< Most recent diagnostics snapshot
+    RecycleRunningStats recycle_stats_;    ///< Running statistics for controller health
 
     // State
     int iter_ = 0;

@@ -490,6 +490,12 @@ void RANSSolver::process_recycle_inflow() {
         }
     }
 
+    // Always accumulate running statistics (GPU path)
+    recycle_stats_.n_samples++;
+    if (raw_scale != scale) recycle_stats_.n_clamp_hits++;
+    recycle_stats_.scale_sum += scale;
+    recycle_stats_.scale_sum_sq += scale * scale;
+
 #else
     // CPU path
     const bool track_diag = (config_.recycle_diag_interval > 0) && !diag_u_copy_.empty();
@@ -627,6 +633,12 @@ void RANSSolver::process_recycle_inflow() {
         recycle_diag_.step = iter_;
         recycle_diag_.shift_k = shift_k;
     }
+
+    // Always accumulate running statistics (even if detailed diagnostics disabled)
+    recycle_stats_.n_samples++;
+    if (raw_scale != scale) recycle_stats_.n_clamp_hits++;
+    recycle_stats_.scale_sum += scale;
+    recycle_stats_.scale_sum_sq += scale * scale;
 #endif
 
     // Update spanwise shift periodically
