@@ -217,6 +217,26 @@ public:
     double compute_divergence_l2_device() const;    // L2 norm of divergence
     double compute_max_conv_device() const;         // max(|conv_u|, |conv_v|, |conv_w|) - verify convection active
 
+    /// Energy balance diagnostics (for recycling/inflow validation)
+    /// @{
+    double compute_kinetic_energy() const;          // KE = 0.5 * integral(u^2+v^2+w^2) dV (CPU version)
+    double compute_bulk_velocity() const;           // U_b = integral(u) / V
+    double compute_power_input() const;             // P_in = f_x * integral(u) dV
+    double compute_viscous_dissipation() const;     // epsilon = 2*nu * integral(S_ij S_ij) dV
+    /// @}
+
+    /// Plane-averaged turbulence statistics at x-index i
+    struct PlaneStats {
+        double u_mean;      // Mean streamwise velocity
+        double v_mean;      // Mean wall-normal velocity
+        double w_mean;      // Mean spanwise velocity
+        double u_rms;       // RMS of u fluctuations
+        double v_rms;       // RMS of v fluctuations
+        double w_rms;       // RMS of w fluctuations
+        double uv_reynolds; // Reynolds shear stress -<u'v'>
+    };
+    PlaneStats compute_plane_stats(int i_global) const;  // i_global is x-index (0 to Nx-1)
+
     /// Check for NaN/Inf in solution fields and abort if detected
     /// @param step Current step number (used for guard interval checking)
     /// @throws std::runtime_error if NaN/Inf detected and guard is enabled

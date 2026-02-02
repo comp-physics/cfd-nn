@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <numeric>
 #include <random>
+#include <vector>
 
 using namespace nncfd;
 
@@ -581,6 +582,207 @@ bool test_inlet_recycle_similarity() {
 }
 
 //==============================================================================
+// Medium-duration tests (energy balance, x-homogeneity)
+//==============================================================================
+
+/// Test: Energy balance (P_in ≈ dissipation in steady state)
+/// This runs for more steps to reach quasi-steady state
+bool test_energy_balance() {
+    std::cout << "\n=== Test: Energy Balance ===\n";
+
+    Mesh mesh;
+    mesh.init_uniform(32, 32, 16, 0.0, 6.28, -1.0, 1.0, 0.0, 3.14);
+
+    Config config;
+    config.nu = 0.01;
+    config.dt = 0.001;
+    config.dp_dx = -1.0;
+    config.recycling_inflow = true;
+    config.recycle_x = 4.0;
+    config.recycle_shift_z = 4;
+    config.recycle_fringe_length = 0.0;
+    config.recycle_filter_tau = -1.0;
+    config.convective_scheme = ConvectiveScheme::Upwind;
+
+    RANSSolver solver(mesh, config);
+
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    bc.z_lo = VelocityBC::Periodic;
+    bc.z_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+    solver.set_body_force(-config.dp_dx, 0.0);
+
+    // Initialize with Poiseuille
+    double u_max = -config.dp_dx * 1.0 / (2.0 * config.nu);
+    VectorField vel(mesh);
+    fill_poiseuille(vel, mesh, u_max);
+    solver.initialize(vel);
+
+    std::cout << "  Running 500 steps to approach steady state...\n";
+
+    // Track energy balance over time
+    std::vector<double> dKdt_samples, P_minus_eps_samples;
+    double K_prev = 0.0;
+
+    const int nsteps = 500;
+    const int sample_interval = 50;
+
+    for (int step = 0; step < nsteps; ++step) {
+        solver.step();
+
+        if (step % sample_interval == 0 && step > 0) {
+            double K = solver.compute_kinetic_energy();
+            double P_in = solver.compute_power_input();
+            double eps = solver.compute_viscous_dissipation();
+
+            double dKdt = (K - K_prev) / (sample_interval * config.dt);
+            double imbalance = P_in - eps;
+
+            dKdt_samples.push_back(dKdt);
+            P_minus_eps_samples.push_back(imbalance);
+
+            if (step == sample_interval || step == nsteps - sample_interval) {
+                std::cout << "  Step " << step << ": K=" << K
+                          << ", P_in=" << P_in << ", eps=" << eps
+                          << ", P-eps=" << imbalance << "\n";
+            }
+
+            K_prev = K;
+        }
+
+        if (step == 0) {
+            K_prev = solver.compute_kinetic_energy();
+        }
+    }
+
+    // Compute mean values in second half (after spinup)
+    int n_samples = static_cast<int>(dKdt_samples.size());
+    int start_idx = n_samples / 2;
+    double mean_dKdt = 0.0, mean_P_eps = 0.0;
+    for (int i = start_idx; i < n_samples; ++i) {
+        mean_dKdt += dKdt_samples[i];
+        mean_P_eps += P_minus_eps_samples[i];
+    }
+    mean_dKdt /= (n_samples - start_idx);
+    mean_P_eps /= (n_samples - start_idx);
+
+    std::cout << "  Mean dK/dt (second half): " << mean_dKdt << "\n";
+    std::cout << "  Mean P_in - eps (second half): " << mean_P_eps << "\n";
+
+    // In steady state, |dK/dt| should be small compared to P_in
+    double P_in_final = solver.compute_power_input();
+    bool dKdt_ok = std::abs(mean_dKdt) < 0.1 * std::abs(P_in_final);
+    std::cout << "  dK/dt check: " << (dKdt_ok ? "OK" : "FAIL") << "\n";
+
+    // P_in - eps should also be small (energy balance)
+    bool balance_ok = std::abs(mean_P_eps) < 0.2 * std::abs(P_in_final);
+    std::cout << "  Energy balance check: " << (balance_ok ? "OK" : "FAIL") << "\n";
+
+    bool pass = dKdt_ok && balance_ok;
+    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
+}
+
+/// Test: x-homogeneity of turbulence statistics
+/// After development, stats should be flat in x (no recovery region)
+bool test_x_homogeneity() {
+    std::cout << "\n=== Test: X-Homogeneity ===\n";
+
+    Mesh mesh;
+    mesh.init_uniform(32, 32, 16, 0.0, 6.28, -1.0, 1.0, 0.0, 3.14);
+
+    Config config;
+    config.nu = 0.01;
+    config.dt = 0.001;
+    config.dp_dx = -1.0;
+    config.recycling_inflow = true;
+    config.recycle_x = 4.0;
+    config.recycle_shift_z = 4;
+    config.recycle_fringe_length = 0.0;
+    config.recycle_filter_tau = -1.0;
+    config.convective_scheme = ConvectiveScheme::Upwind;
+
+    RANSSolver solver(mesh, config);
+
+    VelocityBC bc;
+    bc.x_lo = VelocityBC::Periodic;
+    bc.x_hi = VelocityBC::Periodic;
+    bc.y_lo = VelocityBC::NoSlip;
+    bc.y_hi = VelocityBC::NoSlip;
+    bc.z_lo = VelocityBC::Periodic;
+    bc.z_hi = VelocityBC::Periodic;
+    solver.set_velocity_bc(bc);
+    solver.set_body_force(-config.dp_dx, 0.0);
+
+    // Initialize with Poiseuille
+    double u_max = -config.dp_dx * 1.0 / (2.0 * config.nu);
+    VectorField vel(mesh);
+    fill_poiseuille(vel, mesh, u_max);
+    solver.initialize(vel);
+
+    std::cout << "  Running 300 steps...\n";
+
+    // Run to develop flow
+    for (int step = 0; step < 300; ++step) {
+        solver.step();
+    }
+
+    // Sample plane-averaged stats at multiple x locations
+    // Skip inlet region (first 5 planes) and outlet region (last 3 planes)
+    std::vector<double> u_means, u_rms_vals;
+    std::cout << "  Plane-averaged stats:\n";
+    std::cout << "    i       x        u_mean      u_rms\n";
+
+    for (int i = 5; i < mesh.Nx - 3; i += 4) {
+        auto stats = solver.compute_plane_stats(i);
+        u_means.push_back(stats.u_mean);
+        u_rms_vals.push_back(stats.u_rms);
+
+        double x = mesh.x_min + (i + 0.5) * mesh.dx;
+        std::cout << "    " << i << "    " << std::fixed << std::setprecision(3) << x
+                  << "    " << std::scientific << stats.u_mean
+                  << "    " << stats.u_rms << "\n";
+    }
+
+    // Compute coefficient of variation (std/mean) of u_mean across x
+    double mean_u = 0.0, mean_rms = 0.0;
+    for (size_t i = 0; i < u_means.size(); ++i) {
+        mean_u += u_means[i];
+        mean_rms += u_rms_vals[i];
+    }
+    mean_u /= u_means.size();
+    mean_rms /= u_rms_vals.size();
+
+    double var_u = 0.0, var_rms = 0.0;
+    for (size_t i = 0; i < u_means.size(); ++i) {
+        var_u += (u_means[i] - mean_u) * (u_means[i] - mean_u);
+        var_rms += (u_rms_vals[i] - mean_rms) * (u_rms_vals[i] - mean_rms);
+    }
+    double cv_u = std::sqrt(var_u / u_means.size()) / std::abs(mean_u);
+    double cv_rms = std::sqrt(var_rms / u_rms_vals.size()) / std::abs(mean_rms);
+
+    std::cout << "\n  Coefficient of variation of u_mean across x: " << (cv_u * 100.0) << "%\n";
+    std::cout << "  Coefficient of variation of u_rms across x:  " << (cv_rms * 100.0) << "%\n";
+
+    // For laminar/near-laminar flow, u_mean should be very uniform
+    // u_rms variation is expected from Poiseuille profile
+    bool u_mean_ok = (cv_u < 0.05);  // Less than 5% variation
+    std::cout << "  u_mean uniformity: " << (u_mean_ok ? "OK" : "FAIL") << "\n";
+
+    // For Poiseuille, RMS should also be fairly uniform (all same profile)
+    bool rms_ok = (cv_rms < 0.10);  // Less than 10% variation
+    std::cout << "  u_rms uniformity: " << (rms_ok ? "OK" : "FAIL") << "\n";
+
+    bool pass = u_mean_ok && rms_ok;
+    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass;
+}
+
+//==============================================================================
 // Main
 //==============================================================================
 
@@ -609,6 +811,12 @@ int main() {
     std::cout << "\n*** Diagnostics Tests ***\n";
 
     if (test_inlet_recycle_similarity()) passed++; else failed++;
+
+    // Stage C: Medium-duration tests (energy balance, x-homogeneity)
+    std::cout << "\n*** Stage C: Medium-Duration Tests ***\n";
+
+    if (test_energy_balance()) passed++; else failed++;
+    if (test_x_homogeneity()) passed++; else failed++;
 
     // Summary
     std::cout << "\n========================================\n";

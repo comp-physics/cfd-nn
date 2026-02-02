@@ -4768,5 +4768,240 @@ SolverDeviceView RANSSolver::get_solver_view() const {
 }
 #endif
 
+//==============================================================================
+// Energy balance diagnostics
+//==============================================================================
+
+double RANSSolver::compute_kinetic_energy() const {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
+    const double dV = dx * dy * dz;
+
+    double ke = 0.0;
+    for (int k = 0; k < Nz; ++k) {
+        int kg = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            for (int i = 0; i < Nx; ++i) {
+                int ig = i + Ng;
+                // Interpolate velocities to cell center
+                double u = 0.5 * (velocity_.u(ig, jg, kg) + velocity_.u(ig + 1, jg, kg));
+                double v = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
+                double w = mesh_->is2D() ? 0.0 :
+                           0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
+                ke += 0.5 * (u * u + v * v + w * w) * dV;
+            }
+        }
+    }
+    return ke;
+}
+
+double RANSSolver::compute_bulk_velocity() const {
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
+
+    // Compute integral of u over the domain
+    double sum_u = 0.0;
+    for (int k = 0; k < Nz; ++k) {
+        int kg = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            for (int i = 0; i < Nx; ++i) {
+                int ig = i + Ng;
+                // Interpolate u to cell center
+                double u_cc = 0.5 * (velocity_.u(ig, jg, kg) + velocity_.u(ig + 1, jg, kg));
+                sum_u += u_cc;
+            }
+        }
+    }
+
+    double volume = (mesh_->x_max - mesh_->x_min) *
+                    (mesh_->y_max - mesh_->y_min) *
+                    (mesh_->is2D() ? 1.0 : (mesh_->z_max - mesh_->z_min));
+    double dV = dx * dy * dz;
+    return (sum_u * dV) / volume;
+}
+
+double RANSSolver::compute_power_input() const {
+    // P_in = f_x * integral(u) dV = f_x * U_b * V
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
+    const double dV = dx * dy * dz;
+
+    // Compute integral of (fx*u + fy*v + fz*w) over the domain
+    double power = 0.0;
+    for (int k = 0; k < Nz; ++k) {
+        int kg = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            for (int i = 0; i < Nx; ++i) {
+                int ig = i + Ng;
+                double u_cc = 0.5 * (velocity_.u(ig, jg, kg) + velocity_.u(ig + 1, jg, kg));
+                double v_cc = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
+                double w_cc = mesh_->is2D() ? 0.0 :
+                              0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
+                power += (fx_ * u_cc + fy_ * v_cc + fz_ * w_cc) * dV;
+            }
+        }
+    }
+    return power;
+}
+
+double RANSSolver::compute_viscous_dissipation() const {
+    // epsilon = 2*nu * integral(S_ij * S_ij) dV
+    // where S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
+    // For incompressible: 2*S_ij*S_ij = (du/dx)^2 + (dv/dy)^2 + (dw/dz)^2
+    //                                  + 0.5*(du/dy + dv/dx)^2
+    //                                  + 0.5*(du/dz + dw/dx)^2
+    //                                  + 0.5*(dv/dz + dw/dy)^2
+    // Actually: 2*S_ij*S_ij = 2*[(du/dx)^2 + (dv/dy)^2 + (dw/dz)^2]
+    //                       + (du/dy + dv/dx)^2 + (du/dz + dw/dx)^2 + (dv/dz + dw/dy)^2
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const double dz = mesh_->is2D() ? 1.0 : mesh_->dz;
+    const double dV = dx * dy * dz;
+
+    double dissipation = 0.0;
+
+    for (int k = 0; k < Nz; ++k) {
+        int kg = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            for (int i = 0; i < Nx; ++i) {
+                int ig = i + Ng;
+
+                // Velocity gradients at cell center (using central differences)
+                double dudx = (velocity_.u(ig + 1, jg, kg) - velocity_.u(ig, jg, kg)) / dx;
+                double dvdy = (velocity_.v(ig, jg + 1, kg) - velocity_.v(ig, jg, kg)) / dy;
+
+                // du/dy: average u to cell-center y-locations, then differentiate
+                double u_jm = 0.5 * (velocity_.u(ig, jg - 1, kg) + velocity_.u(ig + 1, jg - 1, kg));
+                double u_jp = 0.5 * (velocity_.u(ig, jg + 1, kg) + velocity_.u(ig + 1, jg + 1, kg));
+                double dudy = (u_jp - u_jm) / (2.0 * dy);
+
+                // dv/dx: average v to cell-center x-locations, then differentiate
+                double v_im = 0.5 * (velocity_.v(ig - 1, jg, kg) + velocity_.v(ig - 1, jg + 1, kg));
+                double v_ip = 0.5 * (velocity_.v(ig + 1, jg, kg) + velocity_.v(ig + 1, jg + 1, kg));
+                double dvdx = (v_ip - v_im) / (2.0 * dx);
+
+                double two_SijSij;
+                if (mesh_->is2D()) {
+                    two_SijSij = 2.0 * (dudx * dudx + dvdy * dvdy) + (dudy + dvdx) * (dudy + dvdx);
+                } else {
+                    double dwdz = (velocity_.w(ig, jg, kg + 1) - velocity_.w(ig, jg, kg)) / dz;
+
+                    // du/dz
+                    double u_km = 0.5 * (velocity_.u(ig, jg, kg - 1) + velocity_.u(ig + 1, jg, kg - 1));
+                    double u_kp = 0.5 * (velocity_.u(ig, jg, kg + 1) + velocity_.u(ig + 1, jg, kg + 1));
+                    double dudz = (u_kp - u_km) / (2.0 * dz);
+
+                    // dw/dx
+                    double w_im = 0.5 * (velocity_.w(ig - 1, jg, kg) + velocity_.w(ig - 1, jg, kg + 1));
+                    double w_ip = 0.5 * (velocity_.w(ig + 1, jg, kg) + velocity_.w(ig + 1, jg, kg + 1));
+                    double dwdx = (w_ip - w_im) / (2.0 * dx);
+
+                    // dv/dz
+                    double v_km = 0.5 * (velocity_.v(ig, jg, kg - 1) + velocity_.v(ig, jg + 1, kg - 1));
+                    double v_kp = 0.5 * (velocity_.v(ig, jg, kg + 1) + velocity_.v(ig, jg + 1, kg + 1));
+                    double dvdz = (v_kp - v_km) / (2.0 * dz);
+
+                    // dw/dy
+                    double w_jm = 0.5 * (velocity_.w(ig, jg - 1, kg) + velocity_.w(ig, jg - 1, kg + 1));
+                    double w_jp = 0.5 * (velocity_.w(ig, jg + 1, kg) + velocity_.w(ig, jg + 1, kg + 1));
+                    double dwdy = (w_jp - w_jm) / (2.0 * dy);
+
+                    two_SijSij = 2.0 * (dudx * dudx + dvdy * dvdy + dwdz * dwdz)
+                               + (dudy + dvdx) * (dudy + dvdx)
+                               + (dudz + dwdx) * (dudz + dwdx)
+                               + (dvdz + dwdy) * (dvdz + dwdy);
+                }
+
+                dissipation += config_.nu * two_SijSij * dV;
+            }
+        }
+    }
+    return dissipation;
+}
+
+RANSSolver::PlaneStats RANSSolver::compute_plane_stats(int i_global) const {
+    PlaneStats stats = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->is2D() ? 1 : mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const int ig = i_global + Ng;
+
+    const int n_points = Ny * Nz;
+    if (n_points == 0) return stats;
+
+    // First pass: compute means
+    double sum_u = 0.0, sum_v = 0.0, sum_w = 0.0;
+    for (int k = 0; k < Nz; ++k) {
+        int kg = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            // Interpolate to cell center at x-face location
+            double u = velocity_.u(ig, jg, kg);  // u is at x-face, no interp needed in x
+            double v = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
+            double w = mesh_->is2D() ? 0.0 :
+                       0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
+            sum_u += u;
+            sum_v += v;
+            sum_w += w;
+        }
+    }
+    stats.u_mean = sum_u / n_points;
+    stats.v_mean = sum_v / n_points;
+    stats.w_mean = sum_w / n_points;
+
+    // Second pass: compute fluctuations and Reynolds stress
+    double sum_uu = 0.0, sum_vv = 0.0, sum_ww = 0.0, sum_uv = 0.0;
+    for (int k = 0; k < Nz; ++k) {
+        int kg = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            double u = velocity_.u(ig, jg, kg);
+            double v = 0.5 * (velocity_.v(ig, jg, kg) + velocity_.v(ig, jg + 1, kg));
+            double w = mesh_->is2D() ? 0.0 :
+                       0.5 * (velocity_.w(ig, jg, kg) + velocity_.w(ig, jg, kg + 1));
+
+            double u_prime = u - stats.u_mean;
+            double v_prime = v - stats.v_mean;
+            double w_prime = w - stats.w_mean;
+
+            sum_uu += u_prime * u_prime;
+            sum_vv += v_prime * v_prime;
+            sum_ww += w_prime * w_prime;
+            sum_uv += u_prime * v_prime;
+        }
+    }
+    stats.u_rms = std::sqrt(sum_uu / n_points);
+    stats.v_rms = std::sqrt(sum_vv / n_points);
+    stats.w_rms = std::sqrt(sum_ww / n_points);
+    stats.uv_reynolds = -sum_uv / n_points;  // -<u'v'>
+
+    return stats;
+}
+
 } // namespace nncfd
 
