@@ -232,6 +232,7 @@ set(LIB_SOURCES
     src/solver.cpp
     src/solver_vtk.cpp
     src/solver_time.cpp
+    src/solver_recycling.cpp
     src/solver_time_kernels_blend.cpp
     src/solver_time_kernels_euler.cpp
     src/solver_time_kernels_periodic.cpp
@@ -496,6 +497,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_2d_3d_comparison TEST_NAME_SUFFIX Comparison2D3DTest LABELS slow)
     add_nncfd_test(test_3d_unified TEST_NAME_SUFFIX ThreeDUnifiedTest LABELS slow)
     add_nncfd_test(test_perturbed_channel LABELS slow)
+    add_nncfd_test(test_recycling_inflow LABELS slow)
     add_nncfd_test(test_endurance_stability LABELS slow)
     add_nncfd_test(test_repeatability LABELS slow)
     add_nncfd_test(test_physics_validation_advanced LABELS slow)

@@ -467,6 +467,10 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
         }
     }
 #endif
+
+    // Initialize recycling inflow if enabled
+    // Must be called after BCs are set so we can validate periodic z requirement
+    initialize_recycling_inflow();
 }
 
 void RANSSolver::set_body_force(double fx, double fy, double fz) {
@@ -700,20 +704,22 @@ void RANSSolver::apply_velocity_bc() {
 
     const bool x_lo_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic);
     const bool x_lo_noslip   = (velocity_bc_.x_lo == VelocityBC::NoSlip);
+    const bool x_lo_inflow   = (velocity_bc_.x_lo == VelocityBC::Inflow);
     const bool x_hi_periodic = (velocity_bc_.x_hi == VelocityBC::Periodic);
     const bool x_hi_noslip   = (velocity_bc_.x_hi == VelocityBC::NoSlip);
+    const bool x_hi_outflow  = (velocity_bc_.x_hi == VelocityBC::Outflow);
 
     const bool y_lo_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic);
     const bool y_lo_noslip   = (velocity_bc_.y_lo == VelocityBC::NoSlip);
     const bool y_hi_periodic = (velocity_bc_.y_hi == VelocityBC::Periodic);
     const bool y_hi_noslip   = (velocity_bc_.y_hi == VelocityBC::NoSlip);
 
-    // Validate that all BCs are supported (Inflow/Outflow not implemented for x/y)
-    if (!x_lo_periodic && !x_lo_noslip) {
-        throw std::runtime_error("Unsupported velocity BC type for x_lo (only Periodic and NoSlip are implemented)");
+    // Validate that all BCs are supported
+    if (!x_lo_periodic && !x_lo_noslip && !x_lo_inflow) {
+        throw std::runtime_error("Unsupported velocity BC type for x_lo");
     }
-    if (!x_hi_periodic && !x_hi_noslip) {
-        throw std::runtime_error("Unsupported velocity BC type for x_hi (only Periodic and NoSlip are implemented)");
+    if (!x_hi_periodic && !x_hi_noslip && !x_hi_outflow) {
+        throw std::runtime_error("Unsupported velocity BC type for x_hi");
     }
     if (!y_lo_periodic && !y_lo_noslip) {
         throw std::runtime_error("Unsupported velocity BC type for y_lo (only Periodic and NoSlip are implemented)");
@@ -825,6 +831,71 @@ void RANSSolver::apply_velocity_bc() {
             apply_v_bc_y_staggered(i, g, Ny, Ng, v_stride,
                                   y_lo_periodic, y_lo_noslip,
                                   y_hi_periodic, y_hi_noslip, v_plane_ptr);
+        }
+    }
+
+    // Outflow BC at x_hi: zero-gradient (Neumann) for ghost cells
+    // Copy interior values to ghost cells: ghost[Ng+Nx+1+g] = interior[Ng+Nx-1-g]
+    if (x_hi_outflow) {
+        // u outflow (normal velocity): apply to all j, all k-planes
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(Nx, Ng, u_stride, u_plane_stride, u_total_Ny, Nz_total)
+        for (int idx = 0; idx < u_total_Ny * Ng * Nz_total; ++idx) {
+            int j = idx % u_total_Ny;
+            int g = (idx / u_total_Ny) % Ng;
+            int k = idx / (u_total_Ny * Ng);
+            double* u_plane_ptr = u_ptr + k * u_plane_stride;
+            int i_ghost = Ng + Nx + 1 + g;     // Ghost face beyond outflow
+            int i_interior = Ng + Nx - 1 - g;  // Interior face
+            u_plane_ptr[j * u_stride + i_ghost] = u_plane_ptr[j * u_stride + i_interior];
+        }
+
+        // v outflow (tangential velocity): apply to all j, all k-planes
+        const int v_y_total = Ny + 1 + 2 * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(Nx, Ng, v_stride, v_plane_stride, v_y_total, Nz_total)
+        for (int idx = 0; idx < v_y_total * Ng * Nz_total; ++idx) {
+            int j = idx % v_y_total;
+            int g = (idx / v_y_total) % Ng;
+            int k = idx / (v_y_total * Ng);
+            double* v_plane_ptr = v_ptr + k * v_plane_stride;
+            int i_ghost = Ng + Nx + g;         // Ghost cell beyond outflow
+            int i_interior = Ng + Nx - 1 - g;  // Interior cell
+            v_plane_ptr[j * v_stride + i_ghost] = v_plane_ptr[j * v_stride + i_interior];
+        }
+    }
+
+    // Inflow BC at x_lo: zero-gradient for ghost cells (inlet face set by recycling)
+    if (x_lo_inflow) {
+        // u inflow ghost cells: ghost[Ng-1-g] = interior[Ng+g]
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) \
+            firstprivate(Ng, u_stride, u_plane_stride, u_total_Ny, Nz_total)
+        for (int idx = 0; idx < u_total_Ny * Ng * Nz_total; ++idx) {
+            int j = idx % u_total_Ny;
+            int g = (idx / u_total_Ny) % Ng;
+            int k = idx / (u_total_Ny * Ng);
+            double* u_plane_ptr = u_ptr + k * u_plane_stride;
+            int i_ghost = Ng - 1 - g;     // Ghost face before inlet
+            int i_interior = Ng + g;      // Interior face
+            u_plane_ptr[j * u_stride + i_ghost] = u_plane_ptr[j * u_stride + i_interior];
+        }
+
+        // v inflow ghost cells
+        const int v_y_total = Ny + 1 + 2 * Ng;
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size]) \
+            firstprivate(Ng, v_stride, v_plane_stride, v_y_total, Nz_total)
+        for (int idx = 0; idx < v_y_total * Ng * Nz_total; ++idx) {
+            int j = idx % v_y_total;
+            int g = (idx / v_y_total) % Ng;
+            int k = idx / (v_y_total * Ng);
+            double* v_plane_ptr = v_ptr + k * v_plane_stride;
+            int i_ghost = Ng - 1 - g;     // Ghost cell before inlet
+            int i_interior = Ng + g;      // Interior cell
+            v_plane_ptr[j * v_stride + i_ghost] = v_plane_ptr[j * v_stride + i_interior];
         }
     }
 
@@ -976,6 +1047,36 @@ void RANSSolver::apply_velocity_bc() {
             } else {
                 if (x_lo_noslip) w_ptr[idx_lo] = -w_ptr[k * w_plane_stride + j * w_stride + (Ng + g)];
                 if (x_hi_noslip) w_ptr[idx_hi] = -w_ptr[k * w_plane_stride + j * w_stride + (Ng + Nx - 1 - g)];
+            }
+        }
+
+        // w inflow/outflow in x-direction (zero-gradient)
+        if (x_lo_inflow) {
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size]) \
+                firstprivate(Nx, Ny, Nz, Ng, w_stride, w_plane_stride)
+            for (int idx = 0; idx < n_w_x_bc; ++idx) {
+                int j = idx % (Ny + 2*Ng);
+                int k = (idx / (Ny + 2*Ng)) % (Nz + 1 + 2*Ng);
+                int g = idx / ((Ny + 2*Ng) * (Nz + 1 + 2*Ng));
+                int i_ghost = Ng - 1 - g;
+                int i_interior = Ng + g;
+                w_ptr[k * w_plane_stride + j * w_stride + i_ghost] =
+                    w_ptr[k * w_plane_stride + j * w_stride + i_interior];
+            }
+        }
+        if (x_hi_outflow) {
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size]) \
+                firstprivate(Nx, Ny, Nz, Ng, w_stride, w_plane_stride)
+            for (int idx = 0; idx < n_w_x_bc; ++idx) {
+                int j = idx % (Ny + 2*Ng);
+                int k = (idx / (Ny + 2*Ng)) % (Nz + 1 + 2*Ng);
+                int g = idx / ((Ny + 2*Ng) * (Nz + 1 + 2*Ng));
+                int i_ghost = Ng + Nx + g;
+                int i_interior = Ng + Nx - 1 - g;
+                w_ptr[k * w_plane_stride + j * w_stride + i_ghost] =
+                    w_ptr[k * w_plane_stride + j * w_stride + i_interior];
             }
         }
 
@@ -2827,6 +2928,16 @@ double RANSSolver::step() {
 
     // 6. Apply boundary conditions
     apply_velocity_bc();
+
+    // 7. Recycling inflow: extract from recycle plane, process, apply at inlet
+    if (use_recycling_) {
+        NVTX_PUSH("recycling_inflow");
+        extract_recycle_plane();      // Sample velocity at recycle plane
+        process_recycle_inflow();     // Apply shift, filter, mass-flux correction
+        apply_recycling_inlet_bc();   // Override inlet BC with recycled data
+        apply_fringe_blending();      // Optional: smooth transition near inlet
+        NVTX_POP();
+    }
 
     } // End Euler time integration path
 

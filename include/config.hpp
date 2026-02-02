@@ -165,7 +165,17 @@ struct Config {
 
     // Benchmark mode
     bool benchmark = false;                 ///< Enable benchmark mode (optimized for timing)
-    
+
+    // Recycling inflow (turbulent inlet BC for DNS/LES)
+    bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo
+    double recycle_x = -1.0;                ///< x-location of recycle plane (-1 = auto: 10*delta)
+    int recycle_shift_z = -1;               ///< Spanwise shift for decorrelation (-1 = auto: Nz/4)
+    int recycle_shift_interval = 100;       ///< Timesteps between shift updates (0 = constant shift)
+    double recycle_filter_tau = -1.0;       ///< Temporal filter timescale (-1 = disabled, >0 = AR1 smoothing)
+    double recycle_fringe_length = -1.0;    ///< Fringe blending zone length (-1 = auto: 2*delta)
+    double recycle_target_bulk_u = -1.0;    ///< Target bulk velocity (-1 = from initial condition)
+    bool recycle_remove_transverse_mean = true; ///< Remove mean v,w at inlet (enforce zero net transverse flow)
+
     /// Load configuration from file
     void load(const std::string& filename);
     

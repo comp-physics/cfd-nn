@@ -690,6 +690,14 @@ void RANSSolver::ssprk2_step(double dt) {
 
     project_velocity(velocity_, dt);
 
+    // Recycling inflow: extract, process, apply after projection
+    if (use_recycling_) {
+        extract_recycle_plane();
+        process_recycle_inflow();
+        apply_recycling_inlet_bc();
+        apply_fringe_blending();
+    }
+
 #ifndef NDEBUG
     // Verify pointer consistency at end of RK2 step
     if (velocity_u_ptr_ != velocity_.u_data().data()) {
@@ -792,6 +800,14 @@ void RANSSolver::ssprk3_step(double dt) {
 
     project_velocity(velocity_, dt);
     apply_velocity_bc();
+
+    // Recycling inflow: extract, process, apply after projection
+    if (use_recycling_) {
+        extract_recycle_plane();
+        process_recycle_inflow();
+        apply_recycling_inlet_bc();
+        apply_fringe_blending();
+    }
 
 #ifndef NDEBUG
     // Verify pointer consistency at end of RK3 step

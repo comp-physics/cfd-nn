@@ -275,6 +275,16 @@ void Config::load(const std::string& filename) {
         poisson_solver = PoissonSolverType::FFT;
     }
 
+    // Recycling inflow parameters
+    recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
+    recycle_x = get_double("recycle_x", recycle_x);
+    recycle_shift_z = get_int("recycle_shift_z", recycle_shift_z);
+    recycle_shift_interval = get_int("recycle_shift_interval", recycle_shift_interval);
+    recycle_filter_tau = get_double("recycle_filter_tau", recycle_filter_tau);
+    recycle_fringe_length = get_double("recycle_fringe_length", recycle_fringe_length);
+    recycle_target_bulk_u = get_double("recycle_target_bulk_u", recycle_target_bulk_u);
+    recycle_remove_transverse_mean = get_bool("recycle_remove_transverse_mean", recycle_remove_transverse_mean);
+
     finalize();
 }
 
@@ -367,6 +377,20 @@ void Config::parse_args(int argc, char** argv) {
             turb_guard_enabled = true;
         } else if ((val = get_value(i, arg, "--turb_guard_interval")) != "") {
             turb_guard_interval = std::stoi(val);
+        } else if (is_flag(arg, "--recycling_inflow")) {
+            recycling_inflow = true;
+        } else if ((val = get_value(i, arg, "--recycle_x")) != "") {
+            recycle_x = std::stod(val);
+        } else if ((val = get_value(i, arg, "--recycle_shift_z")) != "") {
+            recycle_shift_z = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--recycle_shift_interval")) != "") {
+            recycle_shift_interval = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--recycle_filter_tau")) != "") {
+            recycle_filter_tau = std::stod(val);
+        } else if ((val = get_value(i, arg, "--recycle_fringe_length")) != "") {
+            recycle_fringe_length = std::stod(val);
+        } else if ((val = get_value(i, arg, "--recycle_target_bulk_u")) != "") {
+            recycle_target_bulk_u = std::stod(val);
         } else if ((val = get_value(i, arg, "--model")) != "") {
             std::string model = val;
             if (model == "none" || model == "laminar") {
@@ -493,6 +517,16 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --poisson_abs_tol_floor V  Absolute tolerance floor for Poisson (default 0)\n"
                       << "  --turb_guard_enabled  Enable turbulence guard (NaN/Inf checks)\n"
                       << "  --turb_guard_interval N  Check interval for turb guard (default 5)\n"
+                      << "\n"
+                      << "Recycling inflow (turbulent inlet BC for DNS/LES):\n"
+                      << "  --recycling_inflow  Enable recycling inflow at x_lo boundary\n"
+                      << "  --recycle_x V     x-location of recycle plane (-1 = auto: 10*delta)\n"
+                      << "  --recycle_shift_z N  Spanwise shift for decorrelation (-1 = auto: Nz/4)\n"
+                      << "  --recycle_shift_interval N  Timesteps between shift updates (default 100)\n"
+                      << "  --recycle_filter_tau V  Temporal filter timescale (-1 = disabled)\n"
+                      << "  --recycle_fringe_length V  Fringe zone length (-1 = auto: 2*delta)\n"
+                      << "  --recycle_target_bulk_u V  Target bulk velocity (-1 = from IC)\n"
+                      << "\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"

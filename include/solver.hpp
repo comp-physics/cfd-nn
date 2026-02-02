@@ -222,7 +222,16 @@ public:
     /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
     /// @note Checks velocity, pressure, nu_t, and transport fields (k, omega)
     void check_for_nan_inf(int step) const;
-    
+
+    /// Recycling inflow public interface (for testing and advanced use)
+    /// @{
+    void extract_recycle_plane();          ///< Copy velocity at recycle plane to buffers
+    void process_recycle_inflow();         ///< Apply shift, filter, mass-flux correction
+    void apply_recycling_inlet_bc();       ///< Apply processed inflow as inlet BC
+    void apply_fringe_blending();          ///< Blend inlet velocity in fringe zone
+    bool is_recycling_enabled() const { return use_recycling_; }
+    /// @}
+
 private:
     const Mesh* mesh_;
     Config config_;
@@ -280,6 +289,29 @@ private:
     PoissonBC poisson_bc_z_lo_ = PoissonBC::Periodic;
     PoissonBC poisson_bc_z_hi_ = PoissonBC::Periodic;
     double fx_ = 0.0, fy_ = 0.0, fz_ = 0.0;  // Body force (3D)
+
+    // Recycling inflow state and buffers
+    bool use_recycling_ = false;           ///< Recycling inflow enabled
+    int recycle_i_ = -1;                   ///< Grid index of recycle plane
+    int recycle_shift_k_ = 0;              ///< Current spanwise shift (z-index units)
+    int recycle_shift_step_ = 0;           ///< Steps since last shift update
+    double recycle_target_Q_ = -1.0;       ///< Target mass flux for flow rate control
+    double recycle_filter_alpha_ = 0.0;    ///< AR1 filter coefficient (0 = no filter)
+    int fringe_i_end_ = -1;                ///< Grid index where fringe zone ends
+
+    // Recycling inflow plane buffers (Ny × Nz for 3D)
+    // u at inlet: Ny × Nz (cell-face values at i=Ng)
+    // v at inlet: (Ny+1) × Nz (y-face values at i=Ng)
+    // w at inlet: Ny × (Nz+1) (z-face values at i=Ng)
+    std::vector<double> recycle_u_buf_;    ///< Recycled u at inlet (Ny × Nz)
+    std::vector<double> recycle_v_buf_;    ///< Recycled v at inlet ((Ny+1) × Nz)
+    std::vector<double> recycle_w_buf_;    ///< Recycled w at inlet (Ny × (Nz+1))
+    std::vector<double> inlet_u_buf_;      ///< Processed inlet u (after shift/filter)
+    std::vector<double> inlet_v_buf_;      ///< Processed inlet v
+    std::vector<double> inlet_w_buf_;      ///< Processed inlet w
+    std::vector<double> inlet_u_filt_;     ///< Temporally filtered u (for AR1)
+    std::vector<double> inlet_v_filt_;     ///< Temporally filtered v
+    std::vector<double> inlet_w_filt_;     ///< Temporally filtered w
     
     // State
     int iter_ = 0;
@@ -315,7 +347,10 @@ private:
     /// Fill periodic ghost layers on device for a velocity field (GPU-resident, no swaps)
     /// This is called after predictor and after correction to ensure halos are consistent.
     void enforce_periodic_halos_device(double* u_ptr, double* v_ptr, double* w_ptr = nullptr);
-    
+
+    // Recycling inflow initialization (public methods declared above)
+    void initialize_recycling_inflow();    ///< Setup recycling (compute indices, allocate buffers)
+
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
     
@@ -372,7 +407,18 @@ private:
     double* dwdy_ptr_ = nullptr;  // 3D
     double* dwdz_ptr_ = nullptr;  // 3D
     double* wall_distance_ptr_ = nullptr;
-    
+
+    // Recycling inflow GPU pointers (mapped for solver lifetime when enabled)
+    double* recycle_u_ptr_ = nullptr;      ///< Device: recycled u at recycle plane
+    double* recycle_v_ptr_ = nullptr;      ///< Device: recycled v at recycle plane
+    double* recycle_w_ptr_ = nullptr;      ///< Device: recycled w at recycle plane
+    double* inlet_u_ptr_ = nullptr;        ///< Device: processed inlet u
+    double* inlet_v_ptr_ = nullptr;        ///< Device: processed inlet v
+    double* inlet_w_ptr_ = nullptr;        ///< Device: processed inlet w
+    size_t recycle_u_size_ = 0;            ///< Size of u recycle buffer
+    size_t recycle_v_size_ = 0;            ///< Size of v recycle buffer
+    size_t recycle_w_size_ = 0;            ///< Size of w recycle buffer
+
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
 
     // Scratch buffer for sync_from_gpu workaround (NVHPC member pointer requirement)
