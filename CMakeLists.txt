@@ -238,6 +238,8 @@ set(LIB_SOURCES
     src/solver_time_kernels_periodic.cpp
     src/solver_time_kernels_projection.cpp
     src/solver_periodic_halos.cpp
+    src/solver_energy_diagnostics.cpp
+    src/solver_operators.cpp
     src/timing.cpp
     src/config.cpp
     src/features.cpp
