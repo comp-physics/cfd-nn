@@ -55,6 +55,168 @@
 
 namespace nncfd {
 
+#ifdef USE_GPU_OFFLOAD
+//==============================================================================
+// GPU reduction helper functions (standalone to avoid 'this' transfers)
+// NOTE: NVHPC transfers 'this' for every reduction in member functions.
+//       Using free functions with is_device_ptr eliminates this overhead.
+//==============================================================================
+namespace {
+
+/// Max absolute difference for 3D staggered grid residual (u-component)
+/// Takes device pointers directly (caller converts via omp_get_mapped_ptr)
+double gpu_max_du_residual(const double* u_new_dev, const double* u_old_dev,
+                           int Nx_p, int Ny_p, int Nz_eff_p, int Ng_p,
+                           int u_stride_p, int u_plane_stride_p, bool is_2d_p) {
+    // Copy params to locals (nvc++ workaround)
+    const int Nx = Nx_p, Ny = Ny_p, Nz_eff = Nz_eff_p, Ng = Ng_p;
+    const int u_stride = u_stride_p, u_plane_stride = u_plane_stride_p;
+    const bool is_2d = is_2d_p;
+    const int n_faces = (Nx + 1) * Ny * Nz_eff;
+
+    double max_du = 0.0;
+    #pragma omp target teams distribute parallel for reduction(max:max_du) \
+        is_device_ptr(u_new_dev, u_old_dev) \
+        firstprivate(Nx, Ny, Nz_eff, Ng, u_stride, u_plane_stride, is_2d, n_faces)
+    for (int idx = 0; idx < n_faces; ++idx) {
+        int i_local = idx % (Nx + 1);
+        int j_local = (idx / (Nx + 1)) % Ny;
+        int k_local = idx / ((Nx + 1) * Ny);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int k = k_local + Ng;
+        int u_idx = is_2d ? (j * u_stride + i) : (k * u_plane_stride + j * u_stride + i);
+        double du = u_new_dev[u_idx] - u_old_dev[u_idx];
+        if (du < 0.0) du = -du;
+        if (du > max_du) max_du = du;
+    }
+    return max_du;
+}
+
+/// Max absolute difference for 3D staggered grid residual (v-component)
+double gpu_max_dv_residual(const double* v_new_dev, const double* v_old_dev,
+                           int Nx_p, int Ny_p, int Nz_eff_p, int Ng_p,
+                           int v_stride_p, int v_plane_stride_p, bool is_2d_p) {
+    const int Nx = Nx_p, Ny = Ny_p, Nz_eff = Nz_eff_p, Ng = Ng_p;
+    const int v_stride = v_stride_p, v_plane_stride = v_plane_stride_p;
+    const bool is_2d = is_2d_p;
+    const int n_faces = Nx * (Ny + 1) * Nz_eff;
+
+    double max_dv = 0.0;
+    #pragma omp target teams distribute parallel for reduction(max:max_dv) \
+        is_device_ptr(v_new_dev, v_old_dev) \
+        firstprivate(Nx, Ny, Nz_eff, Ng, v_stride, v_plane_stride, is_2d, n_faces)
+    for (int idx = 0; idx < n_faces; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = (idx / Nx) % (Ny + 1);
+        int k_local = idx / (Nx * (Ny + 1));
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int k = k_local + Ng;
+        int v_idx = is_2d ? (j * v_stride + i) : (k * v_plane_stride + j * v_stride + i);
+        double dv = v_new_dev[v_idx] - v_old_dev[v_idx];
+        if (dv < 0.0) dv = -dv;
+        if (dv > max_dv) max_dv = dv;
+    }
+    return max_dv;
+}
+
+/// Max absolute difference for 3D staggered grid residual (w-component)
+double gpu_max_dw_residual(const double* w_new_dev, const double* w_old_dev,
+                           int Nx_p, int Ny_p, int Nz_p, int Ng_p,
+                           int w_stride_p, int w_plane_stride_p) {
+    const int Nx = Nx_p, Ny = Ny_p, Nz = Nz_p, Ng = Ng_p;
+    const int w_stride = w_stride_p, w_plane_stride = w_plane_stride_p;
+    const int n_faces = Nx * Ny * (Nz + 1);
+
+    double max_dw = 0.0;
+    #pragma omp target teams distribute parallel for reduction(max:max_dw) \
+        is_device_ptr(w_new_dev, w_old_dev) \
+        firstprivate(Nx, Ny, Nz, Ng, w_stride, w_plane_stride, n_faces)
+    for (int idx = 0; idx < n_faces; ++idx) {
+        int i_local = idx % Nx;
+        int j_local = (idx / Nx) % Ny;
+        int k_local = idx / (Nx * Ny);
+        int i = i_local + Ng;
+        int j = j_local + Ng;
+        int k = k_local + Ng;
+        int w_idx = k * w_plane_stride + j * w_stride + i;
+        double dw = w_new_dev[w_idx] - w_old_dev[w_idx];
+        if (dw < 0.0) dw = -dw;
+        if (dw > max_dw) max_dw = dw;
+    }
+    return max_dw;
+}
+
+/// Sum over 3D interior grid cells (for computing mean divergence)
+double gpu_sum_interior_3d(const double* dev_ptr, int Nx_p, int Ny_p, int Nz_p,
+                           int i_begin_p, int j_begin_p, int k_begin_p,
+                           int stride_p, int plane_stride_p) {
+    const int Nx = Nx_p, Ny = Ny_p, Nz = Nz_p;
+    const int i_begin = i_begin_p, j_begin = j_begin_p, k_begin = k_begin_p;
+    const int stride = stride_p, plane_stride = plane_stride_p;
+    const int n_cells = Nx * Ny * Nz;
+
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for reduction(+:sum) \
+        is_device_ptr(dev_ptr) \
+        firstprivate(Nx, Ny, Nz, i_begin, j_begin, k_begin, stride, plane_stride, n_cells)
+    for (int idx = 0; idx < n_cells; ++idx) {
+        int i = idx % Nx;
+        int j = (idx / Nx) % Ny;
+        int k = idx / (Nx * Ny);
+        int ii = i + i_begin;
+        int jj = j + j_begin;
+        int kk = k + k_begin;
+        int flat_idx = kk * plane_stride + jj * stride + ii;
+        sum += dev_ptr[flat_idx];
+    }
+    return sum;
+}
+
+/// Sum of squares over 3D interior grid cells (for RHS norm)
+double gpu_sum_sq_interior_3d(const double* dev_ptr, int Nx_p, int Ny_p, int Nz_p,
+                              int i_begin_p, int j_begin_p, int k_begin_p,
+                              int stride_p, int plane_stride_p) {
+    const int Nx = Nx_p, Ny = Ny_p, Nz = Nz_p;
+    const int i_begin = i_begin_p, j_begin = j_begin_p, k_begin = k_begin_p;
+    const int stride = stride_p, plane_stride = plane_stride_p;
+    const int n_cells = Nx * Ny * Nz;
+
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for reduction(+:sum) \
+        is_device_ptr(dev_ptr) \
+        firstprivate(Nx, Ny, Nz, i_begin, j_begin, k_begin, stride, plane_stride, n_cells)
+    for (int idx = 0; idx < n_cells; ++idx) {
+        int i = idx % Nx;
+        int j = (idx / Nx) % Ny;
+        int k = idx / (Nx * Ny);
+        int ii = i + i_begin;
+        int jj = j + j_begin;
+        int kk = k + k_begin;
+        int flat_idx = kk * plane_stride + jj * stride + ii;
+        double val = dev_ptr[flat_idx];
+        sum += val * val;
+    }
+    return sum;
+}
+
+/// Check for NaN/Inf in device array (returns 1 if any bad, 0 otherwise)
+int gpu_check_nan_inf(const double* dev_ptr, size_t size_p) {
+    const size_t size = size_p;
+    int has_bad = 0;
+    #pragma omp target teams distribute parallel for reduction(|:has_bad) \
+        is_device_ptr(dev_ptr) firstprivate(size)
+    for (size_t i = 0; i < size; ++i) {
+        double x = dev_ptr[i];
+        // Manual NaN/Inf check: x != x for NaN, x-x != 0 for Inf
+        has_bad |= (x != x || (x - x) != 0.0) ? 1 : 0;
+    }
+    return has_bad;
+}
+
+} // anonymous namespace
+#endif
 
 // Import GPU kernels from dedicated header
 using namespace nncfd::kernels;
@@ -1210,38 +1372,22 @@ double RANSSolver::step() {
         double* p_corr_ptr = pressure_corr_ptr_;
         const size_t n_field = field_total_size_;
 
-        double sum_div = 0.0;
         int count = is_2d ? (Nx * Ny) : (Nx * Ny * Nz);
 
+        // Use helper function to avoid 'this' transfer (NVHPC workaround)
+        int dev_id = omp_get_default_device();
+        double* div_dev = static_cast<double*>(omp_get_mapped_ptr(div_ptr, dev_id));
+
+        double sum_div = 0.0;
         if (is_2d) {
-            // 2D path
-            #pragma omp target teams distribute parallel for \
-                map(present: div_ptr[0:n_field]) \
-                reduction(+:sum_div)
-            for (int j = 0; j < Ny; ++j) {
-                for (int i = 0; i < Nx; ++i) {
-                    int ii = i + i_begin;
-                    int jj = j + j_begin;
-                    int idx = jj * stride + ii;
-                    sum_div += div_ptr[idx];
-                }
-            }
+            // 2D: use Nz=1 with same helper
+            sum_div = gpu_sum_interior_3d(div_dev, Nx, Ny, 1,
+                                          i_begin, j_begin, 0,
+                                          stride, plane_stride);
         } else {
-            // 3D path
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: div_ptr[0:n_field]) \
-                reduction(+:sum_div)
-            for (int k = 0; k < Nz; ++k) {
-                for (int j = 0; j < Ny; ++j) {
-                    for (int i = 0; i < Nx; ++i) {
-                        int ii = i + i_begin;
-                        int jj = j + j_begin;
-                        int kk = k + k_begin;
-                        int idx = kk * plane_stride + jj * stride + ii;
-                        sum_div += div_ptr[idx];
-                    }
-                }
-            }
+            sum_div = gpu_sum_interior_3d(div_dev, Nx, Ny, Nz,
+                                          i_begin, j_begin, k_begin,
+                                          stride, plane_stride);
         }
 
         mean_div = (count > 0) ? sum_div / count : 0.0;
@@ -1370,38 +1516,51 @@ double RANSSolver::step() {
             const int stride = Nx + 2 * Ng;
             const int plane_stride = stride * (Ny + 2 * Ng);
 
-            if (mesh_->is2D()) {
 #ifdef USE_GPU_OFFLOAD
-                #pragma omp target teams distribute parallel for \
-                    map(present: rhs_poisson_ptr_[0:field_total_size_]) \
-                    reduction(+:rhs_norm_sq, rhs_count)
-#endif
-                for (int j = 0; j < Ny; ++j) {
-                    for (int i = 0; i < Nx; ++i) {
-                        int ii = i + i_begin;
-                        int jj = j + j_begin;
-                        int idx = jj * stride + ii;
-                        double rhs_val = rhs_poisson_ptr_[idx];
-                        rhs_norm_sq += rhs_val * rhs_val;
-                        rhs_count++;
-                    }
+            if (gpu_ready_) {
+                // Use helper function to avoid 'this' transfer
+                double* rhs_ptr = rhs_poisson_ptr_;
+                int dev_id = omp_get_default_device();
+                double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_ptr, dev_id));
+
+                if (mesh_->is2D()) {
+                    rhs_norm_sq = gpu_sum_sq_interior_3d(rhs_dev, Nx, Ny, 1,
+                                                         i_begin, j_begin, 0,
+                                                         stride, plane_stride);
+                    rhs_count = Nx * Ny;
+                } else {
+                    rhs_norm_sq = gpu_sum_sq_interior_3d(rhs_dev, Nx, Ny, Nz,
+                                                         i_begin, j_begin, k_begin,
+                                                         stride, plane_stride);
+                    rhs_count = Nx * Ny * Nz;
                 }
-            } else {
-#ifdef USE_GPU_OFFLOAD
-                #pragma omp target teams distribute parallel for collapse(3) \
-                    map(present: rhs_poisson_ptr_[0:field_total_size_]) \
-                    reduction(+:rhs_norm_sq, rhs_count)
+            } else
 #endif
-                for (int k = 0; k < Nz; ++k) {
+            {
+                // CPU path
+                if (mesh_->is2D()) {
                     for (int j = 0; j < Ny; ++j) {
                         for (int i = 0; i < Nx; ++i) {
                             int ii = i + i_begin;
                             int jj = j + j_begin;
-                            int kk = k + k_begin;
-                            int idx = kk * plane_stride + jj * stride + ii;
+                            int idx = jj * stride + ii;
                             double rhs_val = rhs_poisson_ptr_[idx];
                             rhs_norm_sq += rhs_val * rhs_val;
                             rhs_count++;
+                        }
+                    }
+                } else {
+                    for (int k = 0; k < Nz; ++k) {
+                        for (int j = 0; j < Ny; ++j) {
+                            for (int i = 0; i < Nx; ++i) {
+                                int ii = i + i_begin;
+                                int jj = j + j_begin;
+                                int kk = k + k_begin;
+                                int idx = kk * plane_stride + jj * stride + ii;
+                                double rhs_val = rhs_poisson_ptr_[idx];
+                                rhs_norm_sq += rhs_val * rhs_val;
+                                rhs_count++;
+                            }
                         }
                     }
                 }
@@ -1663,13 +1822,20 @@ double RANSSolver::step() {
     const bool is_2d_res = mesh_->is2D();
     const int Nz_eff = is_2d_res ? 1 : Nz;  // Effective Nz for loop bounds
 
-    // Compute max |u_new - u_old| via reduction
-    const int n_u_faces_res = (Nx + 1) * Ny * Nz_eff;
+    // Compute max |u_new - u_old| via helper function (avoids 'this' transfer)
     const int u_plane_stride_res = is_2d_res ? 0 : v_res.u_plane_stride;
+#ifdef USE_GPU_OFFLOAD
+    // Convert host pointers to device pointers for helper function
+    int dev_id = omp_get_default_device();
+    const double* u_new_dev = static_cast<const double*>(
+        omp_get_mapped_ptr(const_cast<double*>(u_new_ptr), dev_id));
+    const double* u_old_dev = static_cast<const double*>(
+        omp_get_mapped_ptr(const_cast<double*>(u_old_ptr), dev_id));
+    double max_du = gpu_max_du_residual(u_new_dev, u_old_dev, Nx, Ny, Nz_eff, Ng,
+                                        u_stride_res, u_plane_stride_res, is_2d_res);
+#else
     double max_du = 0.0;
-    #pragma omp target teams distribute parallel for reduction(max:max_du) \
-        map(present: u_new_ptr[0:u_total_size_res], u_old_ptr[0:u_total_size_res]) \
-        map(to: Ng, u_stride_res, u_plane_stride_res, Nx, Ny, Nz_eff, is_2d_res)
+    const int n_u_faces_res = (Nx + 1) * Ny * Nz_eff;
     for (int idx = 0; idx < n_u_faces_res; ++idx) {
         int i_local = idx % (Nx + 1);
         int j_local = (idx / (Nx + 1)) % Ny;
@@ -1683,14 +1849,20 @@ double RANSSolver::step() {
         if (du < 0.0) du = -du;
         if (du > max_du) max_du = du;
     }
+#endif
 
-    // Compute max |v_new - v_old| via reduction
-    const int n_v_faces_res = Nx * (Ny + 1) * Nz_eff;
+    // Compute max |v_new - v_old| via helper function (avoids 'this' transfer)
     const int v_plane_stride_res = is_2d_res ? 0 : v_res.v_plane_stride;
+#ifdef USE_GPU_OFFLOAD
+    const double* v_new_dev = static_cast<const double*>(
+        omp_get_mapped_ptr(const_cast<double*>(v_new_ptr), dev_id));
+    const double* v_old_dev = static_cast<const double*>(
+        omp_get_mapped_ptr(const_cast<double*>(v_old_ptr), dev_id));
+    double max_dv = gpu_max_dv_residual(v_new_dev, v_old_dev, Nx, Ny, Nz_eff, Ng,
+                                        v_stride_res, v_plane_stride_res, is_2d_res);
+#else
     double max_dv = 0.0;
-    #pragma omp target teams distribute parallel for reduction(max:max_dv) \
-        map(present: v_new_ptr[0:v_total_size_res], v_old_ptr[0:v_total_size_res]) \
-        map(to: Ng, v_stride_res, v_plane_stride_res, Nx, Ny, Nz_eff, is_2d_res)
+    const int n_v_faces_res = Nx * (Ny + 1) * Nz_eff;
     for (int idx = 0; idx < n_v_faces_res; ++idx) {
         int i_local = idx % Nx;
         int j_local = (idx / Nx) % (Ny + 1);
@@ -1704,6 +1876,7 @@ double RANSSolver::step() {
         if (dv < 0.0) dv = -dv;
         if (dv > max_dv) max_dv = dv;
     }
+#endif
 
     double max_change = (max_du > max_dv) ? max_du : max_dv;
 
@@ -1713,11 +1886,16 @@ double RANSSolver::step() {
         const double* w_old_ptr = v_res.w_old_face;
         const int w_stride_res = v_res.w_stride;
         const int w_plane_stride_res = v_res.w_plane_stride;
+#ifdef USE_GPU_OFFLOAD
+        const double* w_new_dev = static_cast<const double*>(
+            omp_get_mapped_ptr(const_cast<double*>(w_new_ptr), dev_id));
+        const double* w_old_dev = static_cast<const double*>(
+            omp_get_mapped_ptr(const_cast<double*>(w_old_ptr), dev_id));
+        double max_dw = gpu_max_dw_residual(w_new_dev, w_old_dev, Nx, Ny, Nz, Ng,
+                                            w_stride_res, w_plane_stride_res);
+#else
         const int n_w_faces_res = Nx * Ny * (Nz + 1);
         double max_dw = 0.0;
-        #pragma omp target teams distribute parallel for reduction(max:max_dw) \
-            map(present: w_new_ptr[0:w_total_size_res], w_old_ptr[0:w_total_size_res]) \
-            map(to: Ng, w_stride_res, w_plane_stride_res, Nx, Ny, Nz)
         for (int idx = 0; idx < n_w_faces_res; ++idx) {
             int i_local = idx % Nx;
             int j_local = (idx / Nx) % Ny;
@@ -1730,6 +1908,7 @@ double RANSSolver::step() {
             if (dw < 0.0) dw = -dw;
             if (dw > max_dw) max_dw = dw;
         }
+#endif
         if (max_dw > max_change) max_change = max_dw;
     }
 
@@ -2140,7 +2319,8 @@ void RANSSolver::check_for_nan_inf(int step) const {
     const bool has_transport = turb_model_ && turb_model_->uses_transport_equations();
     
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: Do NaN/Inf check entirely on device, only transfer 1 scalar
+    // GPU path: Do NaN/Inf check entirely on device using helper functions
+    // This avoids 'this' transfers that would otherwise happen with inline reductions
     if (gpu_ready_) {
         int has_bad = 0;
 
@@ -2148,50 +2328,31 @@ void RANSSolver::check_for_nan_inf(int step) const {
         const size_t v_total = velocity_.v_total_size();
         const size_t field_total = field_total_size_;
 
-        // Local aliases to avoid implicit 'this' mapping (NVHPC workaround)
-        const double* u = velocity_u_ptr_;
-        const double* v = velocity_v_ptr_;
-        const double* p = pressure_ptr_;
-        const double* nut = nu_t_ptr_;
-        const double* k_arr = k_ptr_;
-        const double* omega_arr = omega_ptr_;
+        // Get device pointers via omp_get_mapped_ptr
+        int dev_id = omp_get_default_device();
+        const double* u_dev = static_cast<const double*>(
+            omp_get_mapped_ptr(const_cast<double*>(velocity_u_ptr_), dev_id));
+        const double* v_dev = static_cast<const double*>(
+            omp_get_mapped_ptr(const_cast<double*>(velocity_v_ptr_), dev_id));
+        const double* p_dev = static_cast<const double*>(
+            omp_get_mapped_ptr(const_cast<double*>(pressure_ptr_), dev_id));
+        const double* nut_dev = static_cast<const double*>(
+            omp_get_mapped_ptr(const_cast<double*>(nu_t_ptr_), dev_id));
 
-        #pragma omp target data map(present: u[0:u_total], v[0:v_total], p[0:field_total], nut[0:field_total])
-        {
-            // Check u-velocity (x-faces)
-            #pragma omp target teams distribute parallel for reduction(|: has_bad)
-            for (size_t idx = 0; idx < u_total; ++idx) {
-                const double x = u[idx];
-                // Use manual NaN/Inf check (x != x for NaN, or x-x != 0 for Inf)
-                has_bad |= (x != x || (x - x) != 0.0) ? 1 : 0;
-            }
-
-            // Check v-velocity (y-faces)
-            #pragma omp target teams distribute parallel for reduction(|: has_bad)
-            for (size_t idx = 0; idx < v_total; ++idx) {
-                const double x = v[idx];
-                has_bad |= (x != x || (x - x) != 0.0) ? 1 : 0;
-            }
-
-            // Check pressure and eddy viscosity (cell-centered)
-            #pragma omp target teams distribute parallel for reduction(|: has_bad)
-            for (size_t idx = 0; idx < field_total; ++idx) {
-                const double pval = p[idx];
-                const double nutval = nut[idx];
-                has_bad |= (pval != pval || (pval - pval) != 0.0 || nutval != nutval || (nutval - nutval) != 0.0) ? 1 : 0;
-            }
-        }
+        // Use helper functions (free functions to avoid 'this' transfer)
+        has_bad |= gpu_check_nan_inf(u_dev, u_total);
+        has_bad |= gpu_check_nan_inf(v_dev, v_total);
+        has_bad |= gpu_check_nan_inf(p_dev, field_total);
+        has_bad |= gpu_check_nan_inf(nut_dev, field_total);
 
         // Check transport variables if turbulence model uses them
         if (has_transport) {
-            #pragma omp target teams distribute parallel for \
-                map(present: k_arr[0:field_total], omega_arr[0:field_total]) \
-                reduction(|: has_bad)
-            for (size_t idx = 0; idx < field_total; ++idx) {
-                const double kval = k_arr[idx];
-                const double wval = omega_arr[idx];
-                has_bad |= (kval != kval || (kval - kval) != 0.0 || wval != wval || (wval - wval) != 0.0) ? 1 : 0;
-            }
+            const double* k_dev = static_cast<const double*>(
+                omp_get_mapped_ptr(const_cast<double*>(k_ptr_), dev_id));
+            const double* omega_dev = static_cast<const double*>(
+                omp_get_mapped_ptr(const_cast<double*>(omega_ptr_), dev_id));
+            has_bad |= gpu_check_nan_inf(k_dev, field_total);
+            has_bad |= gpu_check_nan_inf(omega_dev, field_total);
         }
 
         all_finite = (has_bad == 0);

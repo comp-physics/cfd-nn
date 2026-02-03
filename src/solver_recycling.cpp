@@ -77,6 +77,48 @@ void copy_plane(const double* src, double* dst, int n) {
     }
 }
 
+#ifdef USE_GPU_OFFLOAD
+//==============================================================================
+// GPU reduction helper functions (standalone to avoid this transfers)
+// NOTE: NVHPC transfers 'this' for every reduction in member functions.
+//       Using free functions eliminates this overhead.
+//==============================================================================
+
+/// Sum reduction on device pointer
+double gpu_sum_reduce(double* dev_ptr, int n_param) {
+    const int n = n_param;  // Copy param to local (nvc++ workaround)
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for reduction(+:sum) \
+        is_device_ptr(dev_ptr) firstprivate(n)
+    for (int i = 0; i < n; ++i) {
+        sum += dev_ptr[i];
+    }
+    return sum;
+}
+
+/// Add scalar to all elements of device array
+void gpu_add_scalar(double* dev_ptr, int n_param, double val_param) {
+    const int n = n_param;
+    const double val = val_param;
+    #pragma omp target teams distribute parallel for \
+        is_device_ptr(dev_ptr) firstprivate(n, val)
+    for (int i = 0; i < n; ++i) {
+        dev_ptr[i] += val;
+    }
+}
+
+/// Subtract scalar from all elements of device array
+void gpu_sub_scalar(double* dev_ptr, int n_param, double val_param) {
+    const int n = n_param;
+    const double val = val_param;
+    #pragma omp target teams distribute parallel for \
+        is_device_ptr(dev_ptr) firstprivate(n, val)
+    for (int i = 0; i < n; ++i) {
+        dev_ptr[i] -= val;
+    }
+}
+#endif
+
 } // anonymous namespace
 
 //==============================================================================
@@ -452,13 +494,8 @@ void RANSSolver::process_recycle_inflow() {
     }
 
     // Step 3: Compute mean u and adjust for target bulk velocity
-    // Use GPU reduction to compute plane-mean u
-    double sum_u = 0.0;
-    #pragma omp target teams distribute parallel for reduction(+:sum_u) \
-        is_device_ptr(in_u) firstprivate(Ny, Nz)
-    for (int idx = 0; idx < n_u; ++idx) {
-        sum_u += in_u[idx];
-    }
+    // Use helper function to avoid 'this' transfer on reduction
+    double sum_u = gpu_sum_reduce(in_u, n_u);
     double mean_u = sum_u / static_cast<double>(n_u);
 
     // If target Q not set, use current mean as target
@@ -479,41 +516,19 @@ void RANSSolver::process_recycle_inflow() {
     // Adjust u: scale mean, preserve fluctuations
     // u_new = (u - mean_u) + mean_u * scale = u + mean_u * (scale - 1)
     double mean_adjust = mean_u * (scale - 1.0);
-    #pragma omp target teams distribute parallel for \
-        is_device_ptr(in_u) firstprivate(mean_adjust, n_u)
-    for (int idx = 0; idx < n_u; ++idx) {
-        in_u[idx] += mean_adjust;
-    }
+    gpu_add_scalar(in_u, n_u, mean_adjust);
 
     // Step 4: Remove net transverse flow (optional)
     if (config_.recycle_remove_transverse_mean) {
-        // Subtract mean v
-        double sum_v = 0.0;
-        #pragma omp target teams distribute parallel for reduction(+:sum_v) \
-            is_device_ptr(in_v) firstprivate(n_v)
-        for (int idx = 0; idx < n_v; ++idx) {
-            sum_v += in_v[idx];
-        }
+        // Subtract mean v (using helper to avoid 'this' transfer)
+        double sum_v = gpu_sum_reduce(in_v, n_v);
         double mean_v = sum_v / static_cast<double>(n_v);
-        #pragma omp target teams distribute parallel for \
-            is_device_ptr(in_v) firstprivate(mean_v, n_v)
-        for (int idx = 0; idx < n_v; ++idx) {
-            in_v[idx] -= mean_v;
-        }
+        gpu_sub_scalar(in_v, n_v, mean_v);
 
         // Subtract mean w
-        double sum_w = 0.0;
-        #pragma omp target teams distribute parallel for reduction(+:sum_w) \
-            is_device_ptr(in_w) firstprivate(n_w)
-        for (int idx = 0; idx < n_w; ++idx) {
-            sum_w += in_w[idx];
-        }
+        double sum_w = gpu_sum_reduce(in_w, n_w);
         double mean_w = sum_w / static_cast<double>(n_w);
-        #pragma omp target teams distribute parallel for \
-            is_device_ptr(in_w) firstprivate(mean_w, n_w)
-        for (int idx = 0; idx < n_w; ++idx) {
-            in_w[idx] -= mean_w;
-        }
+        gpu_sub_scalar(in_w, n_w, mean_w);
     }
 
     // Always accumulate running statistics (GPU path)
