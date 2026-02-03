@@ -237,6 +237,147 @@ public:
     };
     PlaneStats compute_plane_stats(int i_global) const;  // i_global is x-index (0 to Nx-1)
 
+    //=========================================================================
+    // Stage F: Turbulence Realism Validation (DNS/LES quality checks)
+    //=========================================================================
+
+    /// Resolution diagnostics for DNS/LES validation
+    struct ResolutionDiagnostics {
+        double u_tau_force = 0.0;   ///< u_tau from forcing: sqrt(delta * |dp/dx|)
+        double u_tau_bot = 0.0;     ///< u_tau from wall shear at bottom wall
+        double u_tau_top = 0.0;     ///< u_tau from wall shear at top wall
+        double y1_plus_bot = 0.0;   ///< First cell y+ at bottom wall
+        double y1_plus_top = 0.0;   ///< First cell y+ at top wall
+        double dx_plus = 0.0;       ///< Streamwise spacing in wall units
+        double dz_plus = 0.0;       ///< Spanwise spacing in wall units
+
+        /// Pass resolution gates (y1+ <= 1, dx+ <= 15, dz+ <= 8)
+        bool passes_resolution_gates() const {
+            return y1_plus_bot <= 1.0 && y1_plus_top <= 1.0 &&
+                   dx_plus <= 15.0 && (dz_plus <= 8.0 || dz_plus == 0.0);
+        }
+
+        /// Pass u_tau consistency check (wall vs forcing)
+        bool passes_utau_consistency(double tol = 0.02) const {
+            double err_bot = std::abs(u_tau_bot - u_tau_force) / (u_tau_force + 1e-12);
+            double err_top = std::abs(u_tau_top - u_tau_force) / (u_tau_force + 1e-12);
+            return err_bot <= tol && err_top <= tol;
+        }
+    };
+
+    /// Momentum balance diagnostics: tau_tot(y) vs tau_lin(y)
+    struct MomentumBalanceDiagnostics {
+        std::vector<double> y;           ///< Distance from wall
+        std::vector<double> y_plus;      ///< Wall units y+
+        std::vector<double> tau_visc;    ///< Viscous stress: nu * dU/dy
+        std::vector<double> tau_reynolds;///< Reynolds stress: -<u'v'>
+        std::vector<double> tau_total;   ///< Total: tau_visc + tau_reynolds
+        std::vector<double> tau_theory;  ///< Linear theory: u_tau^2 * (1 - y/delta)
+        std::vector<double> residual;    ///< tau_total - tau_theory
+
+        /// Max |residual| / u_tau^2
+        double max_residual_normalized(double u_tau) const {
+            double u_tau_sq = u_tau * u_tau;
+            double max_res = 0.0;
+            for (double r : residual) {
+                max_res = std::max(max_res, std::abs(r) / (u_tau_sq + 1e-12));
+            }
+            return max_res;
+        }
+
+        /// L2 residual / u_tau^2
+        double l2_residual_normalized(double u_tau) const {
+            double u_tau_sq = u_tau * u_tau;
+            double sum_sq = 0.0;
+            for (double r : residual) {
+                sum_sq += (r * r) / (u_tau_sq * u_tau_sq + 1e-24);
+            }
+            return std::sqrt(sum_sq / (residual.size() + 1));
+        }
+    };
+
+    /// Reynolds stress profiles in wall units
+    struct ReynoldsStressProfiles {
+        std::vector<double> y_plus;   ///< Wall coordinate y+
+        std::vector<double> uu_plus;  ///< <u'u'>+
+        std::vector<double> vv_plus;  ///< <v'v'>+
+        std::vector<double> ww_plus;  ///< <w'w'>+
+        std::vector<double> uv_plus;  ///< -<u'v'>+
+
+        /// Check stress ordering: <u'u'> > <w'w'> > <v'v'> in buffer/log layer
+        bool passes_stress_ordering() const;
+
+        /// Check -<u'v'>+ shape: near-zero at wall, positive interior
+        bool passes_uv_shape() const;
+    };
+
+    /// Spanwise energy spectrum for recycling artifact detection
+    struct SpanwiseSpectrum {
+        std::vector<double> k_z;      ///< Wavenumbers
+        std::vector<double> E_uu;     ///< Energy spectrum of u
+
+        /// Check for narrow spike at recirculation frequency
+        bool has_recirculation_spike(double x_recycle, double U_bulk, double tol = 5.0) const;
+
+        /// Check for aliasing pileup at high wavenumbers
+        bool has_aliasing_pileup(double tol = 1.5) const;
+    };
+
+    /// Full turbulence realism validation report
+    struct TurbulenceRealismReport {
+        ResolutionDiagnostics resolution;
+        MomentumBalanceDiagnostics momentum_balance;
+        ReynoldsStressProfiles stress_profiles;
+
+        bool resolution_ok = false;
+        bool utau_consistency_ok = false;
+        bool momentum_closure_ok = false;
+        bool stress_shape_ok = false;
+        bool spectrum_ok = false;
+
+        bool passes_all() const {
+            return resolution_ok && utau_consistency_ok &&
+                   momentum_closure_ok && stress_shape_ok && spectrum_ok;
+        }
+
+        void print() const;  ///< Print detailed report to stdout
+    };
+
+    /// Friction velocity from body forcing (exact for fully-developed channel)
+    double u_tau_from_forcing() const;
+
+    /// Wall shear stress using 2nd-order accurate quadratic fit
+    double wall_shear_stress_2nd_order(bool bottom = true) const;
+
+    /// Friction velocity from 2nd-order wall shear
+    double friction_velocity_2nd_order(bool bottom = true) const;
+
+    /// Compute resolution diagnostics (y+, dx+, dz+, u_tau consistency)
+    ResolutionDiagnostics compute_resolution_diagnostics() const;
+
+    /// Reset time-averaged statistics
+    void reset_statistics();
+
+    /// Accumulate statistics sample (call after each timestep during averaging window)
+    void accumulate_statistics();
+
+    /// Number of statistics samples accumulated
+    int statistics_samples() const { return stats_samples_; }
+
+    /// Compute momentum balance (requires accumulated statistics)
+    MomentumBalanceDiagnostics compute_momentum_balance() const;
+
+    /// Compute Reynolds stress profiles (requires accumulated statistics)
+    ReynoldsStressProfiles compute_reynolds_stress_profiles() const;
+
+    /// Compute spanwise energy spectrum at target y+ location
+    SpanwiseSpectrum compute_spanwise_spectrum(double y_plus_target) const;
+
+    /// Run full Stage F turbulence realism validation
+    TurbulenceRealismReport validate_turbulence_realism() const;
+
+    //=========================================================================
+
     /// Stage-by-stage diagnostics for recycling inflow pipeline
     /// Tracks L2 norms and invariants to catch regressions
     struct RecycleDiagnostics {
@@ -414,6 +555,15 @@ private:
     std::vector<double> diag_u_mean_;      ///< u after mean correction stage
     RecycleDiagnostics recycle_diag_;      ///< Most recent diagnostics snapshot
     RecycleRunningStats recycle_stats_;    ///< Running statistics for controller health
+
+    // Stage F: Time-averaged turbulence statistics
+    int stats_samples_ = 0;                ///< Number of samples accumulated
+    std::vector<double> stats_U_mean_;     ///< Mean streamwise velocity U(y)
+    std::vector<double> stats_uu_;         ///< <u'u'>(y)
+    std::vector<double> stats_vv_;         ///< <v'v'>(y)
+    std::vector<double> stats_ww_;         ///< <w'w'>(y)
+    std::vector<double> stats_uv_;         ///< <u'v'>(y)
+    std::vector<double> stats_dUdy_;       ///< dU/dy(y) for momentum balance
 
     // State
     int iter_ = 0;

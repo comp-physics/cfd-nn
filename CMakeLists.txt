@@ -239,6 +239,7 @@ set(LIB_SOURCES
     src/solver_time_kernels_projection.cpp
     src/solver_periodic_halos.cpp
     src/solver_energy_diagnostics.cpp
+    src/solver_turbulence_diagnostics.cpp
     src/solver_operators.cpp
     src/timing.cpp
     src/config.cpp
@@ -500,6 +501,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_3d_unified TEST_NAME_SUFFIX ThreeDUnifiedTest LABELS slow)
     add_nncfd_test(test_perturbed_channel LABELS slow)
     add_nncfd_test(test_recycling_inflow LABELS slow)
+    add_nncfd_test(test_turbulence_realism LABELS slow)
     add_nncfd_test(test_endurance_stability LABELS slow)
     add_nncfd_test(test_repeatability LABELS slow)
     add_nncfd_test(test_physics_validation_advanced LABELS slow)
