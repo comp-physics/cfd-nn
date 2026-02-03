@@ -659,6 +659,9 @@ void RANSSolver::ssprk2_step(double dt) {
 
     // Stage 1: u^(1) = u^n + dt * L(u^n)
     euler_substep(velocity_, velocity_star_, dt);
+    // Apply inlet BC before projection so Poisson sees correct u^*_n = u_bc
+    // This ensures ∂φ/∂n = 0 is consistent at the velocity-Dirichlet inflow
+    if (use_recycling_) apply_recycling_inlet_bc();
     project_velocity(velocity_star_, dt);
 
     // Stage 2: temp = u^(1) + dt * L(u^(1))
@@ -688,14 +691,20 @@ void RANSSolver::ssprk2_step(double dt) {
                                    velocity_.w_total_size());
     }
 
+    // Apply inlet BC BEFORE projection so Poisson can make it div-free
+    // Sequence: 1) set v,w at inlet, 2) correct u for div-free, 3) optional fringe blend
+    if (use_recycling_) {
+        apply_recycling_inlet_bc();     // Sets v, w at inlet
+        correct_inlet_divergence();     // Computes u_inlet to make first slab div-free
+        apply_fringe_blending();        // Optional smoothing
+    }
     project_velocity(velocity_, dt);
 
-    // Recycling inflow: extract, process, apply after projection
+    // Recycling inflow: extract from projected (div-free) flow and prepare data for next step
     if (use_recycling_) {
         extract_recycle_plane();
         process_recycle_inflow();
-        apply_recycling_inlet_bc();
-        apply_fringe_blending();
+        // Note: DO NOT apply BC after projection - it would introduce divergence
     }
 
 #ifndef NDEBUG
@@ -740,6 +749,8 @@ void RANSSolver::ssprk3_step(double dt) {
 
     // Stage 1: u^(1) = u^n + dt * L(u^n)
     euler_substep(velocity_, velocity_star_, dt);
+    // Apply inlet BC before projection so Poisson sees correct u^*_n = u_bc
+    if (use_recycling_) apply_recycling_inlet_bc();
     project_velocity(velocity_star_, dt);
 
     // Stage 2: u^(2) = 0.75 * u^n + 0.25 * (u^(1) + dt * L(u^(1)))
@@ -769,6 +780,8 @@ void RANSSolver::ssprk3_step(double dt) {
                                       velocity_.w_total_size());
     }
 
+    // Apply inlet BC before projection
+    if (use_recycling_) apply_recycling_inlet_bc();
     project_velocity(velocity_star_, dt);
 
     // Stage 3: u^{n+1} = (1/3) * u^n + (2/3) * (u^(2) + dt * L(u^(2)))
@@ -798,15 +811,21 @@ void RANSSolver::ssprk3_step(double dt) {
                                    velocity_.w_total_size());
     }
 
+    // Apply inlet BC BEFORE projection so Poisson can make it div-free
+    // Sequence: 1) set v,w at inlet, 2) correct u for div-free, 3) optional fringe blend
+    if (use_recycling_) {
+        apply_recycling_inlet_bc();     // Sets v, w at inlet
+        correct_inlet_divergence();     // Computes u_inlet to make first slab div-free
+        apply_fringe_blending();        // Optional smoothing
+    }
     project_velocity(velocity_, dt);
     apply_velocity_bc();
 
-    // Recycling inflow: extract, process, apply after projection
+    // Recycling inflow: extract from projected (div-free) flow and prepare data for next step
     if (use_recycling_) {
         extract_recycle_plane();
         process_recycle_inflow();
-        apply_recycling_inlet_bc();
-        apply_fringe_blending();
+        // Note: DO NOT apply BC after projection - it would introduce divergence
     }
 
 #ifndef NDEBUG

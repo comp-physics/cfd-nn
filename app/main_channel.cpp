@@ -194,6 +194,73 @@ VectorField create_perturbed_channel_field(const Mesh& mesh, double amplitude = 
     return vel;
 }
 
+/// Create Poiseuille (parabolic) velocity field for channel flow
+/// u(y) = u_max * (1 - y^2/H^2) where u_max = -dp_dx * H^2 / (2*nu)
+/// Optionally adds divergence-free perturbations on top
+VectorField create_poiseuille_field(const Mesh& mesh, double dp_dx, double nu,
+                                    double perturbation_amplitude = 0.0) {
+    VectorField vel(mesh);
+    double H = (mesh.y_max - mesh.y_min) / 2.0;
+    double y_center = (mesh.y_min + mesh.y_max) / 2.0;
+    double u_max = -dp_dx * H * H / (2.0 * nu);
+
+    // Set parabolic u profile
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j) - y_center;
+            double u_val = u_max * (1.0 - (y * y) / (H * H));
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                vel.u(i, j) = u_val;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                double y = mesh.y(j) - y_center;
+                double u_val = u_max * (1.0 - (y * y) / (H * H));
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    vel.u(i, j, k) = u_val;
+                }
+            }
+        }
+    }
+    // v and w remain zero (divergence-free for uniform u in x and z)
+
+    // Add perturbations if requested
+    if (perturbation_amplitude > 0.0) {
+        VectorField pert = create_perturbed_channel_field(mesh, perturbation_amplitude);
+        if (mesh.is2D()) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    vel.u(i, j) += pert.u(i, j);
+                }
+            }
+            for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    vel.v(i, j) += pert.v(i, j);
+                }
+            }
+        } else {
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        vel.u(i, j, k) += pert.u(i, j, k);
+                    }
+                }
+            }
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        vel.v(i, j, k) += pert.v(i, j, k);
+                    }
+                }
+            }
+        }
+    }
+
+    return vel;
+}
+
 int main(int argc, char** argv) {
     std::cout << "=== Channel Flow Solver ===\n\n";
 
@@ -351,14 +418,30 @@ int main(int argc, char** argv) {
         // Force laminar for unsteady developing flow
         config.turb_model = TurbulenceModelType::None;
 
-        // Initialize with divergence-free perturbation
+        // Initialize velocity field
         std::cout << "Perturbation amplitude: " << config.perturbation_amplitude << "\n";
-        solver.initialize(create_perturbed_channel_field(mesh, config.perturbation_amplitude));
+        if (config.recycling_inflow) {
+            // Recycling requires established mean flow - start with Poiseuille profile
+            // plus optional perturbations to trigger turbulence
+            std::cout << "Initializing with Poiseuille profile (recycling mode)\n";
+            solver.initialize(create_poiseuille_field(mesh, config.dp_dx, config.nu,
+                                                      config.perturbation_amplitude));
+        } else {
+            // Pure developing flow: start with divergence-free perturbation
+            solver.initialize(create_perturbed_channel_field(mesh, config.perturbation_amplitude));
+        }
         
     #ifdef USE_GPU_OFFLOAD
         solver.sync_to_gpu();
     #endif
-        
+
+        // Initialize recycling inlet buffers from initial condition BEFORE first step
+        // This prevents the inlet buffers being zero (from initialization) on step 1
+        if (config.recycling_inflow) {
+            solver.extract_recycle_plane();
+            solver.process_recycle_inflow();
+        }
+
         const std::string prefix = config.write_fields ? (config.output_dir + "developing_channel") : "";
         const int snapshot_freq = (config.num_snapshots > 0) ?
             std::max(1, config.max_steps / config.num_snapshots) : 0;
@@ -390,10 +473,13 @@ int main(int argc, char** argv) {
             }
 
             // Always show progress every ~10% for CI visibility
-            if (step % progress_interval == 0 || step == 1) {
+            // For diagnostic: also print max|div u| at early steps to catch instability onset
+            double max_div = solver.compute_divergence_linf_device();
+            if (step % progress_interval == 0 || step == 1 || step <= 50) {
                 std::cout << "    Step " << std::setw(6) << step << " / " << config.max_steps
                           << "  (" << std::setw(3) << (100 * step / config.max_steps) << "%)"
                           << "  residual = " << std::scientific << std::setprecision(3) << residual
+                          << "  max|div u| = " << std::setprecision(3) << max_div
                           << std::fixed << "\n" << std::flush;
             } else if (config.verbose && (step % config.output_freq == 0)) {
                 std::cout << "Step " << step << " / " << config.max_steps

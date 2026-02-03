@@ -221,38 +221,42 @@ void RANSSolver::apply_velocity_bc() {
         }
     }
 
-    // Inflow BC at x_lo: zero-gradient for ghost cells (inlet face set by recycling)
+    // Inflow BC at x_lo: constant extrapolation of inlet face value (Dirichlet-supporting)
+    // Ghost cells copy the boundary face value at i=Ng so diffusion stencil sees correct BC.
+    // This replaces the previous zero-gradient (Neumann) fill which was inconsistent with
+    // the velocity-Dirichlet inflow condition.
     // NOTE: Loop bounds precomputed to avoid nvc++ 25.5 compiler bug (signal 11)
     if (x_lo_inflow) {
-        // u inflow ghost cells: ghost[Ng-1-g] = interior[Ng+g]
+        // u inflow ghost cells: all ghosts = inlet face value at i=Ng
         const int n_u_inflow = u_total_Ny * Ng * Nz_total;
+        const int i_inlet = Ng;  // Inlet face (Dirichlet boundary)
         #pragma omp target teams distribute parallel for \
             map(present: u_ptr[0:u_total_size]) \
-            firstprivate(Ng, u_stride, u_plane_stride, u_total_Ny, n_u_inflow)
+            firstprivate(Ng, u_stride, u_plane_stride, u_total_Ny, n_u_inflow, i_inlet)
         for (int idx = 0; idx < n_u_inflow; ++idx) {
             int j = idx % u_total_Ny;
             int g = (idx / u_total_Ny) % Ng;
             int k = idx / (u_total_Ny * Ng);
             double* u_plane_ptr = u_ptr + k * u_plane_stride;
             int i_ghost = Ng - 1 - g;     // Ghost face before inlet
-            int i_interior = Ng + g;      // Interior face
-            u_plane_ptr[j * u_stride + i_ghost] = u_plane_ptr[j * u_stride + i_interior];
+            // Constant extrapolation: ghost = inlet boundary value
+            u_plane_ptr[j * u_stride + i_ghost] = u_plane_ptr[j * u_stride + i_inlet];
         }
 
-        // v inflow ghost cells
+        // v inflow ghost cells: all ghosts = inlet cell value at i=Ng
         const int v_y_total = Ny + 1 + 2 * Ng;
         const int n_v_inflow = v_y_total * Ng * Nz_total;
         #pragma omp target teams distribute parallel for \
             map(present: v_ptr[0:v_total_size]) \
-            firstprivate(Ng, v_stride, v_plane_stride, v_y_total, n_v_inflow)
+            firstprivate(Ng, v_stride, v_plane_stride, v_y_total, n_v_inflow, i_inlet)
         for (int idx = 0; idx < n_v_inflow; ++idx) {
             int j = idx % v_y_total;
             int g = (idx / v_y_total) % Ng;
             int k = idx / (v_y_total * Ng);
             double* v_plane_ptr = v_ptr + k * v_plane_stride;
             int i_ghost = Ng - 1 - g;     // Ghost cell before inlet
-            int i_interior = Ng + g;      // Interior cell
-            v_plane_ptr[j * v_stride + i_ghost] = v_plane_ptr[j * v_stride + i_interior];
+            // Constant extrapolation: ghost = inlet boundary value
+            v_plane_ptr[j * v_stride + i_ghost] = v_plane_ptr[j * v_stride + i_inlet];
         }
     }
 
@@ -407,19 +411,20 @@ void RANSSolver::apply_velocity_bc() {
             }
         }
 
-        // w inflow/outflow in x-direction (zero-gradient)
+        // w inflow in x-direction: constant extrapolation of inlet cell value (Dirichlet-supporting)
         if (x_lo_inflow) {
+            const int i_inlet = Ng;  // Inlet cell (Dirichlet boundary)
             #pragma omp target teams distribute parallel for \
                 map(present: w_ptr[0:w_total_size]) \
-                firstprivate(Nx, Ny, Nz, Ng, w_stride, w_plane_stride)
+                firstprivate(Nx, Ny, Nz, Ng, w_stride, w_plane_stride, i_inlet)
             for (int idx = 0; idx < n_w_x_bc; ++idx) {
                 int j = idx % (Ny + 2*Ng);
                 int k = (idx / (Ny + 2*Ng)) % (Nz + 1 + 2*Ng);
                 int g = idx / ((Ny + 2*Ng) * (Nz + 1 + 2*Ng));
                 int i_ghost = Ng - 1 - g;
-                int i_interior = Ng + g;
+                // Constant extrapolation: ghost = inlet boundary value
                 w_ptr[k * w_plane_stride + j * w_stride + i_ghost] =
-                    w_ptr[k * w_plane_stride + j * w_stride + i_interior];
+                    w_ptr[k * w_plane_stride + j * w_stride + i_inlet];
             }
         }
         if (x_hi_outflow) {

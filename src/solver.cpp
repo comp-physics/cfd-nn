@@ -215,6 +215,28 @@ int gpu_check_nan_inf(const double* dev_ptr, size_t size_p) {
     return has_bad;
 }
 
+/// Find first i-index with NaN/Inf in velocity field (for diagnostic)
+/// Returns -1 if no NaN found, otherwise the smallest i where NaN was detected
+int gpu_find_nan_location_u(const double* u_ptr, int Nx, int Ny, int Nz, int Ng,
+                            int stride, int plane_stride) {
+    // Check slabs from inlet to outlet, return first i with NaN
+    for (int i = Ng; i < Ng + Nx + 1; ++i) {
+        int has_nan = 0;
+        const int n_jk = Ny * Nz;
+        #pragma omp target teams distribute parallel for reduction(|:has_nan) \
+            is_device_ptr(u_ptr) firstprivate(i, Ny, Nz, Ng, stride, plane_stride)
+        for (int idx = 0; idx < n_jk; ++idx) {
+            int j = idx % Ny + Ng;
+            int k = idx / Ny + Ng;
+            int flat = k * plane_stride + j * stride + i;
+            double x = u_ptr[flat];
+            has_nan |= (x != x || (x - x) != 0.0) ? 1 : 0;
+        }
+        if (has_nan) return i;
+    }
+    return -1;  // No NaN found
+}
+
 } // anonymous namespace
 #endif
 
@@ -1337,7 +1359,15 @@ double RANSSolver::step() {
     }
 #endif
     NVTX_POP();  // End predictor_step
-    
+
+    // Apply recycling inlet BC BEFORE Poisson solve
+    // Sequence: 1) set v,w at inlet, 2) correct u for div-free, 3) optional fringe blend
+    if (use_recycling_) {
+        apply_recycling_inlet_bc();     // Sets v, w at inlet (u ghosts only)
+        correct_inlet_divergence();     // Computes u_inlet to make first slab div-free
+        apply_fringe_blending();        // Optional smoothing near inlet
+    }
+
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*
     {
@@ -1747,13 +1777,13 @@ double RANSSolver::step() {
     // 6. Apply boundary conditions
     apply_velocity_bc();
 
-    // 7. Recycling inflow: extract from recycle plane, process, apply at inlet
+    // 7. Recycling inflow: extract from projected (div-free) flow for next step
+    // Note: BC application was moved to BEFORE Poisson solve to maintain div-free
     if (use_recycling_) {
         NVTX_PUSH("recycling_inflow");
         extract_recycle_plane();      // Sample velocity at recycle plane
         process_recycle_inflow();     // Apply shift, filter, mass-flux correction
-        apply_recycling_inlet_bc();   // Override inlet BC with recycled data
-        apply_fringe_blending();      // Optional: smooth transition near inlet
+        // Note: DO NOT apply BC or fringe here - it's done before Poisson
         NVTX_POP();
     }
 
@@ -2395,6 +2425,39 @@ void RANSSolver::check_for_nan_inf(int step) const {
         std::cerr << "NUMERICAL STABILITY GUARD: NaN/Inf DETECTED\n";
         std::cerr << "========================================\n";
         std::cerr << "Step: " << step << "\n";
+
+#ifdef USE_GPU_OFFLOAD
+        // Diagnostic: Find where NaN first appears
+        if (gpu_ready_) {
+            const int Nx = mesh_->Nx;
+            const int Ny = mesh_->Ny;
+            const int Nz = mesh_->Nz;
+            const int Ng = mesh_->Nghost;
+            const int u_stride_val = velocity_.u_stride();
+            const int u_plane_val = velocity_.u_plane_stride();
+
+            int dev_id = omp_get_default_device();
+            const double* u_dev = static_cast<const double*>(
+                omp_get_mapped_ptr(const_cast<double*>(velocity_u_ptr_), dev_id));
+
+            // Find first i with NaN
+            int nan_i = gpu_find_nan_location_u(u_dev, Nx, Ny, Nz, Ng, u_stride_val, u_plane_val);
+            if (nan_i >= 0) {
+                int inlet_end = Ng + 5;
+                int outlet_start = Ng + Nx - 5;
+                std::cerr << "\nNaN location diagnostic:\n";
+                std::cerr << "  First NaN at i=" << nan_i;
+                if (nan_i < inlet_end) {
+                    std::cerr << " (NEAR INLET, i_inlet=" << Ng << ")\n";
+                } else if (nan_i >= outlet_start) {
+                    std::cerr << " (NEAR OUTLET, i_outlet=" << (Ng+Nx) << ")\n";
+                } else {
+                    std::cerr << " (INTERIOR)\n";
+                }
+            }
+        }
+#endif
+
         std::cerr << "\nOne or more fields contain NaN or Inf:\n";
         std::cerr << "  - Velocity (u, v)\n";
         std::cerr << "  - Pressure (p)\n";

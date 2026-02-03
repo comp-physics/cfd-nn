@@ -117,6 +117,18 @@ void gpu_sub_scalar(double* dev_ptr, int n_param, double val_param) {
         dev_ptr[i] -= val;
     }
 }
+
+/// Area-weighted sum reduction: sum(u * area)
+double gpu_weighted_sum_reduce(double* dev_ptr, double* area_ptr, int n_param) {
+    const int n = n_param;
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for reduction(+:sum) \
+        is_device_ptr(dev_ptr, area_ptr) firstprivate(n)
+    for (int i = 0; i < n; ++i) {
+        sum += dev_ptr[i] * area_ptr[i];
+    }
+    return sum;
+}
 #endif
 
 } // anonymous namespace
@@ -156,11 +168,24 @@ void RANSSolver::initialize_recycling_inflow() {
     }
 
     // Update Poisson solver BCs to match new velocity BCs
-    // Inflow/Outflow both need Neumann pressure BC (dp/dn = 0)
+    // Key insight: Inflow needs DIRICHLET pressure BC (p=const) to allow projection
+    // to modify inlet velocity for div-free. Outflow uses Neumann (dp/dn = 0).
+    // With Neumann at inlet, the projection can't adjust u_inlet to satisfy continuity.
     if (x_bc_changed) {
-        std::printf("[Recycling] Updating Poisson BCs: x_lo/x_hi -> Neumann\n");
-        poisson_bc_x_lo_ = PoissonBC::Neumann;
+        std::printf("[Recycling] Updating Poisson BCs: x_lo -> Dirichlet (for div-free), x_hi -> Neumann\n");
+        poisson_bc_x_lo_ = PoissonBC::Dirichlet;  // Allows u_inlet correction
         poisson_bc_x_hi_ = PoissonBC::Neumann;
+
+        // CRITICAL: FFT Poisson solvers require periodic x and are incompatible
+        // with inflow/outflow BCs. Force switch to MG which supports Neumann.
+        if (selected_solver_ == PoissonSolverType::FFT ||
+            selected_solver_ == PoissonSolverType::FFT1D ||
+            selected_solver_ == PoissonSolverType::FFT2D) {
+            std::printf("[Recycling] FFT Poisson solver incompatible with inflow/outflow BCs.\n");
+            std::printf("[Recycling] Switching to MG solver (supports Neumann x BCs).\n");
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason_ = "recycling: FFT incompatible with inflow/outflow x BCs";
+        }
 
         // Update all Poisson solvers with new BCs
         if (!mesh_->is2D()) {
@@ -316,12 +341,45 @@ void RANSSolver::initialize_recycling_inflow() {
         diag_u_mean_.resize(recycle_u_size_, 0.0);
     }
 
+    // Precompute area weights for mass flux correction (required for stretched meshes)
+    // For uniform meshes this is also computed but the weights are all equal
+    inlet_needs_area_weight_ = !mesh_->dyv.empty() || !mesh_->dzv.empty();
+    inlet_area_weights_.resize(recycle_u_size_);
+    total_inlet_area_ = 0.0;
+    for (int k = 0; k < Nz; ++k) {
+        double dz_k = mesh_->dz_at(k + Ng);
+        for (int j = 0; j < Ny; ++j) {
+            double dy_j = mesh_->dy_at(j + Ng);
+            double area = dy_j * dz_k;
+            inlet_area_weights_[k * Ny + j] = area;
+            total_inlet_area_ += area;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    {
+        // Upload area weights to GPU
+        int area_device_id = omp_get_default_device();
+        inlet_area_ptr_ = static_cast<double*>(
+            omp_target_alloc(recycle_u_size_ * sizeof(double), area_device_id));
+        if (!inlet_area_ptr_) {
+            throw std::runtime_error("Failed to allocate inlet area weights on GPU");
+        }
+        // Copy host area weights to device
+        omp_target_memcpy(inlet_area_ptr_, inlet_area_weights_.data(),
+                          recycle_u_size_ * sizeof(double),
+                          0, 0, area_device_id, omp_get_initial_device());
+    }
+#endif
+
     if (config_.verbose) {
         std::printf("\n=== Recycling Inflow Configuration ===\n");
         std::printf("Recycle plane: i=%d, x=%.4f\n", recycle_i_, mesh_->xc[recycle_i_]);
         std::printf("Spanwise shift: %d cells (%.2f%%)\n", recycle_shift_k_, 100.0 * recycle_shift_k_ / Nz);
         std::printf("Fringe zone: i=Ng to %d (%.4f < x < %.4f)\n",
                     fringe_i_end_, mesh_->x_min, mesh_->xc[fringe_i_end_]);
+        std::printf("Inlet area: %.6f (area-weighted mean: %s)\n",
+                    total_inlet_area_, inlet_needs_area_weight_ ? "YES" : "no");
         std::printf("Filter timescale: %.4f (alpha will be computed from dt)\n",
                     config_.recycle_filter_tau);
         std::printf("========================================\n\n");
@@ -493,19 +551,27 @@ void RANSSolver::process_recycle_inflow() {
         // In practice, filtering on GPU requires additional device buffers
     }
 
-    // Step 3: Compute mean u and adjust for target bulk velocity
-    // Use helper function to avoid 'this' transfer on reduction
-    double sum_u = gpu_sum_reduce(in_u, n_u);
-    double mean_u = sum_u / static_cast<double>(n_u);
+    // Step 3: Compute bulk velocity and adjust for target
+    // Use area-weighted average for correct mass flux on stretched meshes:
+    //   bulk_u = sum(u * dA) / total_area, where dA = dy * dz
+    double bulk_u;
+    if (inlet_needs_area_weight_) {
+        double sum_u_area = gpu_weighted_sum_reduce(in_u, inlet_area_ptr_, n_u);
+        bulk_u = sum_u_area / total_inlet_area_;
+    } else {
+        // Uniform mesh: plain average is correct
+        double sum_u = gpu_sum_reduce(in_u, n_u);
+        bulk_u = sum_u / static_cast<double>(n_u);
+    }
 
-    // If target Q not set, use current mean as target
+    // If target Q not set, use current bulk velocity as target
     if (recycle_target_Q_ < 0) {
-        recycle_target_Q_ = mean_u;
+        recycle_target_Q_ = bulk_u;
     }
 
     // Scale factor to hit target bulk velocity
     // Limit scale to prevent instability during startup
-    double scale = (mean_u > 1e-10) ? recycle_target_Q_ / mean_u : 1.0;
+    double scale = (bulk_u > 1e-10) ? recycle_target_Q_ / bulk_u : 1.0;
 
     // Clamp scale factor to avoid extreme adjustments
     const double max_scale_deviation = 0.1;  // Allow at most 10% adjustment per step
@@ -513,10 +579,11 @@ void RANSSolver::process_recycle_inflow() {
     if (scale > 1.0 + max_scale_deviation) scale = 1.0 + max_scale_deviation;
     if (scale < 1.0 - max_scale_deviation) scale = 1.0 - max_scale_deviation;
 
-    // Adjust u: scale mean, preserve fluctuations
-    // u_new = (u - mean_u) + mean_u * scale = u + mean_u * (scale - 1)
-    double mean_adjust = mean_u * (scale - 1.0);
-    gpu_add_scalar(in_u, n_u, mean_adjust);
+    // Adjust u: scale bulk velocity, preserve fluctuations
+    // u_new = u + bulk_u * (scale - 1)
+    // This adds a uniform offset to match target mass flux
+    double bulk_adjust = bulk_u * (scale - 1.0);
+    gpu_add_scalar(in_u, n_u, bulk_adjust);
 
     // Step 4: Remove net transverse flow (optional)
     if (config_.recycle_remove_transverse_mean) {
@@ -602,17 +669,29 @@ void RANSSolver::process_recycle_inflow() {
         recycle_diag_.u_rms_before_corr = u_rms_before;
     }
 
-    double sum_u = 0.0;
-    for (size_t i = 0; i < recycle_u_size_; ++i) {
-        sum_u += inlet_u_buf_[i];
+    // Compute bulk velocity using area-weighted average for correct mass flux:
+    //   bulk_u = sum(u * dA) / total_area, where dA = dy * dz
+    double bulk_u;
+    if (inlet_needs_area_weight_) {
+        double sum_u_area = 0.0;
+        for (size_t i = 0; i < recycle_u_size_; ++i) {
+            sum_u_area += inlet_u_buf_[i] * inlet_area_weights_[i];
+        }
+        bulk_u = sum_u_area / total_inlet_area_;
+    } else {
+        // Uniform mesh: plain average is correct
+        double sum_u = 0.0;
+        for (size_t i = 0; i < recycle_u_size_; ++i) {
+            sum_u += inlet_u_buf_[i];
+        }
+        bulk_u = sum_u / static_cast<double>(recycle_u_size_);
     }
-    double mean_u = sum_u / static_cast<double>(recycle_u_size_);
 
     if (recycle_target_Q_ < 0) {
-        recycle_target_Q_ = mean_u;
+        recycle_target_Q_ = bulk_u;
     }
 
-    double scale = (mean_u > 1e-10) ? recycle_target_Q_ / mean_u : 1.0;
+    double scale = (bulk_u > 1e-10) ? recycle_target_Q_ / bulk_u : 1.0;
 
     // Clamp scale factor to avoid extreme adjustments during startup
     const double max_scale_deviation = 0.1;  // Allow at most 10% adjustment per step
@@ -620,9 +699,10 @@ void RANSSolver::process_recycle_inflow() {
     if (scale > 1.0 + max_scale_deviation) scale = 1.0 + max_scale_deviation;
     if (scale < 1.0 - max_scale_deviation) scale = 1.0 - max_scale_deviation;
 
-    double mean_adjust = mean_u * (scale - 1.0);
+    // Adjust u: scale bulk velocity, preserve fluctuations
+    double bulk_adjust = bulk_u * (scale - 1.0);
     for (size_t i = 0; i < recycle_u_size_; ++i) {
-        inlet_u_buf_[i] += mean_adjust;
+        inlet_u_buf_[i] += bulk_adjust;
     }
 
     // [Diag] Capture state after mean correction
@@ -726,19 +806,19 @@ void RANSSolver::apply_recycling_inlet_bc() {
     double* in_v = inlet_v_ptr_;
     double* in_w = inlet_w_ptr_;
 
+    // IMPORTANT: Do NOT set inlet face u directly - let projection determine it for div-free
+    // The recycled u is used only in the ghost cells below to support the convective stencil
+    // This allows the projection to adjust u_inlet to satisfy local continuity
+
+    // Old approach (creates divergence):
     // Apply u at inlet (i = Ng, first interior x-face)
-    const int n_u = Ny * Nz;
-    #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
-        firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride)
-    for (int idx = 0; idx < n_u; ++idx) {
-        int j = idx % Ny;
-        int k = idx / Ny;
-        int j_glob = j + Ng;
-        int k_glob = k + Ng;
-        int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + Ng;
-        u_ptr[dst_idx] = in_u[idx];
-    }
+    // const int n_u = Ny * Nz;
+    // for (int idx = 0; idx < n_u; ++idx) {
+    //     ... u_ptr[dst_idx] = in_u[idx];
+    // }
+
+    // New approach: Skip setting u at inlet face - only set ghost cells (done below)
+    const int n_u = Ny * Nz;  // Still need for ghost cell loop
 
     // Apply v at inlet (i = Ng)
     const int n_v = (Ny + 1) * Nz;
@@ -768,65 +848,62 @@ void RANSSolver::apply_recycling_inlet_bc() {
         w_ptr[dst_idx] = in_w[idx];
     }
 
-    // Also set ghost cells at inlet (i < Ng) to prevent extrapolation issues
-    // Use Neumann-like condition: ghost = interior value
+    // Set ghost cells at inlet (i < Ng) to support Dirichlet-like diffusion stencil
+    // Constant extrapolation: all ghosts = inlet face value at i=Ng
     for (int g = 0; g < Ng; ++g) {
         int i_ghost = Ng - 1 - g;
-        const int i_interior = Ng;
+        const int i_inlet = Ng;  // Inlet face (Dirichlet boundary)
 
         // u ghost cells
+        // u ghost cells: use recycled data directly (since inlet face not set by recycling)
         #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size]) \
-            firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride, i_ghost, i_interior)
+            map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
+            firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride, i_ghost)
         for (int idx = 0; idx < n_u; ++idx) {
             int j = idx % Ny;
             int k = idx / Ny;
             int j_glob = j + Ng;
             int k_glob = k + Ng;
             int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + i_ghost;
-            int src_idx = k_glob * u_plane_stride + j_glob * u_stride + i_interior;
-            u_ptr[dst_idx] = u_ptr[src_idx];
+            // Use recycled value directly for ghost cells
+            u_ptr[dst_idx] = in_u[idx];
         }
 
         // v ghost cells
         #pragma omp target teams distribute parallel for \
             map(present: v_ptr[0:v_total_size]) \
-            firstprivate(Ny, Nz, Ng, v_stride, v_plane_stride, i_ghost, i_interior)
+            firstprivate(Ny, Nz, Ng, v_stride, v_plane_stride, i_ghost, i_inlet)
         for (int idx = 0; idx < n_v; ++idx) {
             int j = idx % (Ny + 1);
             int k = idx / (Ny + 1);
             int j_glob = j + Ng;
             int k_glob = k + Ng;
             int dst_idx = k_glob * v_plane_stride + j_glob * v_stride + i_ghost;
-            int src_idx = k_glob * v_plane_stride + j_glob * v_stride + i_interior;
+            int src_idx = k_glob * v_plane_stride + j_glob * v_stride + i_inlet;
             v_ptr[dst_idx] = v_ptr[src_idx];
         }
 
         // w ghost cells
         #pragma omp target teams distribute parallel for \
             map(present: w_ptr[0:w_total_size]) \
-            firstprivate(Ny, Nz, Ng, w_stride, w_plane_stride, i_ghost, i_interior)
+            firstprivate(Ny, Nz, Ng, w_stride, w_plane_stride, i_ghost, i_inlet)
         for (int idx = 0; idx < n_w; ++idx) {
             int j = idx % Ny;
             int k = idx / Ny;
             int j_glob = j + Ng;
             int k_glob = k + Ng;
             int dst_idx = k_glob * w_plane_stride + j_glob * w_stride + i_ghost;
-            int src_idx = k_glob * w_plane_stride + j_glob * w_stride + i_interior;
+            int src_idx = k_glob * w_plane_stride + j_glob * w_stride + i_inlet;
             w_ptr[dst_idx] = w_ptr[src_idx];
         }
     }
 
 #else
     // CPU path
-    for (int k = 0; k < Nz; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            int j_glob = j + Ng;
-            int k_glob = k + Ng;
-            int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + Ng;
-            velocity_.u_data()[dst_idx] = inlet_u_buf_[k * Ny + j];
-        }
-    }
+    // IMPORTANT: Do NOT set inlet face u directly - let projection determine it for div-free
+    // Only set v, w at inlet face and use recycled u for ghost cells
+    // (Old u loop removed - see GPU path comment for explanation)
+
     for (int k = 0; k < Nz; ++k) {
         for (int j = 0; j < Ny + 1; ++j) {
             int j_glob = j + Ng;
@@ -847,13 +924,13 @@ void RANSSolver::apply_recycling_inlet_bc() {
     // Ghost cells (CPU)
     for (int g = 0; g < Ng; ++g) {
         int i_ghost = Ng - 1 - g;
+        // u ghost cells: use recycled data directly (since inlet face not set by recycling)
         for (int k = 0; k < Nz; ++k) {
             int k_glob = k + Ng;
             for (int j = 0; j < Ny; ++j) {
                 int j_glob = j + Ng;
                 int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + i_ghost;
-                int src_idx = k_glob * u_plane_stride + j_glob * u_stride + Ng;
-                velocity_.u_data()[dst_idx] = velocity_.u_data()[src_idx];
+                velocity_.u_data()[dst_idx] = inlet_u_buf_[k * Ny + j];
             }
         }
         for (int k = 0; k < Nz; ++k) {
@@ -872,6 +949,182 @@ void RANSSolver::apply_recycling_inlet_bc() {
                 int dst_idx = k_glob * w_plane_stride + j_glob * w_stride + i_ghost;
                 int src_idx = k_glob * w_plane_stride + j_glob * w_stride + Ng;
                 velocity_.w_data()[dst_idx] = velocity_.w_data()[src_idx];
+            }
+        }
+    }
+#endif
+}
+
+//==============================================================================
+// Inlet divergence correction: make first interior slab divergence-free
+// This is the key fix for recycling + skew-symmetric stability.
+//==============================================================================
+
+void RANSSolver::correct_inlet_divergence() {
+    if (!use_recycling_) return;
+
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+
+    auto v = get_solver_view();
+    double* u_ptr = v.u_face;
+    double* v_ptr = v.v_face;
+    double* w_ptr = v.w_face;
+
+    const int u_stride = v.u_stride;
+    const int v_stride = v.v_stride;
+    const int w_stride = v.w_stride;
+    const int u_plane_stride = v.u_plane_stride;
+    const int v_plane_stride = v.v_plane_stride;
+    const int w_plane_stride = v.w_plane_stride;
+
+    [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
+    [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
+
+    // Grid spacings (uniform mesh for now - stretched mesh support can be added later)
+    const double dy_val = mesh_->dy;
+    const double dz_val = mesh_->dz;
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU path: compute u_inlet from div-free condition
+    // u_inlet[j,k] = u_interior[j,k] + dx * [(v[j+1]-v[j])/dy + (w[k+1]-w[k])/dz]
+
+    const int n_inlet = Ny * Nz;
+    double* in_u = inlet_u_ptr_;  // We'll store the computed values here
+
+    // Compute the divergence-corrected inlet u values
+    // Formula: u_inlet = u_interior + dx * (dv/dy + dw/dz)
+    // This ensures: div = (u_interior - u_inlet)/dx + dv/dy + dw/dz = 0
+    //
+    // IMPORTANT: Do NOT apply a bulk velocity offset after this correction!
+    // Adding a uniform offset to u_inlet alone breaks the div-free condition
+    // because u_interior is not adjusted. The mass flux is determined by the
+    // interior flow; the pressure gradient will adjust to drive the correct flow.
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size]) \
+        is_device_ptr(in_u) \
+        firstprivate(Ny, Nz, Ng, dx, dy_val, dz_val, u_stride, v_stride, w_stride, \
+                     u_plane_stride, v_plane_stride, w_plane_stride)
+    for (int idx = 0; idx < n_inlet; ++idx) {
+        int j = idx % Ny;       // 0-indexed interior cell in y
+        int k = idx / Ny;       // 0-indexed interior cell in z
+        int j_glob = j + Ng;    // Global index with ghost offset
+        int k_glob = k + Ng;
+
+        // Grid spacing (uniform for now)
+        double dy_local = dy_val;
+        double dz_local = dz_val;
+
+        // u at interior face (i = Ng + 1)
+        int u_interior_idx = k_glob * u_plane_stride + j_glob * u_stride + (Ng + 1);
+        double u_interior = u_ptr[u_interior_idx];
+
+        // v at top and bottom of cell (at inlet x-plane i = Ng)
+        int v_top_idx = k_glob * v_plane_stride + (j_glob + 1) * v_stride + Ng;
+        int v_bot_idx = k_glob * v_plane_stride + j_glob * v_stride + Ng;
+        double dvdy = (v_ptr[v_top_idx] - v_ptr[v_bot_idx]) / dy_local;
+
+        // w at front and back of cell (at inlet x-plane i = Ng)
+        int w_front_idx = (k_glob + 1) * w_plane_stride + j_glob * w_stride + Ng;
+        int w_back_idx = k_glob * w_plane_stride + j_glob * w_stride + Ng;
+        double dwdz = (w_ptr[w_front_idx] - w_ptr[w_back_idx]) / dz_local;
+
+        // Transverse divergence
+        double div_trans = dvdy + dwdz;
+
+        // Divergence-corrected inlet u: u_inlet = u_interior + dx * div_trans
+        // This ensures: div = (u_interior - u_inlet) / dx + div_trans = 0
+        in_u[idx] = u_interior + dx * div_trans;
+    }
+
+    // NO bulk correction here - it would break the div-free condition!
+    // The bulk correction is already applied in process_recycle_inflow() to v,w.
+    // The u at inlet is constrained by the div-free requirement.
+
+    // Finally, write corrected u values to inlet face
+    #pragma omp target teams distribute parallel for \
+        map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
+        firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride)
+    for (int idx = 0; idx < n_inlet; ++idx) {
+        int j = idx % Ny;
+        int k = idx / Ny;
+        int j_glob = j + Ng;
+        int k_glob = k + Ng;
+        int u_inlet_idx = k_glob * u_plane_stride + j_glob * u_stride + Ng;
+        u_ptr[u_inlet_idx] = in_u[idx];
+    }
+
+    // Update ghost cells to match inlet value
+    for (int g = 0; g < Ng; ++g) {
+        int i_ghost = Ng - 1 - g;
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
+            firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride, i_ghost)
+        for (int idx = 0; idx < n_inlet; ++idx) {
+            int j = idx % Ny;
+            int k = idx / Ny;
+            int j_glob = j + Ng;
+            int k_glob = k + Ng;
+            int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + i_ghost;
+            u_ptr[dst_idx] = in_u[idx];
+        }
+    }
+
+#else
+    // CPU path
+    const int n_inlet = Ny * Nz;
+    std::vector<double> u_inlet_corrected(n_inlet);
+
+    // Compute divergence-corrected inlet u values
+    for (int k = 0; k < Nz; ++k) {
+        int k_glob = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int j_glob = j + Ng;
+
+            double dy_local = mesh_->dy_at(j);
+            double dz_local = mesh_->dz_at(k);
+
+            // u at interior face (i = Ng + 1)
+            int u_interior_idx = k_glob * u_plane_stride + j_glob * u_stride + (Ng + 1);
+            double u_interior = velocity_.u_data()[u_interior_idx];
+
+            // v at top and bottom
+            int v_top_idx = k_glob * v_plane_stride + (j_glob + 1) * v_stride + Ng;
+            int v_bot_idx = k_glob * v_plane_stride + j_glob * v_stride + Ng;
+            double dvdy = (velocity_.v_data()[v_top_idx] - velocity_.v_data()[v_bot_idx]) / dy_local;
+
+            // w at front and back
+            int w_front_idx = (k_glob + 1) * w_plane_stride + j_glob * w_stride + Ng;
+            int w_back_idx = k_glob * w_plane_stride + j_glob * w_stride + Ng;
+            double dwdz = (velocity_.w_data()[w_front_idx] - velocity_.w_data()[w_back_idx]) / dz_local;
+
+            double div_trans = dvdy + dwdz;
+            u_inlet_corrected[k * Ny + j] = u_interior + dx * div_trans;
+        }
+    }
+
+    // NO bulk correction - it would break the div-free condition!
+    // The u at inlet is constrained by the div-free requirement.
+
+    // Write to inlet face and ghosts
+    for (int k = 0; k < Nz; ++k) {
+        int k_glob = k + Ng;
+        for (int j = 0; j < Ny; ++j) {
+            int j_glob = j + Ng;
+            double u_val = u_inlet_corrected[k * Ny + j];
+
+            // Inlet face
+            int u_inlet_idx = k_glob * u_plane_stride + j_glob * u_stride + Ng;
+            velocity_.u_data()[u_inlet_idx] = u_val;
+
+            // Ghost cells
+            for (int g = 0; g < Ng; ++g) {
+                int i_ghost = Ng - 1 - g;
+                int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + i_ghost;
+                velocity_.u_data()[dst_idx] = u_val;
             }
         }
     }

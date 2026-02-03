@@ -323,6 +323,7 @@ public:
     void process_recycle_inflow();         ///< Apply shift, filter, mass-flux correction
     void apply_recycling_inlet_bc();       ///< Apply processed inflow as inlet BC
     void apply_fringe_blending();          ///< Blend inlet velocity in fringe zone
+    void correct_inlet_divergence();       ///< Make first slab div-free by correcting inlet u
     bool is_recycling_enabled() const { return use_recycling_; }
     /// @}
 
@@ -519,6 +520,12 @@ private:
     size_t recycle_u_size_ = 0;            ///< Size of u recycle buffer
     size_t recycle_v_size_ = 0;            ///< Size of v recycle buffer
     size_t recycle_w_size_ = 0;            ///< Size of w recycle buffer
+
+    // Area-weighting for mass flux correction (stretched mesh support)
+    std::vector<double> inlet_area_weights_;  ///< Host: dy[j] * dz[k] for each inlet cell
+    double* inlet_area_ptr_ = nullptr;        ///< Device: area weights for weighted reduction
+    double total_inlet_area_ = 0.0;           ///< Total inlet area: sum(dy[j] * dz[k])
+    bool inlet_needs_area_weight_ = false;    ///< True if mesh is stretched (dyv or dzv non-empty)
 
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
 
