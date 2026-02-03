@@ -4,7 +4,15 @@
 // interior turbulence by comparing to the gold-standard periodic channel.
 //
 // Both cases use identical: domain, grid, nu, dp/dx, dt, convection scheme.
-// The only difference is x-BC treatment.
+// The only difference is x-BC treatment:
+// - Periodic: FFT Poisson solver, periodic x BCs
+// - Recycling: MG Poisson solver, Dirichlet inlet / Neumann outlet
+//
+// NOTE: For true turbulent validation, need:
+// - Finer grid: 128×96×128 or more for Re_tau=180 DNS
+// - Higher Re: Re_tau >= 395 for robust turbulence on coarser grids
+// - Longer spinup: 50000+ steps (t ~ 10+ flow-through times)
+// Current quick/full modes use coarse grids and validate machinery only.
 
 #include "solver.hpp"
 #include "mesh.hpp"
@@ -13,8 +21,96 @@
 #include <cmath>
 #include <vector>
 #include <iomanip>
+#include <random>
 
 using namespace nncfd;
+
+// =============================================================================
+// Create Poiseuille + 3D perturbation for transition
+// =============================================================================
+
+VectorField create_perturbed_channel(const Mesh& mesh, double nu, double dp_dx,
+                                     double delta, double pert_amplitude) {
+    VectorField vel(mesh);
+
+    // Poiseuille base profile: u = (|dp/dx|/(2*nu)) * (delta^2 - y^2)
+    double u_max = std::abs(dp_dx) * delta * delta / (2.0 * nu);
+
+    // Random number generator for perturbations
+    std::mt19937 rng(42);  // Fixed seed for reproducibility
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+
+    const int Ng = mesh.Nghost;
+    const double Lx = mesh.x_max - mesh.x_min;
+    const double Lz = mesh.z_max - mesh.z_min;
+    const double kx = 2.0 * M_PI / Lx;
+    const double kz = 2.0 * M_PI / Lz;
+
+    // Initialize u at x-faces
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        double z = (k >= Ng && k < mesh.Nz + Ng) ? mesh.zc[k] : 0.0;
+        for (int j = 0; j < mesh.total_Ny(); ++j) {
+            double y = mesh.yc[j];
+            double y_frac = y / delta;  // -1 to 1
+
+            // Poiseuille profile
+            double u_base = u_max * (1.0 - y_frac * y_frac);
+
+            // Wall-damping factor (vanishes at walls)
+            double wall_damp = (1.0 - y_frac * y_frac);
+            wall_damp = wall_damp * wall_damp;  // sin^2 like behavior
+
+            for (int i = 0; i < mesh.total_Nx() + 1; ++i) {
+                double x = (i >= Ng && i <= mesh.Nx + Ng) ?
+                           mesh.xc[std::min(i, mesh.Nx + Ng - 1)] : 0.0;
+
+                // 3D perturbation: low-wavenumber modes + random
+                double pert_struct = std::sin(kx * x) * std::cos(kz * z);
+                double pert_rand = dist(rng);
+                double pert = pert_amplitude * u_max * wall_damp * (0.7 * pert_struct + 0.3 * pert_rand);
+
+                vel.u(i, j, k) = u_base + pert;
+            }
+        }
+    }
+
+    // Initialize v at y-faces (small perturbations only, Poiseuille has v=0)
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        double z = (k >= Ng && k < mesh.Nz + Ng) ? mesh.zc[k] : 0.0;
+        for (int j = 0; j < mesh.total_Ny() + 1; ++j) {
+            double y = (j >= Ng && j <= mesh.Ny + Ng) ?
+                       mesh.yc[std::min(j, mesh.Ny + Ng - 1)] : 0.0;
+            double y_frac = y / delta;
+            double wall_damp = (1.0 - y_frac * y_frac);
+            wall_damp = wall_damp * wall_damp;
+
+            for (int i = 0; i < mesh.total_Nx(); ++i) {
+                double x = (i >= Ng && i < mesh.Nx + Ng) ? mesh.xc[i] : 0.0;
+                double pert = pert_amplitude * u_max * wall_damp * 0.1 * dist(rng);
+                vel.v(i, j, k) = pert;
+            }
+        }
+    }
+
+    // Initialize w at z-faces (small perturbations for 3D instabilities)
+    if (!mesh.is2D()) {
+        for (int k = 0; k < mesh.total_Nz() + 1; ++k) {
+            for (int j = 0; j < mesh.total_Ny(); ++j) {
+                double y = mesh.yc[j];
+                double y_frac = y / delta;
+                double wall_damp = (1.0 - y_frac * y_frac);
+                wall_damp = wall_damp * wall_damp;
+
+                for (int i = 0; i < mesh.total_Nx(); ++i) {
+                    double pert = pert_amplitude * u_max * wall_damp * 0.1 * dist(rng);
+                    vel.w(i, j, k) = pert;
+                }
+            }
+        }
+    }
+
+    return vel;
+}
 
 // =============================================================================
 // Test configuration
@@ -39,14 +135,15 @@ struct ValidationConfig {
     double Lz = M_PI;        // pi*delta
 
     // Time stepping
-    double dt = 0.0001;         // Small dt for stability at high Re
-    int spinup_steps = 5000;    // Steps before collecting stats (more for smaller dt)
+    double dt = 0.0005;         // Moderate dt (CFL ~ 0.5 for U_max ~ 90)
+    int spinup_steps = 5000;    // Steps for flow to develop
     int stats_steps = 2000;     // Steps to accumulate statistics
     int stats_interval = 10;    // Accumulate every N steps
-    double pert_amplitude = 0.0;  // No perturbation for stability test
+    double pert_amplitude = 0.05;  // 5% amplitude (won't trigger turbulence on coarse grid)
 
-    // Convection scheme: Upwind for max stability, Central for accuracy, Skew for DNS
-    ConvectiveScheme convection = ConvectiveScheme::Upwind;
+    // Convection scheme: Central is stable and adequate for machinery validation
+    // Use Skew for production DNS with fine grids
+    ConvectiveScheme convection = ConvectiveScheme::Central;
 
     // Recycle configuration
     double recycle_x = -1.0;  // Auto (10*delta)
@@ -133,10 +230,22 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
 
     // Create solver
     RANSSolver solver(mesh, config);
+
+    // Set velocity BCs - this triggers initialize_recycling_inflow() if enabled
+    // Default VelocityBC has periodic x, z and no-slip walls y
+    VelocityBC vel_bc;
+    solver.set_velocity_bc(vel_bc);
+
     solver.set_body_force(std::abs(cfg.dp_dx), 0.0);
 
-    // Initialize with simple uniform velocity (flow will develop from body force)
-    solver.initialize_uniform(1.0, 0.0);
+    // Initialize with Poiseuille + 3D perturbation for transition
+    if (cfg.pert_amplitude > 0.0) {
+        VectorField vel = create_perturbed_channel(mesh, nu, cfg.dp_dx, cfg.delta, cfg.pert_amplitude);
+        solver.initialize(vel);
+    } else {
+        // No perturbation - will stay laminar
+        solver.initialize_uniform(1.0, 0.0);
+    }
 
     // Sync to GPU if needed
     solver.sync_to_gpu();
@@ -183,6 +292,22 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
     std::cout << "  u_tau (force): " << result.u_tau << "\n";
     std::cout << "  Momentum closure max residual: "
               << 100.0 * result.momentum.max_residual_normalized(result.u_tau) << "%\n";
+
+    // Turbulence presence diagnostics
+    double max_uv_plus = 0.0;
+    double max_uu_plus = 0.0;
+    for (size_t j = 0; j < result.stresses.uv_plus.size(); ++j) {
+        max_uv_plus = std::max(max_uv_plus, -result.stresses.uv_plus[j]);  // -<u'v'>+
+        max_uu_plus = std::max(max_uu_plus, result.stresses.uu_plus[j]);
+    }
+    std::cout << "  Turbulence check: max(-<u'v'>+) = " << max_uv_plus;
+    if (max_uv_plus < 0.01) {
+        std::cout << " [LAMINAR - no turbulent stresses]\n";
+    } else if (max_uv_plus < 0.5) {
+        std::cout << " [TRANSITIONAL]\n";
+    } else {
+        std::cout << " [TURBULENT - expected ~0.9 for channel]\n";
+    }
 
     return result;
 }
