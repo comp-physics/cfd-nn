@@ -216,20 +216,55 @@ void RANSSolver::initialize_recycling_inflow() {
     recycle_target_Q_ = config_.recycle_target_bulk_u;
 
 #ifdef USE_GPU_OFFLOAD
-    // Map buffers to GPU
-    recycle_u_ptr_ = recycle_u_buf_.data();
-    recycle_v_ptr_ = recycle_v_buf_.data();
-    recycle_w_ptr_ = recycle_w_buf_.data();
-    inlet_u_ptr_ = inlet_u_buf_.data();
-    inlet_v_ptr_ = inlet_v_buf_.data();
-    inlet_w_ptr_ = inlet_w_buf_.data();
+    // Allocate device-only memory for recycling buffers using omp_target_alloc
+    // This avoids "partially present" errors that occur when mapping std::vector
+    // data() pointers which may have overlapping host address ranges
+    int device_id = omp_get_default_device();
 
-    #pragma omp target enter data map(alloc: recycle_u_ptr_[0:recycle_u_size_])
-    #pragma omp target enter data map(alloc: recycle_v_ptr_[0:recycle_v_size_])
-    #pragma omp target enter data map(alloc: recycle_w_ptr_[0:recycle_w_size_])
-    #pragma omp target enter data map(alloc: inlet_u_ptr_[0:recycle_u_size_])
-    #pragma omp target enter data map(alloc: inlet_v_ptr_[0:recycle_v_size_])
-    #pragma omp target enter data map(alloc: inlet_w_ptr_[0:recycle_w_size_])
+    recycle_u_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_u_size_ * sizeof(double), device_id));
+    recycle_v_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_v_size_ * sizeof(double), device_id));
+    recycle_w_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_w_size_ * sizeof(double), device_id));
+    inlet_u_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_u_size_ * sizeof(double), device_id));
+    inlet_v_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_v_size_ * sizeof(double), device_id));
+    inlet_w_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_w_size_ * sizeof(double), device_id));
+
+    if (!recycle_u_ptr_ || !recycle_v_ptr_ || !recycle_w_ptr_ ||
+        !inlet_u_ptr_ || !inlet_v_ptr_ || !inlet_w_ptr_) {
+        throw std::runtime_error("Failed to allocate recycling buffers on GPU");
+    }
+
+    // Zero-initialize the device buffers
+    const size_t n_u = recycle_u_size_;
+    const size_t n_v = recycle_v_size_;
+    const size_t n_w = recycle_w_size_;
+    double* rec_u = recycle_u_ptr_;
+    double* rec_v = recycle_v_ptr_;
+    double* rec_w = recycle_w_ptr_;
+    double* in_u = inlet_u_ptr_;
+    double* in_v = inlet_v_ptr_;
+    double* in_w = inlet_w_ptr_;
+
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_u, in_u)
+    for (size_t i = 0; i < n_u; ++i) {
+        rec_u[i] = 0.0;
+        in_u[i] = 0.0;
+    }
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_v, in_v)
+    for (size_t i = 0; i < n_v; ++i) {
+        rec_v[i] = 0.0;
+        in_v[i] = 0.0;
+    }
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_w, in_w)
+    for (size_t i = 0; i < n_w; ++i) {
+        rec_w[i] = 0.0;
+        in_w[i] = 0.0;
+    }
 #endif
 
     // Allocate diagnostic buffers if L2 breakdown is enabled
@@ -287,7 +322,7 @@ void RANSSolver::extract_recycle_plane() {
     // Extract u at recycle plane (Ny × Nz interior cells)
     const int n_u = Ny * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], rec_u[0:recycle_u_size_]) \
+        map(present: u_ptr[0:u_total_size]) is_device_ptr(rec_u) \
         firstprivate(Ny, Nz, Ng, i_r, u_stride, u_plane_stride)
     for (int idx = 0; idx < n_u; ++idx) {
         int j = idx % Ny;
@@ -301,7 +336,7 @@ void RANSSolver::extract_recycle_plane() {
     // Extract v at recycle plane ((Ny+1) × Nz)
     const int n_v = (Ny + 1) * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: v_ptr[0:v_total_size], rec_v[0:recycle_v_size_]) \
+        map(present: v_ptr[0:v_total_size]) is_device_ptr(rec_v) \
         firstprivate(Ny, Nz, Ng, i_r, v_stride, v_plane_stride)
     for (int idx = 0; idx < n_v; ++idx) {
         int j = idx % (Ny + 1);
@@ -315,7 +350,7 @@ void RANSSolver::extract_recycle_plane() {
     // Extract w at recycle plane (Ny × (Nz+1))
     const int n_w = Ny * (Nz + 1);
     #pragma omp target teams distribute parallel for \
-        map(present: w_ptr[0:w_total_size], rec_w[0:recycle_w_size_]) \
+        map(present: w_ptr[0:w_total_size]) is_device_ptr(rec_w) \
         firstprivate(Ny, Nz, Ng, i_r, w_stride, w_plane_stride)
     for (int idx = 0; idx < n_w; ++idx) {
         int j = idx % Ny;
@@ -379,8 +414,7 @@ void RANSSolver::process_recycle_inflow() {
     // Step 1: Apply spanwise shift to u (Ny × Nz)
     const int n_u = Ny * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: rec_u[0:recycle_u_size_], in_u[0:recycle_u_size_]) \
-        firstprivate(Ny, Nz, shift_k)
+        is_device_ptr(rec_u, in_u) firstprivate(Ny, Nz, shift_k)
     for (int idx = 0; idx < n_u; ++idx) {
         int j = idx % Ny;
         int k = idx / Ny;
@@ -391,8 +425,7 @@ void RANSSolver::process_recycle_inflow() {
     // Step 1: Apply spanwise shift to v ((Ny+1) × Nz)
     const int n_v = (Ny + 1) * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: rec_v[0:recycle_v_size_], in_v[0:recycle_v_size_]) \
-        firstprivate(Ny, Nz, shift_k)
+        is_device_ptr(rec_v, in_v) firstprivate(Ny, Nz, shift_k)
     for (int idx = 0; idx < n_v; ++idx) {
         int j = idx % (Ny + 1);
         int k = idx / (Ny + 1);
@@ -404,8 +437,7 @@ void RANSSolver::process_recycle_inflow() {
     // Note: w is at z-faces, periodic so face Nz+1 wraps to face 0
     const int n_w = Ny * (Nz + 1);
     #pragma omp target teams distribute parallel for \
-        map(present: rec_w[0:recycle_w_size_], in_w[0:recycle_w_size_]) \
-        firstprivate(Ny, Nz, shift_k)
+        is_device_ptr(rec_w, in_w) firstprivate(Ny, Nz, shift_k)
     for (int idx = 0; idx < n_w; ++idx) {
         int j = idx % Ny;
         int k = idx / Ny;
@@ -423,8 +455,7 @@ void RANSSolver::process_recycle_inflow() {
     // Use GPU reduction to compute plane-mean u
     double sum_u = 0.0;
     #pragma omp target teams distribute parallel for reduction(+:sum_u) \
-        map(present: in_u[0:recycle_u_size_]) \
-        firstprivate(Ny, Nz)
+        is_device_ptr(in_u) firstprivate(Ny, Nz)
     for (int idx = 0; idx < n_u; ++idx) {
         sum_u += in_u[idx];
     }
@@ -449,8 +480,7 @@ void RANSSolver::process_recycle_inflow() {
     // u_new = (u - mean_u) + mean_u * scale = u + mean_u * (scale - 1)
     double mean_adjust = mean_u * (scale - 1.0);
     #pragma omp target teams distribute parallel for \
-        map(present: in_u[0:recycle_u_size_]) \
-        firstprivate(mean_adjust, n_u)
+        is_device_ptr(in_u) firstprivate(mean_adjust, n_u)
     for (int idx = 0; idx < n_u; ++idx) {
         in_u[idx] += mean_adjust;
     }
@@ -460,15 +490,13 @@ void RANSSolver::process_recycle_inflow() {
         // Subtract mean v
         double sum_v = 0.0;
         #pragma omp target teams distribute parallel for reduction(+:sum_v) \
-            map(present: in_v[0:recycle_v_size_]) \
-            firstprivate(n_v)
+            is_device_ptr(in_v) firstprivate(n_v)
         for (int idx = 0; idx < n_v; ++idx) {
             sum_v += in_v[idx];
         }
         double mean_v = sum_v / static_cast<double>(n_v);
         #pragma omp target teams distribute parallel for \
-            map(present: in_v[0:recycle_v_size_]) \
-            firstprivate(mean_v, n_v)
+            is_device_ptr(in_v) firstprivate(mean_v, n_v)
         for (int idx = 0; idx < n_v; ++idx) {
             in_v[idx] -= mean_v;
         }
@@ -476,15 +504,13 @@ void RANSSolver::process_recycle_inflow() {
         // Subtract mean w
         double sum_w = 0.0;
         #pragma omp target teams distribute parallel for reduction(+:sum_w) \
-            map(present: in_w[0:recycle_w_size_]) \
-            firstprivate(n_w)
+            is_device_ptr(in_w) firstprivate(n_w)
         for (int idx = 0; idx < n_w; ++idx) {
             sum_w += in_w[idx];
         }
         double mean_w = sum_w / static_cast<double>(n_w);
         #pragma omp target teams distribute parallel for \
-            map(present: in_w[0:recycle_w_size_]) \
-            firstprivate(mean_w, n_w)
+            is_device_ptr(in_w) firstprivate(mean_w, n_w)
         for (int idx = 0; idx < n_w; ++idx) {
             in_w[idx] -= mean_w;
         }
@@ -688,7 +714,7 @@ void RANSSolver::apply_recycling_inlet_bc() {
     // Apply u at inlet (i = Ng, first interior x-face)
     const int n_u = Ny * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], in_u[0:recycle_u_size_]) \
+        map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
         firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride)
     for (int idx = 0; idx < n_u; ++idx) {
         int j = idx % Ny;
@@ -702,7 +728,7 @@ void RANSSolver::apply_recycling_inlet_bc() {
     // Apply v at inlet (i = Ng)
     const int n_v = (Ny + 1) * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: v_ptr[0:v_total_size], in_v[0:recycle_v_size_]) \
+        map(present: v_ptr[0:v_total_size]) is_device_ptr(in_v) \
         firstprivate(Ny, Nz, Ng, v_stride, v_plane_stride)
     for (int idx = 0; idx < n_v; ++idx) {
         int j = idx % (Ny + 1);
@@ -716,7 +742,7 @@ void RANSSolver::apply_recycling_inlet_bc() {
     // Apply w at inlet (i = Ng)
     const int n_w = Ny * (Nz + 1);
     #pragma omp target teams distribute parallel for \
-        map(present: w_ptr[0:w_total_size], in_w[0:recycle_w_size_]) \
+        map(present: w_ptr[0:w_total_size]) is_device_ptr(in_w) \
         firstprivate(Ny, Nz, Ng, w_stride, w_plane_stride)
     for (int idx = 0; idx < n_w; ++idx) {
         int j = idx % Ny;
@@ -880,7 +906,7 @@ void RANSSolver::apply_fringe_blending() {
 
     // Need to map xc to device if not already mapped
     #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], in_u[0:recycle_u_size_]) \
+        map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
         map(to: xc[0:mesh_->Nx + 2*Ng]) \
         firstprivate(Ny, Nz, Ng, i_start, i_end, u_stride, u_plane_stride, x_min, L_fringe)
     for (int idx = 0; idx < n_fringe; ++idx) {
