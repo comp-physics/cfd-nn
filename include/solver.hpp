@@ -346,6 +346,15 @@ public:
     /// Friction velocity from body forcing (exact for fully-developed channel)
     double u_tau_from_forcing() const;
 
+    /// Re_tau from current forcing and viscosity
+    double Re_tau_from_forcing() const;
+
+    /// Compute nu for target Re_tau: nu = sqrt(delta * |dp/dx|) * delta / Re_tau
+    static double nu_for_Re_tau(double Re_tau_target, double dp_dx, double delta = 1.0);
+
+    /// Compute dp/dx for target Re_tau: dp/dx = -(Re_tau * nu / delta)^2 / delta
+    static double dp_dx_for_Re_tau(double Re_tau_target, double nu, double delta = 1.0);
+
     /// Wall shear stress using 2nd-order accurate quadratic fit
     double wall_shear_stress_2nd_order(bool bottom = true) const;
 

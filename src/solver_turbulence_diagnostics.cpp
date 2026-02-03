@@ -20,6 +20,36 @@ double RANSSolver::u_tau_from_forcing() const {
 }
 
 // ============================================================================
+// Re_tau targeting helpers
+// ============================================================================
+
+double RANSSolver::Re_tau_from_forcing() const {
+    // Re_tau = u_tau * delta / nu
+    double delta = (mesh_->y_max - mesh_->y_min) / 2.0;
+    double u_tau = u_tau_from_forcing();
+    return u_tau * delta / config_.nu;
+}
+
+// Static helper: compute nu for target Re_tau given dp/dx and delta
+double RANSSolver::nu_for_Re_tau(double Re_tau_target, double dp_dx, double delta) {
+    // u_tau = sqrt(delta * |dp/dx|)
+    // Re_tau = u_tau * delta / nu
+    // => nu = u_tau * delta / Re_tau = sqrt(delta * |dp/dx|) * delta / Re_tau
+    double u_tau = std::sqrt(delta * std::abs(dp_dx));
+    return u_tau * delta / Re_tau_target;
+}
+
+// Static helper: compute dp/dx for target Re_tau given nu and delta
+double RANSSolver::dp_dx_for_Re_tau(double Re_tau_target, double nu, double delta) {
+    // Re_tau = u_tau * delta / nu
+    // u_tau = Re_tau * nu / delta
+    // u_tau^2 = delta * |dp/dx|
+    // => |dp/dx| = u_tau^2 / delta = (Re_tau * nu / delta)^2 / delta
+    double u_tau = Re_tau_target * nu / delta;
+    return -(u_tau * u_tau) / delta;  // Negative for driving force in +x
+}
+
+// ============================================================================
 // 2nd-order wall shear stress using quadratic fit
 // ============================================================================
 

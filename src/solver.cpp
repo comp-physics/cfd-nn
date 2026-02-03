@@ -2346,7 +2346,8 @@ void RANSSolver::check_for_nan_inf(int step) const {
     }
     
     bool all_finite = true;
-    const bool has_transport = turb_model_ && turb_model_->uses_transport_equations();
+    const bool has_turb_model = (turb_model_ != nullptr);
+    const bool has_transport = has_turb_model && turb_model_->uses_transport_equations();
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: Do NaN/Inf check entirely on device using helper functions
@@ -2373,7 +2374,11 @@ void RANSSolver::check_for_nan_inf(int step) const {
         has_bad |= gpu_check_nan_inf(u_dev, u_total);
         has_bad |= gpu_check_nan_inf(v_dev, v_total);
         has_bad |= gpu_check_nan_inf(p_dev, field_total);
-        has_bad |= gpu_check_nan_inf(nut_dev, field_total);
+
+        // Check nu_t only when turbulence model is active
+        if (has_turb_model) {
+            has_bad |= gpu_check_nan_inf(nut_dev, field_total);
+        }
 
         // Check transport variables if turbulence model uses them
         if (has_transport) {
@@ -2392,23 +2397,30 @@ void RANSSolver::check_for_nan_inf(int step) const {
         // CPU path: Check host-side fields directly (no GPU sync needed)
         for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
             for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                // Check velocity, pressure, nu_t
+                // Check velocity and pressure (always)
                 double u = 0.5 * (velocity_.u(i, j) + velocity_.u(i+1, j));
                 double v = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
                 double p = pressure_(i, j);
-                double nu_t_val = nu_t_(i, j);
-                
-                if (!std::isfinite(u) || !std::isfinite(v) || 
-                    !std::isfinite(p) || !std::isfinite(nu_t_val)) {
+
+                if (!std::isfinite(u) || !std::isfinite(v) || !std::isfinite(p)) {
                     all_finite = false;
                     break;
                 }
-                
+
+                // Check nu_t only when turbulence model is active
+                if (has_turb_model) {
+                    double nu_t_val = nu_t_(i, j);
+                    if (!std::isfinite(nu_t_val)) {
+                        all_finite = false;
+                        break;
+                    }
+                }
+
                 // Check transport variables if applicable
                 if (has_transport) {
                     double k_val = k_(i, j);
                     double omega_val = omega_(i, j);
-                    
+
                     if (!std::isfinite(k_val) || !std::isfinite(omega_val)) {
                         all_finite = false;
                         break;
@@ -2461,7 +2473,9 @@ void RANSSolver::check_for_nan_inf(int step) const {
         std::cerr << "\nOne or more fields contain NaN or Inf:\n";
         std::cerr << "  - Velocity (u, v)\n";
         std::cerr << "  - Pressure (p)\n";
-        std::cerr << "  - Eddy viscosity (nu_t)\n";
+        if (has_turb_model) {
+            std::cerr << "  - Eddy viscosity (nu_t)\n";
+        }
         if (has_transport) {
             std::cerr << "  - Transport variables (k, omega)\n";
         }
