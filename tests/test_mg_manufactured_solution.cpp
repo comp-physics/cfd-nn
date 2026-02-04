@@ -462,13 +462,67 @@ void test_uniform_2d_dirichlet() {
 void test_stretched_2d_dirichlet() {
     std::cout << "\n--- 2D Stretched Grid (tanh), Dirichlet x/y ---\n\n";
 
-    // NOTE: 2D semi-coarsening (x-only) is not yet fully implemented.
-    // The restrict_residual_xz/prolongate_correction_xz functions assume 3D (Nz>1).
-    // For 2D with Nz=1, the z-loop bounds become 0, causing no restriction.
-    // This test is skipped until 2D semi-coarsening is properly implemented.
-    std::cout << "[SKIP] 2D semi-coarsening not yet implemented (restrict_residual_xz assumes 3D)\n";
-    record("2D stretched Dirichlet residual", true, true);  // Skip
-    record("2D stretched Dirichlet solution error", true, true);  // Skip
+    const int Nx = 64, Ny = 64;
+    const double Lx = M_PI;
+    const double y_lo = -1.0, y_hi = 1.0;
+    const double Ly = y_hi - y_lo;
+    const double beta = 2.0;
+
+    Mesh mesh;
+    mesh.init_stretched_y(Nx, Ny, 0.0, Lx, y_lo, y_hi,
+                          Mesh::tanh_stretching(beta), 2);
+
+    std::cout << "Grid: " << Nx << " x " << Ny << "\n";
+    std::cout << "Y-stretched: " << (mesh.is_y_stretched() ? "YES" : "NO") << "\n";
+    std::cout << "dy_wall: " << mesh.dyv[mesh.Nghost] << "\n";
+    std::cout << "dy_center: " << mesh.dyv[mesh.Nghost + Ny/2] << "\n";
+
+    ScalarField phi_true(mesh);
+    const double kx = M_PI / Lx;
+    const double ky = M_PI / Ly;
+
+    // Set interior cells
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double x = mesh.xc[i];
+            double y = mesh.yc[j];
+            phi_true(i,j) = std::sin(kx * x) * std::sin(ky * (y - y_lo));
+        }
+    }
+
+    // Apply Dirichlet ghosts
+    apply_dirichlet_ghosts_2d(mesh, phi_true, 0.0, 0.0, 0.0, 0.0);
+
+    ScalarField rhs(mesh);
+    apply_discrete_laplacian_2d(mesh, phi_true, rhs);
+
+    ScalarField phi(mesh, 0.0);
+    MultigridPoissonSolver mg(mesh);
+    mg.set_bc(PoissonBC::Dirichlet, PoissonBC::Dirichlet,
+              PoissonBC::Dirichlet, PoissonBC::Dirichlet);
+
+    PoissonConfig cfg;
+    cfg.tol_rhs = 1e-10;
+    cfg.tol_abs = 1e-12;
+    cfg.max_vcycles = 100;
+    cfg.use_vcycle_graph = false;
+
+    int cycles = mg.solve(rhs, phi, cfg);
+
+    double solution_error = compute_max_error_2d(mesh, phi, phi_true);
+    double residual_rel = mg.residual_l2() / mg.rhs_norm_l2();
+
+    std::cout << "V-cycles: " << cycles << "\n";
+    std::cout << "Final residual (rel): " << std::scientific << residual_rel << "\n";
+    std::cout << "Solution error (inf): " << solution_error << "\n";
+
+    bool residual_ok = residual_rel < 1e-8;
+    bool error_ok = solution_error < 1e-5;
+
+    record("2D stretched Dirichlet residual", residual_ok,
+           "res_rel=" + std::to_string(residual_rel));
+    record("2D stretched Dirichlet solution error", error_ok,
+           "err=" + std::to_string(solution_error));
 }
 
 //=============================================================================

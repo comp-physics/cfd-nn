@@ -793,6 +793,8 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define CHEBY_TARGET_2D_NONUNIF \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr, aS_ptr, aN_ptr)")
     #define CHEBY_TARGET_3D \
         _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define CHEBY_TARGET_3D_NONUNIF \
@@ -806,6 +808,7 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const double* aS_ptr = yLap_aS_;
     const double* aN_ptr = yLap_aN_;
     #define CHEBY_TARGET_2D
+    #define CHEBY_TARGET_2D_NONUNIF
     #define CHEBY_TARGET_3D
     #define CHEBY_TARGET_3D_NONUNIF
     #define CHEBY_TARGET_COPY
@@ -823,7 +826,23 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
 
         // Steps 2-3: Compute Jacobi update and apply Chebyshev weight
         // Read from u (with valid BCs), write to tmp
-        if (is_2d) {
+        if (is_2d && use_nonuniform_y) {
+            // 2D with non-uniform y-spacing (semi-coarsening in x only)
+            CHEBY_TARGET_2D_NONUNIF
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                    double u_old = u_ptr[idx];
+                    double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                    double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                    double diag_j = 2.0 / dx2 + (aS_ptr[jm] + aN_ptr[jm]);
+                    double u_jacobi = (lap_x + lap_y - f_ptr[idx]) / diag_j;
+                    tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                }
+            }
+        } else if (is_2d) {
+            // 2D with uniform y-spacing
             CHEBY_TARGET_2D
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
@@ -881,6 +900,7 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     apply_bc(level);
 
     #undef CHEBY_TARGET_2D
+    #undef CHEBY_TARGET_2D_NONUNIF
     #undef CHEBY_TARGET_3D
     #undef CHEBY_TARGET_3D_NONUNIF
     #undef CHEBY_TARGET_COPY
@@ -930,6 +950,10 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
         _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_U_TO_TMP_2D_NONUNIF \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr, aS_ptr, aN_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_2D_NONUNIF \
+        _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr, aS_ptr, aN_ptr)")
     #define JACOBI_TARGET_U_TO_TMP_3D \
         _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_3D \
@@ -950,6 +974,8 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     // CPU: no pragmas needed
     #define JACOBI_TARGET_U_TO_TMP_2D
     #define JACOBI_TARGET_TMP_TO_U_2D
+    #define JACOBI_TARGET_U_TO_TMP_2D_NONUNIF
+    #define JACOBI_TARGET_TMP_TO_U_2D_NONUNIF
     #define JACOBI_TARGET_U_TO_TMP_3D
     #define JACOBI_TARGET_TMP_TO_U_3D
     #define JACOBI_TARGET_U_TO_TMP_3D_NONUNIF
@@ -962,7 +988,23 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     for (int iter = 0; iter < iterations; ++iter) {
         if (iter % 2 == 0) {
             // u -> tmp
-            if (is_2d) {
+            if (is_2d && use_nonuniform_y) {
+                // 2D with non-uniform y-spacing (semi-coarsening in x only)
+                JACOBI_TARGET_U_TO_TMP_2D_NONUNIF
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = j * stride + i;
+                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        double u_old = u_ptr[idx];
+                        double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                        double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                        double diag_j = 2.0 / dx2 + (aS_ptr[jm] + aN_ptr[jm]);
+                        double u_jacobi = (lap_x + lap_y - f_ptr[idx]) / diag_j;
+                        tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
+                }
+            } else if (is_2d) {
+                // 2D with uniform y-spacing
                 JACOBI_TARGET_U_TO_TMP_2D
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
@@ -1012,7 +1054,23 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
             }
         } else {
             // tmp -> u
-            if (is_2d) {
+            if (is_2d && use_nonuniform_y) {
+                // 2D with non-uniform y-spacing (semi-coarsening in x only)
+                JACOBI_TARGET_TMP_TO_U_2D_NONUNIF
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = j * stride + i;
+                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        double u_old = tmp_ptr[idx];
+                        double lap_x = (tmp_ptr[idx+1] + tmp_ptr[idx-1]) / dx2;
+                        double lap_y = aS_ptr[jm] * tmp_ptr[idx-stride] + aN_ptr[jm] * tmp_ptr[idx+stride];
+                        double diag_j = 2.0 / dx2 + (aS_ptr[jm] + aN_ptr[jm]);
+                        double u_jacobi = (lap_x + lap_y - f_ptr[idx]) / diag_j;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
+                }
+            } else if (is_2d) {
+                // 2D with uniform y-spacing
                 JACOBI_TARGET_TMP_TO_U_2D
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
@@ -1083,8 +1141,12 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     // Clean up macros
     #undef JACOBI_TARGET_U_TO_TMP_2D
     #undef JACOBI_TARGET_TMP_TO_U_2D
+    #undef JACOBI_TARGET_U_TO_TMP_2D_NONUNIF
+    #undef JACOBI_TARGET_TMP_TO_U_2D_NONUNIF
     #undef JACOBI_TARGET_U_TO_TMP_3D
     #undef JACOBI_TARGET_TMP_TO_U_3D
+    #undef JACOBI_TARGET_U_TO_TMP_3D_NONUNIF
+    #undef JACOBI_TARGET_TMP_TO_U_3D_NONUNIF
     #undef JACOBI_TARGET_COPY
 }
 
