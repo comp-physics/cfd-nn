@@ -1243,11 +1243,11 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
 }
 
 void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
-    // Y-line relaxation: solve tridiagonal systems along y-lines
+    // Y-line relaxation: solve tridiagonal systems along y-lines (Line-Jacobi)
     // This is optimal for anisotropic problems where y-direction dominates.
     // For each (i,k) pair, solve: -aS[j]*u[j-1] + diag[j]*u[j] - aN[j]*u[j+1] = rhs[j]
     // where rhs[j] = f[j] - x_laplacian(u) - z_laplacian(u) (neighbors frozen)
-    // Thomas algorithm: O(Ny) per line, Nx*Nz independent lines
+    // Thomas algorithm: O(Ny) per line, Nx*Nz independent lines (massive GPU parallelism)
     NVTX_SCOPE_POISSON("mg:smooth_yline");
 
     auto& grid = *levels_[level];
@@ -1261,43 +1261,141 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
     const double dz2 = grid.dz * grid.dz;
     const bool is_2d = grid.is2D();
 
-    // Y-metric coefficients (pointers to mesh's precomputed coefficients)
+    // Y-metric coefficients
     const int Ng_fine = levels_[0]->Ng;
     const int y_metric_offset = (Ng_fine - Ng);
 
-    // Get pointers
-    double* u_ptr = u_ptrs_[level];
-    const double* f_ptr = f_ptrs_[level];
-    const double* aS_ptr = yLap_aS_;  // Already a pointer
-    const double* aN_ptr = yLap_aN_;  // Already a pointer
-
-    // Temporary arrays for Thomas algorithm (one per y-line)
-    // Allocate per-line work arrays: c_prime and d_prime for forward sweep
-    std::vector<double> c_prime(Ny);  // Modified upper diagonal
-    std::vector<double> d_prime(Ny);  // Modified RHS
-
-    // 2/dx² for x-direction Laplacian (periodic BC means all x-neighbors exist)
     const double inv_dx2 = 1.0 / dx2;
     const double inv_dz2 = is_2d ? 0.0 : (1.0 / dz2);
 
+#ifdef USE_GPU_OFFLOAD
+    // Max Ny we support for stack-allocated work arrays (256 should cover most cases)
+    constexpr int MAX_NY = 256;
+    if (Ny <= MAX_NY) {
+        // GPU path: parallel Thomas solve per (i,k) line - NO host transfers
+        // Each thread handles one complete y-line with thread-local work arrays
+        int device = omp_get_default_device();
+        double* u_ptr_gpu = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+        const double* f_ptr_gpu = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+        const double* aS_ptr_gpu = static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device));
+        const double* aN_ptr_gpu = static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device));
+
+        for (int iter = 0; iter < iterations; ++iter) {
+            if (is_2d) {
+                // 2D: parallelize over i (Nx lines)
+                #pragma omp target teams distribute parallel for is_device_ptr(u_ptr_gpu, f_ptr_gpu, aS_ptr_gpu, aN_ptr_gpu)
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    // Thread-local work arrays on GPU stack
+                    double c_prime[MAX_NY];
+                    double d_prime[MAX_NY];
+
+                    // Forward sweep (Thomas algorithm)
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        int jm = j + y_metric_offset;
+                        int idx = j * stride + i;
+
+                        double a = (j > Ng) ? -aS_ptr_gpu[jm] : 0.0;
+                        double c = (j < Ny + Ng - 1) ? -aN_ptr_gpu[jm] : 0.0;
+                        double b = aS_ptr_gpu[jm] + aN_ptr_gpu[jm] + 2.0 * inv_dx2;
+
+                        double rhs = f_ptr_gpu[idx] - inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1]);
+
+                        int j_local = j - Ng;
+                        if (j_local == 0) {
+                            c_prime[0] = c / b;
+                            d_prime[0] = rhs / b;
+                        } else {
+                            double denom = b - a * c_prime[j_local - 1];
+                            c_prime[j_local] = c / denom;
+                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                        }
+                    }
+
+                    // Backward substitution
+                    for (int j = Ny + Ng - 1; j >= Ng; --j) {
+                        int j_local = j - Ng;
+                        int idx = j * stride + i;
+                        if (j_local == Ny - 1) {
+                            u_ptr_gpu[idx] = d_prime[j_local];
+                        } else {
+                            u_ptr_gpu[idx] = d_prime[j_local] - c_prime[j_local] * u_ptr_gpu[idx + stride];
+                        }
+                    }
+                }
+            } else {
+                // 3D: parallelize over (i,k) pairs (Nx*Nz lines)
+                const int num_lines = Nx * Nz;
+                #pragma omp target teams distribute parallel for is_device_ptr(u_ptr_gpu, f_ptr_gpu, aS_ptr_gpu, aN_ptr_gpu)
+                for (int line_idx = 0; line_idx < num_lines; ++line_idx) {
+                    int i = (line_idx % Nx) + Ng;
+                    int k = (line_idx / Nx) + Ng;
+
+                    // Thread-local work arrays on GPU stack
+                    double c_prime[MAX_NY];
+                    double d_prime[MAX_NY];
+
+                    // Forward sweep (Thomas algorithm)
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        int jm = j + y_metric_offset;
+                        int idx = k * plane_stride + j * stride + i;
+
+                        double a = (j > Ng) ? -aS_ptr_gpu[jm] : 0.0;
+                        double c = (j < Ny + Ng - 1) ? -aN_ptr_gpu[jm] : 0.0;
+                        double b = aS_ptr_gpu[jm] + aN_ptr_gpu[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
+
+                        double rhs = f_ptr_gpu[idx]
+                                   - inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1])
+                                   - inv_dz2 * (u_ptr_gpu[idx+plane_stride] + u_ptr_gpu[idx-plane_stride]);
+
+                        int j_local = j - Ng;
+                        if (j_local == 0) {
+                            c_prime[0] = c / b;
+                            d_prime[0] = rhs / b;
+                        } else {
+                            double denom = b - a * c_prime[j_local - 1];
+                            c_prime[j_local] = c / denom;
+                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                        }
+                    }
+
+                    // Backward substitution
+                    for (int j = Ny + Ng - 1; j >= Ng; --j) {
+                        int j_local = j - Ng;
+                        int idx = k * plane_stride + j * stride + i;
+                        if (j_local == Ny - 1) {
+                            u_ptr_gpu[idx] = d_prime[j_local];
+                        } else {
+                            u_ptr_gpu[idx] = d_prime[j_local] - c_prime[j_local] * u_ptr_gpu[idx + stride];
+                        }
+                    }
+                }
+            }
+
+            apply_bc(level);
+        }
+        return;  // GPU path complete
+    }
+#endif
+
+    // CPU fallback path (for non-GPU builds or Ny > MAX_NY)
+    double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
+
+    std::vector<double> c_prime(Ny);
+    std::vector<double> d_prime(Ny);
+
     for (int iter = 0; iter < iterations; ++iter) {
-        // Sweep over all y-lines (one per (i,k) pair)
         if (is_2d) {
-            // 2D case: only iterate over i, k is fixed
             for (int i = Ng; i < Nx + Ng; ++i) {
-                // Build tridiagonal system for this y-line
-                // Forward sweep (Thomas algorithm)
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     int jm = j + y_metric_offset;
                     int idx = j * stride + i;
 
-                    // Tridiagonal system: a*u[j-1] + b*u[j] + c*u[j+1] = d
-                    // Derived from the Poisson equation -∇²φ = f
-                    double a = (j > Ng) ? -aS_ptr[jm] : 0.0;  // Lower diagonal
-                    double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;  // Upper diagonal
-                    double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;  // Diagonal
-
-                    // RHS: f - lap_x(u)
+                    double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
+                    double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
+                    double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;
                     double rhs = f_ptr[idx] - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]);
 
                     int j_local = j - Ng;
@@ -1311,7 +1409,6 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     }
                 }
 
-                // Backward substitution
                 for (int j = Ny + Ng - 1; j >= Ng; --j) {
                     int j_local = j - Ng;
                     int idx = j * stride + i;
@@ -1323,21 +1420,15 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                 }
             }
         } else {
-            // 3D case: iterate over (i,k) pairs
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
-                    // Build tridiagonal system for this y-line
-                    // Forward sweep (Thomas algorithm)
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = k * plane_stride + j * stride + i;
 
-                        // Tridiagonal: -aS*u[j-1] + diag*u[j] - aN*u[j+1] = rhs
                         double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
                         double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
                         double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
-
-                        // RHS: f - lap_x - lap_z
                         double rhs = f_ptr[idx]
                                    - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
                                    - inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]);
@@ -1353,7 +1444,6 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         }
                     }
 
-                    // Backward substitution
                     for (int j = Ny + Ng - 1; j >= Ng; --j) {
                         int j_local = j - Ng;
                         int idx = k * plane_stride + j * stride + i;
@@ -2056,16 +2146,8 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 
         for (int pass = 0; pass < nu; ++pass) {
             if (use_yline_for_anisotropy) {
-#ifdef USE_GPU_OFFLOAD
-                // Y-line relaxation runs on CPU - transfer both u and f (RHS)
-                const size_t size = level_sizes_[level];
-                #pragma omp target update from(u_ptrs_[level][0:size])
-                #pragma omp target update from(f_ptrs_[level][0:size])
-#endif
+                // Y-line relaxation now runs entirely on GPU - no transfers needed
                 smooth_y_lines(level, 2);  // 2 y-line sweeps per pass
-#ifdef USE_GPU_OFFLOAD
-                #pragma omp target update to(u_ptrs_[level][0:size])
-#endif
             } else if (semi_coarsening_ && (level > 0)) {
                 // 2D semi-coarsening: use more Jacobi iterations with damping
                 smooth_jacobi(level, degree * 4, 0.67);
@@ -2083,15 +2165,8 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         const bool is_3d = levels_[level]->Nz > 1;
         if (semi_coarsening_ && is_3d) {
             // 3D semi-coarsening: use y-line relaxation (Thomas algorithm)
-#ifdef USE_GPU_OFFLOAD
-            const size_t size = level_sizes_[level];
-            #pragma omp target update from(u_ptrs_[level][0:size])
-            #pragma omp target update from(f_ptrs_[level][0:size])
-#endif
+            // Runs entirely on GPU - no transfers needed
             smooth_y_lines(level, 10);  // Multiple y-line sweeps
-#ifdef USE_GPU_OFFLOAD
-            #pragma omp target update to(u_ptrs_[level][0:size])
-#endif
         } else if (semi_coarsening_) {
             // 2D semi-coarsening: use many damped Jacobi iterations
             smooth_jacobi(level, 200, 0.67);
