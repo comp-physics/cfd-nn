@@ -91,7 +91,14 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
         // CRITICAL: Disable CUDA Graph for stretched grids
         // The graphed V-cycle uses uniform-y operators that don't have non-uniform y support yet
         use_vcycle_graph_ = false;
-        std::cout << "[MG] Disabled V-cycle CUDA Graph for y-stretched mesh (non-uniform y requires ungraphed path)\n";
+
+        // CRITICAL: Force Jacobi smoother for stretched grids
+        // The Chebyshev eigenvalue bounds [0.05, 1.95] assume uniform grid spacing.
+        // With stretched y, the variable-coefficient Laplacian has eigenvalues outside
+        // this range (near-wall cells have 1/dy^2 >> uniform grid), causing divergence.
+        // Jacobi with omega=0.7-0.8 is unconditionally stable for any SPD matrix.
+        smoother_type_ = MGSmootherType::Jacobi;
+        std::cout << "[MG] y-stretched mesh: disabled V-cycle CUDA Graph, forced Jacobi smoother (Chebyshev bounds invalid)\n";
     }
 
     // Initialize GPU buffers (maps to device) OR set up raw pointers for CPU
@@ -2477,6 +2484,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             b_inf_ = 0.0;
             b_l2_ = 0.0;
         }
+
+        // Mark that we used fixed-cycle mode (for status reporting)
+        converged_ = false;       // Not applicable - no convergence check performed
+        fixed_cycle_mode_ = true; // Flag that we used fixed-cycle mode
 
         // Handle nullspace for singular problems (pure Neumann/Periodic)
         fix_nullspace(0);
