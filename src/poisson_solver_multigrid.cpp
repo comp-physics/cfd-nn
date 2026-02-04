@@ -61,6 +61,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <iomanip>  // for std::setprecision, std::fixed
 #include <cassert>
 #include <limits>   // for std::numeric_limits (NaN handling)
 #include <cstdlib>  // for std::getenv
@@ -79,6 +80,7 @@ constexpr double CHEBYSHEV_LAMBDA_MAX = 1.95;
 
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
+    compute_gershgorin_bounds();  // Compute per-level Chebyshev eigenvalue bounds
 
     // Initialize y-metric pointers for non-uniform y-spacing at level 0
     // (D·G = L consistency for stretched grids in projection step)
@@ -92,13 +94,11 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
         // The graphed V-cycle uses uniform-y operators that don't have non-uniform y support yet
         use_vcycle_graph_ = false;
 
-        // CRITICAL: Force Jacobi smoother for stretched grids
-        // The Chebyshev eigenvalue bounds [0.05, 1.95] assume uniform grid spacing.
-        // With stretched y, the variable-coefficient Laplacian has eigenvalues outside
-        // this range (near-wall cells have 1/dy^2 >> uniform grid), causing divergence.
-        // Jacobi with omega=0.7-0.8 is unconditionally stable for any SPD matrix.
-        smoother_type_ = MGSmootherType::Jacobi;
-        std::cout << "[MG] y-stretched mesh: disabled V-cycle CUDA Graph, forced Jacobi smoother (Chebyshev bounds invalid)\n";
+        // Chebyshev smoother is now enabled for stretched grids using Gershgorin bounds.
+        // The compute_gershgorin_bounds() function computes λmax per level based on
+        // actual operator coefficients, making Chebyshev safe for variable-coefficient Laplacians.
+        // Jacobi fallback is available via MG_SMOOTHER=jacobi environment variable if needed.
+        std::cout << "[MG] y-stretched mesh: disabled V-cycle CUDA Graph, using Chebyshev with Gershgorin bounds\n";
     }
 
     // Initialize GPU buffers (maps to device) OR set up raw pointers for CPU
@@ -224,6 +224,79 @@ void MultigridPoissonSolver::create_hierarchy() {
             levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz, ng_coarse));
         }
     }
+}
+
+void MultigridPoissonSolver::compute_gershgorin_bounds() {
+    // Compute per-level Gershgorin bounds for D⁻¹A (Jacobi-preconditioned operator)
+    // For Chebyshev smoothing, we need λmax such that eigenvalues of D⁻¹A ∈ [λmin, λmax]
+    //
+    // Gershgorin theorem: For each row i, eigenvalues lie in disk centered at
+    // diagonal with radius = sum of |off-diagonals|. For D⁻¹A:
+    //   - Diagonal of D⁻¹A is 1 (since D⁻¹D = I)
+    //   - Off-diagonals of D⁻¹A are |a_ij|/d_i
+    //   - λmax ≤ max_i(1 + Σ_j |a_ij|/d_i)
+    //
+    // For 7-point stencil: λmax ≤ 1 + max_i(off_diag_sum_i / diag_i)
+
+    cheby_lambda_max_.resize(levels_.size());
+
+    for (size_t level = 0; level < levels_.size(); ++level) {
+        auto& grid = *levels_[level];
+        const double dx2 = grid.dx * grid.dx;
+        const double dy2 = grid.dy * grid.dy;
+        const double dz2 = grid.dz * grid.dz;
+        const bool is_2d = grid.is2D();
+        const int Ny = grid.Ny;
+        const int Ng = grid.Ng;
+
+        // Check if this level uses non-uniform y (semi-coarsening keeps y-metrics)
+        const bool use_nonuniform_y = y_stretched_ && (semi_coarsening_ || level == 0);
+
+        // For semi-coarsening: coarse levels have Ng=1 but y-metrics are indexed for fine mesh
+        const int Ng_fine = levels_[0]->Ng;
+        const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
+
+        double max_ratio = 0.0;
+
+        if (use_nonuniform_y) {
+            // Non-uniform y: compute max over all interior cells
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                int jm = j + y_metric_offset;
+                double aS = yLap_aS_[jm];
+                double aN = yLap_aN_[jm];
+
+                // Diagonal and off-diagonal sum for this row
+                double diag_j = is_2d ? (2.0/dx2 + (aS + aN))
+                                      : (2.0/dx2 + (aS + aN) + 2.0/dz2);
+                double off_sum = is_2d ? (2.0/dx2 + aS + aN)
+                                       : (2.0/dx2 + aS + aN + 2.0/dz2);
+
+                double ratio = off_sum / diag_j;
+                max_ratio = std::max(max_ratio, ratio);
+            }
+        } else {
+            // Uniform grid: ratio is exactly 1 for all interior cells
+            // (off_sum = diag for 7-point stencil)
+            max_ratio = 1.0;
+        }
+
+        // λmax = 1 + max_ratio, with safety margin
+        // Add 10% margin for numerical safety (boundary modifications, rounding, precision)
+        cheby_lambda_max_[level] = (1.0 + max_ratio) * 1.10;
+
+        // Clamp to reasonable range [1.8, 2.5] for robustness
+        // Lower bound prevents too-aggressive polynomial; upper bound catches pathological cases
+        cheby_lambda_max_[level] = std::max(1.8, std::min(2.5, cheby_lambda_max_[level]));
+    }
+
+    // Report computed bounds
+    std::cout << "[MG] Chebyshev Gershgorin bounds computed: ";
+    for (size_t level = 0; level < levels_.size(); ++level) {
+        std::cout << "L" << level << "=" << std::fixed << std::setprecision(3)
+                  << cheby_lambda_max_[level];
+        if (level < levels_.size() - 1) std::cout << ", ";
+    }
+    std::cout << std::defaultfloat << "\n";
 }
 
 void MultigridPoissonSolver::apply_bc(int level) {
@@ -783,9 +856,12 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const int Ng_fine = levels_[0]->Ng;
     const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
 
-    // Chebyshev eigenvalue bounds (see constants at top of file)
-    const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
-    const double c = (CHEBYSHEV_LAMBDA_MAX - CHEBYSHEV_LAMBDA_MIN) / 2.0;
+    // Chebyshev eigenvalue bounds: use per-level Gershgorin bounds for D⁻¹A
+    // λmin = 0.05 * λmax (smoothing doesn't need tight lower bound, but this keeps ω reasonable)
+    const double lambda_max = cheby_lambda_max_[level];
+    const double lambda_min = 0.05 * lambda_max;
+    const double d = (lambda_max + lambda_min) / 2.0;
+    const double c = (lambda_max - lambda_min) / 2.0;
 
     // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
     // Local pointer copies with map(present:) get HOST addresses in NVHPC.
@@ -830,6 +906,11 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
         // ω_k = 1/(d - c*cos(θ_k)) where θ_k = π*(2k+1)/(2*degree)
         double theta = M_PI * (2.0 * k + 1.0) / (2.0 * degree);
         double omega = 1.0 / (d - c * std::cos(theta));
+
+        // SAFETY: Clamp ω to prevent catastrophic over-relaxation
+        // Even with correct bounds, numerical precision can cause issues at extremes
+        constexpr double OMEGA_MAX = 2.0;
+        omega = std::min(omega, OMEGA_MAX);
 
         // Steps 2-3: Compute Jacobi update and apply Chebyshev weight
         // Read from u (with valid BCs), write to tmp

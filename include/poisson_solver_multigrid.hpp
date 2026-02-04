@@ -157,6 +157,11 @@ private:
     bool semi_coarsening_ = false;     ///< True if using x-z semi-coarsening (y unchanged across levels)
     size_t y_metrics_size_ = 0;        ///< Size of y-metric arrays
 
+    // Per-level Chebyshev eigenvalue bounds (computed via Gershgorin for D⁻¹A)
+    // λmax is the upper bound on spectrum of Jacobi-preconditioned operator
+    // λmin is set to 0.1 * λmax (smoothing doesn't need tight lower bound)
+    std::vector<double> cheby_lambda_max_;  ///< Per-level λmax for Chebyshev
+
     // Boundary conditions
     PoissonBC bc_x_lo_ = PoissonBC::Periodic;
     PoissonBC bc_x_hi_ = PoissonBC::Periodic;
@@ -189,6 +194,7 @@ private:
 
     // Core multigrid operations
     void create_hierarchy();
+    void compute_gershgorin_bounds();  // Compute per-level Chebyshev eigenvalue bounds
     void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
     void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
