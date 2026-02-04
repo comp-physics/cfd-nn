@@ -1269,8 +1269,10 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
     const double inv_dz2 = is_2d ? 0.0 : (1.0 / dz2);
 
 #ifdef USE_GPU_OFFLOAD
-    // Max Ny we support for stack-allocated work arrays (256 should cover most cases)
-    constexpr int MAX_NY = 256;
+    // Max Ny we support for stack-allocated work arrays (128 is safe for occupancy)
+    // Above this, local memory spills can hurt performance
+    constexpr int MAX_NY = 128;
+    constexpr double PIVOT_EPS = 1e-14;  // Guard against tiny pivots in Thomas
     if (Ny <= MAX_NY) {
         // GPU path: parallel Thomas solve per (i,k) line - NO host transfers
         // Each thread handles one complete y-line with thread-local work arrays
@@ -1302,12 +1304,17 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
-                            c_prime[0] = c / b;
-                            d_prime[0] = rhs / b;
+                            // Guard against tiny diagonal (shouldn't happen for valid Poisson)
+                            double b_safe = (b > PIVOT_EPS) ? b : PIVOT_EPS;
+                            c_prime[0] = c / b_safe;
+                            d_prime[0] = rhs / b_safe;
                         } else {
                             double denom = b - a * c_prime[j_local - 1];
-                            c_prime[j_local] = c / denom;
-                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                            // Clamp tiny pivots to avoid NaN (system should be diagonally dominant)
+                            double denom_safe = (denom > PIVOT_EPS || denom < -PIVOT_EPS) ? denom :
+                                                (denom >= 0 ? PIVOT_EPS : -PIVOT_EPS);
+                            c_prime[j_local] = c / denom_safe;
+                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom_safe;
                         }
                     }
 
@@ -1349,12 +1356,15 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
-                            c_prime[0] = c / b;
-                            d_prime[0] = rhs / b;
+                            double b_safe = (b > PIVOT_EPS) ? b : PIVOT_EPS;
+                            c_prime[0] = c / b_safe;
+                            d_prime[0] = rhs / b_safe;
                         } else {
                             double denom = b - a * c_prime[j_local - 1];
-                            c_prime[j_local] = c / denom;
-                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                            double denom_safe = (denom > PIVOT_EPS || denom < -PIVOT_EPS) ? denom :
+                                                (denom >= 0 ? PIVOT_EPS : -PIVOT_EPS);
+                            c_prime[j_local] = c / denom_safe;
+                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom_safe;
                         }
                     }
 
@@ -1378,6 +1388,7 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
 #endif
 
     // CPU fallback path (for non-GPU builds or Ny > MAX_NY)
+    constexpr double PIVOT_EPS_CPU = 1e-14;  // Same threshold as GPU
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     const double* aS_ptr = yLap_aS_;
@@ -1400,12 +1411,15 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
 
                     int j_local = j - Ng;
                     if (j_local == 0) {
-                        c_prime[0] = c / b;
-                        d_prime[0] = rhs / b;
+                        double b_safe = (std::abs(b) > PIVOT_EPS_CPU) ? b : PIVOT_EPS_CPU;
+                        c_prime[0] = c / b_safe;
+                        d_prime[0] = rhs / b_safe;
                     } else {
                         double denom = b - a * c_prime[j_local - 1];
-                        c_prime[j_local] = c / denom;
-                        d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                        double denom_safe = (std::abs(denom) > PIVOT_EPS_CPU) ? denom :
+                                            (denom >= 0 ? PIVOT_EPS_CPU : -PIVOT_EPS_CPU);
+                        c_prime[j_local] = c / denom_safe;
+                        d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom_safe;
                     }
                 }
 
@@ -1435,12 +1449,15 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
-                            c_prime[0] = c / b;
-                            d_prime[0] = rhs / b;
+                            double b_safe = (std::abs(b) > PIVOT_EPS_CPU) ? b : PIVOT_EPS_CPU;
+                            c_prime[0] = c / b_safe;
+                            d_prime[0] = rhs / b_safe;
                         } else {
                             double denom = b - a * c_prime[j_local - 1];
-                            c_prime[j_local] = c / denom;
-                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                            double denom_safe = (std::abs(denom) > PIVOT_EPS_CPU) ? denom :
+                                                (denom >= 0 ? PIVOT_EPS_CPU : -PIVOT_EPS_CPU);
+                            c_prime[j_local] = c / denom_safe;
+                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom_safe;
                         }
                     }
 
