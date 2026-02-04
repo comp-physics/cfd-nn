@@ -1756,7 +1756,14 @@ double RANSSolver::step() {
         // Populate PoissonStats for external access (always, not just when diagnostics enabled)
         if (selected_solver_ == PoissonSolverType::MG) {
             poisson_stats_.cycles = cycles;
-            poisson_stats_.converged = mg_poisson_solver_.converged();
+            // Determine solve status from MG solver flags
+            if (mg_poisson_solver_.used_fixed_cycles()) {
+                poisson_stats_.status = PoissonSolveStatus::FixedCycles;
+            } else if (mg_poisson_solver_.converged()) {
+                poisson_stats_.status = PoissonSolveStatus::ConvergedToTol;
+            } else {
+                poisson_stats_.status = PoissonSolveStatus::HitMaxCycles;
+            }
             poisson_stats_.rhs_norm_l2 = mg_poisson_solver_.rhs_norm_l2();
             poisson_stats_.rhs_norm_inf = mg_poisson_solver_.rhs_norm();
             poisson_stats_.res_norm_l2 = mg_poisson_solver_.residual_l2();
@@ -1784,7 +1791,7 @@ double RANSSolver::step() {
                           << " ||r0||=" << r0_norm
                           << " ||r||/||b||=" << poisson_stats_.res_over_rhs
                           << " ||r||/||r0||=" << ((r0_norm > 1e-30) ? r_norm / r0_norm : 0.0)
-                          << (poisson_stats_.converged ? "" : " [MAX_CYCLES]");
+                          << " [" << poisson_stats_.status_string() << "]";
             }
             std::cout << "\n";
         }
@@ -1845,6 +1852,27 @@ double RANSSolver::step() {
         poisson_stats_.div_after_proj_linf = max_div;
         poisson_stats_.div_after_proj_l2 = std::sqrt(sum_div2);
 
+        // Compute dimensionless scaled divergence for portable thresholds
+        // dx_min = min cell size, u_ref = u_tau (from forcing) or bulk velocity
+        double dx_min = mesh_->dx;
+        if (mesh_->is_y_stretched()) {
+            // For stretched mesh, use minimum dy from wall region
+            dx_min = std::min(dx_min, mesh_->dyv[mesh_->Nghost]);  // First interior cell height
+        } else {
+            dx_min = std::min(dx_min, mesh_->dy);
+        }
+        if (!mesh_->is2D()) {
+            dx_min = std::min(dx_min, mesh_->dz);
+        }
+        // Use u_tau from forcing as reference velocity (consistent with channel flow)
+        double u_ref = u_tau_from_forcing();
+        if (u_ref < 1e-10) u_ref = 1.0;  // Fallback if no forcing
+
+        poisson_stats_.dx_min = dx_min;
+        poisson_stats_.u_ref = u_ref;
+        poisson_stats_.div_scaled_linf = max_div * dx_min / u_ref;
+        poisson_stats_.div_scaled_l2 = poisson_stats_.div_after_proj_l2 * dx_min / u_ref;
+
         // Print diagnostics if enabled (via NNCFD_POISSON_DIAGNOSTICS env var)
         static bool div_diagnostics = (std::getenv("NNCFD_POISSON_DIAGNOSTICS") != nullptr);
         static int div_diagnostics_interval = []() {
@@ -1854,8 +1882,9 @@ double RANSSolver::step() {
         }();
         if (div_diagnostics && (iter_ % div_diagnostics_interval == 0)) {
             std::cout << "[Projection] ||div(u)||_Linf=" << std::scientific << std::setprecision(6)
-                      << max_div << " ||div(u)||_L2=" << poisson_stats_.div_after_proj_l2
-                      << " dt*Linf=" << current_dt_ * max_div << "\n";
+                      << max_div << " L2=" << poisson_stats_.div_after_proj_l2
+                      << " scaled_Linf=" << poisson_stats_.div_scaled_linf
+                      << " [" << poisson_stats_.status_string() << "]\n";
         }
     }
     

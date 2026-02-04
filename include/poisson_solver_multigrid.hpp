@@ -78,7 +78,11 @@ public:
     double initial_residual_l2() const { return r0_l2_; }
 
     /// Check if last solve converged (reached tolerance) vs hit max_vcycles
+    /// Returns false for fixed-cycle mode (no convergence check performed)
     bool converged() const { return converged_; }
+
+    /// Check if last solve used fixed-cycle mode (no convergence checking)
+    bool used_fixed_cycles() const { return fixed_cycle_mode_; }
 
     /// Set smoother type (Jacobi for reference/debugging, Chebyshev for performance)
     /// Can also be set via environment variable MG_SMOOTHER=jacobi|chebyshev
@@ -168,6 +172,7 @@ private:
     double r0_ = 0.0;            // Initial residual ||r0||_∞ from last solve
     double r0_l2_ = 0.0;         // Initial residual ||r0||_2 from last solve
     bool converged_ = false;     // True if solve reached tolerance (vs hitting max_vcycles)
+    bool fixed_cycle_mode_ = false; // True if last solve used fixed-cycle mode
     double dirichlet_val_ = 0.0;
     MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
 

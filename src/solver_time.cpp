@@ -572,7 +572,14 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     // Populate PoissonStats for external access (for RK paths that call project_velocity)
     if (selected_solver_ == PoissonSolverType::MG) {
         poisson_stats_.cycles = vcycles;
-        poisson_stats_.converged = mg_poisson_solver_.converged();
+        // Determine solve status from MG solver flags
+        if (mg_poisson_solver_.used_fixed_cycles()) {
+            poisson_stats_.status = PoissonSolveStatus::FixedCycles;
+        } else if (mg_poisson_solver_.converged()) {
+            poisson_stats_.status = PoissonSolveStatus::ConvergedToTol;
+        } else {
+            poisson_stats_.status = PoissonSolveStatus::HitMaxCycles;
+        }
         poisson_stats_.rhs_norm_l2 = mg_poisson_solver_.rhs_norm_l2();
         poisson_stats_.rhs_norm_inf = mg_poisson_solver_.rhs_norm();
         poisson_stats_.res_norm_l2 = mg_poisson_solver_.residual_l2();

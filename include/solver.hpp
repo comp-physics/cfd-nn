@@ -97,17 +97,47 @@ public:
     /// Returns a human-readable string explaining why the solver was chosen
     const std::string& selection_reason() const { return selection_reason_; }
 
+    /// Poisson solve termination status
+    enum class PoissonSolveStatus {
+        ConvergedToTol,  ///< Met tolerance criterion before max_vcycles
+        HitMaxCycles,    ///< Ran max_vcycles without meeting tolerance
+        FixedCycles      ///< Ran exactly fixed_cycles (no convergence check)
+    };
+
     /// Poisson solve statistics from last step (for testing/diagnostics)
     struct PoissonStats {
         int cycles = 0;           ///< V-cycles (or iterations) performed
-        bool converged = true;    ///< True if tolerance achieved (vs hitting max_vcycles)
+        PoissonSolveStatus status = PoissonSolveStatus::ConvergedToTol;
+
+        // Poisson residual norms
         double rhs_norm_l2 = 0.0; ///< ||b||_L2 at start of solve
         double rhs_norm_inf = 0.0;///< ||b||_∞ at start of solve
         double res_norm_l2 = 0.0; ///< ||r||_L2 after solve
         double res_norm_inf = 0.0;///< ||r||_∞ after solve
-        double res_over_rhs = 0.0;///< ||r||/||b|| (relative residual)
+        double res_over_rhs = 0.0;///< ||r||/||b|| (relative residual) - key metric
+
+        // Post-projection divergence (raw)
         double div_after_proj_linf = 0.0; ///< ||div(u)||_∞ after projection
         double div_after_proj_l2 = 0.0;   ///< ||div(u)||_L2 after projection
+
+        // Dimensionless divergence (scaled by dx_min / u_ref for portable thresholds)
+        double div_scaled_linf = 0.0;     ///< ||div(u)||_∞ * dx_min / u_ref
+        double div_scaled_l2 = 0.0;       ///< ||div(u)||_L2 * dx_min / u_ref
+        double dx_min = 0.0;              ///< Min cell size used for scaling
+        double u_ref = 1.0;               ///< Reference velocity (u_tau or bulk)
+
+        /// Helper to get status string for logging
+        const char* status_string() const {
+            switch (status) {
+                case PoissonSolveStatus::ConvergedToTol: return "TOL";
+                case PoissonSolveStatus::HitMaxCycles:   return "MAX_CYCLES";
+                case PoissonSolveStatus::FixedCycles:    return "FIXED";
+            }
+            return "UNKNOWN";
+        }
+
+        /// Check if solve achieved tolerance (not fixed-cycle or max-cycles)
+        bool converged_to_tol() const { return status == PoissonSolveStatus::ConvergedToTol; }
     };
 
     /// Get statistics from last Poisson solve (updated after each step())
