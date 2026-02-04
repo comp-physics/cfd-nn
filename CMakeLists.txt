@@ -526,6 +526,10 @@ if(BUILD_TESTS)
         add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
         # MANDATORY ensures GPU offload actually happens (no silent CPU fallback)
         set_tests_properties(GPUUtilizationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+        # GPU turbulence readiness acceptance test - validates all systems before production runs
+        add_nncfd_test(test_gpu_turbulence_readiness TEST_NAME_SUFFIX GPUTurbulenceReadinessTest LABELS "gpu;acceptance")
+        set_tests_properties(GPUTurbulenceReadinessTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
     endif()
 
     # =========================================================================
