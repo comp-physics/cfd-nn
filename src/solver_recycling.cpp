@@ -172,6 +172,8 @@ void RANSSolver::initialize_recycling_inflow() {
     // to modify inlet velocity for div-free. Outflow uses Neumann (dp/dn = 0).
     // With Neumann at inlet, the projection can't adjust u_inlet to satisfy continuity.
     if (x_bc_changed) {
+        // Inflow needs DIRICHLET pressure BC (p=const) to allow projection to modify inlet velocity
+        // Outflow uses Neumann (dp/dn = 0)
         std::printf("[Recycling] Updating Poisson BCs: x_lo -> Dirichlet (for div-free), x_hi -> Neumann\n");
         poisson_bc_x_lo_ = PoissonBC::Dirichlet;  // Allows u_inlet correction
         poisson_bc_x_hi_ = PoissonBC::Neumann;
@@ -185,6 +187,15 @@ void RANSSolver::initialize_recycling_inflow() {
             std::printf("[Recycling] Switching to MG solver (supports Neumann x BCs).\n");
             selected_solver_ = PoissonSolverType::MG;
             selection_reason_ = "recycling: FFT incompatible with inflow/outflow x BCs";
+        }
+
+        // CRITICAL: MG solver with Dirichlet/Neumann x BCs requires convergence-based
+        // iteration (fixed_cycles=0). The default fixed_cycles=8 is insufficient for
+        // non-periodic BCs and causes pressure solution to be ~5x too large, leading
+        // to velocity explosion after projection.
+        if (config_.poisson_fixed_cycles > 0) {
+            std::printf("[Recycling] Setting poisson_fixed_cycles=0 (convergence-based MG for non-periodic x BCs).\n");
+            config_.poisson_fixed_cycles = 0;
         }
 
         // Update all Poisson solvers with new BCs
