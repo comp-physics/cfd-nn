@@ -486,6 +486,10 @@ void Config::parse_args(int argc, char** argv) {
             // Fixed time step (no adaptive dt for consistent timing)
             adaptive_dt = false;
             dt = 0.001;
+        } else if (is_flag(arg, "--perf_mode") || is_flag(arg, "--perf")) {
+            // Performance mode: reduce GPU sync overhead for production turbulence runs
+            // Sets diag_interval=50, poisson_check_interval=5 in finalize()
+            perf_mode = true;
         } else if (is_flag(arg, "--help") || is_flag(arg, "-h")) {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -550,6 +554,8 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
                       << "  --benchmark       Benchmark mode: 192^3 3D duct, upwind, 1 Poisson cycle,\n"
                       << "                      no output/turbulence (all overridable by other flags)\n"
+                      << "  --perf_mode       Performance mode: reduce GPU sync overhead for production runs\n"
+                      << "                      (sets diag_interval=50, poisson_check_interval=5)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"
@@ -943,6 +949,20 @@ void Config::finalize() {
                   << "  --model none      (laminar, no turbulence model)\n"
                   << "  --model baseline  (simple mixing length, if mild turbulence expected)\n";
         std::exit(1);
+    }
+
+    // =========================================================================
+    // PERFORMANCE MODE - reduce GPU sync overhead for production runs
+    // =========================================================================
+    if (perf_mode) {
+        // Only override if user didn't explicitly set these values
+        if (diag_interval == 1) {
+            diag_interval = 50;  // Reduce div norm computation frequency
+        }
+        if (poisson_check_interval == 3) {  // 3 is the new default
+            poisson_check_interval = 5;  // Further reduce MG sync frequency
+        }
+        // Note: NaN/Inf guard still runs at turb_guard_interval (default=5)
     }
 }
 

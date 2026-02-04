@@ -167,6 +167,11 @@ struct Config {
     // Benchmark mode
     bool benchmark = false;                 ///< Enable benchmark mode (optimized for timing)
 
+    // Performance mode - reduces GPU sync overhead for production runs
+    // When enabled, automatically sets: diag_interval=50, poisson_check_interval=5
+    // Use for turbulence runs after validation; disable for debugging
+    bool perf_mode = false;                 ///< Enable performance mode (reduced diagnostics)
+
     // Recycling inflow (turbulent inlet BC for DNS/LES)
     bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo
     double recycle_x = -1.0;                ///< x-location of recycle plane (-1 = auto: 10*delta)
