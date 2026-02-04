@@ -90,6 +90,7 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
         yLap_aN_ = mesh_->yLap_aN.data();
         yLap_aP_ = mesh_->yLap_aP.data();
         y_metrics_size_ = mesh_->total_Ny();
+
         // CRITICAL: Disable CUDA Graph for stretched grids
         // The graphed V-cycle uses uniform-y operators that don't have non-uniform y support yet
         use_vcycle_graph_ = false;
@@ -1241,6 +1242,141 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     #undef JACOBI_TARGET_COPY
 }
 
+void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
+    // Y-line relaxation: solve tridiagonal systems along y-lines
+    // This is optimal for anisotropic problems where y-direction dominates.
+    // For each (i,k) pair, solve: -aS[j]*u[j-1] + diag[j]*u[j] - aN[j]*u[j+1] = rhs[j]
+    // where rhs[j] = f[j] - x_laplacian(u) - z_laplacian(u) (neighbors frozen)
+    // Thomas algorithm: O(Ny) per line, Nx*Nz independent lines
+    NVTX_SCOPE_POISSON("mg:smooth_yline");
+
+    auto& grid = *levels_[level];
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int Ng = grid.Ng;
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+    const double dx2 = grid.dx * grid.dx;
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
+
+    // Y-metric coefficients (pointers to mesh's precomputed coefficients)
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = (Ng_fine - Ng);
+
+    // Get pointers
+    double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    const double* aS_ptr = yLap_aS_;  // Already a pointer
+    const double* aN_ptr = yLap_aN_;  // Already a pointer
+
+    // Temporary arrays for Thomas algorithm (one per y-line)
+    // Allocate per-line work arrays: c_prime and d_prime for forward sweep
+    std::vector<double> c_prime(Ny);  // Modified upper diagonal
+    std::vector<double> d_prime(Ny);  // Modified RHS
+
+    // 2/dx² for x-direction Laplacian (periodic BC means all x-neighbors exist)
+    const double inv_dx2 = 1.0 / dx2;
+    const double inv_dz2 = is_2d ? 0.0 : (1.0 / dz2);
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        // Sweep over all y-lines (one per (i,k) pair)
+        if (is_2d) {
+            // 2D case: only iterate over i, k is fixed
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                // Build tridiagonal system for this y-line
+                // Forward sweep (Thomas algorithm)
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    int jm = j + y_metric_offset;
+                    int idx = j * stride + i;
+
+                    // Lower diagonal (south)
+                    double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
+                    // Upper diagonal (north)
+                    double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
+                    // Diagonal
+                    double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;
+
+                    // RHS: f - x_laplacian(u)
+                    double rhs = f_ptr[idx] - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]);
+
+                    // Incorporate wall BCs (Dirichlet u=0 at j=Ng-1 and j=Ny+Ng)
+                    // These are implicit in the aS/aN coefficients for wall points
+
+                    int j_local = j - Ng;  // 0-indexed for work arrays
+                    if (j_local == 0) {
+                        c_prime[0] = c / b;
+                        d_prime[0] = rhs / b;
+                    } else {
+                        double denom = b - a * c_prime[j_local - 1];
+                        c_prime[j_local] = c / denom;
+                        d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                    }
+                }
+
+                // Backward substitution
+                for (int j = Ny + Ng - 1; j >= Ng; --j) {
+                    int j_local = j - Ng;
+                    int idx = j * stride + i;
+                    if (j_local == Ny - 1) {
+                        u_ptr[idx] = d_prime[j_local];
+                    } else {
+                        u_ptr[idx] = d_prime[j_local] - c_prime[j_local] * u_ptr[idx + stride];
+                    }
+                }
+            }
+        } else {
+            // 3D case: iterate over (i,k) pairs
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    // Build tridiagonal system for this y-line
+                    // Forward sweep (Thomas algorithm)
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        int jm = j + y_metric_offset;
+                        int idx = k * plane_stride + j * stride + i;
+
+                        // Lower diagonal (south)
+                        double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
+                        // Upper diagonal (north)
+                        double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
+                        // Diagonal
+                        double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
+
+                        // RHS: f - x_laplacian(u) - z_laplacian(u)
+                        double rhs = f_ptr[idx]
+                                   - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
+                                   - inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]);
+
+                        int j_local = j - Ng;
+                        if (j_local == 0) {
+                            c_prime[0] = c / b;
+                            d_prime[0] = rhs / b;
+                        } else {
+                            double denom = b - a * c_prime[j_local - 1];
+                            c_prime[j_local] = c / denom;
+                            d_prime[j_local] = (rhs - a * d_prime[j_local - 1]) / denom;
+                        }
+                    }
+
+                    // Backward substitution
+                    for (int j = Ny + Ng - 1; j >= Ng; --j) {
+                        int j_local = j - Ng;
+                        int idx = k * plane_stride + j * stride + i;
+                        if (j_local == Ny - 1) {
+                            u_ptr[idx] = d_prime[j_local];
+                        } else {
+                            u_ptr[idx] = d_prime[j_local] - c_prime[j_local] * u_ptr[idx + stride];
+                        }
+                    }
+                }
+            }
+        }
+
+        apply_bc(level);
+    }
+}
+
 void MultigridPoissonSolver::compute_residual(int level) {
     NVTX_SCOPE_RESIDUAL("mg:residual");
 
@@ -1920,14 +2056,54 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         }
     };
 
+    // WORKAROUND: Semi-coarsening V-cycle diverges because the coarse grid solve
+    // itself diverges (confirmed via debug output: coarse res increases 4x per solve).
+    // The coarse grid has larger dx/dz but same y-metrics, making it MORE anisotropic.
+    // Point smoothers can't handle this. Use iterative solve on finest level only.
+    //
+    // For highly anisotropic problems, we need MANY iterations because:
+    // 1. Condition number κ = O((L/h_min)²) where h_min is near-wall cell size
+    // 2. Chebyshev convergence: ||e_k|| ≤ 2*(sqrt(κ)-1)/(sqrt(κ)+1))^k * ||e_0||
+    // 3. For κ ≈ 10000 (typical stretched grid), need ~500 iterations for 10^-6 reduction
+    //
+    // Use Jacobi with heavy under-relaxation as it's more robust than Chebyshev
+    // for extremely ill-conditioned systems (Chebyshev bounds may be inaccurate).
+    // KNOWN LIMITATION: Semi-coarsening V-cycle doesn't converge for stretched y-grids.
+    // The coarse grid correction diverges because the coarse problem becomes even more
+    // anisotropic (y-terms dominate as x/z terms shrink). Point relaxation methods (Jacobi,
+    // Chebyshev) are too slow to compensate.
+    //
+    // WORKAROUND: Use many Chebyshev iterations on the finest level only, bypassing
+    // the V-cycle. This is slow but should eventually converge. For practical use of
+    // stretched y-grids, users should:
+    //   1. Use smaller stretching ratio (beta closer to 1)
+    //   2. Build with HYPRE support (--poisson hypre)
+    //   3. Use steady-state solver instead of transient
+    //
+    // TODO: Implement y-line relaxation (tridiagonal solve along y) for efficient
+    // smoothing of anisotropic problems. This requires cuSPARSE batched tridiagonal.
+    if (semi_coarsening_ && level == 0) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            std::cerr << "\n*** WARNING: Stretched y-grid with MG solver is slow and may not converge ***\n";
+            std::cerr << "*** Consider using --poisson auto (FFT) or building with HYPRE support ***\n\n";
+        }
+
+        // Use high-degree Chebyshev which converges faster than Jacobi
+        // for the eigenvalue range we have (Gershgorin bounds).
+        // 200 iterations per call, 8 calls = 1600 total per Poisson solve.
+        const int chebyshev_degree = 200;
+        smooth_chebyshev(level, chebyshev_degree);
+        return;
+    }
+
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - solve approximately
-        // With MIN_COARSE_SIZE=8, coarsest is 8x8 (64 points)
-        // Use more iterations/higher degree for accurate coarse solve
         if (smoother_type_ == MGSmootherType::Chebyshev) {
-            smooth_chebyshev(level, std::max(8, degree * 2));  // Higher degree for coarse
+            smooth_chebyshev(level, std::max(8, degree * 2));
         } else {
-            smooth_jacobi(level, 20, 0.8);  // 20 Jacobi iterations
+            smooth_jacobi(level, 20, 0.8);
         }
         return;
     }
