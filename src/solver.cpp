@@ -1923,6 +1923,49 @@ double RANSSolver::step() {
                       << " scaled_Linf=" << poisson_stats_.div_scaled_linf
                       << " [" << poisson_stats_.status_string() << "]\n";
         }
+
+        // Projection health watchdog - alert on poor projection quality
+        if (config_.projection_watchdog) {
+            bool alert = false;
+            std::string alert_reason;
+
+            // Check for HitMaxCycles (Poisson didn't converge)
+            if (poisson_stats_.status == PoissonSolveStatus::HitMaxCycles) {
+                alert = true;
+                alert_reason = "Poisson hit max_vcycles";
+            }
+
+            // Check for divergence exceeding threshold
+            if (config_.div_threshold > 0.0 && poisson_stats_.div_scaled_linf > config_.div_threshold) {
+                alert = true;
+                if (!alert_reason.empty()) alert_reason += " + ";
+                alert_reason += "div_scaled=" + std::to_string(poisson_stats_.div_scaled_linf);
+            }
+
+            if (alert) {
+                // Track consecutive alerts for trend detection
+                static int consecutive_alerts = 0;
+                static int last_alert_iter = -100;
+
+                if (iter_ - last_alert_iter <= config_.diag_interval) {
+                    consecutive_alerts++;
+                } else {
+                    consecutive_alerts = 1;
+                }
+                last_alert_iter = iter_;
+
+                // Print one-line alert (not every step - just when detected)
+                std::cerr << "[PROJECTION ALERT] iter=" << iter_
+                          << " " << alert_reason
+                          << " cycles=" << poisson_stats_.cycles
+                          << " res/rhs=" << std::scientific << std::setprecision(2)
+                          << poisson_stats_.res_over_rhs;
+                if (consecutive_alerts > 1) {
+                    std::cerr << " (consecutive=" << consecutive_alerts << ")";
+                }
+                std::cerr << "\n";
+            }
+        }
     }
     
     // Note: iter_ is managed by the outer solve loop, don't increment here

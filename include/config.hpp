@@ -172,6 +172,10 @@ struct Config {
     // Use for turbulence runs after validation; disable for debugging
     bool perf_mode = false;                 ///< Enable performance mode (reduced diagnostics)
 
+    // Projection health watchdog - alerts on poor projection quality
+    double div_threshold = 1e-5;            ///< Alert if div_scaled_linf exceeds this (0 = disabled)
+    bool projection_watchdog = true;        ///< Enable projection health monitoring
+
     // Recycling inflow (turbulent inlet BC for DNS/LES)
     bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo
     double recycle_x = -1.0;                ///< x-location of recycle plane (-1 = auto: 10*delta)
