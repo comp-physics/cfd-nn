@@ -2341,14 +2341,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         // NOTE: V-cycle graph is 3D only (2D path not fully tested)
         const bool is_3d = (levels_[0]->Nz > 1);
         const bool use_graph = use_vcycle_graph_ && cfg.use_vcycle_graph && is_3d;
-        // DEBUG: Trace graph config
-        static bool first_solve = true;
-        if (first_solve) {
-            std::cout << "[MG DEBUG] use_vcycle_graph_=" << use_vcycle_graph_
-                      << " cfg.use_vcycle_graph=" << cfg.use_vcycle_graph
-                      << " is_3d=" << is_3d << " => use_graph=" << use_graph << "\n";
-            first_solve = false;
-        }
+
         auto run_cycles = [&](int n) {
             if (use_graph) {
                 // Initialize graph on first use or if parameters changed

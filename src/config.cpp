@@ -371,6 +371,8 @@ void Config::parse_args(int argc, char** argv) {
             poisson_solver = PoissonSolverType::FFT;
         } else if ((val = get_value(i, arg, "--poisson_abs_tol_floor")) != "") {
             poisson_abs_tol_floor = std::stod(val);
+        } else if (is_flag(arg, "--no_poisson_vcycle_graph")) {
+            poisson_use_vcycle_graph = false;
         } else if ((val = get_value(i, arg, "--turb_guard_enabled")) != "") {
             turb_guard_enabled = (val == "true" || val == "1" || val == "yes");
         } else if (is_flag(arg, "--turb_guard_enabled")) {

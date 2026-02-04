@@ -1639,10 +1639,6 @@ double RANSSolver::step() {
         pcfg.nu2 = config_.poisson_nu2;
         pcfg.chebyshev_degree = config_.poisson_chebyshev_degree;
         pcfg.use_vcycle_graph = config_.poisson_use_vcycle_graph;
-        // DEBUG: trace vcycle graph config (always print, use cerr for immediate output)
-        std::cerr << "[Solver DEBUG] config_.poisson_use_vcycle_graph=" << config_.poisson_use_vcycle_graph
-                  << " pcfg.use_vcycle_graph=" << pcfg.use_vcycle_graph << std::endl;
-        std::cerr.flush();
 
         // Legacy tolerance for backward compatibility (non-MG solvers use this)
         double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
