@@ -80,12 +80,26 @@ constexpr double CHEBYSHEV_LAMBDA_MAX = 1.95;
 MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) {
     create_hierarchy();
 
+    // Initialize y-metric pointers for non-uniform y-spacing at level 0
+    // (D·G = L consistency for stretched grids in projection step)
+    if (mesh_->is_y_stretched()) {
+        y_stretched_ = true;
+        yLap_aS_ = mesh_->yLap_aS.data();
+        yLap_aN_ = mesh_->yLap_aN.data();
+        yLap_aP_ = mesh_->yLap_aP.data();
+        y_metrics_size_ = mesh_->total_Ny();
+        // CRITICAL: Disable CUDA Graph for stretched grids
+        // The graphed V-cycle uses uniform-y operators that don't have non-uniform y support yet
+        use_vcycle_graph_ = false;
+        std::cout << "[MG] Disabled V-cycle CUDA Graph for y-stretched mesh (non-uniform y requires ungraphed path)\n";
+    }
+
     // Initialize GPU buffers (maps to device) OR set up raw pointers for CPU
     // This enables unified loops to use cached pointers on both CPU and GPU
     initialize_gpu_buffers();
 
     // V-cycle CUDA Graph is enabled by default (use_vcycle_graph_ = true in header)
-    // Can be disabled via config.poisson_use_vcycle_graph = false
+    // Can be disabled via config.poisson_use_vcycle_graph = false or by y-stretching (above)
 }
 
 MultigridPoissonSolver::~MultigridPoissonSolver() {
@@ -137,11 +151,15 @@ void MultigridPoissonSolver::create_hierarchy() {
     double dy = mesh_->dy;
     double dz = mesh_->dz;
     const bool is_2d = mesh_->is2D();
+    const bool y_stretched = mesh_->is_y_stretched();
 
     // Finest level uses mesh's ghost width (may be >1 for O4 schemes)
     // Coarse levels use Ng=1 since MG internally uses O2 stencils
     const int ng_fine = mesh_->Nghost;
     constexpr int ng_coarse = 1;
+
+    // Minimum coarse grid size (8x8 is GPU-friendly while giving good MG efficiency)
+    constexpr int MIN_COARSE_SIZE = 8;
 
     // Finest level
     if (is_2d) {
@@ -150,10 +168,35 @@ void MultigridPoissonSolver::create_hierarchy() {
         levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz, ng_fine));
     }
 
-    // Coarsen until we reach minimum grid size
-    // 8x8 coarsest is GPU-friendly while still giving good MG efficiency
-    // For 128x128: gives 4 levels (128→64→32→16→8) instead of 3
-    constexpr int MIN_COARSE_SIZE = 8;
+    // For y-stretched grids: use semi-coarsening (coarsen x/z only, keep y unchanged)
+    // This maintains D·G = L consistency because y-metric coefficients are the same on all levels
+    if (y_stretched) {
+        semi_coarsening_ = true;
+        std::cout << "[MG] Semi-coarsening mode for y-stretched mesh (coarsen x/z only, y unchanged)\n";
+
+        // Semi-coarsening: only reduce Nx and Nz, keep Ny constant
+        // dy stays the same (non-uniform), dx and dz double per level
+        if (is_2d) {
+            while (Nx > MIN_COARSE_SIZE) {
+                Nx /= 2;
+                dx *= 2.0;
+                // Ny and dy unchanged
+                levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, dx, dy, ng_coarse));
+            }
+        } else {
+            while (Nx > MIN_COARSE_SIZE && Nz > MIN_COARSE_SIZE) {
+                Nx /= 2;
+                Nz /= 2;
+                dx *= 2.0;
+                dz *= 2.0;
+                // Ny and dy unchanged
+                levels_.push_back(std::make_unique<GridLevel>(Nx, Ny, Nz, dx, dy, dz, ng_coarse));
+            }
+        }
+        return;
+    }
+
+    // Standard full coarsening for uniform grids
 
     if (is_2d) {
         while (Nx > MIN_COARSE_SIZE && Ny > MIN_COARSE_SIZE) {
@@ -717,6 +760,10 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
                                : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
 
+    // Check for non-uniform y (D·G = L consistency)
+    // With semi-coarsening, ALL levels use the same y-metric coefficients
+    const bool use_nonuniform_y = y_stretched_ && (semi_coarsening_ || level == 0);
+
     const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
@@ -724,6 +771,10 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
     const size_t total_size = grid.total_size;
+
+    // For semi-coarsening: coarse levels have Ng=1 but y-metrics are indexed for fine mesh (Ng=Ng_fine)
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
 
     // Chebyshev eigenvalue bounds (see constants at top of file)
     const double d = (CHEBYSHEV_LAMBDA_MAX + CHEBYSHEV_LAMBDA_MIN) / 2.0;
@@ -736,20 +787,27 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
     const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
     double* tmp_ptr = tmp_ptrs_[level];  // Already a raw device pointer (omp_target_alloc)
+    const double* aS_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device)) : nullptr;
+    const double* aN_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device)) : nullptr;
     // Note: Cannot use nowait here - Chebyshev iterations have data dependencies
     // Each iteration reads the result of the previous iteration
     #define CHEBY_TARGET_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define CHEBY_TARGET_3D \
         _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define CHEBY_TARGET_3D_NONUNIF \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr, aS_ptr, aN_ptr)")
     #define CHEBY_TARGET_COPY \
         _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr, tmp_ptr)")
 #else
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
     #define CHEBY_TARGET_2D
     #define CHEBY_TARGET_3D
+    #define CHEBY_TARGET_3D_NONUNIF
     #define CHEBY_TARGET_COPY
 #endif
 
@@ -775,6 +833,24 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
                                      + (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2
                                      - f_ptr[idx]) / coeff;
                     tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                }
+            }
+        } else if (use_nonuniform_y) {
+            // 3D with non-uniform y-spacing
+            CHEBY_TARGET_3D_NONUNIF
+            for (int kk = Ng; kk < Nz + Ng; ++kk) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = kk * plane_stride + j * stride + i;
+                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        double u_old = u_ptr[idx];
+                        double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                        double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                        double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                        double diag_j = 2.0 / dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0 / dz2;
+                        double u_jacobi = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag_j;
+                        tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
                 }
             }
         } else {
@@ -806,6 +882,7 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
 
     #undef CHEBY_TARGET_2D
     #undef CHEBY_TARGET_3D
+    #undef CHEBY_TARGET_3D_NONUNIF
     #undef CHEBY_TARGET_COPY
 }
 
@@ -823,6 +900,10 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     const double coeff = is_2d ? (2.0 / dx2 + 2.0 / dy2)
                                : (2.0 / dx2 + 2.0 / dy2 + 2.0 / dz2);
 
+    // Check for non-uniform y (D·G = L consistency)
+    // With semi-coarsening, ALL levels use the same y-metric coefficients
+    const bool use_nonuniform_y = y_stretched_ && (semi_coarsening_ || level == 0);
+
     const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
@@ -831,6 +912,10 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     const int plane_stride = grid.plane_stride;
     [[maybe_unused]] const size_t total_size = grid.total_size;
 
+    // For semi-coarsening: coarse levels have Ng=1 but y-metrics are indexed for fine mesh (Ng=Ng_fine)
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
+
 #ifdef USE_GPU_OFFLOAD
     // NVHPC WORKAROUND: Use omp_get_mapped_ptr to get actual device addresses.
     // Local pointer copies with map(present:) get HOST addresses in NVHPC.
@@ -838,6 +923,8 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
     const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
     double* tmp_ptr = tmp_ptrs_[level];  // Already a raw device pointer (omp_target_alloc)
+    const double* aS_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device)) : nullptr;
+    const double* aN_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device)) : nullptr;
     // All pointers are now device pointers - use is_device_ptr for all
     #define JACOBI_TARGET_U_TO_TMP_2D \
         _Pragma("omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
@@ -847,6 +934,10 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
         _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
     #define JACOBI_TARGET_TMP_TO_U_3D \
         _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr)")
+    #define JACOBI_TARGET_U_TO_TMP_3D_NONUNIF \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr, aS_ptr, aN_ptr)")
+    #define JACOBI_TARGET_TMP_TO_U_3D_NONUNIF \
+        _Pragma("omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, tmp_ptr, aS_ptr, aN_ptr)")
     #define JACOBI_TARGET_COPY \
         _Pragma("omp target teams distribute parallel for is_device_ptr(u_ptr, tmp_ptr)")
 #else
@@ -854,11 +945,15 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* tmp_ptr = r_ptrs_[level];  // Reuse r as scratch buffer on CPU
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
     // CPU: no pragmas needed
     #define JACOBI_TARGET_U_TO_TMP_2D
     #define JACOBI_TARGET_TMP_TO_U_2D
     #define JACOBI_TARGET_U_TO_TMP_3D
     #define JACOBI_TARGET_TMP_TO_U_3D
+    #define JACOBI_TARGET_U_TO_TMP_3D_NONUNIF
+    #define JACOBI_TARGET_TMP_TO_U_3D_NONUNIF
     #define JACOBI_TARGET_COPY
 #endif
 
@@ -879,7 +974,27 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                         tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
                     }
                 }
+            } else if (use_nonuniform_y) {
+                // 3D with non-uniform y-spacing
+                // Jacobi stencil: lap_y = aS*u[j-1] + aN*u[j+1], diag = (aS + aN) + 2/dx² + 2/dz²
+                JACOBI_TARGET_U_TO_TMP_3D_NONUNIF
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            int idx = k * plane_stride + j * stride + i;
+                            int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                            double u_old = u_ptr[idx];
+                            double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                            double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                            double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                            double diag_j = 2.0 / dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0 / dz2;
+                            double u_jacobi = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag_j;
+                            tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                        }
+                    }
+                }
             } else {
+                // 3D with uniform spacing
                 JACOBI_TARGET_U_TO_TMP_3D
                 for (int k = Ng; k < Nz + Ng; ++k) {
                     for (int j = Ng; j < Ny + Ng; ++j) {
@@ -909,7 +1024,26 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
                         u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
                     }
                 }
+            } else if (use_nonuniform_y) {
+                // 3D with non-uniform y-spacing
+                JACOBI_TARGET_TMP_TO_U_3D_NONUNIF
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            int idx = k * plane_stride + j * stride + i;
+                            int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                            double u_old = tmp_ptr[idx];
+                            double lap_x = (tmp_ptr[idx+1] + tmp_ptr[idx-1]) / dx2;
+                            double lap_y = aS_ptr[jm] * tmp_ptr[idx-stride] + aN_ptr[jm] * tmp_ptr[idx+stride];
+                            double lap_z = (tmp_ptr[idx+plane_stride] + tmp_ptr[idx-plane_stride]) / dz2;
+                            double diag_j = 2.0 / dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0 / dz2;
+                            double u_jacobi = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag_j;
+                            u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                        }
+                    }
+                }
             } else {
+                // 3D with uniform spacing
                 JACOBI_TARGET_TMP_TO_U_3D
                 for (int k = Ng; k < Nz + Ng; ++k) {
                     for (int j = Ng; j < Ny + Ng; ++j) {
@@ -972,43 +1106,97 @@ void MultigridPoissonSolver::compute_residual(int level) {
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
 
+    // Check for non-uniform y (D·G = L consistency)
+    // With semi-coarsening, ALL levels use the same y-metric coefficients
+    const bool use_nonuniform_y = y_stretched_ && (semi_coarsening_ || level == 0);
+
+    // For semi-coarsening: coarse levels have Ng=1 but y-metrics are indexed for fine mesh (Ng=Ng_fine)
+    // Map j -> j_metric: j_metric = j - Ng + Ng_fine
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
+
 #ifdef USE_GPU_OFFLOAD
     // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses
     int device = omp_get_default_device();
     const double* u_ptr = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
     const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
     double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+    const double* aS_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device)) : nullptr;
+    const double* aN_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device)) : nullptr;
+    const double* aP_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aP_), device)) : nullptr;
 #else
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
+    const double* aP_ptr = yLap_aP_;
 #endif
 
     if (is_2d) {
+        if (use_nonuniform_y) {
+            // 2D with non-uniform y-spacing
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr)
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr, aS_ptr, aN_ptr, aP_ptr)
 #endif
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            for (int i = Ng; i < Nx + Ng; ++i) {
-                int idx = j * stride + i;
-                double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
-                                 + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
-                r_ptr[idx] = f_ptr[idx] - laplacian;
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                    // Non-uniform y Laplacian: aS*u[j-1] + aP*u[j] + aN*u[j+1]
+                    double lap_x = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2;
+                    double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aP_ptr[jm] * u_ptr[idx] + aN_ptr[jm] * u_ptr[idx+stride];
+                    r_ptr[idx] = f_ptr[idx] - (lap_x + lap_y);
+                }
+            }
+        } else {
+            // 2D with uniform spacing
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr)
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
+                    r_ptr[idx] = f_ptr[idx] - laplacian;
+                }
             }
         }
     } else {
         // 3D path
+        if (use_nonuniform_y) {
+            // 3D with non-uniform y-spacing
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, r_ptr)
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, r_ptr, aS_ptr, aN_ptr, aP_ptr)
 #endif
-        for (int k = Ng; k < Nz + Ng; ++k) {
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    int idx = k * plane_stride + j * stride + i;
-                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
-                                     + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
-                    r_ptr[idx] = f_ptr[idx] - laplacian;
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        // Non-uniform y Laplacian: aS*u[j-1] + aP*u[j] + aN*u[j+1]
+                        double lap_x = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2;
+                        double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aP_ptr[jm] * u_ptr[idx] + aN_ptr[jm] * u_ptr[idx+stride];
+                        double lap_z = (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                        r_ptr[idx] = f_ptr[idx] - (lap_x + lap_y + lap_z);
+                    }
+                }
+            }
+        } else {
+            // 3D with uniform spacing
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, r_ptr)
+#endif
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                         + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
+                                         + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                        r_ptr[idx] = f_ptr[idx] - laplacian;
+                    }
                 }
             }
         }
@@ -1027,6 +1215,10 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     const double dz2 = grid.dz * grid.dz;
     const bool is_2d = grid.is2D();
 
+    // Check for non-uniform y (D·G = L consistency)
+    // With semi-coarsening, ALL levels use the same y-metric coefficients
+    const bool use_nonuniform_y = y_stretched_ && (semi_coarsening_ || level == 0);
+
     const int Ng = grid.Ng;  // Use level's ghost width
     const int Nx = grid.Nx;
     const int Ny = grid.Ny;
@@ -1034,58 +1226,113 @@ void MultigridPoissonSolver::compute_residual_and_norms(int level, double& r_inf
     const int stride = grid.stride;
     const int plane_stride = grid.plane_stride;
 
+    // For semi-coarsening: coarse levels have Ng=1 but y-metrics are indexed for fine mesh (Ng=Ng_fine)
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
+
     // NVHPC WORKAROUND: Use omp_get_mapped_ptr for actual device addresses.
 #ifdef USE_GPU_OFFLOAD
     int device = omp_get_default_device();
     const double* u_ptr = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
     const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
     double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[level], device));
+    const double* aS_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device)) : nullptr;
+    const double* aN_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device)) : nullptr;
+    const double* aP_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aP_), device)) : nullptr;
 #else
     const double* u_ptr = u_ptrs_[level];
     const double* f_ptr = f_ptrs_[level];
     double* r_ptr = r_ptrs_[level];
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
+    const double* aP_ptr = yLap_aP_;
 #endif
 
     double max_res = 0.0;
     double sum_sq = 0.0;
 
     if (is_2d) {
+        if (use_nonuniform_y) {
+            // 2D with non-uniform y-spacing
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
+            #pragma omp target teams distribute parallel for collapse(2) \
+                is_device_ptr(u_ptr, f_ptr, r_ptr, aS_ptr, aN_ptr, aP_ptr) reduction(max: max_res) reduction(+: sum_sq)
 #endif
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            for (int i = Ng; i < Nx + Ng; ++i) {
-                int idx = j * stride + i;
-                double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
-                                 + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
-                double r = f_ptr[idx] - laplacian;
-                r_ptr[idx] = r;
-                // Compute norms
-                double abs_r = (r >= 0.0) ? r : -r;
-                if (abs_r > max_res) max_res = abs_r;
-                sum_sq += r * r;
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                    double lap_x = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2;
+                    double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aP_ptr[jm] * u_ptr[idx] + aN_ptr[jm] * u_ptr[idx+stride];
+                    double r = f_ptr[idx] - (lap_x + lap_y);
+                    r_ptr[idx] = r;
+                    double abs_r = (r >= 0.0) ? r : -r;
+                    if (abs_r > max_res) max_res = abs_r;
+                    sum_sq += r * r;
+                }
+            }
+        } else {
+            // 2D with uniform spacing
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) \
+                is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2;
+                    double r = f_ptr[idx] - laplacian;
+                    r_ptr[idx] = r;
+                    double abs_r = (r >= 0.0) ? r : -r;
+                    if (abs_r > max_res) max_res = abs_r;
+                    sum_sq += r * r;
+                }
             }
         }
     } else {
         // 3D path
+        if (use_nonuniform_y) {
+            // 3D with non-uniform y-spacing
 #ifdef USE_GPU_OFFLOAD
-        #pragma omp target teams distribute parallel for collapse(3) \
-            is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
+            #pragma omp target teams distribute parallel for collapse(3) \
+                is_device_ptr(u_ptr, f_ptr, r_ptr, aS_ptr, aN_ptr, aP_ptr) reduction(max: max_res) reduction(+: sum_sq)
 #endif
-        for (int k = Ng; k < Nz + Ng; ++k) {
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    int idx = k * plane_stride + j * stride + i;
-                    double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
-                                     + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
-                                     + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
-                    double r = f_ptr[idx] - laplacian;
-                    r_ptr[idx] = r;
-                    // Compute norms
-                    double abs_r = (r >= 0.0) ? r : -r;
-                    if (abs_r > max_res) max_res = abs_r;
-                    sum_sq += r * r;
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        double lap_x = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2;
+                        double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aP_ptr[jm] * u_ptr[idx] + aN_ptr[jm] * u_ptr[idx+stride];
+                        double lap_z = (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                        double r = f_ptr[idx] - (lap_x + lap_y + lap_z);
+                        r_ptr[idx] = r;
+                        double abs_r = (r >= 0.0) ? r : -r;
+                        if (abs_r > max_res) max_res = abs_r;
+                        sum_sq += r * r;
+                    }
+                }
+            }
+        } else {
+            // 3D with uniform spacing
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) \
+                is_device_ptr(u_ptr, f_ptr, r_ptr) reduction(max: max_res) reduction(+: sum_sq)
+#endif
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double laplacian = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2
+                                         + (u_ptr[idx+stride] - 2.0*u_ptr[idx] + u_ptr[idx-stride]) / dy2
+                                         + (u_ptr[idx+plane_stride] - 2.0*u_ptr[idx] + u_ptr[idx-plane_stride]) / dz2;
+                        double r = f_ptr[idx] - laplacian;
+                        r_ptr[idx] = r;
+                        double abs_r = (r >= 0.0) ? r : -r;
+                        if (abs_r > max_res) max_res = abs_r;
+                        sum_sq += r * r;
+                    }
                 }
             }
         }
@@ -1184,6 +1431,93 @@ void MultigridPoissonSolver::restrict_residual(int fine_level) {
                                      + r_fine[idx_f-1+stride_f-plane_stride_f] + r_fine[idx_f+1+stride_f-plane_stride_f]
                                      + r_fine[idx_f-1-stride_f+plane_stride_f] + r_fine[idx_f+1-stride_f+plane_stride_f]
                                      + r_fine[idx_f-1+stride_f+plane_stride_f] + r_fine[idx_f+1+stride_f+plane_stride_f]);
+
+                    f_coarse[idx_c] = sum;
+                }
+            }
+        }
+    }
+}
+
+void MultigridPoissonSolver::restrict_residual_xz(int fine_level) {
+    NVTX_SCOPE_MG("mg:restrict_xz");
+
+    // Semi-coarsening restriction: coarsen only in x and z, keep y unchanged
+    // For each (i_c, j, k_c): average over x-z neighbors at the same y
+    // This maintains y-metric consistency across all MG levels
+    auto& fine = *levels_[fine_level];
+    auto& coarse = *levels_[fine_level + 1];
+    const bool is_2d = fine.is2D();
+
+    const int Ng_f = fine.Ng;
+    const int Ng_c = coarse.Ng;
+    const int Nx_c = coarse.Nx;
+    const int Ny_c = coarse.Ny;  // Same as Ny_f (no y coarsening)
+    const int Nz_c = coarse.Nz;
+    const int stride_f = fine.stride;
+    const int stride_c = coarse.stride;
+    const int plane_stride_f = fine.plane_stride;
+    const int plane_stride_c = coarse.plane_stride;
+
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* r_fine = static_cast<const double*>(omp_get_mapped_ptr(r_ptrs_[fine_level], device));
+    double* f_coarse = static_cast<double*>(omp_get_mapped_ptr(f_ptrs_[fine_level + 1], device));
+#else
+    const double* r_fine = r_ptrs_[fine_level];
+    double* f_coarse = f_ptrs_[fine_level + 1];
+#endif
+
+    if (is_2d) {
+        // 2D semi-coarsening: coarsen x only, keep y unchanged
+        // Use 3-point averaging in x: 0.25 * r[i-1] + 0.5 * r[i] + 0.25 * r[i+1]
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(r_fine, f_coarse)
+#endif
+        for (int j = Ng_c; j < Ny_c + Ng_c; ++j) {
+            for (int i_c = Ng_c; i_c < Nx_c + Ng_c; ++i_c) {
+                // y is unchanged: j_f = j (same index, different Ng offset)
+                int j_f = j - Ng_c + Ng_f;
+                // x coarsens: i_f = 2 * (i_c - Ng_c) + Ng_f
+                int i_f = Ng_f + 2 * (i_c - Ng_c);
+
+                int idx_f = j_f * stride_f + i_f;
+                int idx_c = j * stride_c + i_c;
+
+                // 3-point x-direction averaging (full weighting in x only)
+                f_coarse[idx_c] = 0.25 * r_fine[idx_f - 1]
+                                + 0.50 * r_fine[idx_f]
+                                + 0.25 * r_fine[idx_f + 1];
+            }
+        }
+    } else {
+        // 3D semi-coarsening: coarsen x and z only, keep y unchanged
+        // Use 9-point averaging in x-z plane
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(r_fine, f_coarse)
+#endif
+        for (int k_c = Ng_c; k_c < Nz_c + Ng_c; ++k_c) {
+            for (int j = Ng_c; j < Ny_c + Ng_c; ++j) {
+                for (int i_c = Ng_c; i_c < Nx_c + Ng_c; ++i_c) {
+                    // y is unchanged: j_f = j (same index, different Ng offset)
+                    int j_f = j - Ng_c + Ng_f;
+                    // x and z coarsen
+                    int i_f = Ng_f + 2 * (i_c - Ng_c);
+                    int k_f = Ng_f + 2 * (k_c - Ng_c);
+
+                    int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
+                    int idx_c = k_c * plane_stride_c + j * stride_c + i_c;
+
+                    // 9-point x-z plane averaging (no y neighbors)
+                    double sum = 0.0;
+                    // Center (weight = 1/4)
+                    sum += 0.25 * r_fine[idx_f];
+                    // 4 face neighbors in x-z (weight = 1/8 each)
+                    sum += 0.125 * (r_fine[idx_f - 1] + r_fine[idx_f + 1]
+                                  + r_fine[idx_f - plane_stride_f] + r_fine[idx_f + plane_stride_f]);
+                    // 4 corner neighbors in x-z (weight = 1/16 each)
+                    sum += 0.0625 * (r_fine[idx_f - 1 - plane_stride_f] + r_fine[idx_f + 1 - plane_stride_f]
+                                   + r_fine[idx_f - 1 + plane_stride_f] + r_fine[idx_f + 1 + plane_stride_f]);
 
                     f_coarse[idx_c] = sum;
                 }
@@ -1303,6 +1637,97 @@ void MultigridPoissonSolver::prolongate_correction(int coarse_level) {
     }
 }
 
+void MultigridPoissonSolver::prolongate_correction_xz(int coarse_level) {
+    NVTX_SCOPE_MG("mg:prolongate_xz");
+
+    // Semi-coarsening prolongation: interpolate only in x and z, keep y unchanged
+    // For each fine cell: bilinear interpolation in x-z from coarse cells at same y
+    auto& coarse = *levels_[coarse_level];
+    auto& fine = *levels_[coarse_level - 1];
+    const bool is_2d = fine.is2D();
+
+    const int Ng_f = fine.Ng;
+    const int Ng_c = coarse.Ng;
+    const int Nx_f = fine.Nx;
+    const int Ny_f = fine.Ny;
+    const int Nz_f = fine.Nz;
+    const int stride_f = fine.stride;
+    const int stride_c = coarse.stride;
+    const int plane_stride_f = fine.plane_stride;
+    const int plane_stride_c = coarse.plane_stride;
+
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* u_coarse = static_cast<const double*>(omp_get_mapped_ptr(u_ptrs_[coarse_level], device));
+    double* u_fine = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[coarse_level - 1], device));
+#else
+    const double* u_coarse = u_ptrs_[coarse_level];
+    double* u_fine = u_ptrs_[coarse_level - 1];
+#endif
+
+    if (is_2d) {
+        // 2D semi-coarsening: interpolate x only, y is identity (injection)
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_coarse, u_fine)
+#endif
+        for (int j_f = Ng_f; j_f < Ny_f + Ng_f; ++j_f) {
+            for (int i_f = Ng_f; i_f < Nx_f + Ng_f; ++i_f) {
+                // y: direct mapping (no coarsening)
+                int j_c = j_f - Ng_f + Ng_c;
+                // x: coarsened
+                int i_c = (i_f - Ng_f) / 2 + Ng_c;
+                int di = (i_f - Ng_f) & 1;
+
+                // Linear interpolation in x only
+                double wx1 = 0.5 * di;
+                double wx0 = 1.0 - wx1;
+
+                int idx_c = j_c * stride_c + i_c;
+                double correction = wx0 * u_coarse[idx_c] + wx1 * u_coarse[idx_c + 1];
+
+                int idx_f = j_f * stride_f + i_f;
+                u_fine[idx_f] += correction;
+            }
+        }
+    } else {
+        // 3D semi-coarsening: bilinear interpolation in x-z, y is identity
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_coarse, u_fine)
+#endif
+        for (int k_f = Ng_f; k_f < Nz_f + Ng_f; ++k_f) {
+            for (int j_f = Ng_f; j_f < Ny_f + Ng_f; ++j_f) {
+                for (int i_f = Ng_f; i_f < Nx_f + Ng_f; ++i_f) {
+                    // y: direct mapping (no coarsening)
+                    int j_c = j_f - Ng_f + Ng_c;
+                    // x and z: coarsened
+                    int i_c = (i_f - Ng_f) / 2 + Ng_c;
+                    int k_c = (k_f - Ng_f) / 2 + Ng_c;
+                    int di = (i_f - Ng_f) & 1;
+                    int dk = (k_f - Ng_f) & 1;
+
+                    // Bilinear interpolation weights in x-z
+                    double wx1 = 0.5 * di;
+                    double wx0 = 1.0 - wx1;
+                    double wz1 = 0.5 * dk;
+                    double wz0 = 1.0 - wz1;
+
+                    int idx_c = k_c * plane_stride_c + j_c * stride_c + i_c;
+
+                    // Bilinear interpolation from 4 coarse neighbors in x-z plane
+                    double correction =
+                        wx0 * wz0 * u_coarse[idx_c]
+                      + wx1 * wz0 * u_coarse[idx_c + 1]
+                      + wx0 * wz1 * u_coarse[idx_c + plane_stride_c]
+                      + wx1 * wz1 * u_coarse[idx_c + 1 + plane_stride_c];
+
+                    int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
+                    u_fine[idx_f] += correction;
+                }
+            }
+        }
+    }
+}
+
 void MultigridPoissonSolver::solve_coarsest(int iterations) {
     // Direct solve on coarsest grid using multiple Chebyshev iterations
     // Each Chebyshev call performs degree=4 polynomial sweeps
@@ -1364,8 +1789,12 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
     // This is essential for periodic BCs where ghost cells must wrap around
     apply_bc_to_residual(level);
 
-    // Restrict to coarse grid
-    restrict_residual(level);
+    // Restrict to coarse grid (use semi-coarsening if y is stretched)
+    if (semi_coarsening_) {
+        restrict_residual_xz(level);
+    } else {
+        restrict_residual(level);
+    }
 
     // Zero coarse grid solution
     {
@@ -1400,7 +1829,11 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 
     // Prolongate correction and apply boundary conditions
     // (BC needed before post-smoothing reads ghost cells)
-    prolongate_correction(level + 1);
+    if (semi_coarsening_) {
+        prolongate_correction_xz(level + 1);
+    } else {
+        prolongate_correction(level + 1);
+    }
     apply_bc(level);
 
     // Post-smoothing (nu2 passes of degree-k Chebyshev)
@@ -1841,6 +2274,14 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         // NOTE: V-cycle graph is 3D only (2D path not fully tested)
         const bool is_3d = (levels_[0]->Nz > 1);
         const bool use_graph = use_vcycle_graph_ && cfg.use_vcycle_graph && is_3d;
+        // DEBUG: Trace graph config
+        static bool first_solve = true;
+        if (first_solve) {
+            std::cout << "[MG DEBUG] use_vcycle_graph_=" << use_vcycle_graph_
+                      << " cfg.use_vcycle_graph=" << cfg.use_vcycle_graph
+                      << " is_3d=" << is_3d << " => use_graph=" << use_graph << "\n";
+            first_solve = false;
+        }
         auto run_cycles = [&](int n) {
             if (use_graph) {
                 // Initialize graph on first use or if parameters changed
@@ -2181,6 +2622,11 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
         }
     }
     
+    // Map y-metric arrays for non-uniform y-spacing (level 0 only)
+    if (y_stretched_ && yLap_aS_ && yLap_aN_ && yLap_aP_) {
+        #pragma omp target enter data map(to: yLap_aS_[0:y_metrics_size_], yLap_aN_[0:y_metrics_size_], yLap_aP_[0:y_metrics_size_])
+    }
+
     // Verify mappings succeeded
     if (!u_ptrs_.empty() && !gpu::is_pointer_present(u_ptrs_[0])) {
         throw std::runtime_error("GPU mapping failed despite device availability");
@@ -2214,6 +2660,11 @@ void MultigridPoissonSolver::cleanup_gpu_buffers() {
             omp_target_free(tmp_ptrs_[lvl], device_id);
             tmp_ptrs_[lvl] = nullptr;
         }
+    }
+
+    // Unmap y-metric arrays for non-uniform y-spacing
+    if (y_stretched_ && yLap_aS_ && yLap_aN_ && yLap_aP_) {
+        #pragma omp target exit data map(delete: yLap_aS_[0:y_metrics_size_], yLap_aN_[0:y_metrics_size_], yLap_aP_[0:y_metrics_size_])
     }
 
     gpu_ready_ = false;

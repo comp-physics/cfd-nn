@@ -1019,8 +1019,14 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
         const double* w_ptr = vel_ptrs.w;
 
         const int n_cells = Nx * Ny * Nz;
-        if (use_O4) {
-            // O4 divergence with periodic-aware fallback
+
+        // Check for y-stretching (non-uniform y-spacing)
+        const bool y_stretched = v.y_stretched;
+        const double* dyv_ptr = v.dyv;
+        [[maybe_unused]] const size_t y_metrics_size = y_stretched ? y_metrics_size_ : 0;
+
+        if (use_O4 && !y_stretched) {
+            // O4 divergence with periodic-aware fallback (uniform y only)
             #pragma omp target teams distribute parallel for \
                 map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size]) \
                 firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Nz, Ng, x_periodic, y_periodic, z_periodic)
@@ -1035,8 +1041,33 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
                     dx, dy, dz, x_periodic, y_periodic, z_periodic,
                     u_ptr, v_ptr, w_ptr, div_ptr);
             }
+        } else if (y_stretched) {
+            // O2 divergence with non-uniform y-spacing
+            // Uses dyv[j] for dv/dy instead of uniform dy
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size], dyv_ptr[0:y_metrics_size]) \
+                firstprivate(dx, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_cells; ++idx) {
+                const int i = idx % Nx + Ng;
+                const int j = (idx / Nx) % Ny + Ng;
+                const int k = idx / (Nx * Ny) + Ng;
+
+                // Inline divergence with variable y-spacing
+                const int u_right = k * u_plane_stride + j * u_stride + (i + 1);
+                const int u_left  = k * u_plane_stride + j * u_stride + i;
+                const int v_top   = k * v_plane_stride + (j + 1) * v_stride + i;
+                const int v_bottom = k * v_plane_stride + j * v_stride + i;
+                const int w_front = (k + 1) * w_plane_stride + j * w_stride + i;
+                const int w_back  = k * w_plane_stride + j * w_stride + i;
+                const int div_idx = k * div_plane_stride + j * div_stride + i;
+
+                const double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
+                const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dyv_ptr[j];  // Non-uniform y
+                const double dwdz = (w_ptr[w_front] - w_ptr[w_back]) / dz;
+                div_ptr[div_idx] = dudx + dvdy + dwdz;
+            }
         } else {
-            // O2 divergence
+            // O2 divergence with uniform spacing
             #pragma omp target teams distribute parallel for \
                 map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size], div_ptr[0:div_total_size]) \
                 firstprivate(dx, dy, dz, u_stride, v_stride, w_stride, u_plane_stride, v_plane_stride, w_plane_stride, div_stride, div_plane_stride, Nx, Ny, Ng)
@@ -1057,16 +1088,20 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     // 2D path
     const int n_cells = Nx * Ny;
 
-    // Use target data for scalar parameters (NVHPC workaround)
-    #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx, Ng)
-    {
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size])
-        for (int idx = 0; idx < n_cells; ++idx) {
-            const int i = idx % Nx + Ng;  // Cell center i index (with ghosts)
-            const int j = idx / Nx + Ng;  // Cell center j index (with ghosts)
+    // Check for y-stretching (non-uniform y-spacing)
+    const bool y_stretched = v.y_stretched;
+    const double* dyv_ptr = v.dyv;
+    [[maybe_unused]] const size_t y_metrics_size = y_stretched ? y_metrics_size_ : 0;
 
-            // Fully inlined divergence computation
+    if (y_stretched) {
+        // 2D divergence with non-uniform y-spacing
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size], dyv_ptr[0:y_metrics_size]) \
+            firstprivate(dx, u_stride, v_stride, div_stride, Nx, Ng)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int i = idx % Nx + Ng;
+            const int j = idx / Nx + Ng;
+
             const int u_right = j * u_stride + (i + 1);
             const int u_left = j * u_stride + i;
             const int v_top = (j + 1) * v_stride + i;
@@ -1074,8 +1109,30 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
             const int div_idx = j * div_stride + i;
 
             const double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
-            const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
+            const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dyv_ptr[j];  // Non-uniform y
             div_ptr[div_idx] = dudx + dvdy;
+        }
+    } else {
+        // 2D divergence with uniform spacing
+        #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx, Ng)
+        {
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size])
+            for (int idx = 0; idx < n_cells; ++idx) {
+                const int i = idx % Nx + Ng;  // Cell center i index (with ghosts)
+                const int j = idx / Nx + Ng;  // Cell center j index (with ghosts)
+
+                // Fully inlined divergence computation
+                const int u_right = j * u_stride + (i + 1);
+                const int u_left = j * u_stride + i;
+                const int v_top = (j + 1) * v_stride + i;
+                const int v_bottom = j * v_stride + i;
+                const int div_idx = j * div_stride + i;
+
+                const double dudx = (u_ptr[u_right] - u_ptr[u_left]) / dx;
+                const double dvdy = (v_ptr[v_top] - v_ptr[v_bottom]) / dy;
+                div_ptr[div_idx] = dudx + dvdy;
+            }
         }
     }
 }
@@ -1130,6 +1187,11 @@ void RANSSolver::correct_velocity() {
     double*       u_ptr      = v.u_face;
     double*       v_ptr      = v.v_face;
     double*       p_ptr      = v.p;
+
+    // Y-metric arrays for non-uniform y-spacing (D·G = L consistency)
+    const bool y_stretched = v.y_stretched;
+    const double* dyc_ptr = v.dyc;
+    [[maybe_unused]] const size_t y_metrics_size = y_stretched ? y_metrics_size_ : 0;
 
     // 3D path
     if (!mesh_->is2D()) {
@@ -1195,8 +1257,8 @@ void RANSSolver::correct_velocity() {
 
         // Correct v-velocities at y-faces (3D)
         const int n_v_faces = Nx * (Ny + 1) * Nz;
-        if (use_O4) {
-            // O4 pressure gradient with periodic-aware fallback
+        if (use_O4 && !y_stretched) {
+            // O4 pressure gradient with periodic-aware fallback (uniform y only)
             #pragma omp target teams distribute parallel for \
                 map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
                 firstprivate(dy, dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng, y_periodic)
@@ -1209,8 +1271,28 @@ void RANSSolver::correct_velocity() {
                     v_stride, v_plane_stride, p_stride, p_plane_stride,
                     dy, dt, y_periodic, v_star_ptr, p_corr_ptr, v_ptr);
             }
+        } else if (y_stretched) {
+            // O2 pressure gradient with non-uniform y-spacing
+            // Uses dyc[j] = yc[j] - yc[j-1] for center-to-center spacing at v-face j
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size], dyc_ptr[0:y_metrics_size]) \
+                firstprivate(dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+
+                // Inline v-correction with non-uniform y-spacing
+                // v(i,j) is at y-face j between cells (i,j-1) and (i,j)
+                const int v_idx = k * v_plane_stride + j * v_stride + i;
+                const int p_top    = k * p_plane_stride + j * p_stride + i;
+                const int p_bottom = k * p_plane_stride + (j - 1) * p_stride + i;
+
+                const double dp_dy = (p_corr_ptr[p_top] - p_corr_ptr[p_bottom]) / dyc_ptr[j];  // Non-uniform y
+                v_ptr[v_idx] = v_star_ptr[v_idx] - dt * dp_dy;
+            }
         } else {
-            // O2 pressure gradient
+            // O2 pressure gradient with uniform spacing
             #pragma omp target teams distribute parallel for \
                 map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
                 firstprivate(dy, dt, v_stride, v_plane_stride, p_stride, p_plane_stride, Nx, Ny, Ng)
@@ -1349,17 +1431,39 @@ void RANSSolver::correct_velocity() {
 
     // Correct ALL v-velocities at y-faces (including redundant face if periodic)
     const int n_v_faces = Nx * (Ny + 1);
-    #pragma omp target teams distribute parallel for \
-        map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
-        firstprivate(dy, dt, v_stride, p_stride, Nx, Ng)
-    for (int idx = 0; idx < n_v_faces; ++idx) {
-        int i_local = idx % Nx;
-        int j_local = idx / Nx;
-        int i = i_local + Ng;
-        int j = j_local + Ng;
+    if (y_stretched) {
+        // 2D v-correction with non-uniform y-spacing
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size], dyc_ptr[0:y_metrics_size]) \
+            firstprivate(dt, v_stride, p_stride, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = idx / Nx;
+            int i = i_local + Ng;
+            int j = j_local + Ng;
 
-        correct_v_face_kernel_staggered(i, j, v_stride, p_stride, dy, dt,
-                                       v_star_ptr, p_corr_ptr, v_ptr);
+            // v(i,j) is at y-face j between cells (i,j-1) and (i,j)
+            const int v_idx = j * v_stride + i;
+            const int p_top = j * p_stride + i;
+            const int p_bottom = (j - 1) * p_stride + i;
+
+            const double dp_dy = (p_corr_ptr[p_top] - p_corr_ptr[p_bottom]) / dyc_ptr[j];  // Non-uniform y
+            v_ptr[v_idx] = v_star_ptr[v_idx] - dt * dp_dy;
+        }
+    } else {
+        // 2D v-correction with uniform y-spacing
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size], v_star_ptr[0:v_total_size], p_corr_ptr[0:p_total_size]) \
+            firstprivate(dy, dt, v_stride, p_stride, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = idx / Nx;
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+
+            correct_v_face_kernel_staggered(i, j, v_stride, p_stride, dy, dt,
+                                           v_star_ptr, p_corr_ptr, v_ptr);
+        }
     }
 
     // Enforce exact y-periodicity: average the bottom and top edge values

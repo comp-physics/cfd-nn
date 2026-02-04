@@ -140,7 +140,16 @@ private:
     
     const Mesh* mesh_;
     std::vector<std::unique_ptr<GridLevel>> levels_;
-    
+
+    // Y-metric arrays for non-uniform y-spacing at level 0 (D·G = L consistency)
+    // These are pointers to the original mesh's precomputed coefficients (nullptr if uniform)
+    const double* yLap_aS_ = nullptr;  ///< Laplacian south coeff: 1/(dyv[j] * dyc[j])
+    const double* yLap_aN_ = nullptr;  ///< Laplacian north coeff: 1/(dyv[j] * dyc[j+1])
+    const double* yLap_aP_ = nullptr;  ///< Laplacian diagonal: -(aS + aN)
+    bool y_stretched_ = false;         ///< True if y is non-uniform
+    bool semi_coarsening_ = false;     ///< True if using x-z semi-coarsening (y unchanged across levels)
+    size_t y_metrics_size_ = 0;        ///< Size of y-metric arrays
+
     // Boundary conditions
     PoissonBC bc_x_lo_ = PoissonBC::Periodic;
     PoissonBC bc_x_hi_ = PoissonBC::Periodic;
@@ -175,7 +184,9 @@ private:
     void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
     void restrict_residual(int fine_level);
+    void restrict_residual_xz(int fine_level);  // Semi-coarsening: x-z only
     void prolongate_correction(int coarse_level);
+    void prolongate_correction_xz(int coarse_level);  // Semi-coarsening: x-z only
     void apply_bc(int level);
     void apply_bc_to_residual(int level);  // Apply periodic BCs to residual for restriction
     void vcycle(int level, int nu1 = 2, int nu2 = 2, int degree = 4);

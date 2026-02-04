@@ -39,8 +39,15 @@ struct Mesh {
 
     // Variable cell sizes for stretched grids
     std::vector<double> dxv; ///< dx for each cell column
-    std::vector<double> dyv; ///< dy for each cell row
+    std::vector<double> dyv; ///< dy for each cell row (cell height = yf[j+1] - yf[j])
     std::vector<double> dzv; ///< dz for each cell layer
+
+    // Y-derivative metrics for non-uniform grids (projection step consistency)
+    // These are precomputed coefficients for D·G = L compatibility
+    std::vector<double> dyc;     ///< center-to-center spacing at y-face j: yc[j] - yc[j-1]
+    std::vector<double> yLap_aS; ///< Laplacian south coeff: 1/(dyv[j] * dyc[j])
+    std::vector<double> yLap_aN; ///< Laplacian north coeff: 1/(dyv[j] * dyc[j+1])
+    std::vector<double> yLap_aP; ///< Laplacian diagonal: -(aS + aN)
 
     /// Total number of cells including ghosts
     int total_Nx() const { return Nx + 2 * Nghost; }
@@ -118,6 +125,12 @@ struct Mesh {
     double dx_at(int i) const { return dxv.empty() ? dx : dxv[i]; }
     double dy_at(int j) const { return dyv.empty() ? dy : dyv[j]; }
     double dz_at(int k) const { return dzv.empty() ? dz : dzv[k]; }
+
+    /// Check if y is stretched (non-uniform)
+    bool is_y_stretched() const { return !dyv.empty(); }
+
+    /// Get center-to-center y-spacing at face j (for gradient)
+    double dyc_at(int j) const { return dyc.empty() ? dy : dyc[j]; }
     
     /// Wall distance (for channel: distance to nearest wall in y)
     double wall_distance(int i, int j) const;
