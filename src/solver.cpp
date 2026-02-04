@@ -1822,51 +1822,93 @@ double RANSSolver::step() {
 
     } // End Euler time integration path
 
-    // Post-projection divergence measurement (always computed for projection health)
-    // This is the actual measure of projection quality: ||div(u^{n+1})||
-    {
+    // Post-projection divergence measurement (throttled by diag_interval for performance)
+    // Skip expensive GPU reduction except every diag_interval steps
+    // Stats from last measurement are preserved between updates
+    if (iter_ % config_.diag_interval == 0) {
+        // compute_divergence writes to device memory (div_velocity_ptr_)
         compute_divergence(VelocityWhich::Current, div_velocity_);
+
+        // GPU reduction for norms - avoids full field GPU→CPU transfer
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int Nz = mesh_->Nz;
+        const int Ng = mesh_->Nghost;
+        const int stride = Nx + 2 * Ng;
+        const int plane_stride = stride * (Ny + 2 * Ng);
+        const bool is_2d = mesh_->is2D();
+
         double max_div = 0.0;
         double sum_div2 = 0.0;
-        if (mesh_->is2D()) {
-            const double dV = mesh_->dx * mesh_->dy;
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    double d = div_velocity_(i, j);
-                    max_div = std::max(max_div, std::abs(d));
-                    sum_div2 += d * d * dV;
+
+#ifdef USE_GPU_OFFLOAD
+        // GPU reduction - only copies 2 scalars back, not the full field
+        const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) \
+                is_device_ptr(div_dev) reduction(max: max_div) reduction(+: sum_div2)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double d = div_dev[idx];
+                    double abs_d = (d >= 0.0) ? d : -d;
+                    if (abs_d > max_div) max_div = abs_d;
+                    sum_div2 += d * d;
                 }
             }
         } else {
-            const double dV = mesh_->dx * mesh_->dy * mesh_->dz;
-            for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
-                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                        double d = div_velocity_(i, j, k);
-                        max_div = std::max(max_div, std::abs(d));
-                        sum_div2 += d * d * dV;
+            #pragma omp target teams distribute parallel for collapse(3) \
+                is_device_ptr(div_dev) reduction(max: max_div) reduction(+: sum_div2)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double d = div_dev[idx];
+                        double abs_d = (d >= 0.0) ? d : -d;
+                        if (abs_d > max_div) max_div = abs_d;
+                        sum_div2 += d * d;
                     }
                 }
             }
         }
+#else
+        // CPU fallback
+        if (is_2d) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    double d = div_velocity_(i, j);
+                    max_div = std::max(max_div, std::abs(d));
+                    sum_div2 += d * d;
+                }
+            }
+        } else {
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        double d = div_velocity_(i, j, k);
+                        max_div = std::max(max_div, std::abs(d));
+                        sum_div2 += d * d;
+                    }
+                }
+            }
+        }
+#endif
+
         poisson_stats_.div_after_proj_linf = max_div;
         poisson_stats_.div_after_proj_l2 = std::sqrt(sum_div2);
 
         // Compute dimensionless scaled divergence for portable thresholds
-        // dx_min = min cell size, u_ref = u_tau (from forcing) or bulk velocity
         double dx_min = mesh_->dx;
         if (mesh_->is_y_stretched()) {
-            // For stretched mesh, use minimum dy from wall region
-            dx_min = std::min(dx_min, mesh_->dyv[mesh_->Nghost]);  // First interior cell height
+            dx_min = std::min(dx_min, mesh_->dyv[mesh_->Nghost]);
         } else {
             dx_min = std::min(dx_min, mesh_->dy);
         }
-        if (!mesh_->is2D()) {
+        if (!is_2d) {
             dx_min = std::min(dx_min, mesh_->dz);
         }
-        // Use u_tau from forcing as reference velocity (consistent with channel flow)
         double u_ref = u_tau_from_forcing();
-        if (u_ref < 1e-10) u_ref = 1.0;  // Fallback if no forcing
+        if (u_ref < 1e-10) u_ref = 1.0;
 
         poisson_stats_.dx_min = dx_min;
         poisson_stats_.u_ref = u_ref;
@@ -1875,12 +1917,7 @@ double RANSSolver::step() {
 
         // Print diagnostics if enabled (via NNCFD_POISSON_DIAGNOSTICS env var)
         static bool div_diagnostics = (std::getenv("NNCFD_POISSON_DIAGNOSTICS") != nullptr);
-        static int div_diagnostics_interval = []() {
-            const char* env = std::getenv("NNCFD_POISSON_DIAGNOSTICS_INTERVAL");
-            int v = env ? std::atoi(env) : 1;
-            return (v > 0) ? v : 1;
-        }();
-        if (div_diagnostics && (iter_ % div_diagnostics_interval == 0)) {
+        if (div_diagnostics) {
             std::cout << "[Projection] ||div(u)||_Linf=" << std::scientific << std::setprecision(6)
                       << max_div << " L2=" << poisson_stats_.div_after_proj_l2
                       << " scaled_Linf=" << poisson_stats_.div_scaled_linf

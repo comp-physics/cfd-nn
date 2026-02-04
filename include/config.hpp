@@ -117,6 +117,7 @@ struct Config {
     int output_freq = 100;      ///< Console output frequency (iterations)
     int num_snapshots = 10;     ///< Number of VTK snapshots during simulation
     bool verbose = true;
+    int diag_interval = 1;      ///< Expensive diagnostics frequency (div norms, Poisson stats). Set >1 for perf runs.
     
     // Benchmark / postprocessing controls
     // - postprocess: Poiseuille table + L2 error + velocity_profile.dat
@@ -139,7 +140,7 @@ struct Config {
     double poisson_tol_abs = 0.0;    ///< Absolute tolerance on ||r||_∞ (0 = disabled)
     double poisson_tol_rhs = 1e-6;   ///< RHS-relative: ||r||/||b|| (tight for Galilean invariance)
     double poisson_tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0||
-    int poisson_check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap)
+    int poisson_check_interval = 3;  ///< Check convergence every N V-cycles (reduces GPU→CPU sync frequency)
     bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
     double poisson_linf_safety = 10.0; ///< L∞ safety cap multiplier (prevent L2 from hiding bad cells)
     int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
