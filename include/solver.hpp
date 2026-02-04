@@ -216,6 +216,14 @@ public:
     /// Compute friction Reynolds number Re_tau
     double Re_tau() const;
 
+    /// Flow-through time based on bulk velocity: t* = t * U_b / δ
+    /// Measures how many channel lengths the bulk flow has traveled
+    double flow_through_time_bulk() const;
+
+    /// Flow-through time based on friction velocity: t+ = t * u_τ / δ
+    /// Measures time in wall units (more relevant for turbulence development)
+    double flow_through_time_friction() const;
+
     /// Compute convective KE production rate: <u, conv(u)>
     /// Returns the rate of KE change due to advection (should be ~0 for skew-symmetric form)
     /// Call this after compute_convective_term() to get meaningful results

@@ -475,9 +475,11 @@ int main(int argc, char** argv) {
             // Always show progress every ~10% for CI visibility
             // For diagnostic: also print max|div u| at early steps to catch instability onset
             double max_div = solver.compute_divergence_linf_device();
+            double t_star = solver.flow_through_time_bulk();
             if (step % progress_interval == 0 || step == 1 || step <= 50) {
                 std::cout << "    Step " << std::setw(6) << step << " / " << config.max_steps
                           << "  (" << std::setw(3) << (100 * step / config.max_steps) << "%)"
+                          << "  t*=" << std::fixed << std::setprecision(2) << t_star
                           << "  residual = " << std::scientific << std::setprecision(3) << residual
                           << "  max|div u| = " << std::setprecision(3) << max_div
                           << std::fixed << "\n" << std::flush;

@@ -2399,6 +2399,24 @@ double RANSSolver::Re_tau() const {
     return u_tau * delta / config_.nu;
 }
 
+double RANSSolver::flow_through_time_bulk() const {
+    // t* = t * U_b / δ
+    // Number of channel half-heights the bulk flow has traveled
+    double delta = (mesh_->y_max - mesh_->y_min) / 2.0;
+    double U_b = bulk_velocity();
+    if (U_b < 1e-12) return 0.0;  // Avoid division by zero for quiescent flow
+    return current_time_ * U_b / delta;
+}
+
+double RANSSolver::flow_through_time_friction() const {
+    // t+ = t * u_τ / δ
+    // Time in friction/wall units
+    double delta = (mesh_->y_max - mesh_->y_min) / 2.0;
+    double u_tau = friction_velocity();
+    if (u_tau < 1e-12) return 0.0;  // Avoid division by zero
+    return current_time_ * u_tau / delta;
+}
+
 double RANSSolver::compute_convective_ke_production() const {
     // Compute <u, conv(u)> = rate of KE change due to advection
     // For skew-symmetric advection with div(u)=0, this should be ~0
