@@ -2116,6 +2116,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         r0_l2_ = 0.0;
         b_inf_ = 0.0;
         b_l2_ = 0.0;
+        converged_ = true;  // Fixed-cycle mode: always "converged" (no tolerance check)
 
         // Handle nullspace for singular problems (pure Neumann/Periodic)
         fix_nullspace(0);
@@ -2192,6 +2193,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     compute_residual_and_norms(0, r0_, r0_l2_);
     residual_ = r0_;
     residual_l2_ = r0_l2_;
+    converged_ = false;  // Reset: will be set true if tolerance achieved
 
     int cycles_used = 0;
     for (int cycle = 0; cycle < max_cycles; ++cycle) {
@@ -2235,6 +2237,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
             }
 
             if (converged) {
+                converged_ = true;  // Record that we achieved tolerance
                 break;
             }
         }
@@ -2568,6 +2571,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     compute_residual_and_norms(0, r0_, r0_l2_);
     residual_ = r0_;
     residual_l2_ = r0_l2_;
+    converged_ = false;  // Reset: will be set true if tolerance achieved
 
     int cycles_used = 0;
     for (int cycle = 0; cycle < max_cycles; ++cycle) {
@@ -2611,6 +2615,7 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             }
 
             if (converged) {
+                converged_ = true;  // Record that we achieved tolerance
                 break;
             }
         }

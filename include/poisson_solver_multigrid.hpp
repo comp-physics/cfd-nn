@@ -77,6 +77,9 @@ public:
     /// Get initial residual ||r0||_2
     double initial_residual_l2() const { return r0_l2_; }
 
+    /// Check if last solve converged (reached tolerance) vs hit max_vcycles
+    bool converged() const { return converged_; }
+
     /// Set smoother type (Jacobi for reference/debugging, Chebyshev for performance)
     /// Can also be set via environment variable MG_SMOOTHER=jacobi|chebyshev
     void set_smoother(MGSmootherType type) { smoother_type_ = type; }
@@ -164,6 +167,7 @@ private:
     double b_l2_ = 0.0;          // ||b||_2 from last solve
     double r0_ = 0.0;            // Initial residual ||r0||_∞ from last solve
     double r0_l2_ = 0.0;         // Initial residual ||r0||_2 from last solve
+    bool converged_ = false;     // True if solve reached tolerance (vs hitting max_vcycles)
     double dirichlet_val_ = 0.0;
     MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
 

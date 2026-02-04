@@ -100,11 +100,14 @@ public:
     /// Poisson solve statistics from last step (for testing/diagnostics)
     struct PoissonStats {
         int cycles = 0;           ///< V-cycles (or iterations) performed
+        bool converged = true;    ///< True if tolerance achieved (vs hitting max_vcycles)
         double rhs_norm_l2 = 0.0; ///< ||b||_L2 at start of solve
         double rhs_norm_inf = 0.0;///< ||b||_∞ at start of solve
         double res_norm_l2 = 0.0; ///< ||r||_L2 after solve
         double res_norm_inf = 0.0;///< ||r||_∞ after solve
         double res_over_rhs = 0.0;///< ||r||/||b|| (relative residual)
+        double div_after_proj_linf = 0.0; ///< ||div(u)||_∞ after projection
+        double div_after_proj_l2 = 0.0;   ///< ||div(u)||_L2 after projection
     };
 
     /// Get statistics from last Poisson solve (updated after each step())
@@ -238,6 +241,157 @@ public:
     PlaneStats compute_plane_stats(int i_global) const;  // i_global is x-index (0 to Nx-1)
 
     //=========================================================================
+    // Turbulence Presence Indicators (robust turbulence detection)
+    //=========================================================================
+
+    /// Turbulence state classification
+    enum class TurbulenceState {
+        LAMINAR,       ///< Flow is laminar (no turbulent fluctuations)
+        TRANSITIONAL,  ///< Flow is transitioning (some fluctuations, unstable)
+        TURBULENT      ///< Flow is fully turbulent (sustained fluctuations)
+    };
+
+    /// Validation mode for Stage F
+    enum class ValidationMode {
+        Quick,  ///< Machinery validation: looser thresholds, coarse grids OK
+        Full    ///< DNS realism: strict resolution gates, production quality
+    };
+
+    /// Turbulence presence indicators (robust detection beyond just -<u'v'>+)
+    struct TurbulencePresenceIndicators {
+        // Mid-channel RMS (time-averaged after spin-up)
+        double u_rms_mid = 0.0;         ///< u'_rms at y/delta=0.5
+        double v_rms_mid = 0.0;         ///< v'_rms at y/delta=0.5
+        double w_rms_mid = 0.0;         ///< w'_rms at y/delta=0.5 (3D only)
+
+        // Turbulent kinetic energy at mid-channel
+        double tke_mid = 0.0;           ///< k = 0.5*(u'² + v'² + w'²) at y/delta=0.5
+
+        // Wall shear tracking (use forcing-based reference for consistency)
+        double u_tau_current = 0.0;     ///< Current u_tau from wall shear
+        double u_tau_force = 0.0;       ///< Reference u_tau from forcing: sqrt(delta * |dp/dx_effective|)
+        double u_tau_ratio = 0.0;       ///< u_tau_current / u_tau_force
+
+        // Reynolds stress peak
+        double max_uv_plus = 0.0;       ///< max(-<u'v'>+) in trust region
+        int max_uv_plus_y_index = 0;    ///< y-index where max occurs
+
+        // Trust region bounds (exclude fringe + 2δ at inlet, 2δ at outlet)
+        int trust_x_start = 0;          ///< Start x-index of trust region
+        int trust_x_end = 0;            ///< End x-index of trust region
+        double trust_x_min = 0.0;       ///< Physical x-coordinate of trust region start
+        double trust_x_max = 0.0;       ///< Physical x-coordinate of trust region end
+
+        // Temporal stability (check if turbulence is sustained)
+        double u_tau_drift_rate = 0.0;  ///< d(u_tau)/dt normalized by u_tau
+        bool is_settling = false;       ///< True if u_tau is still drifting
+
+        /// Classify turbulence state based on instantaneous indicators
+        TurbulenceState classify() const {
+            // Primary criterion: wall shear ratio
+            if (u_tau_ratio > 1.2) {
+                return TurbulenceState::TURBULENT;
+            } else if (u_tau_ratio > 1.05) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+
+            // Secondary: Reynolds stress presence
+            if (max_uv_plus >= 0.5) {
+                return TurbulenceState::TURBULENT;
+            } else if (max_uv_plus >= 0.1) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+
+            // Tertiary: mid-channel TKE (more robust than RMS alone)
+            if (tke_mid > 0.01 * u_tau_force * u_tau_force) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+
+            return TurbulenceState::LAMINAR;
+        }
+
+        /// Get human-readable state string
+        const char* state_string() const {
+            switch (classify()) {
+                case TurbulenceState::LAMINAR:      return "LAMINAR";
+                case TurbulenceState::TRANSITIONAL: return "TRANSITIONAL";
+                case TurbulenceState::TURBULENT:    return "TURBULENT";
+            }
+            return "UNKNOWN";
+        }
+
+        /// Check if turbulence is present (transitional or turbulent)
+        bool is_turbulent_or_transitional() const {
+            return classify() != TurbulenceState::LAMINAR;
+        }
+    };
+
+    /// Sample for time-windowed turbulence tracking
+    struct TurbulenceSample {
+        double time = 0.0;
+        double u_tau_ratio = 0.0;
+        double u_rms_mid = 0.0;
+        double tke_mid = 0.0;
+        double max_uv_plus = 0.0;
+        TurbulenceState state = TurbulenceState::LAMINAR;
+    };
+
+    /// Time-windowed turbulence classifier with hysteresis
+    /// Prevents flickering classifications from momentary spikes/dips
+    struct TurbulenceClassifier {
+        // Window configuration
+        static constexpr int DEFAULT_WINDOW_SIZE = 20;     ///< Samples in rolling window
+        static constexpr int DEFAULT_HYSTERESIS = 5;       ///< Consecutive windows to change state
+
+        // Window statistics (computed from rolling buffer)
+        double u_tau_ratio_mean = 0.0;
+        double u_rms_mid_mean = 0.0;
+        double tke_mid_mean = 0.0;
+        double max_uv_plus_mean = 0.0;
+
+        // Current confirmed state (with hysteresis)
+        TurbulenceState confirmed_state = TurbulenceState::LAMINAR;
+        int consecutive_turbulent = 0;      ///< Consecutive windows classified turbulent
+        int consecutive_transitional = 0;   ///< Consecutive windows classified transitional
+        int consecutive_laminar = 0;        ///< Consecutive windows classified laminar
+
+        // Configuration
+        int window_size = DEFAULT_WINDOW_SIZE;
+        int hysteresis_count = DEFAULT_HYSTERESIS;
+
+        /// Classify based on windowed means (used internally)
+        TurbulenceState classify_instant() const {
+            if (u_tau_ratio_mean > 1.2 || max_uv_plus_mean >= 0.5) {
+                return TurbulenceState::TURBULENT;
+            } else if (u_tau_ratio_mean > 1.05 || max_uv_plus_mean >= 0.1 || tke_mid_mean > 0.01) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+            return TurbulenceState::LAMINAR;
+        }
+
+        /// Get confirmed state (with hysteresis applied)
+        TurbulenceState state() const { return confirmed_state; }
+
+        /// Get state string
+        const char* state_string() const {
+            switch (confirmed_state) {
+                case TurbulenceState::LAMINAR:      return "LAMINAR";
+                case TurbulenceState::TRANSITIONAL: return "TRANSITIONAL";
+                case TurbulenceState::TURBULENT:    return "TURBULENT";
+            }
+            return "UNKNOWN";
+        }
+    };
+
+    /// Wall shear history sample (for temporal tracking)
+    struct WallShearSample {
+        double time = 0.0;              ///< Simulation time
+        double u_tau_bot = 0.0;         ///< u_tau at bottom wall
+        double u_tau_top = 0.0;         ///< u_tau at top wall
+        double u_tau_avg = 0.0;         ///< Average of both walls
+    };
+
+    //=========================================================================
     // Stage F: Turbulence Realism Validation (DNS/LES quality checks)
     //=========================================================================
 
@@ -328,19 +482,40 @@ public:
         ResolutionDiagnostics resolution;
         MomentumBalanceDiagnostics momentum_balance;
         ReynoldsStressProfiles stress_profiles;
+        TurbulencePresenceIndicators presence;  ///< Turbulence presence indicators
+
+        ValidationMode mode = ValidationMode::Full;  ///< Validation mode used
 
         bool resolution_ok = false;
         bool utau_consistency_ok = false;
         bool momentum_closure_ok = false;
         bool stress_shape_ok = false;
         bool spectrum_ok = false;
+        bool turbulence_present_ok = false;  ///< True if turbulence is detected (Quick mode)
 
+        /// Pass criteria depend on validation mode:
+        /// - Full: all checks must pass (DNS quality)
+        /// - Quick: turbulence present + no explosion (machinery validation)
         bool passes_all() const {
+            if (mode == ValidationMode::Quick) {
+                // Quick mode: turbulence present, closure reasonable, not exploding
+                return turbulence_present_ok &&
+                       (momentum_balance.max_residual_normalized(resolution.u_tau_force) < 1.0);
+            }
+            // Full mode: all checks must pass
             return resolution_ok && utau_consistency_ok &&
                    momentum_closure_ok && stress_shape_ok && spectrum_ok;
         }
 
         void print() const;  ///< Print detailed report to stdout
+
+        /// Thresholds for Quick mode (machinery validation on coarse grids)
+        static constexpr double QUICK_CLOSURE_TOL = 0.50;      ///< 50% momentum closure
+        static constexpr double QUICK_UTAU_CONSISTENCY = 0.20; ///< 20% u_tau consistency
+
+        /// Thresholds for Full mode (DNS realism)
+        static constexpr double FULL_CLOSURE_TOL = 0.02;       ///< 2% momentum closure
+        static constexpr double FULL_UTAU_CONSISTENCY = 0.02;  ///< 2% u_tau consistency
     };
 
     /// Friction velocity from body forcing (exact for fully-developed channel)
@@ -384,6 +559,79 @@ public:
 
     /// Run full Stage F turbulence realism validation
     TurbulenceRealismReport validate_turbulence_realism() const;
+
+    /// Run Stage F validation with specified mode (Quick or Full)
+    TurbulenceRealismReport validate_turbulence_realism(ValidationMode mode) const;
+
+    /// Compute turbulence presence indicators (robust detection)
+    /// @param trust_x_start Start x-index for trust region (auto-computed if -1)
+    /// @param trust_x_end End x-index for trust region (auto-computed if -1)
+    TurbulencePresenceIndicators compute_turbulence_presence(int trust_x_start = -1,
+                                                              int trust_x_end = -1) const;
+
+    /// Record wall shear sample (call periodically during spinup for drift detection)
+    void record_wall_shear_sample(double time);
+
+    /// Get wall shear history
+    const std::vector<WallShearSample>& get_wall_shear_history() const { return wall_shear_history_; }
+
+    /// Clear wall shear history (call when starting statistics collection)
+    void clear_wall_shear_history() { wall_shear_history_.clear(); }
+
+    /// Check if wall shear has settled (drift rate below threshold)
+    /// @param window_samples Number of recent samples to check
+    /// @param drift_threshold Max allowed |d(u_tau)/dt| / u_tau per unit time
+    /// @note Only meaningful after force ramp is complete
+    bool is_wall_shear_settled(int window_samples = 10, double drift_threshold = 0.01) const;
+
+    //=========================================================================
+    // Time-windowed turbulence classifier
+    //=========================================================================
+
+    /// Record turbulence sample for windowed classification
+    /// Call this periodically (e.g., every 10-50 steps) during spinup/stats
+    void record_turbulence_sample();
+
+    /// Get the time-windowed turbulence classifier state
+    const TurbulenceClassifier& turbulence_classifier() const { return turb_classifier_; }
+
+    /// Clear turbulence sample history (call when starting fresh)
+    void clear_turbulence_samples() {
+        turb_samples_.clear();
+        turb_classifier_ = TurbulenceClassifier();
+    }
+
+    /// Configure turbulence classifier window
+    void configure_turbulence_classifier(int window_size, int hysteresis_count) {
+        turb_classifier_.window_size = window_size;
+        turb_classifier_.hysteresis_count = hysteresis_count;
+    }
+
+    //=========================================================================
+    // Ramped forcing for startup stabilization
+    //=========================================================================
+
+    /// Enable ramped forcing: dp/dx(t) = (1 - e^{-t/T}) * dp/dx_target
+    /// @param ramp_time Time constant T for exponential ramp (bulk time units)
+    void enable_force_ramp(double ramp_time);
+
+    /// Disable force ramping (use constant forcing)
+    void disable_force_ramp() { force_ramp_enabled_ = false; }
+
+    /// Check if force ramping is active
+    bool is_force_ramp_active() const { return force_ramp_enabled_ && current_time_ < 5.0 * force_ramp_tau_; }
+
+    /// Get current effective body force (accounts for ramping)
+    double get_effective_fx() const;
+    double get_effective_fy() const;
+    double get_effective_fz() const;
+
+    /// Get current simulation time
+    double current_time() const { return current_time_; }
+
+    /// Project velocity field to remove divergence (one-time cleanup after perturbation)
+    /// This performs a single pressure projection without advancing time
+    void project_initial_velocity();
 
     //=========================================================================
 
@@ -578,6 +826,21 @@ private:
     int iter_ = 0;
     int step_count_ = 0;  // Track current step for guard
     double current_dt_;
+    double current_time_ = 0.0;  // Simulation time (accumulated from dt)
+
+    // Force ramping state (for startup stabilization)
+    bool force_ramp_enabled_ = false;
+    double force_ramp_tau_ = 1.0;     // Ramp time constant (bulk time units)
+    double fx_target_ = 0.0;          // Target body force (used when ramping)
+    double fy_target_ = 0.0;
+    double fz_target_ = 0.0;
+
+    // Wall shear history for turbulence settling detection
+    std::vector<WallShearSample> wall_shear_history_;
+
+    // Turbulence sample buffer for windowed classification
+    std::vector<TurbulenceSample> turb_samples_;
+    TurbulenceClassifier turb_classifier_;
     
     // Original internal methods
     void apply_velocity_bc();
@@ -685,6 +948,12 @@ private:
     double* inlet_area_ptr_ = nullptr;        ///< Device: area weights for weighted reduction
     double total_inlet_area_ = 0.0;           ///< Total inlet area: sum(dy[j] * dz[k])
     bool inlet_needs_area_weight_ = false;    ///< True if mesh is stretched (dyv or dzv non-empty)
+
+    // Y-metric arrays for non-uniform y-spacing (D·G = L consistency for projection step)
+    // These are const pointers to mesh_->dyv/dyc data, mapped to GPU for stretched grids
+    const double* dyv_ptr_ = nullptr;  ///< Cell height at row j: yf[j+1] - yf[j]
+    const double* dyc_ptr_ = nullptr;  ///< Center-to-center spacing at face j: yc[j] - yc[j-1]
+    size_t y_metrics_size_ = 0;        ///< Size of dyv/dyc arrays (total_Ny())
 
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
 

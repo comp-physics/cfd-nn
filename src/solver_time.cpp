@@ -569,14 +569,52 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     vcycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
 #endif
 
+    // Populate PoissonStats for external access (for RK paths that call project_velocity)
+    if (selected_solver_ == PoissonSolverType::MG) {
+        poisson_stats_.cycles = vcycles;
+        poisson_stats_.converged = mg_poisson_solver_.converged();
+        poisson_stats_.rhs_norm_l2 = mg_poisson_solver_.rhs_norm_l2();
+        poisson_stats_.rhs_norm_inf = mg_poisson_solver_.rhs_norm();
+        poisson_stats_.res_norm_l2 = mg_poisson_solver_.residual_l2();
+        poisson_stats_.res_norm_inf = mg_poisson_solver_.residual();
+        double b_norm = pcfg.use_l2_norm ? poisson_stats_.rhs_norm_l2 : poisson_stats_.rhs_norm_inf;
+        double r_norm = pcfg.use_l2_norm ? poisson_stats_.res_norm_l2 : poisson_stats_.res_norm_inf;
+        poisson_stats_.res_over_rhs = (b_norm > 1e-30) ? r_norm / b_norm : 0.0;
+    }
+
     // Track Poisson solve stats for benchmarking (enable with POISSON_STATS=1)
     static bool print_stats = (std::getenv("POISSON_STATS") != nullptr);
+    static bool print_debug = (std::getenv("POISSON_DEBUG") != nullptr);
     static int poisson_solve_count = 0;
     static int total_vcycles = 0;
     poisson_solve_count++;
     total_vcycles += vcycles;
     if (print_stats) {
         std::cerr << "[Poisson] solve #" << poisson_solve_count << " vcycles=" << vcycles << "\n";
+    }
+
+    // Debug: print RHS and solution norms (enable with POISSON_DEBUG=1)
+    if (print_debug && poisson_solve_count <= 10) {
+        // Compute max|rhs| and max|p| on device
+        double rhs_max = 0.0, p_max = 0.0;
+        const double* rhs_dev = gpu::dev_ptr(rhs_poisson_ptr_);
+        const double* p_dev = gpu::dev_ptr(pressure_corr_ptr_);
+        const int n_cells = Nx * Ny * (is_2d ? 1 : Nz);
+        #pragma omp target teams distribute parallel for reduction(max:rhs_max,p_max) is_device_ptr(rhs_dev, p_dev)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int ii = idx % Nx + Ng;
+            int jk = idx / Nx;
+            int jj = (is_2d ? jk : jk % Ny) + Ng;
+            int kk = (is_2d ? 0 : jk / Ny) + Ng;
+            int flat = kk * plane_stride + jj * stride + ii;
+            rhs_max = std::max(rhs_max, std::abs(rhs_dev[flat]));
+            p_max = std::max(p_max, std::abs(p_dev[flat]));
+        }
+        // Also get MG residual if using MG
+        double mg_res = (selected_solver_ == PoissonSolverType::MG) ? mg_poisson_solver_.residual() : 0.0;
+        std::cerr << "[Poisson DEBUG] solve #" << poisson_solve_count
+                  << "  max|rhs|=" << rhs_max << "  max|p|=" << p_max
+                  << "  residual=" << mg_res << "  vcycles=" << vcycles << "\n";
     }
 
     // Copy velocity_ to velocity_star_ for correct_velocity()

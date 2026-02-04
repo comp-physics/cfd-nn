@@ -323,6 +323,10 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     bool periodic_xz = true;  // Default for channel: periodic x/z
     bool uniform_xz = true;   // Default for channel: uniform x/z spacing
 
+    // FFT solvers use tridiagonal solves in y that assume uniform spacing
+    // If y is stretched, the FFT solver's tridiagonal system is incorrect
+    bool uniform_y = !config.stretch_y;
+
     if (mesh.is2D()) {
         // 2D mesh: try FFT2D solver (periodic x, non-periodic y)
         try {
@@ -337,7 +341,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         }
     } else {
         // 3D mesh: try 2D FFT first (periodic x AND z)
-        if (periodic_xz && uniform_xz) {
+        // Note: FFT solver requires uniform y spacing for its tridiagonal solves
+        if (periodic_xz && uniform_xz && uniform_y) {
             try {
                 fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
                 fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
@@ -349,6 +354,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
             } catch (const std::exception& e) {
                 std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
             }
+        } else if (!uniform_y) {
+            std::cout << "[Solver] FFT solver skipped: y-stretching requires uniform-y compatible solver\n";
         }
 
         // Also initialize 1D FFT solver (for cases like duct flow)
@@ -927,7 +934,16 @@ double RANSSolver::step() {
     }
     NVTX_POP();
     }
-    
+
+    // Update effective body force if ramping is enabled
+    // This modifies fx_, fy_, fz_ which are used by euler_substep and RK methods
+    if (force_ramp_enabled_) {
+        double ramp = 1.0 - std::exp(-current_time_ / force_ramp_tau_);
+        fx_ = fx_target_ * ramp;
+        fy_ = fy_target_ * ramp;
+        fz_ = fz_target_ * ramp;
+    }
+
     // 1a. Advance turbulence transport equations (if model uses them)
     if (turb_model_ && turb_model_->uses_transport_equations()) {
         TIMED_SCOPE("turbulence_transport");
@@ -1623,6 +1639,10 @@ double RANSSolver::step() {
         pcfg.nu2 = config_.poisson_nu2;
         pcfg.chebyshev_degree = config_.poisson_chebyshev_degree;
         pcfg.use_vcycle_graph = config_.poisson_use_vcycle_graph;
+        // DEBUG: trace vcycle graph config (always print, use cerr for immediate output)
+        std::cerr << "[Solver DEBUG] config_.poisson_use_vcycle_graph=" << config_.poisson_use_vcycle_graph
+                  << " pcfg.use_vcycle_graph=" << pcfg.use_vcycle_graph << std::endl;
+        std::cerr.flush();
 
         // Legacy tolerance for backward compatibility (non-MG solvers use this)
         double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
@@ -1733,6 +1753,19 @@ double RANSSolver::step() {
             }
         }
 
+        // Populate PoissonStats for external access (always, not just when diagnostics enabled)
+        if (selected_solver_ == PoissonSolverType::MG) {
+            poisson_stats_.cycles = cycles;
+            poisson_stats_.converged = mg_poisson_solver_.converged();
+            poisson_stats_.rhs_norm_l2 = mg_poisson_solver_.rhs_norm_l2();
+            poisson_stats_.rhs_norm_inf = mg_poisson_solver_.rhs_norm();
+            poisson_stats_.res_norm_l2 = mg_poisson_solver_.residual_l2();
+            poisson_stats_.res_norm_inf = mg_poisson_solver_.residual();
+            double b_norm = pcfg.use_l2_norm ? poisson_stats_.rhs_norm_l2 : poisson_stats_.rhs_norm_inf;
+            double r_norm = pcfg.use_l2_norm ? poisson_stats_.res_norm_l2 : poisson_stats_.res_norm_inf;
+            poisson_stats_.res_over_rhs = (b_norm > 1e-30) ? r_norm / b_norm : 0.0;
+        }
+
         // Print cycle count diagnostics if enabled
         if (poisson_diagnostics && (iter_ % poisson_diagnostics_interval == 0)) {
             std::cout << "[Poisson] iter=" << iter_ << " cycles=" << cycles
@@ -1740,29 +1773,22 @@ double RANSSolver::step() {
                       << final_residual;
             // For MG solver, also print norms and ratios for convergence analysis
             if (selected_solver_ == PoissonSolverType::MG) {
-                // Get both L∞ and L2 norms
-                double r_inf = mg_poisson_solver_.residual();
-                double r_l2 = mg_poisson_solver_.residual_l2();
-                double b_inf = mg_poisson_solver_.rhs_norm();
-                double b_l2 = mg_poisson_solver_.rhs_norm_l2();
-                double r0_inf = mg_poisson_solver_.initial_residual();
-                double r0_l2 = mg_poisson_solver_.initial_residual_l2();
-
                 // Show which norm is used for convergence
                 const char* norm_type = pcfg.use_l2_norm ? "L2" : "Linf";
-                double r_norm = pcfg.use_l2_norm ? r_l2 : r_inf;
-                double b_norm = pcfg.use_l2_norm ? b_l2 : b_inf;
+                double r_norm = pcfg.use_l2_norm ? poisson_stats_.res_norm_l2 : poisson_stats_.res_norm_inf;
+                double b_norm = pcfg.use_l2_norm ? poisson_stats_.rhs_norm_l2 : poisson_stats_.rhs_norm_inf;
+                double r0_inf = mg_poisson_solver_.initial_residual();
+                double r0_l2 = mg_poisson_solver_.initial_residual_l2();
                 double r0_norm = pcfg.use_l2_norm ? r0_l2 : r0_inf;
-                double r_over_b = (b_norm > 1e-30) ? r_norm / b_norm : 0.0;
-                double r_over_r0 = (r0_norm > 1e-30) ? r_norm / r0_norm : 0.0;
                 std::cout << " [" << norm_type << "] ||b||=" << b_norm
                           << " ||r0||=" << r0_norm
-                          << " ||r||/||b||=" << r_over_b
-                          << " ||r||/||r0||=" << r_over_r0;
+                          << " ||r||/||b||=" << poisson_stats_.res_over_rhs
+                          << " ||r||/||r0||=" << ((r0_norm > 1e-30) ? r_norm / r0_norm : 0.0)
+                          << (poisson_stats_.converged ? "" : " [MAX_CYCLES]");
             }
             std::cout << "\n";
         }
-        
+
         NVTX_POP();
     }
     
@@ -1789,9 +1815,37 @@ double RANSSolver::step() {
 
     } // End Euler time integration path
 
-    // Post-projection divergence check (diagnostic only)
-    // This is the actual measure of projection quality: max|div(u^{n+1})|
+    // Post-projection divergence measurement (always computed for projection health)
+    // This is the actual measure of projection quality: ||div(u^{n+1})||
     {
+        compute_divergence(VelocityWhich::Current, div_velocity_);
+        double max_div = 0.0;
+        double sum_div2 = 0.0;
+        if (mesh_->is2D()) {
+            const double dV = mesh_->dx * mesh_->dy;
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    double d = div_velocity_(i, j);
+                    max_div = std::max(max_div, std::abs(d));
+                    sum_div2 += d * d * dV;
+                }
+            }
+        } else {
+            const double dV = mesh_->dx * mesh_->dy * mesh_->dz;
+            for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double d = div_velocity_(i, j, k);
+                        max_div = std::max(max_div, std::abs(d));
+                        sum_div2 += d * d * dV;
+                    }
+                }
+            }
+        }
+        poisson_stats_.div_after_proj_linf = max_div;
+        poisson_stats_.div_after_proj_l2 = std::sqrt(sum_div2);
+
+        // Print diagnostics if enabled (via NNCFD_POISSON_DIAGNOSTICS env var)
         static bool div_diagnostics = (std::getenv("NNCFD_POISSON_DIAGNOSTICS") != nullptr);
         static int div_diagnostics_interval = []() {
             const char* env = std::getenv("NNCFD_POISSON_DIAGNOSTICS_INTERVAL");
@@ -1799,36 +1853,8 @@ double RANSSolver::step() {
             return (v > 0) ? v : 1;
         }();
         if (div_diagnostics && (iter_ % div_diagnostics_interval == 0)) {
-            compute_divergence(VelocityWhich::Current, div_velocity_);  // Divergence of corrected velocity
-            double max_div = 0.0;
-            double sum_div2 = 0.0;  // For L2 norm
-            int n_cells = 0;
-            if (mesh_->is2D()) {
-                const double dV = mesh_->dx * mesh_->dy;  // Cell volume (uniform)
-                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                        double d = div_velocity_(i, j);
-                        max_div = std::max(max_div, std::abs(d));
-                        sum_div2 += d * d * dV;
-                        n_cells++;
-                    }
-                }
-            } else {
-                const double dV = mesh_->dx * mesh_->dy * mesh_->dz;  // Cell volume
-                for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
-                    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                            double d = div_velocity_(i, j, k);
-                            max_div = std::max(max_div, std::abs(d));
-                            sum_div2 += d * d * dV;
-                            n_cells++;
-                        }
-                    }
-                }
-            }
-            double l2_div = std::sqrt(sum_div2);
             std::cout << "[Projection] ||div(u)||_Linf=" << std::scientific << std::setprecision(6)
-                      << max_div << " ||div(u)||_L2=" << l2_div
+                      << max_div << " ||div(u)||_L2=" << poisson_stats_.div_after_proj_l2
                       << " dt*Linf=" << current_dt_ * max_div << "\n";
         }
     }
@@ -1948,6 +1974,9 @@ double RANSSolver::step() {
     // Do this after turbulence update but before next iteration starts
     check_for_nan_inf(step_count_);
     ++step_count_;
+
+    // Update simulation time
+    current_time_ += current_dt_;
 
     return max_change;
 }
@@ -2778,6 +2807,17 @@ void RANSSolver::extract_field_pointers() {
     dvdx_ptr_ = dvdx_.data().data();
     dvdy_ptr_ = dvdy_.data().data();
     wall_distance_ptr_ = wall_distance_.data().data();
+
+    // Y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
+    if (mesh_->is_y_stretched()) {
+        dyv_ptr_ = mesh_->dyv.data();
+        dyc_ptr_ = mesh_->dyc.data();
+        y_metrics_size_ = mesh_->total_Ny();
+    } else {
+        dyv_ptr_ = nullptr;
+        dyc_ptr_ = nullptr;
+        y_metrics_size_ = 0;
+    }
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -2893,11 +2933,16 @@ void RANSSolver::initialize_gpu_buffers() {
     #pragma omp target teams distribute parallel for map(present: tau_yy_ptr_[0:field_total_size_])
     for (size_t i = 0; i < field_total_size_; ++i) tau_yy_ptr_[i] = 0.0;
 
+    // Map y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
+    if (y_metrics_size_ > 0 && dyv_ptr_ && dyc_ptr_) {
+        #pragma omp target enter data map(to: dyv_ptr_[0:y_metrics_size_], dyc_ptr_[0:y_metrics_size_])
+    }
+
     // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
     if (!gpu::is_pointer_present(velocity_u_ptr_)) {
         throw std::runtime_error("GPU mapping failed despite device availability");
     }
-    
+
     gpu_ready_ = true;
     
 #ifdef GPU_PROFILE_TRANSFERS
@@ -2971,7 +3016,12 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: tau_xx_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_xy_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_yy_ptr_[0:field_total_size_])
-    
+
+    // Delete y-metric arrays for non-uniform y-spacing
+    if (y_metrics_size_ > 0 && dyv_ptr_ && dyc_ptr_) {
+        #pragma omp target exit data map(delete: dyv_ptr_[0:y_metrics_size_], dyc_ptr_[0:y_metrics_size_])
+    }
+
     gpu_ready_ = false;
 }
 
@@ -3488,6 +3538,11 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.dy = mesh_->dy;
     view.dz = mesh_->dz;
     view.dt = current_dt_;
+
+    // Y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
+    view.y_stretched = mesh_->is_y_stretched();
+    view.dyv = dyv_ptr_;
+    view.dyc = dyc_ptr_;
 #else
     // CPU build: always return host pointers
     view.u_face = const_cast<double*>(velocity_.u_data().data());
@@ -3518,8 +3573,13 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
     view.dt = current_dt_;
+
+    // Y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
+    view.y_stretched = mesh_->is_y_stretched();
+    view.dyv = dyv_ptr_;
+    view.dyc = dyc_ptr_;
 #endif
-    
+
     return view;
 }
 #else
@@ -3660,6 +3720,11 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.dy = mesh_->dy;
     view.dz = mesh_->dz;
     view.dt = current_dt_;
+
+    // Y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
+    view.y_stretched = mesh_->is_y_stretched();
+    view.dyv = dyv_ptr_;
+    view.dyc = dyc_ptr_;
 
     return view;
 }
