@@ -282,15 +282,17 @@ void MultigridPoissonSolver::compute_gershgorin_bounds() {
 
         // λmax = 1 + max_ratio, with safety margin
         // Add 10% margin for numerical safety (boundary modifications, rounding, precision)
-        cheby_lambda_max_[level] = (1.0 + max_ratio) * 1.10;
+        double raw_lambda_max = 1.0 + max_ratio;
+        cheby_lambda_max_[level] = raw_lambda_max * 1.10;
 
-        // Clamp to reasonable range [1.8, 2.5] for robustness
-        // Lower bound prevents too-aggressive polynomial; upper bound catches pathological cases
-        cheby_lambda_max_[level] = std::max(1.8, std::min(2.5, cheby_lambda_max_[level]));
+        // Floor only (no ceiling) - never underestimate λmax, that causes divergence
+        // If true λmax > computed, polynomial becomes conservative (slower but safe)
+        // If true λmax < computed (clamp wrongly), we'd diverge
+        cheby_lambda_max_[level] = std::max(1.8, cheby_lambda_max_[level]);
     }
 
-    // Report computed bounds
-    std::cout << "[MG] Chebyshev Gershgorin bounds computed: ";
+    // Report computed bounds (raw values for diagnostics)
+    std::cout << "[MG] Chebyshev Gershgorin bounds: ";
     for (size_t level = 0; level < levels_.size(); ++level) {
         std::cout << "L" << level << "=" << std::fixed << std::setprecision(3)
                   << cheby_lambda_max_[level];
@@ -857,9 +859,10 @@ void MultigridPoissonSolver::smooth_chebyshev(int level, int degree) {
     const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
 
     // Chebyshev eigenvalue bounds: use per-level Gershgorin bounds for D⁻¹A
-    // λmin = 0.05 * λmax (smoothing doesn't need tight lower bound, but this keeps ω reasonable)
+    // λmin = 0.1 * λmax (conservative: wider interval → higher ω, but more forgiving of bound errors)
+    // Can tune to 0.05 for performance once bounds are validated
     const double lambda_max = cheby_lambda_max_[level];
-    const double lambda_min = 0.05 * lambda_max;
+    const double lambda_min = 0.1 * lambda_max;
     const double d = (lambda_max + lambda_min) / 2.0;
     const double c = (lambda_max - lambda_min) / 2.0;
 
@@ -2257,6 +2260,7 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     const int Ng_f = finest_cpu.Ng;  // Use actual Ng for correct interior indexing (O4 has Ng=2)
     b_inf_ = 0.0;
     double b_sum_sq = 0.0;
+    static int cheby_growth_warnings_cpu = 0;  // Throttle residual-growth warnings
     if (mesh_->is2D()) {
         for (int j = Ng_f; j < Ng_f + finest_cpu.Ny; ++j) {
             for (int i = Ng_f; i < Ng_f + finest_cpu.Nx; ++i) {
@@ -2286,6 +2290,8 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     fixed_cycle_mode_ = false; // Convergence-based mode
 
     int cycles_used = 0;
+    double prev_residual_cpu = r0_l2_;  // Track for non-contraction detection
+
     for (int cycle = 0; cycle < max_cycles; ++cycle) {
         vcycle(0, nu1, nu2, degree);
         cycles_used = cycle + 1;
@@ -2294,6 +2300,17 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
         if ((cycle % check_interval) == (check_interval - 1) || cycle == max_cycles - 1) {
             // Fused residual + norm computation (single pass over memory, single GPU reduction)
             compute_residual_and_norms(0, residual_, residual_l2_);
+
+            // SAFETY: Detect non-contraction (residual growing) - indicates smoother issue
+            if (residual_l2_ > 1.05 * prev_residual_cpu && prev_residual_cpu > 1e-30) {
+                if (smoother_type_ == MGSmootherType::Chebyshev && cheby_growth_warnings_cpu < 5) {
+                    std::cerr << "[MG WARNING] Residual grew: " << std::scientific << prev_residual_cpu
+                              << " -> " << residual_l2_ << " (cycle " << cycle
+                              << "). Consider MG_SMOOTHER=jacobi\n" << std::defaultfloat;
+                    cheby_growth_warnings_cpu++;
+                }
+            }
+            prev_residual_cpu = residual_l2_;
 
             // Select norm for convergence based on config (L2 is smoother, less sensitive to hot cells)
             const double r_norm = cfg.use_l2_norm ? residual_l2_ : residual_;
