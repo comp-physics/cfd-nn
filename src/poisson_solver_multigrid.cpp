@@ -1291,20 +1291,16 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     int jm = j + y_metric_offset;
                     int idx = j * stride + i;
 
-                    // Lower diagonal (south)
-                    double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
-                    // Upper diagonal (north)
-                    double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
-                    // Diagonal
-                    double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;
+                    // Tridiagonal system: a*u[j-1] + b*u[j] + c*u[j+1] = d
+                    // Derived from the Poisson equation -∇²φ = f
+                    double a = (j > Ng) ? -aS_ptr[jm] : 0.0;  // Lower diagonal
+                    double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;  // Upper diagonal
+                    double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;  // Diagonal
 
-                    // RHS: f - x_laplacian(u)
+                    // RHS: f - lap_x(u)
                     double rhs = f_ptr[idx] - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]);
 
-                    // Incorporate wall BCs (Dirichlet u=0 at j=Ng-1 and j=Ny+Ng)
-                    // These are implicit in the aS/aN coefficients for wall points
-
-                    int j_local = j - Ng;  // 0-indexed for work arrays
+                    int j_local = j - Ng;
                     if (j_local == 0) {
                         c_prime[0] = c / b;
                         d_prime[0] = rhs / b;
@@ -1336,14 +1332,12 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         int jm = j + y_metric_offset;
                         int idx = k * plane_stride + j * stride + i;
 
-                        // Lower diagonal (south)
+                        // Tridiagonal: -aS*u[j-1] + diag*u[j] - aN*u[j+1] = rhs
                         double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
-                        // Upper diagonal (north)
                         double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
-                        // Diagonal
                         double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
 
-                        // RHS: f - x_laplacian(u) - z_laplacian(u)
+                        // RHS: f - lap_x - lap_z
                         double rhs = f_ptr[idx]
                                    - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
                                    - inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]);
@@ -1931,6 +1925,12 @@ void MultigridPoissonSolver::prolongate_correction_xz(int coarse_level) {
 
     // Semi-coarsening prolongation: interpolate only in x and z, keep y unchanged
     // For each fine cell: bilinear interpolation in x-z from coarse cells at same y
+    //
+    // COARSE CORRECTION DAMPING: For anisotropic problems, the coarse correction
+    // can overshoot. With y-line relaxation on coarse levels (which properly handles
+    // the y-direction anisotropy), full correction (α=1.0) is stable.
+    const double alpha = 1.0;  // No damping - y-line relaxation handles anisotropy
+
     auto& coarse = *levels_[coarse_level];
     auto& fine = *levels_[coarse_level - 1];
     const bool is_2d = fine.is2D();
@@ -1975,7 +1975,7 @@ void MultigridPoissonSolver::prolongate_correction_xz(int coarse_level) {
                 double correction = wx0 * u_coarse[idx_c] + wx1 * u_coarse[idx_c + 1];
 
                 int idx_f = j_f * stride_f + i_f;
-                u_fine[idx_f] += correction;
+                u_fine[idx_f] += alpha * correction;  // Damped correction
             }
         }
     } else {
@@ -2010,7 +2010,7 @@ void MultigridPoissonSolver::prolongate_correction_xz(int coarse_level) {
                       + wx1 * wz1 * u_coarse[idx_c + 1 + plane_stride_c];
 
                     int idx_f = k_f * plane_stride_f + j_f * stride_f + i_f;
-                    u_fine[idx_f] += correction;
+                    u_fine[idx_f] += alpha * correction;  // Damped correction
                 }
             }
         }
@@ -2046,64 +2046,59 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 
     // Helper lambda to call the appropriate smoother
     // nu = number of smoothing passes, degree = Chebyshev polynomial degree per pass
+    // For semi-coarsening: use Jacobi on coarse levels (more robust under anisotropy)
+    // but keep Chebyshev on finest level for speed
     auto do_smooth = [this, level, degree](int nu) {
+        // For semi-coarsening: use y-line relaxation on coarse levels (3D only for now)
+        // 2D uses Jacobi until we debug the y-line relaxation issue
+        const bool is_3d = levels_[level]->Nz > 1;
+        const bool use_yline_for_anisotropy = semi_coarsening_ && (level > 0) && is_3d;
+
         for (int pass = 0; pass < nu; ++pass) {
-            if (smoother_type_ == MGSmootherType::Chebyshev) {
+            if (use_yline_for_anisotropy) {
+#ifdef USE_GPU_OFFLOAD
+                // Y-line relaxation runs on CPU - transfer both u and f (RHS)
+                const size_t size = level_sizes_[level];
+                #pragma omp target update from(u_ptrs_[level][0:size])
+                #pragma omp target update from(f_ptrs_[level][0:size])
+#endif
+                smooth_y_lines(level, 2);  // 2 y-line sweeps per pass
+#ifdef USE_GPU_OFFLOAD
+                #pragma omp target update to(u_ptrs_[level][0:size])
+#endif
+            } else if (semi_coarsening_ && (level > 0)) {
+                // 2D semi-coarsening: use more Jacobi iterations with damping
+                smooth_jacobi(level, degree * 4, 0.67);
+            } else if (smoother_type_ == MGSmootherType::Chebyshev) {
                 smooth_chebyshev(level, degree);
             } else {
-                smooth_jacobi(level, degree, 0.8);  // omega = 0.8 for stability
+                smooth_jacobi(level, degree, 0.8);
             }
         }
     };
 
-    // WORKAROUND: Semi-coarsening V-cycle diverges because the coarse grid solve
-    // itself diverges (confirmed via debug output: coarse res increases 4x per solve).
-    // The coarse grid has larger dx/dz but same y-metrics, making it MORE anisotropic.
-    // Point smoothers can't handle this. Use iterative solve on finest level only.
-    //
-    // For highly anisotropic problems, we need MANY iterations because:
-    // 1. Condition number κ = O((L/h_min)²) where h_min is near-wall cell size
-    // 2. Chebyshev convergence: ||e_k|| ≤ 2*(sqrt(κ)-1)/(sqrt(κ)+1))^k * ||e_0||
-    // 3. For κ ≈ 10000 (typical stretched grid), need ~500 iterations for 10^-6 reduction
-    //
-    // Use Jacobi with heavy under-relaxation as it's more robust than Chebyshev
-    // for extremely ill-conditioned systems (Chebyshev bounds may be inaccurate).
-    // KNOWN LIMITATION: Semi-coarsening V-cycle doesn't converge for stretched y-grids.
-    // The coarse grid correction diverges because the coarse problem becomes even more
-    // anisotropic (y-terms dominate as x/z terms shrink). Point relaxation methods (Jacobi,
-    // Chebyshev) are too slow to compensate.
-    //
-    // WORKAROUND: Use many Chebyshev iterations on the finest level only, bypassing
-    // the V-cycle. This is slow but should eventually converge. For practical use of
-    // stretched y-grids, users should:
-    //   1. Use smaller stretching ratio (beta closer to 1)
-    //   2. Build with HYPRE support (--poisson hypre)
-    //   3. Use steady-state solver instead of transient
-    //
-    // TODO: Implement y-line relaxation (tridiagonal solve along y) for efficient
-    // smoothing of anisotropic problems. This requires cuSPARSE batched tridiagonal.
-    if (semi_coarsening_ && level == 0) {
-        static bool warned = false;
-        if (!warned) {
-            warned = true;
-            std::cerr << "\n*** WARNING: Stretched y-grid with MG solver is slow and may not converge ***\n";
-            std::cerr << "*** Consider using --poisson auto (FFT) or building with HYPRE support ***\n\n";
-        }
-
-        // Use high-degree Chebyshev which converges faster than Jacobi
-        // for the eigenvalue range we have (Gershgorin bounds).
-        // 200 iterations per call, 8 calls = 1600 total per Poisson solve.
-        const int chebyshev_degree = 200;
-        smooth_chebyshev(level, chebyshev_degree);
-        return;
-    }
-
     if (level == static_cast<int>(levels_.size()) - 1) {
-        // Coarsest level - solve approximately
-        if (smoother_type_ == MGSmootherType::Chebyshev) {
-            smooth_chebyshev(level, std::max(8, degree * 2));
+        // Coarsest level - do a REAL solve, not just a few smooths
+        // For anisotropic problems, weak coarse solves cause correction overshoot
+        const bool is_3d = levels_[level]->Nz > 1;
+        if (semi_coarsening_ && is_3d) {
+            // 3D semi-coarsening: use y-line relaxation (Thomas algorithm)
+#ifdef USE_GPU_OFFLOAD
+            const size_t size = level_sizes_[level];
+            #pragma omp target update from(u_ptrs_[level][0:size])
+            #pragma omp target update from(f_ptrs_[level][0:size])
+#endif
+            smooth_y_lines(level, 10);  // Multiple y-line sweeps
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target update to(u_ptrs_[level][0:size])
+#endif
+        } else if (semi_coarsening_) {
+            // 2D semi-coarsening: use many damped Jacobi iterations
+            smooth_jacobi(level, 200, 0.67);
         } else {
-            smooth_jacobi(level, 20, 0.8);
+            const int coarse_iters = 50;
+            const double coarse_omega = 0.67;
+            smooth_jacobi(level, coarse_iters, coarse_omega);
         }
         return;
     }
