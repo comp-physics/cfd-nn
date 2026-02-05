@@ -452,6 +452,10 @@ int main(int argc, char** argv) {
         // Progress output interval for CI visibility (always enabled)
         const int progress_interval = std::max(1, config.max_steps / 10);
 
+        // Statistics accumulation for Stage F validation (last 50% of run)
+        const int stats_start_step = config.max_steps / 2;
+        bool stats_active = false;
+
         for (int step = 1; step <= config.max_steps; ++step) {
             if (config.adaptive_dt) {
                 (void)solver.compute_adaptive_dt();
@@ -492,7 +496,17 @@ int main(int argc, char** argv) {
                 std::cerr << "ERROR: Solver diverged at step " << step << "\n";
                 return 1;
             }
-            
+
+            // Start statistics accumulation at halfway point
+            if (step == stats_start_step) {
+                solver.reset_statistics();
+                stats_active = true;
+                std::cout << "    [Statistics accumulation started at step " << step << "]\n";
+            }
+            if (stats_active) {
+                solver.accumulate_statistics();
+            }
+
             final_residual = residual;
         }
         
@@ -502,8 +516,22 @@ int main(int argc, char** argv) {
         
         total_timer.stop();
         total_iterations = config.max_steps;
-        
+
         std::cout << "\n=== Unsteady simulation complete ===\n";
+
+        // Stage F validation for turbulence runs
+        if (stats_active && solver.statistics_samples() > 100) {
+            std::cout << "\n=== Stage F: Turbulence Realism Validation ===\n";
+            std::cout << "Statistics samples: " << solver.statistics_samples() << "\n\n";
+            auto report = solver.validate_turbulence_realism();
+            report.print();
+
+            // Write momentum balance for analysis
+            auto mb = solver.compute_momentum_balance();
+            std::cout << "\nMomentum balance (max residual / tau_wall): "
+                      << std::scientific << std::setprecision(3)
+                      << mb.max_residual_normalized(solver.friction_velocity()) * 100 << "%\n";
+        }
         
     } else {
         // ============================================================

@@ -341,6 +341,10 @@ endif()
 add_executable(channel app/main_channel.cpp)
 target_link_libraries(channel nn_cfd_core)
 
+# DNS validation with Stage F diagnostics
+add_executable(dns_validation app/dns_validation.cpp)
+target_link_libraries(dns_validation nn_cfd_core)
+
 # CPU vs GPU comparison tool (for validation)
 add_executable(compare_channel_cpu_gpu app/compare_channel_cpu_gpu.cpp)
 target_link_libraries(compare_channel_cpu_gpu nn_cfd_core)
