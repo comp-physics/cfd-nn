@@ -174,7 +174,9 @@ struct Config {
 
     // Projection health watchdog - alerts on poor projection quality
     double div_threshold = 1e-5;            ///< Alert if div_scaled_linf exceeds this (0 = disabled)
+    double div_tol_acceptable = 1e-6;       ///< Suppress MG stall alerts if div_scaled_linf below this
     bool projection_watchdog = true;        ///< Enable projection health monitoring
+    bool gpu_only_mode = false;             ///< Strict GPU-only mode (no CPU fallbacks, no full-field host reads)
 
     // Recycling inflow (turbulent inlet BC for DNS/LES)
     bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo

@@ -3734,6 +3734,55 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         make_rhs_mean_free(0);
     }
 
+    // Optional RHS pre-smoothing on finest level (semi-coarsening + Neumann only)
+    // This removes near-grid noise from intermediate velocity divergence
+    // without affecting the mean-free constraint. Costs ~1 xz-RBGS sweep.
+    // Enable via environment: MG_PRESMOOTH_RHS=1
+    static bool presmooth_rhs = (std::getenv("MG_PRESMOOTH_RHS") != nullptr);
+    if (presmooth_rhs && semi_coarsening_ && has_nullspace() && levels_[0]->Nz > 1) {
+        // Apply mild smoothing to RHS (stored in f_ptrs_[0])
+        // This is a Jacobi-like operation on the RHS field itself
+        // We use the tmp buffer and xz-RBGS-like structure but on f instead of u
+        // For simplicity, just do 1 damped Jacobi sweep on the RHS
+        auto& grid = *levels_[0];
+        const double dx2 = grid.dx * grid.dx;
+        const double dz2 = grid.dz * grid.dz;
+        const int Ng = grid.Ng;
+        const int Nx = grid.Nx;
+        const int Ny = grid.Ny;
+        const int Nz = grid.Nz;
+        const int stride = grid.stride;
+        const int plane_stride = grid.plane_stride;
+        const double omega = 0.5;  // Light damping
+
+#ifdef USE_GPU_OFFLOAD
+        int device = omp_get_default_device();
+        double* f_ptr = static_cast<double*>(omp_get_mapped_ptr(f_ptrs_[0], device));
+        double* tmp_ptr = tmp_ptrs_[0];
+
+        // Copy f to tmp
+        size_t total = level_sizes_[0];
+        #pragma omp target teams distribute parallel for is_device_ptr(f_ptr, tmp_ptr)
+        for (size_t idx = 0; idx < total; ++idx) tmp_ptr[idx] = f_ptr[idx];
+
+        // One Jacobi sweep: smooth f in xz-planes (average with neighbors)
+        double coeff_xz = 2.0/dx2 + 2.0/dz2;
+        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(f_ptr, tmp_ptr)
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    double f_avg = (tmp_ptr[idx+1] + tmp_ptr[idx-1]) / dx2 +
+                                   (tmp_ptr[idx+plane_stride] + tmp_ptr[idx-plane_stride]) / dz2;
+                    f_ptr[idx] = (1.0 - omega) * tmp_ptr[idx] + omega * f_avg / coeff_xz;
+                }
+            }
+        }
+#endif
+        // Re-enforce mean-free after smoothing
+        make_rhs_mean_free(0);
+    }
+
     apply_bc(0);
 
     // ========================================================================

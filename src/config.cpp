@@ -285,6 +285,12 @@ void Config::load(const std::string& filename) {
     recycle_target_bulk_u = get_double("recycle_target_bulk_u", recycle_target_bulk_u);
     recycle_remove_transverse_mean = get_bool("recycle_remove_transverse_mean", recycle_remove_transverse_mean);
 
+    // Projection health watchdog
+    div_threshold = get_double("div_threshold", div_threshold);
+    div_tol_acceptable = get_double("div_tol_acceptable", div_tol_acceptable);
+    projection_watchdog = get_bool("projection_watchdog", projection_watchdog);
+    gpu_only_mode = get_bool("gpu_only_mode", gpu_only_mode);
+
     finalize();
 }
 
