@@ -1294,13 +1294,21 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     // Forward sweep (Thomas algorithm)
                     // Solving -L(u) = -f with positive diagonal for stability:
                     //   -aS*u[j-1] + (aS+aN+2/dx²)*u[j] - aN*u[j+1] = -f + x_neighbors
+                    //
+                    // WALL BC HANDLING (Neumann du/dy=0): see 3D path comments
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = j * stride + i;
 
-                        double a = (j > Ng) ? -aS_ptr_gpu[jm] : 0.0;
-                        double c = (j < Ny + Ng - 1) ? -aN_ptr_gpu[jm] : 0.0;
-                        double b = aS_ptr_gpu[jm] + aN_ptr_gpu[jm] + 2.0 * inv_dx2;
+                        const bool at_south_wall = (j == Ng);
+                        const bool at_north_wall = (j == Ny + Ng - 1);
+
+                        // Neumann BC modifies both off-diagonal AND diagonal
+                        double a = at_south_wall ? 0.0 : -aS_ptr_gpu[jm];
+                        double c = at_north_wall ? 0.0 : -aN_ptr_gpu[jm];
+                        double b = (at_south_wall ? 0.0 : aS_ptr_gpu[jm])
+                                 + (at_north_wall ? 0.0 : aN_ptr_gpu[jm])
+                                 + 2.0 * inv_dx2;
 
                         // RHS: -f + x_neighbors (consistent with -L(u) = -f form)
                         double rhs = inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1]) - f_ptr_gpu[idx];
@@ -1347,13 +1355,26 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     // Forward sweep (Thomas algorithm)
                     // Solving -L(u) = -f with positive diagonal for stability:
                     //   -aS*u[j-1] + (aS+aN+2/dx²+2/dz²)*u[j] - aN*u[j+1] = -f + x_neighbors + z_neighbors
+                    //
+                    // WALL BC HANDLING (Neumann du/dy=0):
+                    // At walls, ghost = interior (u[ghost] = u[interior]), which modifies the equation.
+                    // At south wall: lap_y = aS*u[j] + aP*u[j] + aN*u[j+1] = (aS+aP)*u[j] + aN*u[j+1]
+                    //              = -aN*u[j] + aN*u[j+1] (since aP = -(aS+aN))
+                    // So effective diagonal becomes aN (not aS+aN). Similarly for north wall.
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = k * plane_stride + j * stride + i;
 
-                        double a = (j > Ng) ? -aS_ptr_gpu[jm] : 0.0;
-                        double c = (j < Ny + Ng - 1) ? -aN_ptr_gpu[jm] : 0.0;
-                        double b = aS_ptr_gpu[jm] + aN_ptr_gpu[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
+                        const bool at_south_wall = (j == Ng);
+                        const bool at_north_wall = (j == Ny + Ng - 1);
+
+                        // Neumann BC modifies both off-diagonal AND diagonal
+                        double a = at_south_wall ? 0.0 : -aS_ptr_gpu[jm];
+                        double c = at_north_wall ? 0.0 : -aN_ptr_gpu[jm];
+                        // Diagonal: remove wall-side coefficient when Neumann BC absorbs that term
+                        double b = (at_south_wall ? 0.0 : aS_ptr_gpu[jm])
+                                 + (at_north_wall ? 0.0 : aN_ptr_gpu[jm])
+                                 + 2.0 * inv_dx2 + 2.0 * inv_dz2;
 
                         // RHS: -f + x_neighbors + z_neighbors (consistent with -L(u) = -f form)
                         double rhs = inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1])
@@ -1410,9 +1431,15 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     int jm = j + y_metric_offset;
                     int idx = j * stride + i;
 
-                    double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
-                    double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
-                    double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;
+                    const bool at_south_wall = (j == Ng);
+                    const bool at_north_wall = (j == Ny + Ng - 1);
+
+                    // Neumann BC modifies both off-diagonal AND diagonal
+                    double a = at_south_wall ? 0.0 : -aS_ptr[jm];
+                    double c = at_north_wall ? 0.0 : -aN_ptr[jm];
+                    double b = (at_south_wall ? 0.0 : aS_ptr[jm])
+                             + (at_north_wall ? 0.0 : aN_ptr[jm])
+                             + 2.0 * inv_dx2;
                     // RHS: -f + x_neighbors (consistent with -L(u) = -f form)
                     double rhs = inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]) - f_ptr[idx];
 
@@ -1447,9 +1474,15 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         int jm = j + y_metric_offset;
                         int idx = k * plane_stride + j * stride + i;
 
-                        double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
-                        double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
-                        double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
+                        const bool at_south_wall = (j == Ng);
+                        const bool at_north_wall = (j == Ny + Ng - 1);
+
+                        // Neumann BC modifies both off-diagonal AND diagonal
+                        double a = at_south_wall ? 0.0 : -aS_ptr[jm];
+                        double c = at_north_wall ? 0.0 : -aN_ptr[jm];
+                        double b = (at_south_wall ? 0.0 : aS_ptr[jm])
+                                 + (at_north_wall ? 0.0 : aN_ptr[jm])
+                                 + 2.0 * inv_dx2 + 2.0 * inv_dz2;
                         // RHS: -f + x_neighbors + z_neighbors (consistent with -L(u) = -f form)
                         double rhs = inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
                                    + inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride])
@@ -2161,13 +2194,15 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 
     // Helper lambda to call the appropriate smoother
     // nu = number of smoothing passes, degree = Chebyshev polynomial degree per pass
-    // For semi-coarsening: use Jacobi on coarse levels (more robust under anisotropy)
-    // but keep Chebyshev on finest level for speed
+    // For 3D semi-coarsening: use y-line relaxation on ALL levels (including finest)
+    // This is critical for stretched y-grids where point-smoothers are ineffective
     auto do_smooth = [this, level, degree](int nu) {
-        // For semi-coarsening: use y-line relaxation on coarse levels (3D only for now)
-        // 2D uses Jacobi until we debug the y-line relaxation issue
+        // For 3D semi-coarsening: use y-line relaxation on ALL levels
+        // The y-direction has highly anisotropic coefficients (stretched mesh),
+        // so point-smoothers like Chebyshev converge very slowly.
+        // Y-line relaxation solves exact tridiagonal systems, capturing the stiff y-modes.
         const bool is_3d = levels_[level]->Nz > 1;
-        const bool use_yline_for_anisotropy = semi_coarsening_ && (level > 0) && is_3d;
+        const bool use_yline_for_anisotropy = semi_coarsening_ && is_3d;
         const bool needs_strong_smooth = has_nullspace();  // Neumann/Periodic needs more sweeps
 
         for (int pass = 0; pass < nu; ++pass) {
@@ -2176,7 +2211,7 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
                 // Neumann case needs more sweeps to converge the slowest y-eigenmodes
                 const int sweeps = needs_strong_smooth ? 4 : 2;
                 smooth_y_lines(level, sweeps);
-            } else if (semi_coarsening_ && (level > 0)) {
+            } else if (semi_coarsening_) {
                 // 2D semi-coarsening: use more Jacobi iterations with damping
                 smooth_jacobi(level, degree * 4, 0.67);
             } else if (smoother_type_ == MGSmootherType::Chebyshev) {
