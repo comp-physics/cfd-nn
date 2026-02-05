@@ -220,6 +220,10 @@ private:
 
     void subtract_mean(int level);
 
+    /// Make RHS mean-free for compatibility with Neumann/Periodic BCs
+    /// Call BEFORE V-cycles - this is the proper Neumann handling
+    void make_rhs_mean_free(int level);
+
     /// Check if the problem has a nullspace (solution unique only up to a constant)
     ///
     /// The Poisson equation has a non-trivial nullspace (constants) when:

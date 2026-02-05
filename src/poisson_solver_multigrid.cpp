@@ -1292,6 +1292,8 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     double d_prime[MAX_NY];
 
                     // Forward sweep (Thomas algorithm)
+                    // Solving -L(u) = -f with positive diagonal for stability:
+                    //   -aS*u[j-1] + (aS+aN+2/dx²)*u[j] - aN*u[j+1] = -f + x_neighbors
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = j * stride + i;
@@ -1300,7 +1302,8 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         double c = (j < Ny + Ng - 1) ? -aN_ptr_gpu[jm] : 0.0;
                         double b = aS_ptr_gpu[jm] + aN_ptr_gpu[jm] + 2.0 * inv_dx2;
 
-                        double rhs = f_ptr_gpu[idx] - inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1]);
+                        // RHS: -f + x_neighbors (consistent with -L(u) = -f form)
+                        double rhs = inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1]) - f_ptr_gpu[idx];
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
@@ -1342,6 +1345,8 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     double d_prime[MAX_NY];
 
                     // Forward sweep (Thomas algorithm)
+                    // Solving -L(u) = -f with positive diagonal for stability:
+                    //   -aS*u[j-1] + (aS+aN+2/dx²+2/dz²)*u[j] - aN*u[j+1] = -f + x_neighbors + z_neighbors
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = k * plane_stride + j * stride + i;
@@ -1350,9 +1355,10 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         double c = (j < Ny + Ng - 1) ? -aN_ptr_gpu[jm] : 0.0;
                         double b = aS_ptr_gpu[jm] + aN_ptr_gpu[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
 
-                        double rhs = f_ptr_gpu[idx]
-                                   - inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1])
-                                   - inv_dz2 * (u_ptr_gpu[idx+plane_stride] + u_ptr_gpu[idx-plane_stride]);
+                        // RHS: -f + x_neighbors + z_neighbors (consistent with -L(u) = -f form)
+                        double rhs = inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1])
+                                   + inv_dz2 * (u_ptr_gpu[idx+plane_stride] + u_ptr_gpu[idx-plane_stride])
+                                   - f_ptr_gpu[idx];
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
@@ -1407,7 +1413,8 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
                     double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
                     double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2;
-                    double rhs = f_ptr[idx] - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]);
+                    // RHS: -f + x_neighbors (consistent with -L(u) = -f form)
+                    double rhs = inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]) - f_ptr[idx];
 
                     int j_local = j - Ng;
                     if (j_local == 0) {
@@ -1443,9 +1450,10 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         double a = (j > Ng) ? -aS_ptr[jm] : 0.0;
                         double c = (j < Ny + Ng - 1) ? -aN_ptr[jm] : 0.0;
                         double b = aS_ptr[jm] + aN_ptr[jm] + 2.0 * inv_dx2 + 2.0 * inv_dz2;
-                        double rhs = f_ptr[idx]
-                                   - inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
-                                   - inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]);
+                        // RHS: -f + x_neighbors + z_neighbors (consistent with -L(u) = -f form)
+                        double rhs = inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
+                                   + inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride])
+                                   - f_ptr[idx];
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
@@ -2160,11 +2168,14 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         // 2D uses Jacobi until we debug the y-line relaxation issue
         const bool is_3d = levels_[level]->Nz > 1;
         const bool use_yline_for_anisotropy = semi_coarsening_ && (level > 0) && is_3d;
+        const bool needs_strong_smooth = has_nullspace();  // Neumann/Periodic needs more sweeps
 
         for (int pass = 0; pass < nu; ++pass) {
             if (use_yline_for_anisotropy) {
                 // Y-line relaxation now runs entirely on GPU - no transfers needed
-                smooth_y_lines(level, 2);  // 2 y-line sweeps per pass
+                // Neumann case needs more sweeps to converge the slowest y-eigenmodes
+                const int sweeps = needs_strong_smooth ? 4 : 2;
+                smooth_y_lines(level, sweeps);
             } else if (semi_coarsening_ && (level > 0)) {
                 // 2D semi-coarsening: use more Jacobi iterations with damping
                 smooth_jacobi(level, degree * 4, 0.67);
@@ -2179,16 +2190,21 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
     if (level == static_cast<int>(levels_.size()) - 1) {
         // Coarsest level - do a REAL solve, not just a few smooths
         // For anisotropic problems, weak coarse solves cause correction overshoot
+        // For Neumann BCs (has_nullspace), we need even more iterations
         const bool is_3d = levels_[level]->Nz > 1;
+        const bool needs_strong_coarse = has_nullspace();  // Neumann/Periodic needs stronger solve
         if (semi_coarsening_ && is_3d) {
             // 3D semi-coarsening: use y-line relaxation (Thomas algorithm)
             // Runs entirely on GPU - no transfers needed
-            smooth_y_lines(level, 10);  // Multiple y-line sweeps
+            // Neumann case needs more sweeps to converge the slowest y-eigenmodes
+            const int sweeps = needs_strong_coarse ? 50 : 20;
+            smooth_y_lines(level, sweeps);
         } else if (semi_coarsening_) {
             // 2D semi-coarsening: use many damped Jacobi iterations
-            smooth_jacobi(level, 200, 0.67);
+            const int iters = needs_strong_coarse ? 400 : 200;
+            smooth_jacobi(level, iters, 0.67);
         } else {
-            const int coarse_iters = 50;
+            const int coarse_iters = needs_strong_coarse ? 100 : 50;
             const double coarse_omega = 0.67;
             smooth_jacobi(level, coarse_iters, coarse_omega);
         }
@@ -2409,6 +2425,77 @@ void MultigridPoissonSolver::subtract_mean(int level) {
             int j = (idx / Nx) % Ny + Ng;
             int k = idx / (Nx * Ny) + Ng;
             u_ptr[k * plane_stride + j * stride + i] -= mean;
+        }
+    }
+}
+
+void MultigridPoissonSolver::make_rhs_mean_free(int level) {
+    // For Neumann/Periodic BCs, the Poisson equation has a nullspace (constants).
+    // For a solution to exist, the RHS must satisfy the compatibility condition:
+    //   integral(rhs) = 0  (or equivalently, mean(rhs) = 0)
+    // This function subtracts the mean from the RHS to ensure compatibility.
+    // Call this BEFORE V-cycles, not after - it's the proper Neumann handling.
+    auto& grid = *levels_[level];
+    double sum = 0.0;
+    const int Ng = grid.Ng;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* f_ptr = static_cast<double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+#else
+    double* f_ptr = f_ptrs_[level];
+#endif
+
+    if (Nz == 1) {
+        // 2D case - compute sum
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for reduction(+:sum) is_device_ptr(f_ptr)
+#endif
+        for (int idx = 0; idx < Nx * Ny; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            sum += f_ptr[j * stride + i];
+        }
+
+        double mean = sum / (Nx * Ny);
+
+        // 2D case - subtract mean
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(f_ptr)
+#endif
+        for (int idx = 0; idx < Nx * Ny; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = idx / Nx + Ng;
+            f_ptr[j * stride + i] -= mean;
+        }
+    } else {
+        // 3D case - compute sum
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for reduction(+:sum) is_device_ptr(f_ptr)
+#endif
+        for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            sum += f_ptr[k * plane_stride + j * stride + i];
+        }
+
+        double mean = sum / (Nx * Ny * Nz);
+
+        // 3D case - subtract mean
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(f_ptr)
+#endif
+        for (int idx = 0; idx < Nx * Ny * Nz; ++idx) {
+            int i = idx % Nx + Ng;
+            int j = (idx / Nx) % Ny + Ng;
+            int k = idx / (Nx * Ny) + Ng;
+            f_ptr[k * plane_stride + j * stride + i] -= mean;
         }
     }
 }
@@ -2687,6 +2774,12 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             f_dev[idx] = rhs_dev[idx];
             u_dev[idx] = p_dev[idx];
         }
+    }
+
+    // For Neumann/Periodic BCs, make RHS mean-free BEFORE solving (compatibility condition)
+    // This is critical for convergence - without it, MG can "wander" in the nullspace
+    if (has_nullspace()) {
+        make_rhs_mean_free(0);
     }
 
     apply_bc(0);
