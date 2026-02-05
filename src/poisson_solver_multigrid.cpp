@@ -2688,6 +2688,10 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     }
     b_l2_ = std::sqrt(b_sum_sq);
 
+    // Apply BCs to initial guess before any computation
+    // Critical for y-line smoother which needs correct x/z ghost values for RHS
+    apply_bc(0);
+
     // Initial residual - use fused function to compute residual + both norms in single pass
     compute_residual_and_norms(0, r0_, r0_l2_);
     residual_ = r0_;
@@ -3082,6 +3086,10 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     }
     b_inf_ = b_inf_local;  // Store for diagnostics
     b_l2_ = std::sqrt(b_sum_sq);
+
+    // Apply BCs to initial guess before any computation
+    // Critical for y-line smoother which needs correct x/z ghost values for RHS
+    apply_bc(0);
 
     // Initial residual - use fused function to compute residual + both norms in single pass
     compute_residual_and_norms(0, r0_, r0_l2_);
