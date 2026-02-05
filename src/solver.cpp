@@ -1535,6 +1535,13 @@ double RANSSolver::step() {
         // Warm-start: zero on first iteration
         if (iter_ == 0) {
             pressure_correction_.fill(0.0);
+#ifdef USE_GPU_OFFLOAD
+            // Sync zeroed initial guess to GPU for solve_device()
+            // Without this, GPU solve starts with uninitialized data
+            if (gpu_ready_) {
+                #pragma omp target update to(pressure_corr_ptr_[0:field_total_size_])
+            }
+#endif
         }
     }
     NVTX_POP();  // End poisson_rhs_build

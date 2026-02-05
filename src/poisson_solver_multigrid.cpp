@@ -2843,6 +2843,7 @@ void MultigridPoissonSolver::solve_coarse_pcg(int max_iters, double tol) {
         f_ptr[i] = f_save[i];
     }
 #endif
+    // PCG iteration tracking disabled - not needed in production
 }
 
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
@@ -2882,6 +2883,9 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
                 // Neumann case needs more sweeps to converge the slowest y-eigenmodes
                 const int sweeps = needs_strong_smooth ? 4 : 2;
                 smooth_y_lines(level, sweeps);
+                // Add Jacobi sweeps to reduce x/z high-frequency modes that y-line doesn't touch
+                // Without this, x/z high-frequency error passes through unchanged, causing MG stall
+                smooth_jacobi(level, 4, 0.67);
             } else if (semi_coarsening_) {
                 // 2D semi-coarsening: use more Jacobi iterations with damping
                 smooth_jacobi(level, degree * 4, 0.67);
