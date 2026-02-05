@@ -1268,6 +1268,12 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
     const double inv_dx2 = 1.0 / dx2;
     const double inv_dz2 = is_2d ? 0.0 : (1.0 / dz2);
 
+    // BC type affects diagonal modification at walls
+    // For Neumann: ghost = interior, so wall-side coefficient is absorbed into diagonal -> modify diagonal
+    // For Dirichlet: ghost is fixed, no absorption -> keep full diagonal
+    const bool neumann_y_lo = (bc_y_lo_ == PoissonBC::Neumann);
+    const bool neumann_y_hi = (bc_y_hi_ == PoissonBC::Neumann);
+
 #ifdef USE_GPU_OFFLOAD
     // Max Ny we support for stack-allocated work arrays (128 is safe for occupancy)
     // Above this, local memory spills can hurt performance
@@ -1295,7 +1301,9 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     // Solving -L(u) = -f with positive diagonal for stability:
                     //   -aS*u[j-1] + (aS+aN+2/dx²)*u[j] - aN*u[j+1] = -f + x_neighbors
                     //
-                    // WALL BC HANDLING (Neumann du/dy=0): see 3D path comments
+                    // WALL BC HANDLING:
+                    // - Neumann (du/dy=0): ghost = interior, so wall-side coeff absorbs into diagonal
+                    // - Dirichlet: ghost is fixed BC value, no diagonal modification needed
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = j * stride + i;
@@ -1303,15 +1311,19 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         const bool at_south_wall = (j == Ng);
                         const bool at_north_wall = (j == Ny + Ng - 1);
 
-                        // Neumann BC modifies both off-diagonal AND diagonal
+                        // Off-diagonal: always 0 at walls (ghost not in tridiagonal solve)
                         double a = at_south_wall ? 0.0 : -aS_ptr_gpu[jm];
                         double c = at_north_wall ? 0.0 : -aN_ptr_gpu[jm];
-                        double b = (at_south_wall ? 0.0 : aS_ptr_gpu[jm])
-                                 + (at_north_wall ? 0.0 : aN_ptr_gpu[jm])
+                        // Diagonal: only modify for Neumann BC (absorption into diagonal)
+                        double b = ((at_south_wall && neumann_y_lo) ? 0.0 : aS_ptr_gpu[jm])
+                                 + ((at_north_wall && neumann_y_hi) ? 0.0 : aN_ptr_gpu[jm])
                                  + 2.0 * inv_dx2;
 
                         // RHS: -f + x_neighbors (consistent with -L(u) = -f form)
                         double rhs = inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1]) - f_ptr_gpu[idx];
+                        // For Dirichlet BC: add ghost contribution to RHS (moved from tridiagonal)
+                        if (at_south_wall && !neumann_y_lo) rhs += aS_ptr_gpu[jm] * u_ptr_gpu[idx - stride];
+                        if (at_north_wall && !neumann_y_hi) rhs += aN_ptr_gpu[jm] * u_ptr_gpu[idx + stride];
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
@@ -1356,11 +1368,9 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     // Solving -L(u) = -f with positive diagonal for stability:
                     //   -aS*u[j-1] + (aS+aN+2/dx²+2/dz²)*u[j] - aN*u[j+1] = -f + x_neighbors + z_neighbors
                     //
-                    // WALL BC HANDLING (Neumann du/dy=0):
-                    // At walls, ghost = interior (u[ghost] = u[interior]), which modifies the equation.
-                    // At south wall: lap_y = aS*u[j] + aP*u[j] + aN*u[j+1] = (aS+aP)*u[j] + aN*u[j+1]
-                    //              = -aN*u[j] + aN*u[j+1] (since aP = -(aS+aN))
-                    // So effective diagonal becomes aN (not aS+aN). Similarly for north wall.
+                    // WALL BC HANDLING:
+                    // - Neumann (du/dy=0): ghost = interior, so wall-side coeff absorbs into diagonal
+                    // - Dirichlet: ghost is fixed BC value, no diagonal modification needed
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         int jm = j + y_metric_offset;
                         int idx = k * plane_stride + j * stride + i;
@@ -1368,18 +1378,21 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         const bool at_south_wall = (j == Ng);
                         const bool at_north_wall = (j == Ny + Ng - 1);
 
-                        // Neumann BC modifies both off-diagonal AND diagonal
+                        // Off-diagonal: always 0 at walls (ghost not in tridiagonal solve)
                         double a = at_south_wall ? 0.0 : -aS_ptr_gpu[jm];
                         double c = at_north_wall ? 0.0 : -aN_ptr_gpu[jm];
-                        // Diagonal: remove wall-side coefficient when Neumann BC absorbs that term
-                        double b = (at_south_wall ? 0.0 : aS_ptr_gpu[jm])
-                                 + (at_north_wall ? 0.0 : aN_ptr_gpu[jm])
+                        // Diagonal: only modify for Neumann BC (absorption into diagonal)
+                        double b = ((at_south_wall && neumann_y_lo) ? 0.0 : aS_ptr_gpu[jm])
+                                 + ((at_north_wall && neumann_y_hi) ? 0.0 : aN_ptr_gpu[jm])
                                  + 2.0 * inv_dx2 + 2.0 * inv_dz2;
 
                         // RHS: -f + x_neighbors + z_neighbors (consistent with -L(u) = -f form)
                         double rhs = inv_dx2 * (u_ptr_gpu[idx+1] + u_ptr_gpu[idx-1])
                                    + inv_dz2 * (u_ptr_gpu[idx+plane_stride] + u_ptr_gpu[idx-plane_stride])
                                    - f_ptr_gpu[idx];
+                        // For Dirichlet BC: add ghost contribution to RHS (moved from tridiagonal)
+                        if (at_south_wall && !neumann_y_lo) rhs += aS_ptr_gpu[jm] * u_ptr_gpu[idx - stride];
+                        if (at_north_wall && !neumann_y_hi) rhs += aN_ptr_gpu[jm] * u_ptr_gpu[idx + stride];
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
@@ -1434,14 +1447,18 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                     const bool at_south_wall = (j == Ng);
                     const bool at_north_wall = (j == Ny + Ng - 1);
 
-                    // Neumann BC modifies both off-diagonal AND diagonal
+                    // Off-diagonal: always 0 at walls (ghost not in tridiagonal solve)
                     double a = at_south_wall ? 0.0 : -aS_ptr[jm];
                     double c = at_north_wall ? 0.0 : -aN_ptr[jm];
-                    double b = (at_south_wall ? 0.0 : aS_ptr[jm])
-                             + (at_north_wall ? 0.0 : aN_ptr[jm])
+                    // Diagonal: only modify for Neumann BC (absorption into diagonal)
+                    double b = ((at_south_wall && neumann_y_lo) ? 0.0 : aS_ptr[jm])
+                             + ((at_north_wall && neumann_y_hi) ? 0.0 : aN_ptr[jm])
                              + 2.0 * inv_dx2;
                     // RHS: -f + x_neighbors (consistent with -L(u) = -f form)
                     double rhs = inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1]) - f_ptr[idx];
+                    // For Dirichlet BC: add ghost contribution to RHS (moved from tridiagonal)
+                    if (at_south_wall && !neumann_y_lo) rhs += aS_ptr[jm] * u_ptr[idx - stride];
+                    if (at_north_wall && !neumann_y_hi) rhs += aN_ptr[jm] * u_ptr[idx + stride];
 
                     int j_local = j - Ng;
                     if (j_local == 0) {
@@ -1477,16 +1494,20 @@ void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
                         const bool at_south_wall = (j == Ng);
                         const bool at_north_wall = (j == Ny + Ng - 1);
 
-                        // Neumann BC modifies both off-diagonal AND diagonal
+                        // Off-diagonal: always 0 at walls (ghost not in tridiagonal solve)
                         double a = at_south_wall ? 0.0 : -aS_ptr[jm];
                         double c = at_north_wall ? 0.0 : -aN_ptr[jm];
-                        double b = (at_south_wall ? 0.0 : aS_ptr[jm])
-                                 + (at_north_wall ? 0.0 : aN_ptr[jm])
+                        // Diagonal: only modify for Neumann BC (absorption into diagonal)
+                        double b = ((at_south_wall && neumann_y_lo) ? 0.0 : aS_ptr[jm])
+                                 + ((at_north_wall && neumann_y_hi) ? 0.0 : aN_ptr[jm])
                                  + 2.0 * inv_dx2 + 2.0 * inv_dz2;
                         // RHS: -f + x_neighbors + z_neighbors (consistent with -L(u) = -f form)
                         double rhs = inv_dx2 * (u_ptr[idx+1] + u_ptr[idx-1])
                                    + inv_dz2 * (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride])
                                    - f_ptr[idx];
+                        // For Dirichlet BC: add ghost contribution to RHS (moved from tridiagonal)
+                        if (at_south_wall && !neumann_y_lo) rhs += aS_ptr[jm] * u_ptr[idx - stride];
+                        if (at_north_wall && !neumann_y_hi) rhs += aN_ptr[jm] * u_ptr[idx + stride];
 
                         int j_local = j - Ng;
                         if (j_local == 0) {
