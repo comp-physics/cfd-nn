@@ -197,6 +197,7 @@ private:
     void compute_gershgorin_bounds();  // Compute per-level Chebyshev eigenvalue bounds
     void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
     void smooth_y_lines(int level, int iterations);  // Y-line relaxation for anisotropic grids
+    void smooth_xz_plane_rbgs(int level, int iterations);  // Red-black GS in xz-planes (attacks y-constant modes)
     void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
     void restrict_residual(int fine_level);

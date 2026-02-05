@@ -1242,6 +1242,179 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     #undef JACOBI_TARGET_COPY
 }
 
+void MultigridPoissonSolver::smooth_xz_plane_rbgs(int level, int iterations) {
+    // Red-Black Gauss-Seidel in x-z planes (for each fixed y-row j)
+    // Targets modes that are constant in y but oscillatory in x/z
+    // These modes pass through y-line smoothing unchanged, causing MG stalls
+    //
+    // For each plane at y=j, we solve: (Lx + Lz)u = f - Ly*u
+    // where Ly*u is frozen from the previous y-line sweep
+    // Red: (i+k) % 2 == 0, Black: (i+k) % 2 == 1
+    NVTX_SCOPE_POISSON("mg:smooth_xz_rbgs");
+
+    auto& grid = *levels_[level];
+    const double dx2 = grid.dx * grid.dx;
+    const double dz2 = grid.dz * grid.dz;
+    const int Ng = grid.Ng;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+
+    // Check for non-uniform y (D·G = L consistency)
+    const bool use_nonuniform_y = y_stretched_ && (semi_coarsening_ || level == 0);
+
+    // For semi-coarsening: coarse levels have Ng=1 but y-metrics are indexed for fine mesh
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
+
+    // Uniform y coefficients (fallback)
+    const double dy2 = grid.dy * grid.dy;
+
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level], device));
+    const double* f_ptr = static_cast<const double*>(omp_get_mapped_ptr(f_ptrs_[level], device));
+    const double* aS_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device)) : nullptr;
+    const double* aN_ptr = use_nonuniform_y ? static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device)) : nullptr;
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        // Red sweep: (i + k) % 2 == 0
+        if (use_nonuniform_y) {
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, aS_ptr, aN_ptr)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if ((i + k) % 2 == 0) {
+                            int idx = k * plane_stride + j * stride + i;
+                            int jm = j + y_metric_offset;
+                            // x/z neighbors (in-place update, but red-black ensures no conflict)
+                            double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                            double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                            // y neighbors (frozen from y-line sweep)
+                            double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                            double diag = 2.0/dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0/dz2;
+                            u_ptr[idx] = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag;
+                        }
+                    }
+                }
+            }
+        } else {
+            double coeff = 2.0/dx2 + 2.0/dy2 + 2.0/dz2;
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if ((i + k) % 2 == 0) {
+                            int idx = k * plane_stride + j * stride + i;
+                            double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                            double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                            double lap_y = (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2;
+                            u_ptr[idx] = (lap_x + lap_y + lap_z - f_ptr[idx]) / coeff;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Black sweep: (i + k) % 2 == 1
+        if (use_nonuniform_y) {
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr, aS_ptr, aN_ptr)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if ((i + k) % 2 == 1) {
+                            int idx = k * plane_stride + j * stride + i;
+                            int jm = j + y_metric_offset;
+                            double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                            double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                            double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                            double diag = 2.0/dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0/dz2;
+                            u_ptr[idx] = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag;
+                        }
+                    }
+                }
+            }
+        } else {
+            double coeff = 2.0/dx2 + 2.0/dy2 + 2.0/dz2;
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr, f_ptr)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if ((i + k) % 2 == 1) {
+                            int idx = k * plane_stride + j * stride + i;
+                            double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                            double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                            double lap_y = (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2;
+                            u_ptr[idx] = (lap_x + lap_y + lap_z - f_ptr[idx]) / coeff;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply BCs after each RB iteration
+        apply_bc(level);
+    }
+#else
+    // CPU path
+    double* u_ptr = u_ptrs_[level];
+    const double* f_ptr = f_ptrs_[level];
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
+    double coeff = 2.0/dx2 + 2.0/dy2 + 2.0/dz2;
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        // Red sweep
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if ((i + k) % 2 == 0) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                        double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                        double lap_y, diag;
+                        if (use_nonuniform_y) {
+                            int jm = j + y_metric_offset;
+                            lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                            diag = 2.0/dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0/dz2;
+                        } else {
+                            lap_y = (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2;
+                            diag = coeff;
+                        }
+                        u_ptr[idx] = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag;
+                    }
+                }
+            }
+        }
+        // Black sweep
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if ((i + k) % 2 == 1) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
+                        double lap_z = (u_ptr[idx+plane_stride] + u_ptr[idx-plane_stride]) / dz2;
+                        double lap_y, diag;
+                        if (use_nonuniform_y) {
+                            int jm = j + y_metric_offset;
+                            lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
+                            diag = 2.0/dx2 + (aS_ptr[jm] + aN_ptr[jm]) + 2.0/dz2;
+                        } else {
+                            lap_y = (u_ptr[idx+stride] + u_ptr[idx-stride]) / dy2;
+                            diag = coeff;
+                        }
+                        u_ptr[idx] = (lap_x + lap_y + lap_z - f_ptr[idx]) / diag;
+                    }
+                }
+            }
+        }
+        apply_bc(level);
+    }
+#endif
+}
+
 void MultigridPoissonSolver::smooth_y_lines(int level, int iterations) {
     // Y-line relaxation: solve tridiagonal systems along y-lines (Line-Jacobi)
     // This is optimal for anisotropic problems where y-direction dominates.
@@ -2879,13 +3052,16 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
 
         for (int pass = 0; pass < nu; ++pass) {
             if (use_yline_for_anisotropy) {
-                // Y-line relaxation now runs entirely on GPU - no transfers needed
+                // Y-line relaxation: solves y-direction exactly (Thomas algorithm)
                 // Neumann case needs more sweeps to converge the slowest y-eigenmodes
-                const int sweeps = needs_strong_smooth ? 4 : 2;
-                smooth_y_lines(level, sweeps);
-                // Add Jacobi sweeps to reduce x/z high-frequency modes that y-line doesn't touch
-                // Without this, x/z high-frequency error passes through unchanged, causing MG stall
-                smooth_jacobi(level, 4, 0.67);
+                const int yline_sweeps = needs_strong_smooth ? 4 : 2;
+                smooth_y_lines(level, yline_sweeps);
+                // XZ-plane RBGS: attacks modes constant in y but oscillatory in x/z
+                // These modes pass through y-line unchanged and cause MG stall without this
+                // RBGS is more effective than Jacobi for these plane-like error modes
+                // Use more sweeps on finest level where high-frequency content is strongest
+                const int rbgs_sweeps = (level == 0 && needs_strong_smooth) ? 4 : 2;
+                smooth_xz_plane_rbgs(level, rbgs_sweeps);
             } else if (semi_coarsening_) {
                 // 2D semi-coarsening: use more Jacobi iterations with damping
                 smooth_jacobi(level, degree * 4, 0.67);
@@ -2897,7 +3073,8 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         }
     };
 
-    if (level == static_cast<int>(levels_.size()) - 1) {
+    const int num_levels = static_cast<int>(levels_.size());
+    if (level == num_levels - 1) {
         // Coarsest level - do a REAL solve, not just a few smooths
         // For anisotropic problems, weak coarse solves cause correction overshoot
         // For Neumann BCs (has_nullspace), we need even more iterations
@@ -2921,6 +3098,60 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         return;
     }
 
+    // K-cycle-lite: Apply extra smoothing at next-to-coarsest level
+    // This helps kill stubborn modes that don't transfer well to the coarsest grid
+    const bool is_3d = levels_[level]->Nz > 1;
+    if (level == num_levels - 2 && semi_coarsening_ && is_3d && has_nullspace()) {
+        // At L2 (e.g., 16×64×16 for 64³ grid), do extra work
+        // This is K-cycle-lite: stronger solve at near-coarsest level
+        do_smooth(nu1);
+        compute_residual(level);
+        apply_bc_to_residual(level);
+        restrict_residual_xz(level);
+
+        // Zero and solve coarsest (L3)
+        {
+            auto& coarse = *levels_[level + 1];
+            size_t size_c = level_sizes_[level + 1];
+#ifdef USE_GPU_OFFLOAD
+            int device = omp_get_default_device();
+            double* u_coarse = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level + 1], device));
+            #pragma omp target teams distribute parallel for is_device_ptr(u_coarse)
+            for (int idx = 0; idx < (int)size_c; ++idx) u_coarse[idx] = 0.0;
+#else
+            std::fill(u_ptrs_[level + 1], u_ptrs_[level + 1] + size_c, 0.0);
+#endif
+        }
+        // Strong PCG solve at coarsest
+        solve_coarse_pcg(50, 1e-10);
+
+        // Prolongate from level+1 to level and post-smooth
+        prolongate_correction_xz(level + 1);  // coarse_level = level + 1
+        apply_bc(level);
+        do_smooth(nu2);
+
+        // Repeat the coarse solve (K-cycle: two coarse solves)
+        compute_residual(level);
+        apply_bc_to_residual(level);
+        restrict_residual_xz(level);
+        {
+            size_t size_c = level_sizes_[level + 1];
+#ifdef USE_GPU_OFFLOAD
+            int device = omp_get_default_device();
+            double* u_coarse = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[level + 1], device));
+            #pragma omp target teams distribute parallel for is_device_ptr(u_coarse)
+            for (int idx = 0; idx < (int)size_c; ++idx) u_coarse[idx] = 0.0;
+#else
+            std::fill(u_ptrs_[level + 1], u_ptrs_[level + 1] + size_c, 0.0);
+#endif
+        }
+        solve_coarse_pcg(50, 1e-10);
+        prolongate_correction_xz(level + 1);  // coarse_level = level + 1
+        apply_bc(level);
+        do_smooth(nu2);
+        return;
+    }
+
     // Pre-smoothing (nu1 passes of degree-k Chebyshev)
     do_smooth(nu1);
 
@@ -2936,6 +3167,13 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         restrict_residual_xz(level);
     } else {
         restrict_residual(level);
+    }
+
+    // For Neumann BCs, ensure coarse-level RHS is mean-free after restriction
+    // Full-weighting restriction should preserve zero-mean, but numerical precision
+    // can accumulate. This ensures compatibility condition at all levels.
+    if (has_nullspace()) {
+        make_rhs_mean_free(level + 1);
     }
 
     // Zero coarse grid solution

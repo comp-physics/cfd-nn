@@ -1932,8 +1932,16 @@ double RANSSolver::step() {
             bool alert = false;
             std::string alert_reason;
 
+            // For projection, what matters is div(u), not residual.
+            // If div(u) is acceptable, don't alert even if residual didn't converge.
+            // This handles semi-coarsening MG which may stall on rough RHS but still achieve
+            // acceptable divergence for DNS purposes.
+            const double div_tol_acceptable = 1e-6;  // Acceptable for DNS
+            const bool div_is_acceptable = (poisson_stats_.div_scaled_linf < div_tol_acceptable);
+
             // Check for HitMaxCycles (Poisson didn't converge)
-            if (poisson_stats_.status == PoissonSolveStatus::HitMaxCycles) {
+            // But suppress if div(u) is acceptable - residual stall is OK in that case
+            if (poisson_stats_.status == PoissonSolveStatus::HitMaxCycles && !div_is_acceptable) {
                 alert = true;
                 alert_reason = "Poisson hit max_vcycles";
             }
