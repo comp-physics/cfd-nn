@@ -681,6 +681,131 @@ void test_stretched_3d_channel() {
            "err=" + std::to_string(solution_error));
 }
 
+void test_stretched_3d_channel_64cubed() {
+    // 64x64x64 test specifically to verify PCG coarse solver at DNS resolution
+    // This size was problematic before PCG: y-line smoothing alone stalled at ~10% residual
+    std::cout << "\n--- 3D Stretched Grid 64x64x64, Channel BCs (Periodic x/z, Neumann y) ---\n\n";
+
+    const int Nx = 64, Ny = 64, Nz = 64;
+    const double Lx = 4*M_PI, Lz = 4*M_PI/3;  // ~channel aspect ratios
+    const double y_lo = -1.0, y_hi = 1.0;
+    const double Ly = y_hi - y_lo;
+    const double beta = 2.0;
+
+    Mesh mesh;
+    mesh.init_stretched_y(Nx, Ny, Nz, 0.0, Lx, y_lo, y_hi, 0.0, Lz,
+                          Mesh::tanh_stretching(beta), 2);
+
+    std::cout << "Grid: " << Nx << " x " << Ny << " x " << Nz << "\n";
+    std::cout << "Y-stretched: " << (mesh.is_y_stretched() ? "YES" : "NO") << "\n";
+
+    // For Neumann y: φ_true = cos(π(y-y_lo)/Ly) * cos(2πx/Lx) * cos(2πz/Lz)
+    // dφ/dy = 0 at y=y_lo, y=y_hi (homogeneous Neumann)
+    ScalarField phi_true(mesh);
+    const double kx = 2*M_PI / Lx;
+    const double ky = M_PI / Ly;
+    const double kz = 2*M_PI / Lz;
+
+    // Set interior cells
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double x = mesh.xc[i];
+                double y = mesh.yc[j];
+                double z = mesh.zc[k];
+                phi_true(i,j,k) = std::cos(ky * (y - y_lo)) * std::cos(kx * x) * std::cos(kz * z);
+            }
+        }
+    }
+
+    // Apply BCs in order: periodic x, periodic z, neumann y
+    apply_periodic_ghosts_x_3d(mesh, phi_true);
+    apply_periodic_ghosts_z_3d(mesh, phi_true);
+    apply_neumann_ghosts_y_3d(mesh, phi_true);
+
+    ScalarField rhs(mesh);
+    apply_discrete_laplacian_3d(mesh, phi_true, rhs);
+
+    // For pure Neumann/Periodic, remove mean from RHS (compatibility)
+    double rhs_sum = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                rhs_sum += rhs(i,j,k);
+                ++count;
+            }
+        }
+    }
+    double rhs_mean = rhs_sum / count;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                rhs(i,j,k) -= rhs_mean;
+            }
+        }
+    }
+    std::cout << "RHS mean removed: " << rhs_mean << "\n";
+
+    ScalarField phi(mesh, 0.0);
+    MultigridPoissonSolver mg(mesh);
+    mg.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+              PoissonBC::Neumann, PoissonBC::Neumann,
+              PoissonBC::Periodic, PoissonBC::Periodic);
+
+    PoissonConfig cfg;
+    cfg.tol_rhs = 1e-6;  // Standard DNS tolerance
+    cfg.tol_abs = 1e-10;
+    cfg.max_vcycles = 100;
+    cfg.use_vcycle_graph = false;
+
+    int cycles = mg.solve(rhs, phi, cfg);
+
+    // Remove means for comparison (nullspace)
+    double phi_mean = 0.0, phi_true_mean = 0.0;
+    count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                phi_mean += phi(i,j,k);
+                phi_true_mean += phi_true(i,j,k);
+                ++count;
+            }
+        }
+    }
+    phi_mean /= count;
+    phi_true_mean /= count;
+
+    double solution_error = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double err = std::abs((phi(i,j,k) - phi_mean) - (phi_true(i,j,k) - phi_true_mean));
+                solution_error = std::max(solution_error, err);
+            }
+        }
+    }
+
+    double residual_rel = mg.residual_l2() / mg.rhs_norm_l2();
+
+    std::cout << "V-cycles: " << cycles << "\n";
+    std::cout << "Final residual (rel): " << std::scientific << residual_rel << "\n";
+    std::cout << "Solution error (inf, mean-removed): " << solution_error << "\n";
+
+    // With PCG coarse solver, residual should converge to tol_rhs (1e-6) within 100 V-cycles
+    // Before PCG, this test would stall at ~10% residual
+    bool residual_ok = residual_rel < 1e-5;  // Stricter than 1e-3 to verify PCG works
+    bool error_ok = solution_error < 1e-4;
+    bool cycles_ok = cycles < 100;  // Should not hit max_vcycles
+
+    record("64^3 stretched channel residual", residual_ok,
+           "res_rel=" + std::to_string(residual_rel));
+    record("64^3 stretched channel solution error", error_ok,
+           "err=" + std::to_string(solution_error));
+    record("64^3 stretched channel converged", cycles_ok,
+           "cycles=" + std::to_string(cycles));
+}
+
 //=============================================================================
 // Main
 //=============================================================================
@@ -698,6 +823,7 @@ int main() {
         {"2D Stretched", test_stretched_2d_dirichlet},
         {"3D Uniform", test_uniform_3d_dirichlet},
         {"3D Stretched", test_stretched_3d_dirichlet},
-        {"3D Channel BCs", test_stretched_3d_channel}
+        {"3D Channel BCs", test_stretched_3d_channel},
+        {"3D Channel 64^3", test_stretched_3d_channel_64cubed}
     });
 }
