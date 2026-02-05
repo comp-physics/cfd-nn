@@ -209,6 +209,17 @@ private:
     
     // Direct solver for coarsest level
     void solve_coarsest(int iterations = 100);
+
+    // PCG solver for coarsest level with y-line preconditioner
+    // This properly handles x/z low-frequency modes that y-line smoothing alone misses
+    void solve_coarse_pcg(int max_iters = 100, double tol = 1e-10);
+
+    // Apply Laplacian operator: y = A * x (for PCG)
+    // Uses same stencil as compute_residual but without subtracting from f
+    void apply_laplacian_coarse(const double* x, double* y);
+
+    // GPU-resident dot product with reduction
+    double dot_product_gpu(const double* a, const double* b, size_t n);
     
     // Utility
     double compute_max_residual(int level);
@@ -251,6 +262,14 @@ private:
     std::vector<double*> f_ptrs_;  // Device pointers for f at each level
     std::vector<double*> r_ptrs_;  // Device pointers for r at each level
     std::vector<double*> tmp_ptrs_;  // Scratch buffer for Jacobi ping-pong
+
+    // PCG scratch buffers for coarsest level
+    double* pcg_p_ = nullptr;    // Search direction
+    double* pcg_z_ = nullptr;    // Preconditioned residual
+    double* pcg_Ap_ = nullptr;   // A * p
+    double* pcg_x_ = nullptr;    // Solution accumulator (separate from u for preconditioner)
+    double* pcg_f_save_ = nullptr;  // Saved RHS for preconditioner
+    size_t pcg_buf_size_ = 0;    // Allocated size
     std::vector<size_t> level_sizes_;  // Total size for each level
 
     // NVHPC WORKAROUND: Level-0 member pointers for direct use in target regions.

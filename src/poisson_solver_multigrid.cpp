@@ -2195,6 +2195,656 @@ void MultigridPoissonSolver::solve_coarsest(int iterations) {
     }
 }
 
+double MultigridPoissonSolver::dot_product_gpu(const double* a, const double* b, size_t n) {
+    // GPU-resident dot product with parallel reduction
+    double result = 0.0;
+
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for reduction(+:result) is_device_ptr(a, b)
+#endif
+    for (size_t i = 0; i < n; ++i) {
+        result += a[i] * b[i];
+    }
+
+    return result;
+}
+
+void MultigridPoissonSolver::apply_laplacian_coarse(const double* x, double* y) {
+    // Apply Laplacian operator on coarsest level: y = A * x
+    // Same stencil as compute_residual but without the f - ... subtraction
+    NVTX_SCOPE_MG("mg:apply_laplacian_coarse");
+
+    int coarsest = static_cast<int>(levels_.size()) - 1;
+    auto& grid = *levels_[coarsest];
+    const double dx2 = grid.dx * grid.dx;
+    const double dz2 = grid.dz * grid.dz;
+    const bool is_2d = grid.is2D();
+
+    const int Ng = grid.Ng;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+
+    // For semi-coarsening: ALL levels use same y-metric coefficients from finest level
+    const bool use_nonuniform_y = y_stretched_ && semi_coarsening_;
+    const int Ng_fine = levels_[0]->Ng;
+    const int y_metric_offset = use_nonuniform_y ? (Ng_fine - Ng) : 0;
+
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    const double* aS_ptr = use_nonuniform_y ?
+        static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aS_), device)) : nullptr;
+    const double* aN_ptr = use_nonuniform_y ?
+        static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aN_), device)) : nullptr;
+    const double* aP_ptr = use_nonuniform_y ?
+        static_cast<const double*>(omp_get_mapped_ptr(const_cast<double*>(yLap_aP_), device)) : nullptr;
+#else
+    const double* aS_ptr = yLap_aS_;
+    const double* aN_ptr = yLap_aN_;
+    const double* aP_ptr = yLap_aP_;
+#endif
+
+    if (is_2d) {
+        const double dy2 = grid.dy * grid.dy;
+        if (use_nonuniform_y) {
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(x, y, aS_ptr, aN_ptr, aP_ptr)
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    int jm = j + y_metric_offset;
+                    double lap_x = (x[idx+1] - 2.0*x[idx] + x[idx-1]) / dx2;
+                    double lap_y = aS_ptr[jm] * x[idx-stride] + aP_ptr[jm] * x[idx] + aN_ptr[jm] * x[idx+stride];
+                    y[idx] = lap_x + lap_y;
+                }
+            }
+        } else {
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(x, y)
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double lap = (x[idx+1] - 2.0*x[idx] + x[idx-1]) / dx2
+                               + (x[idx+stride] - 2.0*x[idx] + x[idx-stride]) / dy2;
+                    y[idx] = lap;
+                }
+            }
+        }
+    } else {
+        // 3D path
+        if (use_nonuniform_y) {
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(x, y, aS_ptr, aN_ptr, aP_ptr)
+#endif
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        int jm = j + y_metric_offset;
+                        double lap_x = (x[idx+1] - 2.0*x[idx] + x[idx-1]) / dx2;
+                        double lap_y = aS_ptr[jm] * x[idx-stride] + aP_ptr[jm] * x[idx] + aN_ptr[jm] * x[idx+stride];
+                        double lap_z = (x[idx+plane_stride] - 2.0*x[idx] + x[idx-plane_stride]) / dz2;
+                        y[idx] = lap_x + lap_y + lap_z;
+                    }
+                }
+            }
+        } else {
+            const double dy2 = grid.dy * grid.dy;
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(x, y)
+#endif
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double lap = (x[idx+1] - 2.0*x[idx] + x[idx-1]) / dx2
+                                   + (x[idx+stride] - 2.0*x[idx] + x[idx-stride]) / dy2
+                                   + (x[idx+plane_stride] - 2.0*x[idx] + x[idx-plane_stride]) / dz2;
+                        y[idx] = lap;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void MultigridPoissonSolver::solve_coarse_pcg(int max_iters, double tol) {
+    // Preconditioned Conjugate Gradient for coarsest level
+    // Preconditioner: 2 sweeps of y-line relaxation (Thomas algorithm)
+    //
+    // This properly reduces x/z low-frequency modes that y-line smoothing alone misses.
+    // The y-line preconditioner captures the dominant y-anisotropy, while CG handles
+    // the isotropic x/z components that the semi-coarsening hierarchy struggles with.
+    //
+    // For Neumann BCs (nullspace present), we project out the nullspace (mean) from
+    // the search direction to prevent pAp from going to zero.
+    NVTX_SCOPE_POISSON("mg:solve_coarse_pcg");
+
+    int coarsest = static_cast<int>(levels_.size()) - 1;
+    auto& grid = *levels_[coarsest];
+    const int Ng = grid.Ng;
+    const int Nx = grid.Nx;
+    const int Ny = grid.Ny;
+    const int Nz = grid.Nz;
+    const int stride = grid.stride;
+    const int plane_stride = grid.plane_stride;
+    const size_t total_size = grid.total_size;
+    const bool is_2d = grid.is2D();
+    const bool needs_nullspace_projection = has_nullspace();
+    const int n_interior = Nx * Ny * (is_2d ? 1 : Nz);
+
+    // Allocate PCG scratch buffers on first call
+    if (pcg_buf_size_ < total_size) {
+#ifdef USE_GPU_OFFLOAD
+        if (pcg_p_) {
+            int device = omp_get_default_device();
+            omp_target_free(pcg_p_, device);
+            omp_target_free(pcg_z_, device);
+            omp_target_free(pcg_Ap_, device);
+            omp_target_free(pcg_x_, device);
+            omp_target_free(pcg_f_save_, device);
+        }
+        int device = omp_get_default_device();
+        pcg_p_ = static_cast<double*>(omp_target_alloc(total_size * sizeof(double), device));
+        pcg_z_ = static_cast<double*>(omp_target_alloc(total_size * sizeof(double), device));
+        pcg_Ap_ = static_cast<double*>(omp_target_alloc(total_size * sizeof(double), device));
+        pcg_x_ = static_cast<double*>(omp_target_alloc(total_size * sizeof(double), device));
+        pcg_f_save_ = static_cast<double*>(omp_target_alloc(total_size * sizeof(double), device));
+#else
+        delete[] pcg_p_;
+        delete[] pcg_z_;
+        delete[] pcg_Ap_;
+        delete[] pcg_x_;
+        delete[] pcg_f_save_;
+        pcg_p_ = new double[total_size];
+        pcg_z_ = new double[total_size];
+        pcg_Ap_ = new double[total_size];
+        pcg_x_ = new double[total_size];
+        pcg_f_save_ = new double[total_size];
+#endif
+        pcg_buf_size_ = total_size;
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    int device = omp_get_default_device();
+    double* u_ptr = static_cast<double*>(omp_get_mapped_ptr(u_ptrs_[coarsest], device));
+    double* f_ptr = static_cast<double*>(omp_get_mapped_ptr(f_ptrs_[coarsest], device));
+    double* r_ptr = static_cast<double*>(omp_get_mapped_ptr(r_ptrs_[coarsest], device));
+#else
+    double* u_ptr = u_ptrs_[coarsest];
+    double* f_ptr = f_ptrs_[coarsest];
+    double* r_ptr = r_ptrs_[coarsest];
+#endif
+    double* p = pcg_p_;
+    double* z = pcg_z_;
+    double* Ap = pcg_Ap_;
+    double* x = pcg_x_;        // Solution accumulator
+    double* f_save = pcg_f_save_;  // Saved RHS
+
+    // Save original RHS (f) - we'll need it for preconditioner
+    // Initialize solution x = u (incoming guess)
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for is_device_ptr(f_save, f_ptr, x, u_ptr)
+    for (size_t i = 0; i < total_size; ++i) {
+        f_save[i] = f_ptr[i];
+        x[i] = u_ptr[i];
+    }
+#else
+    for (size_t i = 0; i < total_size; ++i) {
+        f_save[i] = f_ptr[i];
+        x[i] = u_ptr[i];
+    }
+#endif
+
+    // Compute initial residual r = f - A*x
+    // Copy x to u for residual computation (compute_residual uses u)
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for is_device_ptr(u_ptr, x)
+    for (size_t i = 0; i < total_size; ++i) {
+        u_ptr[i] = x[i];
+    }
+#else
+    for (size_t i = 0; i < total_size; ++i) {
+        u_ptr[i] = x[i];
+    }
+#endif
+
+    apply_bc(coarsest);
+    compute_residual(coarsest);
+
+    // Compute ||r||^2 for initial norm (only over interior)
+    double r_norm_sq_init = 0.0;
+#ifdef USE_GPU_OFFLOAD
+    if (is_2d) {
+        #pragma omp target teams distribute parallel for collapse(2) reduction(+:r_norm_sq_init) is_device_ptr(r_ptr)
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * stride + i;
+                r_norm_sq_init += r_ptr[idx] * r_ptr[idx];
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(3) reduction(+:r_norm_sq_init) is_device_ptr(r_ptr)
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    r_norm_sq_init += r_ptr[idx] * r_ptr[idx];
+                }
+            }
+        }
+    }
+#else
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = k * plane_stride + j * stride + i;
+                r_norm_sq_init += r_ptr[idx] * r_ptr[idx];
+            }
+        }
+    }
+#endif
+
+    if (r_norm_sq_init < tol * tol) {
+        // Already converged - copy solution back
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(u_ptr, x)
+        for (size_t i = 0; i < total_size; ++i) {
+            u_ptr[i] = x[i];
+        }
+#else
+        for (size_t i = 0; i < total_size; ++i) {
+            u_ptr[i] = x[i];
+        }
+#endif
+        return;
+    }
+
+    // Apply preconditioner: z = M^{-1} r
+    // Preconditioner = 2 y-line sweeps solving M*z = r
+    // Set f = r (RHS for preconditioner), u = 0 (initial guess for z)
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for is_device_ptr(f_ptr, r_ptr, u_ptr)
+    for (size_t i = 0; i < total_size; ++i) {
+        f_ptr[i] = r_ptr[i];
+        u_ptr[i] = 0.0;
+    }
+#else
+    for (size_t i = 0; i < total_size; ++i) {
+        f_ptr[i] = r_ptr[i];
+        u_ptr[i] = 0.0;
+    }
+#endif
+
+    smooth_y_lines(coarsest, 2);
+
+    // For Neumann BCs: project out nullspace (mean) from preconditioned residual
+    // This ensures p has no component in the nullspace, preventing pAp → 0
+    if (needs_nullspace_projection) {
+        double z_sum = 0.0;
+#ifdef USE_GPU_OFFLOAD
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) reduction(+:z_sum) is_device_ptr(u_ptr)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    z_sum += u_ptr[j * stride + i];
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) reduction(+:z_sum) is_device_ptr(u_ptr)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        z_sum += u_ptr[k * plane_stride + j * stride + i];
+                    }
+                }
+            }
+        }
+#else
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    z_sum += u_ptr[k * plane_stride + j * stride + i];
+                }
+            }
+        }
+#endif
+        double z_mean = z_sum / n_interior;
+#ifdef USE_GPU_OFFLOAD
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    u_ptr[j * stride + i] -= z_mean;
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        u_ptr[k * plane_stride + j * stride + i] -= z_mean;
+                    }
+                }
+            }
+        }
+#else
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    u_ptr[k * plane_stride + j * stride + i] -= z_mean;
+                }
+            }
+        }
+#endif
+    }
+
+    // z = u (result of preconditioner), p = z
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for is_device_ptr(z, p, u_ptr)
+    for (size_t i = 0; i < total_size; ++i) {
+        z[i] = u_ptr[i];
+        p[i] = u_ptr[i];
+    }
+#else
+    for (size_t i = 0; i < total_size; ++i) {
+        z[i] = u_ptr[i];
+        p[i] = u_ptr[i];
+    }
+#endif
+
+    // rho = r^T z (only interior)
+    double rho = 0.0;
+#ifdef USE_GPU_OFFLOAD
+    if (is_2d) {
+        #pragma omp target teams distribute parallel for collapse(2) reduction(+:rho) is_device_ptr(r_ptr, z)
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * stride + i;
+                rho += r_ptr[idx] * z[idx];
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(3) reduction(+:rho) is_device_ptr(r_ptr, z)
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    rho += r_ptr[idx] * z[idx];
+                }
+            }
+        }
+    }
+#else
+    for (int k = Ng; k < Nz + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = k * plane_stride + j * stride + i;
+                rho += r_ptr[idx] * z[idx];
+            }
+        }
+    }
+#endif
+
+    // Main PCG loop
+    for (int iter = 0; iter < max_iters; ++iter) {
+        // Apply BC to p for Laplacian stencil (need ghost values)
+        // Copy p to u for BC application
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(u_ptr, p)
+        for (size_t i = 0; i < total_size; ++i) {
+            u_ptr[i] = p[i];
+        }
+#else
+        for (size_t i = 0; i < total_size; ++i) {
+            u_ptr[i] = p[i];
+        }
+#endif
+        apply_bc(coarsest);
+
+        // Ap = A * p (using u which has BCs applied)
+        apply_laplacian_coarse(u_ptr, Ap);
+
+        // alpha = rho / (p^T Ap) - use interior only
+        double pAp = 0.0;
+#ifdef USE_GPU_OFFLOAD
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) reduction(+:pAp) is_device_ptr(u_ptr, Ap)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    pAp += u_ptr[idx] * Ap[idx];  // u_ptr has p with BCs
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) reduction(+:pAp) is_device_ptr(u_ptr, Ap)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        pAp += u_ptr[idx] * Ap[idx];
+                    }
+                }
+            }
+        }
+#else
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    pAp += u_ptr[idx] * Ap[idx];
+                }
+            }
+        }
+#endif
+
+        if (std::abs(pAp) < 1e-30) {
+            break;  // Breakdown - p is in null space
+        }
+        double alpha = rho / pAp;
+
+        // Update: x += alpha * p, r -= alpha * Ap
+        double r_norm_sq = 0.0;
+#ifdef USE_GPU_OFFLOAD
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) reduction(+:r_norm_sq) is_device_ptr(x, u_ptr, r_ptr, Ap)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    x[idx] += alpha * u_ptr[idx];  // u_ptr has p with BCs
+                    r_ptr[idx] -= alpha * Ap[idx];
+                    r_norm_sq += r_ptr[idx] * r_ptr[idx];
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) reduction(+:r_norm_sq) is_device_ptr(x, u_ptr, r_ptr, Ap)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        x[idx] += alpha * u_ptr[idx];
+                        r_ptr[idx] -= alpha * Ap[idx];
+                        r_norm_sq += r_ptr[idx] * r_ptr[idx];
+                    }
+                }
+            }
+        }
+#else
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    x[idx] += alpha * u_ptr[idx];
+                    r_ptr[idx] -= alpha * Ap[idx];
+                    r_norm_sq += r_ptr[idx] * r_ptr[idx];
+                }
+            }
+        }
+#endif
+
+        // Check convergence
+        if (r_norm_sq < tol * tol * r_norm_sq_init) {
+            break;
+        }
+
+        // Apply preconditioner: z = M^{-1} r
+        // Set f = r (RHS), u = 0 (initial guess)
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(f_ptr, r_ptr, u_ptr)
+        for (size_t i = 0; i < total_size; ++i) {
+            f_ptr[i] = r_ptr[i];
+            u_ptr[i] = 0.0;
+        }
+#else
+        for (size_t i = 0; i < total_size; ++i) {
+            f_ptr[i] = r_ptr[i];
+            u_ptr[i] = 0.0;
+        }
+#endif
+
+        smooth_y_lines(coarsest, 2);
+
+        // For Neumann BCs: project out nullspace (mean) from preconditioned residual
+        if (needs_nullspace_projection) {
+            double z_sum = 0.0;
+#ifdef USE_GPU_OFFLOAD
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) reduction(+:z_sum) is_device_ptr(u_ptr)
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        z_sum += u_ptr[j * stride + i];
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) reduction(+:z_sum) is_device_ptr(u_ptr)
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            z_sum += u_ptr[k * plane_stride + j * stride + i];
+                        }
+                    }
+                }
+            }
+#else
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        z_sum += u_ptr[k * plane_stride + j * stride + i];
+                    }
+                }
+            }
+#endif
+            double z_mean = z_sum / n_interior;
+#ifdef USE_GPU_OFFLOAD
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr)
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        u_ptr[j * stride + i] -= z_mean;
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr)
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            u_ptr[k * plane_stride + j * stride + i] -= z_mean;
+                        }
+                    }
+                }
+            }
+#else
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        u_ptr[k * plane_stride + j * stride + i] -= z_mean;
+                    }
+                }
+            }
+#endif
+        }
+
+        // z = u (result of preconditioner)
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(z, u_ptr)
+        for (size_t i = 0; i < total_size; ++i) {
+            z[i] = u_ptr[i];
+        }
+#else
+        for (size_t i = 0; i < total_size; ++i) {
+            z[i] = u_ptr[i];
+        }
+#endif
+
+        // rho_new = r^T z
+        double rho_new = 0.0;
+#ifdef USE_GPU_OFFLOAD
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) reduction(+:rho_new) is_device_ptr(r_ptr, z)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    rho_new += r_ptr[idx] * z[idx];
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) reduction(+:rho_new) is_device_ptr(r_ptr, z)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        rho_new += r_ptr[idx] * z[idx];
+                    }
+                }
+            }
+        }
+#else
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * plane_stride + j * stride + i;
+                    rho_new += r_ptr[idx] * z[idx];
+                }
+            }
+        }
+#endif
+
+        // beta = rho_new / rho
+        double beta = (std::abs(rho) > 1e-30) ? (rho_new / rho) : 0.0;
+        rho = rho_new;
+
+        // p = z + beta * p
+#ifdef USE_GPU_OFFLOAD
+        #pragma omp target teams distribute parallel for is_device_ptr(p, z)
+        for (size_t i = 0; i < total_size; ++i) {
+            p[i] = z[i] + beta * p[i];
+        }
+#else
+        for (size_t i = 0; i < total_size; ++i) {
+            p[i] = z[i] + beta * p[i];
+        }
+#endif
+    }
+
+    // Copy solution back to u, restore original f
+#ifdef USE_GPU_OFFLOAD
+    #pragma omp target teams distribute parallel for is_device_ptr(u_ptr, x, f_ptr, f_save)
+    for (size_t i = 0; i < total_size; ++i) {
+        u_ptr[i] = x[i];
+        f_ptr[i] = f_save[i];
+    }
+#else
+    for (size_t i = 0; i < total_size; ++i) {
+        u_ptr[i] = x[i];
+        f_ptr[i] = f_save[i];
+    }
+#endif
+}
+
 void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
     NVTX_SCOPE_POISSON("mg:vcycle");
 
@@ -2250,11 +2900,11 @@ void MultigridPoissonSolver::vcycle(int level, int nu1, int nu2, int degree) {
         const bool is_3d = levels_[level]->Nz > 1;
         const bool needs_strong_coarse = has_nullspace();  // Neumann/Periodic needs stronger solve
         if (semi_coarsening_ && is_3d) {
-            // 3D semi-coarsening: use y-line relaxation (Thomas algorithm)
-            // Runs entirely on GPU - no transfers needed
-            // Neumann case needs more sweeps to converge the slowest y-eigenmodes
-            const int sweeps = needs_strong_coarse ? 50 : 20;
-            smooth_y_lines(level, sweeps);
+            // 3D semi-coarsening: use PCG with y-line preconditioner
+            // Y-line smoothing alone can't reduce x/z low-frequency modes effectively
+            // PCG properly handles the isotropic x/z components
+            const int pcg_iters = needs_strong_coarse ? 50 : 30;
+            solve_coarse_pcg(pcg_iters, 1e-10);
         } else if (semi_coarsening_) {
             // 2D semi-coarsening: use many damped Jacobi iterations
             const int iters = needs_strong_coarse ? 400 : 200;
@@ -3259,6 +3909,21 @@ void MultigridPoissonSolver::cleanup_gpu_buffers() {
         #pragma omp target exit data map(delete: yLap_aS_[0:y_metrics_size_], yLap_aN_[0:y_metrics_size_], yLap_aP_[0:y_metrics_size_])
     }
 
+    // Free PCG scratch buffers
+    if (pcg_p_) {
+        omp_target_free(pcg_p_, device_id);
+        omp_target_free(pcg_z_, device_id);
+        omp_target_free(pcg_Ap_, device_id);
+        omp_target_free(pcg_x_, device_id);
+        omp_target_free(pcg_f_save_, device_id);
+        pcg_p_ = nullptr;
+        pcg_z_ = nullptr;
+        pcg_Ap_ = nullptr;
+        pcg_x_ = nullptr;
+        pcg_f_save_ = nullptr;
+        pcg_buf_size_ = 0;
+    }
+
     gpu_ready_ = false;
 }
 
@@ -3442,7 +4107,18 @@ void MultigridPoissonSolver::initialize_gpu_buffers() {
 }
 
 void MultigridPoissonSolver::cleanup_gpu_buffers() {
-    // No-op
+    // Free PCG scratch buffers (CPU version)
+    delete[] pcg_p_;
+    delete[] pcg_z_;
+    delete[] pcg_Ap_;
+    delete[] pcg_x_;
+    delete[] pcg_f_save_;
+    pcg_p_ = nullptr;
+    pcg_z_ = nullptr;
+    pcg_Ap_ = nullptr;
+    pcg_x_ = nullptr;
+    pcg_f_save_ = nullptr;
+    pcg_buf_size_ = 0;
 }
 
 void MultigridPoissonSolver::sync_level_to_gpu(int level) {
