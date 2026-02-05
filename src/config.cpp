@@ -275,6 +275,15 @@ void Config::load(const std::string& filename) {
         poisson_solver = PoissonSolverType::FFT;
     }
 
+    // Trip region forcing parameters
+    trip_enabled = get_bool("trip_enabled", trip_enabled);
+    trip_x_start = get_double("trip_x_start", trip_x_start);
+    trip_x_end = get_double("trip_x_end", trip_x_end);
+    trip_amplitude = get_double("trip_amplitude", trip_amplitude);
+    trip_duration = get_double("trip_duration", trip_duration);
+    trip_ramp_off_start = get_double("trip_ramp_off_start", trip_ramp_off_start);
+    trip_n_modes_z = get_int("trip_n_modes_z", trip_n_modes_z);
+
     // Recycling inflow parameters
     recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
     recycle_x = get_double("recycle_x", recycle_x);

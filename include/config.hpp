@@ -178,6 +178,15 @@ struct Config {
     bool projection_watchdog = true;        ///< Enable projection health monitoring
     bool gpu_only_mode = false;             ///< Strict GPU-only mode (no CPU fallbacks, no full-field host reads)
 
+    // Trip region forcing (triggers turbulence transition for DNS)
+    bool trip_enabled = false;              ///< Enable trip region forcing for transition
+    double trip_x_start = 0.5;              ///< Start x-location of trip region
+    double trip_x_end = 1.5;                ///< End x-location of trip region
+    double trip_amplitude = 0.1;            ///< Trip forcing amplitude (A * u_tau^2 / delta)
+    double trip_duration = 2.0;             ///< Duration of trip forcing in friction time units
+    double trip_ramp_off_start = 1.5;       ///< Start of ramp-off phase
+    int trip_n_modes_z = 4;                 ///< Number of spanwise modes in trip forcing
+
     // Recycling inflow (turbulent inlet BC for DNS/LES)
     bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo
     double recycle_x = -1.0;                ///< x-location of recycle plane (-1 = auto: 10*delta)

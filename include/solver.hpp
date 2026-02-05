@@ -667,6 +667,19 @@ public:
     /// Get current simulation time
     double current_time() const { return current_time_; }
 
+    //=========================================================================
+    // Trip region forcing (for turbulence transition)
+    //=========================================================================
+
+    /// Initialize trip region forcing (call after set_body_force for correct u_tau)
+    void initialize_trip_forcing();
+
+    /// Check if trip forcing is currently active
+    bool is_trip_active() const { return trip_active_ && current_time_ < config_.trip_duration; }
+
+    /// Compute trip forcing amplitude multiplier at current time (includes ramp-off)
+    double get_trip_time_ramp() const;
+
     /// Project velocity field to remove divergence (one-time cleanup after perturbation)
     /// This performs a single pressure projection without advancing time
     void project_initial_velocity();
@@ -872,6 +885,11 @@ private:
     double fx_target_ = 0.0;          // Target body force (used when ramping)
     double fy_target_ = 0.0;
     double fz_target_ = 0.0;
+
+    // Trip region forcing state (for turbulence transition)
+    bool trip_active_ = false;            // Trip forcing currently active
+    double trip_u_tau_ = 1.0;             // Reference u_tau for scaling
+    std::vector<double> trip_phases_;     // Random phases for spanwise modes
 
     // Wall shear history for turbulence settling detection
     std::vector<WallShearSample> wall_shear_history_;

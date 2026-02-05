@@ -670,6 +670,51 @@ void RANSSolver::set_body_force(double fx, double fy, double fz) {
     fz_ = fz;
 }
 
+void RANSSolver::initialize_trip_forcing() {
+    if (!config_.trip_enabled) {
+        trip_active_ = false;
+        return;
+    }
+
+    // Compute reference u_tau from forcing: u_tau = sqrt(delta * |dp/dx|)
+    double delta = 0.5 * (mesh_->y_max - mesh_->y_min);  // Channel half-height
+    trip_u_tau_ = std::sqrt(delta * std::abs(fx_));
+
+    // Initialize random phases for spanwise modes (deterministic seed for reproducibility)
+    std::srand(12345);  // Fixed seed for reproducibility
+    trip_phases_.resize(config_.trip_n_modes_z);
+    for (int m = 0; m < config_.trip_n_modes_z; ++m) {
+        trip_phases_[m] = 2.0 * M_PI * static_cast<double>(std::rand()) / RAND_MAX;
+    }
+
+    trip_active_ = true;
+
+    if (config_.verbose) {
+        std::cout << "\n=== Trip Region Forcing ===\n";
+        std::cout << "  x-region:    [" << config_.trip_x_start << ", " << config_.trip_x_end << "]\n";
+        std::cout << "  amplitude:   " << config_.trip_amplitude << " * u_tau^2 = "
+                  << config_.trip_amplitude * trip_u_tau_ * trip_u_tau_ << "\n";
+        std::cout << "  duration:    " << config_.trip_duration << " (t*)\n";
+        std::cout << "  ramp-off:    [" << config_.trip_ramp_off_start << ", " << config_.trip_duration << "]\n";
+        std::cout << "  z-modes:     " << config_.trip_n_modes_z << "\n";
+        std::cout << "  u_tau (ref): " << trip_u_tau_ << "\n";
+        std::cout << "===========================\n\n";
+    }
+}
+
+double RANSSolver::get_trip_time_ramp() const {
+    double t = current_time_;
+    if (t >= config_.trip_duration) {
+        return 0.0;
+    }
+    if (t <= config_.trip_ramp_off_start) {
+        return 1.0;
+    }
+    // Smooth ramp-off using cosine
+    double frac = (t - config_.trip_ramp_off_start) / (config_.trip_duration - config_.trip_ramp_off_start);
+    return 0.5 * (1.0 + std::cos(M_PI * frac));  // 1 -> 0 smoothly
+}
+
 void RANSSolver::print_solver_info() const {
     std::cout << "\n=== Solver Configuration ===\n";
 
@@ -826,7 +871,10 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
     if (turb_model_) {
         turb_model_->initialize(*mesh_, velocity_);
     }
-    
+
+    // Initialize trip forcing if enabled (needs fx_ set via set_body_force)
+    initialize_trip_forcing();
+
 #ifdef USE_GPU_OFFLOAD
     // Ensure initialized fields are mirrored to device for GPU runs
     sync_to_gpu();
@@ -1342,6 +1390,85 @@ double RANSSolver::step() {
                 w_star_ptr[idx_back] = w_avg;
                 w_star_ptr[idx_front] = w_avg;
             }
+        }
+    }
+
+    // Trip region forcing: add localized body force to v* to trigger turbulence
+    if (trip_active_ && is_trip_active()) {
+        const double trip_ramp = get_trip_time_ramp();
+        const double trip_A = config_.trip_amplitude * trip_u_tau_ * trip_u_tau_ * trip_ramp;
+        const double trip_x0 = config_.trip_x_start;
+        const double trip_x1 = config_.trip_x_end;
+        const double trip_width = trip_x1 - trip_x0;
+        const double Lz_trip = mesh_->z_max - mesh_->z_min;
+        const int n_modes = config_.trip_n_modes_z;
+        const bool is_3d = !mesh_->is2D();
+
+        // Copy phases to device
+        const double* phases_ptr = trip_phases_.data();
+        [[maybe_unused]] const size_t n_phases = trip_phases_.size();
+
+        // Get mesh coordinate pointers (already mapped)
+        const double* xc_ptr = mesh_->xc.data();
+        const double* yf_ptr = mesh_->yf.data();  // v is at y-faces
+        // For 3D, we need zc; for 2D we use a dummy single-element array
+        static const double zc_dummy[1] = {0.0};
+        const double* zc_ptr = is_3d ? mesh_->zc.data() : zc_dummy;
+        [[maybe_unused]] const size_t xc_size = mesh_->xc.size();
+        [[maybe_unused]] const size_t yf_size = mesh_->yf.size();
+        [[maybe_unused]] const size_t zc_size = is_3d ? mesh_->zc.size() : 1;
+
+        // Apply trip forcing to v*
+        const int Nz_trip = is_3d ? mesh_->Nz : 1;
+        const int n_trip = Nx * (Ny + 1) * Nz_trip;
+
+        #pragma omp target teams distribute parallel for \
+            map(present: v_star_ptr[0:v_total_size_pred]) \
+            map(to: phases_ptr[0:n_phases], xc_ptr[0:xc_size], yf_ptr[0:yf_size], zc_ptr[0:zc_size]) \
+            firstprivate(trip_A, trip_x0, trip_x1, trip_width, Lz_trip, n_modes, dt, \
+                         v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_trip, Ng, is_3d)
+        for (int idx = 0; idx < n_trip; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = (idx / Nx) % (Ny + 1);
+            int k_local = idx / (Nx * (Ny + 1));
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            int k = k_local + Ng;
+
+            double x = xc_ptr[i];  // Cell center x for this face
+            double y = yf_ptr[j];  // y-face location
+
+            // Skip if outside trip region in x
+            if (x < trip_x0 || x > trip_x1) continue;
+
+            // x envelope: smooth cosine within trip region
+            double xi = (x - trip_x0) / trip_width;  // 0 to 1
+            double env_x = 0.5 * (1.0 - std::cos(2.0 * M_PI * xi));  // 0->1->0
+
+            // y envelope: concentrated in buffer layer, zero at walls
+            // g(y) = y * (1 - y^2) for y in [-1, 1]
+            double g_y = y * (1.0 - y * y);
+
+            // z modulation: sum of sinusoidal modes
+            double h_z = 0.0;
+            if (is_3d && n_modes > 0) {
+                double z = zc_ptr[k];
+                for (int m = 0; m < n_modes; ++m) {
+                    double k_z = 2.0 * M_PI * (m + 1) / Lz_trip;
+                    h_z += std::sin(k_z * z + phases_ptr[m]);
+                }
+                h_z /= n_modes;  // Normalize
+            } else {
+                h_z = 1.0;  // 2D case
+            }
+
+            // Compute trip forcing
+            double f_trip = trip_A * env_x * g_y * h_z;
+
+            // Add to v*
+            int v_idx = is_3d ? (k * v_plane_stride_pred + j * v_stride_pred + i)
+                              : (j * v_stride_pred + i);
+            v_star_ptr[v_idx] += dt * f_trip;
         }
     }
 
