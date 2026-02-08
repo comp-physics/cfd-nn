@@ -2816,9 +2816,23 @@ void MultigridPoissonSolver::solve_coarse_pcg(int max_iters, double tol) {
 #endif
 
         if (std::abs(pAp) < 1e-30) {
-            break;  // Breakdown - p is in null space
+            // PCG breakdown - p is in null space or near-singular
+            static bool pcg_warn_printed = false;
+            if (!pcg_warn_printed) {
+                std::cerr << "[PCG BREAKDOWN] pAp=" << pAp << " < 1e-30 at iter " << iter
+                          << " (rho=" << rho << "). Solver may not converge.\n";
+                pcg_warn_printed = true;
+            }
+            break;
         }
         double alpha = rho / pAp;
+
+        // Guard against alpha blowup (rho >> pAp)
+        if (std::abs(alpha) > 1e10) {
+            std::cerr << "[PCG ALPHA GUARD] alpha=" << alpha << " (rho=" << rho
+                      << ", pAp=" << pAp << ") - clamping to 1e10\n";
+            alpha = (alpha > 0) ? 1e10 : -1e10;
+        }
 
         // Update: x += alpha * p, r -= alpha * Ap
         double r_norm_sq = 0.0;

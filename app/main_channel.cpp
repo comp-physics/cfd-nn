@@ -420,10 +420,13 @@ int main(int argc, char** argv) {
 
         // Initialize velocity field
         std::cout << "Perturbation amplitude: " << config.perturbation_amplitude << "\n";
-        if (config.recycling_inflow) {
-            // Recycling requires established mean flow - start with Poiseuille profile
-            // plus optional perturbations to trigger turbulence
-            std::cout << "Initializing with Poiseuille profile (recycling mode)\n";
+        if (config.recycling_inflow || config.trip_enabled) {
+            // Recycling or trip forcing requires established mean flow - start with Poiseuille
+            // profile plus optional perturbations to trigger turbulence
+            std::cout << "Initializing with Poiseuille profile";
+            if (config.trip_enabled) std::cout << " (trip mode)";
+            if (config.recycling_inflow) std::cout << " (recycling mode)";
+            std::cout << "\n";
             solver.initialize(create_poiseuille_field(mesh, config.dp_dx, config.nu,
                                                       config.perturbation_amplitude));
         } else {
@@ -458,7 +461,7 @@ int main(int argc, char** argv) {
 
         for (int step = 1; step <= config.max_steps; ++step) {
             if (config.adaptive_dt) {
-                (void)solver.compute_adaptive_dt();
+                solver.set_dt(solver.compute_adaptive_dt());
             }
             double residual = solver.step();
 

@@ -186,6 +186,9 @@ public:
     
     /// Get current time step
     double current_dt() const { return current_dt_; }
+
+    /// Set current time step (for external adaptive dt control)
+    void set_dt(double dt) { current_dt_ = dt; }
     
     /// Access fields
     const VectorField& velocity() const { return velocity_; }
@@ -890,6 +893,16 @@ private:
     bool trip_active_ = false;            // Trip forcing currently active
     double trip_u_tau_ = 1.0;             // Reference u_tau for scaling
     std::vector<double> trip_phases_;     // Random phases for spanwise modes
+
+    // Precomputed trip forcing arrays (GPU-resident for fast kernel)
+    std::vector<double> trip_env_x_;      // x-envelope: cosine window [Nx]
+    std::vector<double> trip_g_y_;        // y-profile for v-faces [Ny+1]
+    std::vector<double> trip_Fz_v_;       // z-modes for v (sine) [Nz]
+    std::vector<double> trip_Fz_w_;       // z-modes for w (cosine) [Nz+1]
+    double* trip_env_x_ptr_ = nullptr;    // GPU pointer
+    double* trip_g_y_ptr_ = nullptr;
+    double* trip_Fz_v_ptr_ = nullptr;
+    double* trip_Fz_w_ptr_ = nullptr;
 
     // Wall shear history for turbulence settling detection
     std::vector<WallShearSample> wall_shear_history_;

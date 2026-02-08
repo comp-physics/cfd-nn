@@ -283,6 +283,7 @@ void Config::load(const std::string& filename) {
     trip_duration = get_double("trip_duration", trip_duration);
     trip_ramp_off_start = get_double("trip_ramp_off_start", trip_ramp_off_start);
     trip_n_modes_z = get_int("trip_n_modes_z", trip_n_modes_z);
+    trip_force_w = get_bool("trip_force_w", trip_force_w);
 
     // Recycling inflow parameters
     recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
@@ -299,6 +300,12 @@ void Config::load(const std::string& filename) {
     div_tol_acceptable = get_double("div_tol_acceptable", div_tol_acceptable);
     projection_watchdog = get_bool("projection_watchdog", projection_watchdog);
     gpu_only_mode = get_bool("gpu_only_mode", gpu_only_mode);
+
+    // Adaptive projection
+    adaptive_projection = get_bool("adaptive_projection", adaptive_projection);
+    div_target = get_double("div_target", div_target);
+    projection_max_cycles = get_int("projection_max_cycles", projection_max_cycles);
+    projection_extra_chunk = get_int("projection_extra_chunk", projection_extra_chunk);
 
     finalize();
 }

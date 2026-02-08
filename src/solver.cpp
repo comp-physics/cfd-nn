@@ -21,6 +21,7 @@
 #include "stencil_operators.hpp"
 #include "solver_kernels.hpp"
 #include "solver_time_kernels.hpp"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -680,6 +681,13 @@ void RANSSolver::initialize_trip_forcing() {
     double delta = 0.5 * (mesh_->y_max - mesh_->y_min);  // Channel half-height
     trip_u_tau_ = std::sqrt(delta * std::abs(fx_));
 
+    // Auto-compute trip region location if not specified
+    double Lx = mesh_->x_max - mesh_->x_min;
+    double Lz = mesh_->z_max - mesh_->z_min;
+    double trip_x0 = (config_.trip_x_start < 0) ? mesh_->x_min + 0.1 * Lx : config_.trip_x_start;
+    double trip_x1 = (config_.trip_x_end < 0) ? mesh_->x_min + 0.2 * Lx : config_.trip_x_end;
+    double trip_width = trip_x1 - trip_x0;
+
     // Initialize random phases for spanwise modes (deterministic seed for reproducibility)
     std::srand(12345);  // Fixed seed for reproducibility
     trip_phases_.resize(config_.trip_n_modes_z);
@@ -687,16 +695,95 @@ void RANSSolver::initialize_trip_forcing() {
         trip_phases_[m] = 2.0 * M_PI * static_cast<double>(std::rand()) / RAND_MAX;
     }
 
+    // Precompute x-envelope: cosine window in trip region, zero outside
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const bool is_3d = !mesh_->is2D();
+
+    trip_env_x_.resize(mesh_->total_Nx(), 0.0);
+    for (int i = 0; i < mesh_->total_Nx(); ++i) {
+        double x = mesh_->xc[i];
+        if (x >= trip_x0 && x <= trip_x1) {
+            double xi = (x - trip_x0) / trip_width;  // 0 to 1
+            trip_env_x_[i] = 0.5 * (1.0 - std::cos(2.0 * M_PI * xi));  // 0->1->0
+        }
+    }
+
+    // Precompute y-profile for v-faces: g(y) = y * (1 - y^2) for y in [-1, 1]
+    // This concentrates forcing in buffer layer, zero at walls
+    trip_g_y_.resize(mesh_->total_Ny() + 1, 0.0);
+    for (int j = 0; j < static_cast<int>(trip_g_y_.size()); ++j) {
+        if (j < static_cast<int>(mesh_->yf.size())) {
+            double y = mesh_->yf[j];
+            trip_g_y_[j] = y * (1.0 - y * y);
+        }
+    }
+
+    // Precompute z-modes for v (sine) and w (cosine, phase-shifted)
+    if (is_3d) {
+        const int n_modes = config_.trip_n_modes_z;
+
+        // For v*: sum of sines at cell centers
+        trip_Fz_v_.resize(mesh_->total_Nz(), 0.0);
+        for (int k = 0; k < mesh_->total_Nz(); ++k) {
+            double z = mesh_->zc[k];
+            double sum = 0.0;
+            for (int m = 0; m < n_modes; ++m) {
+                double kz = 2.0 * M_PI * (m + 1) / Lz;
+                sum += std::sin(kz * z + trip_phases_[m]);
+            }
+            trip_Fz_v_[k] = sum / n_modes;
+        }
+
+        // For w*: sum of cosines (phase-shifted) at z-faces for vortical structures
+        trip_Fz_w_.resize(mesh_->total_Nz() + 1, 0.0);
+        for (int k = 0; k < static_cast<int>(trip_Fz_w_.size()); ++k) {
+            if (k < static_cast<int>(mesh_->zf.size())) {
+                double z = mesh_->zf[k];
+                double sum = 0.0;
+                for (int m = 0; m < n_modes; ++m) {
+                    double kz = 2.0 * M_PI * (m + 1) / Lz;
+                    // Use cosine (π/2 phase shift from v) for vortical coupling
+                    sum += std::cos(kz * z + trip_phases_[m]);
+                }
+                trip_Fz_w_[k] = sum / n_modes;
+            }
+        }
+    } else {
+        trip_Fz_v_.resize(1, 1.0);  // 2D: no z variation
+        trip_Fz_w_.resize(1, 0.0);  // 2D: no w forcing
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    // Map precomputed arrays to GPU
+    trip_env_x_ptr_ = trip_env_x_.data();
+    trip_g_y_ptr_ = trip_g_y_.data();
+    trip_Fz_v_ptr_ = trip_Fz_v_.data();
+    trip_Fz_w_ptr_ = trip_Fz_w_.data();
+    const size_t env_x_size = trip_env_x_.size();
+    const size_t g_y_size = trip_g_y_.size();
+    const size_t Fz_v_size = trip_Fz_v_.size();
+    const size_t Fz_w_size = trip_Fz_w_.size();
+
+    #pragma omp target enter data map(to: trip_env_x_ptr_[0:env_x_size], \
+                                          trip_g_y_ptr_[0:g_y_size], \
+                                          trip_Fz_v_ptr_[0:Fz_v_size], \
+                                          trip_Fz_w_ptr_[0:Fz_w_size])
+#endif
+
     trip_active_ = true;
 
     if (config_.verbose) {
         std::cout << "\n=== Trip Region Forcing ===\n";
-        std::cout << "  x-region:    [" << config_.trip_x_start << ", " << config_.trip_x_end << "]\n";
+        std::cout << "  x-region:    [" << trip_x0 << ", " << trip_x1 << "]\n";
         std::cout << "  amplitude:   " << config_.trip_amplitude << " * u_tau^2 = "
                   << config_.trip_amplitude * trip_u_tau_ * trip_u_tau_ << "\n";
         std::cout << "  duration:    " << config_.trip_duration << " (t*)\n";
         std::cout << "  ramp-off:    [" << config_.trip_ramp_off_start << ", " << config_.trip_duration << "]\n";
         std::cout << "  z-modes:     " << config_.trip_n_modes_z << "\n";
+        std::cout << "  force w*:    " << (config_.trip_force_w ? "yes" : "no") << "\n";
         std::cout << "  u_tau (ref): " << trip_u_tau_ << "\n";
         std::cout << "===========================\n\n";
     }
@@ -1393,41 +1480,33 @@ double RANSSolver::step() {
         }
     }
 
-    // Trip region forcing: add localized body force to v* to trigger turbulence
+    // Trip region forcing: add localized body force to v* and w* to trigger turbulence
+    // Uses precomputed arrays for fast kernel (just multiplications, no trig)
     if (trip_active_ && is_trip_active()) {
         const double trip_ramp = get_trip_time_ramp();
         const double trip_A = config_.trip_amplitude * trip_u_tau_ * trip_u_tau_ * trip_ramp;
-        const double trip_x0 = config_.trip_x_start;
-        const double trip_x1 = config_.trip_x_end;
-        const double trip_width = trip_x1 - trip_x0;
-        const double Lz_trip = mesh_->z_max - mesh_->z_min;
-        const int n_modes = config_.trip_n_modes_z;
         const bool is_3d = !mesh_->is2D();
+        const bool force_w = config_.trip_force_w && is_3d;
 
-        // Copy phases to device
-        const double* phases_ptr = trip_phases_.data();
-        [[maybe_unused]] const size_t n_phases = trip_phases_.size();
+        // Get precomputed arrays (already on GPU)
+        const double* env_x_ptr = trip_env_x_ptr_;
+        const double* g_y_ptr = trip_g_y_ptr_;
+        const double* Fz_v_ptr = trip_Fz_v_ptr_;
+        [[maybe_unused]] const double* Fz_w_ptr = trip_Fz_w_ptr_;
+        [[maybe_unused]] const size_t env_x_size = trip_env_x_.size();
+        [[maybe_unused]] const size_t g_y_size = trip_g_y_.size();
+        [[maybe_unused]] const size_t Fz_v_size = trip_Fz_v_.size();
+        [[maybe_unused]] const size_t Fz_w_size = trip_Fz_w_.size();
 
-        // Get mesh coordinate pointers (already mapped)
-        const double* xc_ptr = mesh_->xc.data();
-        const double* yf_ptr = mesh_->yf.data();  // v is at y-faces
-        // For 3D, we need zc; for 2D we use a dummy single-element array
-        static const double zc_dummy[1] = {0.0};
-        const double* zc_ptr = is_3d ? mesh_->zc.data() : zc_dummy;
-        [[maybe_unused]] const size_t xc_size = mesh_->xc.size();
-        [[maybe_unused]] const size_t yf_size = mesh_->yf.size();
-        [[maybe_unused]] const size_t zc_size = is_3d ? mesh_->zc.size() : 1;
-
-        // Apply trip forcing to v*
+        // Apply trip forcing to v* (wall-normal)
         const int Nz_trip = is_3d ? mesh_->Nz : 1;
-        const int n_trip = Nx * (Ny + 1) * Nz_trip;
+        const int n_v_trip = Nx * (Ny + 1) * Nz_trip;
 
         #pragma omp target teams distribute parallel for \
-            map(present: v_star_ptr[0:v_total_size_pred]) \
-            map(to: phases_ptr[0:n_phases], xc_ptr[0:xc_size], yf_ptr[0:yf_size], zc_ptr[0:zc_size]) \
-            firstprivate(trip_A, trip_x0, trip_x1, trip_width, Lz_trip, n_modes, dt, \
-                         v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_trip, Ng, is_3d)
-        for (int idx = 0; idx < n_trip; ++idx) {
+            map(present: v_star_ptr[0:v_total_size_pred], \
+                        env_x_ptr[0:env_x_size], g_y_ptr[0:g_y_size], Fz_v_ptr[0:Fz_v_size]) \
+            firstprivate(trip_A, dt, v_stride_pred, v_plane_stride_pred, Nx, Ny, Nz_trip, Ng, is_3d)
+        for (int idx = 0; idx < n_v_trip; ++idx) {
             int i_local = idx % Nx;
             int j_local = (idx / Nx) % (Ny + 1);
             int k_local = idx / (Nx * (Ny + 1));
@@ -1435,40 +1514,56 @@ double RANSSolver::step() {
             int j = j_local + Ng;
             int k = k_local + Ng;
 
-            double x = xc_ptr[i];  // Cell center x for this face
-            double y = yf_ptr[j];  // y-face location
+            // Lookup precomputed values (no trig!)
+            double env_x = env_x_ptr[i];
+            double g_y = g_y_ptr[j];
+            double Fz = is_3d ? Fz_v_ptr[k] : 1.0;
 
-            // Skip if outside trip region in x
-            if (x < trip_x0 || x > trip_x1) continue;
-
-            // x envelope: smooth cosine within trip region
-            double xi = (x - trip_x0) / trip_width;  // 0 to 1
-            double env_x = 0.5 * (1.0 - std::cos(2.0 * M_PI * xi));  // 0->1->0
-
-            // y envelope: concentrated in buffer layer, zero at walls
-            // g(y) = y * (1 - y^2) for y in [-1, 1]
-            double g_y = y * (1.0 - y * y);
-
-            // z modulation: sum of sinusoidal modes
-            double h_z = 0.0;
-            if (is_3d && n_modes > 0) {
-                double z = zc_ptr[k];
-                for (int m = 0; m < n_modes; ++m) {
-                    double k_z = 2.0 * M_PI * (m + 1) / Lz_trip;
-                    h_z += std::sin(k_z * z + phases_ptr[m]);
-                }
-                h_z /= n_modes;  // Normalize
-            } else {
-                h_z = 1.0;  // 2D case
-            }
-
-            // Compute trip forcing
-            double f_trip = trip_A * env_x * g_y * h_z;
+            // Compute trip forcing: just multiplications
+            double f_trip = trip_A * env_x * g_y * Fz;
 
             // Add to v*
             int v_idx = is_3d ? (k * v_plane_stride_pred + j * v_stride_pred + i)
                               : (j * v_stride_pred + i);
             v_star_ptr[v_idx] += dt * f_trip;
+        }
+
+        // Apply trip forcing to w* (spanwise) for vortical structures
+        if (force_w) {
+            const int Nz = mesh_->Nz;
+            const int w_stride_trip = v.w_stride;
+            const int w_plane_stride_trip = v.w_plane_stride;
+            double* w_star_trip = v.w_star_face;
+            [[maybe_unused]] const size_t w_total_trip = velocity_.w_total_size();
+
+            const int n_w_trip = Nx * Ny * (Nz + 1);
+
+            #pragma omp target teams distribute parallel for \
+                map(present: w_star_trip[0:w_total_trip], \
+                            env_x_ptr[0:env_x_size], g_y_ptr[0:g_y_size], Fz_w_ptr[0:Fz_w_size]) \
+                firstprivate(trip_A, dt, w_stride_trip, w_plane_stride_trip, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_w_trip; ++idx) {
+                int i_local = idx % Nx;
+                int j_local = (idx / Nx) % Ny;
+                int k_local = idx / (Nx * Ny);
+                int i = i_local + Ng;
+                int j = j_local + Ng;
+                int k = k_local + Ng;
+
+                // Lookup precomputed values
+                double env_x = env_x_ptr[i];
+                // Use cell-center y profile for w (approximate)
+                double g_y = (j > 0 && j < static_cast<int>(g_y_size) - 1) ?
+                             0.5 * (g_y_ptr[j] + g_y_ptr[j+1]) : 0.0;
+                double Fz = Fz_w_ptr[k];
+
+                // Compute trip forcing (same amplitude as v for balanced vortices)
+                double f_trip = trip_A * env_x * g_y * Fz;
+
+                // Add to w*
+                int w_idx = k * w_plane_stride_trip + j * w_stride_trip + i;
+                w_star_trip[w_idx] += dt * f_trip;
+            }
         }
     }
 
@@ -2837,10 +2932,15 @@ double RANSSolver::compute_adaptive_dt() const {
     [[maybe_unused]] const int Ny = mesh_->Ny;
     [[maybe_unused]] const int Ng = mesh_->Nghost;
     const double nu = config_.nu;
-    
+
 // Unified CPU/GPU path: compute CFL and diffusive constraints using raw pointers
     double u_max = 1e-10;
     double nu_eff_max = nu;
+    double v_dy_ratio_max = 1e-10;  // max(|v|/dy_local) for directional CFL_y
+
+    // Check if y is stretched and get dy values
+    const bool y_stretched = mesh_->is_y_stretched();
+    [[maybe_unused]] const double dy_uniform = mesh_->dy;
 
     [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
     [[maybe_unused]] const size_t v_total_size = velocity_.v_total_size();
@@ -2855,9 +2955,13 @@ double RANSSolver::compute_adaptive_dt() const {
         const double* u = velocity_u_ptr_;
         const double* v = velocity_v_ptr_;
         const double* nut = nu_t_ptr_;
+        const double* dyv = dyv_ptr_;
         const size_t n_u = u_total_size;
         const size_t n_v = v_total_size;
         const size_t n_f = field_total_size;
+        const size_t n_dyv = y_metrics_size_;
+        const bool y_str = y_stretched;
+        const double dy_unif = dy_uniform;
 
         // 2D: Compute max velocity magnitude (for advective CFL)
         #pragma omp target teams distribute parallel for \
@@ -2871,6 +2975,39 @@ double RANSSolver::compute_adaptive_dt() const {
                 double v_avg = 0.5 * (v[jj * v_stride + ii] + v[(jj + 1) * v_stride + ii]);
                 double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
                 if (u_mag > u_max) u_max = u_mag;
+            }
+        }
+
+        // 2D: Compute max|v|/dy_local for directional CFL_y (critical for stretched grids)
+        if (y_str && dyv != nullptr) {
+            #pragma omp target teams distribute parallel for \
+                map(present: v[0:n_v], dyv[0:n_dyv]) reduction(max:v_dy_ratio_max)
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + Ng;
+                    int jj = j + Ng;
+                    double v_face = fabs(v[jj * v_stride + ii]);  // v at south face
+                    double v_face_n = fabs(v[(jj + 1) * v_stride + ii]);  // v at north face
+                    double v_local = fmax(v_face, v_face_n);
+                    double dy_local = dyv[j];
+                    double ratio = v_local / dy_local;
+                    if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
+                }
+            }
+        } else {
+            // Uniform grid - use mesh_->dy
+            #pragma omp target teams distribute parallel for \
+                map(present: v[0:n_v]) reduction(max:v_dy_ratio_max)
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + Ng;
+                    int jj = j + Ng;
+                    double v_face = fabs(v[jj * v_stride + ii]);
+                    double v_face_n = fabs(v[(jj + 1) * v_stride + ii]);
+                    double v_local = fmax(v_face, v_face_n);
+                    double ratio = v_local / dy_unif;
+                    if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
+                }
             }
         }
 
@@ -2899,6 +3036,14 @@ double RANSSolver::compute_adaptive_dt() const {
                                       velocity_v_ptr_[(jj + 1) * v_stride + ii]);
                 double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
                 if (u_mag > u_max) u_max = u_mag;
+
+                // Compute |v|/dy_local for directional CFL_y
+                double v_face = std::fabs(velocity_v_ptr_[jj * v_stride + ii]);
+                double v_face_n = std::fabs(velocity_v_ptr_[(jj + 1) * v_stride + ii]);
+                double v_local = std::max(v_face, v_face_n);
+                double dy_local = y_stretched ? mesh_->dyv[j] : dy_uniform;
+                double ratio = v_local / dy_local;
+                if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
             }
         }
         if (turb_model_) {
@@ -2929,10 +3074,14 @@ double RANSSolver::compute_adaptive_dt() const {
         const double* v = velocity_v_ptr_;
         const double* w = velocity_w_ptr_;
         const double* nut = nu_t_ptr_;
+        const double* dyv = dyv_ptr_;
         const size_t n_u = u_total_size;
         const size_t n_v = v_total_size;
         const size_t n_w = w_total_size;
         const size_t n_f = field_total_size;
+        const size_t n_dyv = y_metrics_size_;
+        const bool y_str = y_stretched;
+        const double dy_unif = dy_uniform;
 
         // 3D: Compute max velocity magnitude (for advective CFL)
         #pragma omp target teams distribute parallel for collapse(3) \
@@ -2952,6 +3101,45 @@ double RANSSolver::compute_adaptive_dt() const {
                                           w[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
                     double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
                     if (u_mag > u_max) u_max = u_mag;
+                }
+            }
+        }
+
+        // 3D: Compute max|v|/dy_local for directional CFL_y (critical for stretched grids)
+        if (y_str && dyv != nullptr) {
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: v[0:n_v], dyv[0:n_dyv]) reduction(max:v_dy_ratio_max)
+            for (int k = 0; k < Nz; ++k) {
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ii = i + Ng;
+                        int jj = j + Ng;
+                        int kk = k + Ng;
+                        double v_face = fabs(v[kk * v_plane_stride + jj * v_stride + ii]);
+                        double v_face_n = fabs(v[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
+                        double v_local = fmax(v_face, v_face_n);
+                        double dy_local = dyv[j];
+                        double ratio = v_local / dy_local;
+                        if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
+                    }
+                }
+            }
+        } else {
+            // Uniform grid - use mesh_->dy
+            #pragma omp target teams distribute parallel for collapse(3) \
+                map(present: v[0:n_v]) reduction(max:v_dy_ratio_max)
+            for (int k = 0; k < Nz; ++k) {
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ii = i + Ng;
+                        int jj = j + Ng;
+                        int kk = k + Ng;
+                        double v_face = fabs(v[kk * v_plane_stride + jj * v_stride + ii]);
+                        double v_face_n = fabs(v[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
+                        double v_local = fmax(v_face, v_face_n);
+                        double ratio = v_local / dy_unif;
+                        if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
+                    }
                 }
             }
         }
@@ -2988,6 +3176,14 @@ double RANSSolver::compute_adaptive_dt() const {
                                           velocity_w_ptr_[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
                     double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
                     if (u_mag > u_max) u_max = u_mag;
+
+                    // Compute |v|/dy_local for directional CFL_y
+                    double v_face = std::fabs(velocity_v_ptr_[kk * v_plane_stride + jj * v_stride + ii]);
+                    double v_face_n = std::fabs(velocity_v_ptr_[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
+                    double v_local = std::max(v_face, v_face_n);
+                    double dy_local = y_stretched ? mesh_->dyv[j] : dy_uniform;
+                    double ratio = v_local / dy_local;
+                    if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
                 }
             }
         }
@@ -3009,15 +3205,29 @@ double RANSSolver::compute_adaptive_dt() const {
     }
 
     // Compute time step constraints (same for GPU and CPU)
-    double dx_min = mesh_->is2D() ? std::min(mesh_->dx, mesh_->dy)
-                                  : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
+    // IMPORTANT: For stretched grids, use actual dy_min, not the average mesh_->dy
+    double dy_eff = dy_uniform;
+    if (y_stretched && !mesh_->dyv.empty()) {
+        dy_eff = *std::min_element(mesh_->dyv.begin(), mesh_->dyv.end());
+    }
+    double dx_min = mesh_->is2D() ? std::min(mesh_->dx, dy_eff)
+                                  : std::min({mesh_->dx, dy_eff, mesh_->dz});
     double dt_cfl = config_.CFL_max * dx_min / u_max;
-    
+
+    // Directional CFL_y constraint: critical for stretched grids with small dy near walls
+    // Use conservative target with safety factor since dt is computed from previous step's velocity
+    // but the current step's predictor can significantly increase velocity (especially during trip)
+    double cfl_y_target = 0.3;  // Target CFL_y (less conservative now that dx_min uses dy_eff)
+    if (config_.trip_enabled && current_time_ < config_.trip_duration) {
+        cfl_y_target = 0.2;  // Stricter during trip forcing (turbulence transition)
+    }
+    double dt_cfl_y = cfl_y_target / v_dy_ratio_max;
+
     // Diffusive stability: dt < 0.25 * dx² / ν (hard limit from von Neumann analysis)
     // NOTE: Do NOT scale by CFL_max - this is a stability constant, not a tuning parameter
     double dt_diff = 0.25 * dx_min * dx_min / nu_eff_max;
-    
-    return std::min(dt_cfl, dt_diff);
+
+    return std::min({dt_cfl, dt_cfl_y, dt_diff});
 }
 
 
