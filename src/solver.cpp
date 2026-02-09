@@ -2934,9 +2934,12 @@ double RANSSolver::compute_adaptive_dt() const {
     const double nu = config_.nu;
 
 // Unified CPU/GPU path: compute CFL and diffusive constraints using raw pointers
-    double u_max = 1e-10;
+    // Use DIRECTIONAL max velocities for proper CFL in each direction
+    double u_abs_max = 1e-10;  // max|u| for CFL_x
+    double v_abs_max = 1e-10;  // max|v| for CFL_y (uniform grid)
+    double w_abs_max = 1e-10;  // max|w| for CFL_z
     double nu_eff_max = nu;
-    double v_dy_ratio_max = 1e-10;  // max(|v|/dy_local) for directional CFL_y
+    double v_dy_ratio_max = 1e-10;  // max(|v|/dy_local) for directional CFL_y on stretched grids
 
     // Check if y is stretched and get dy values
     const bool y_stretched = mesh_->is_y_stretched();
@@ -2963,18 +2966,24 @@ double RANSSolver::compute_adaptive_dt() const {
         const bool y_str = y_stretched;
         const double dy_unif = dy_uniform;
 
-        // 2D: Compute max velocity magnitude (for advective CFL)
+        // 2D: Compute DIRECTIONAL max velocities for proper CFL in each direction
+        // This avoids the overly conservative isotropic CFL that uses min(dx,dy) / velocity_magnitude
         #pragma omp target teams distribute parallel for \
-            map(present: u[0:n_u], v[0:n_v]) reduction(max:u_max)
+            map(present: u[0:n_u], v[0:n_v]) reduction(max:u_abs_max, v_abs_max)
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
                 int ii = i + Ng;
                 int jj = j + Ng;
-                // Interpolate u and v to cell center for staggered grid
-                double u_avg = 0.5 * (u[jj * u_stride + ii] + u[jj * u_stride + ii + 1]);
-                double v_avg = 0.5 * (v[jj * v_stride + ii] + v[(jj + 1) * v_stride + ii]);
-                double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
-                if (u_mag > u_max) u_max = u_mag;
+                // Compute max|u| at cell faces (for CFL_x constraint)
+                double u_face = fabs(u[jj * u_stride + ii]);
+                double u_face_e = fabs(u[jj * u_stride + ii + 1]);
+                double u_local = fmax(u_face, u_face_e);
+                if (u_local > u_abs_max) u_abs_max = u_local;
+                // Compute max|v| at cell faces (for CFL_y constraint)
+                double v_face = fabs(v[jj * v_stride + ii]);
+                double v_face_n = fabs(v[(jj + 1) * v_stride + ii]);
+                double v_local = fmax(v_face, v_face_n);
+                if (v_local > v_abs_max) v_abs_max = v_local;
             }
         }
 
@@ -3026,21 +3035,24 @@ double RANSSolver::compute_adaptive_dt() const {
             }
         }
 #else
+        // 2D CPU path: Compute DIRECTIONAL max velocities
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
                 int ii = i + Ng;
                 int jj = j + Ng;
-                double u_avg = 0.5 * (velocity_u_ptr_[jj * u_stride + ii] +
-                                      velocity_u_ptr_[jj * u_stride + ii + 1]);
-                double v_avg = 0.5 * (velocity_v_ptr_[jj * v_stride + ii] +
-                                      velocity_v_ptr_[(jj + 1) * v_stride + ii]);
-                double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
-                if (u_mag > u_max) u_max = u_mag;
+                // Compute max|u| at cell faces (for CFL_x)
+                double u_face = std::fabs(velocity_u_ptr_[jj * u_stride + ii]);
+                double u_face_e = std::fabs(velocity_u_ptr_[jj * u_stride + ii + 1]);
+                double u_local = std::max(u_face, u_face_e);
+                if (u_local > u_abs_max) u_abs_max = u_local;
 
-                // Compute |v|/dy_local for directional CFL_y
+                // Compute max|v| at cell faces (for CFL_y and v_dy_ratio)
                 double v_face = std::fabs(velocity_v_ptr_[jj * v_stride + ii]);
                 double v_face_n = std::fabs(velocity_v_ptr_[(jj + 1) * v_stride + ii]);
                 double v_local = std::max(v_face, v_face_n);
+                if (v_local > v_abs_max) v_abs_max = v_local;
+
+                // Compute |v|/dy_local for directional CFL_y on stretched grids
                 double dy_local = y_stretched ? mesh_->dyv[j] : dy_uniform;
                 double ratio = v_local / dy_local;
                 if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
@@ -3083,24 +3095,31 @@ double RANSSolver::compute_adaptive_dt() const {
         const bool y_str = y_stretched;
         const double dy_unif = dy_uniform;
 
-        // 3D: Compute max velocity magnitude (for advective CFL)
+        // 3D: Compute DIRECTIONAL max velocities for proper CFL in each direction
+        // This avoids the overly conservative isotropic CFL that uses min(dx,dy,dz) / velocity_magnitude
         #pragma omp target teams distribute parallel for collapse(3) \
-            map(present: u[0:n_u], v[0:n_v], w[0:n_w]) reduction(max:u_max)
+            map(present: u[0:n_u], v[0:n_v], w[0:n_w]) reduction(max:u_abs_max, v_abs_max, w_abs_max)
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int ii = i + Ng;
                     int jj = j + Ng;
                     int kk = k + Ng;
-                    // Interpolate u, v, w to cell center for staggered grid
-                    double u_avg = 0.5 * (u[kk * u_plane_stride + jj * u_stride + ii] +
-                                          u[kk * u_plane_stride + jj * u_stride + ii + 1]);
-                    double v_avg = 0.5 * (v[kk * v_plane_stride + jj * v_stride + ii] +
-                                          v[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
-                    double w_avg = 0.5 * (w[kk * w_plane_stride + jj * w_stride + ii] +
-                                          w[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
-                    double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
-                    if (u_mag > u_max) u_max = u_mag;
+                    // max|u| for CFL_x constraint
+                    double u_face = fabs(u[kk * u_plane_stride + jj * u_stride + ii]);
+                    double u_face_e = fabs(u[kk * u_plane_stride + jj * u_stride + ii + 1]);
+                    double u_local = fmax(u_face, u_face_e);
+                    if (u_local > u_abs_max) u_abs_max = u_local;
+                    // max|v| for CFL_y constraint
+                    double v_face = fabs(v[kk * v_plane_stride + jj * v_stride + ii]);
+                    double v_face_n = fabs(v[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
+                    double v_local = fmax(v_face, v_face_n);
+                    if (v_local > v_abs_max) v_abs_max = v_local;
+                    // max|w| for CFL_z constraint
+                    double w_face = fabs(w[kk * w_plane_stride + jj * w_stride + ii]);
+                    double w_face_t = fabs(w[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
+                    double w_local = fmax(w_face, w_face_t);
+                    if (w_local > w_abs_max) w_abs_max = w_local;
                 }
             }
         }
@@ -3162,25 +3181,32 @@ double RANSSolver::compute_adaptive_dt() const {
             }
         }
 #else
+        // 3D CPU path: Compute DIRECTIONAL max velocities
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int ii = i + Ng;
                     int jj = j + Ng;
                     int kk = k + Ng;
-                    double u_avg = 0.5 * (velocity_u_ptr_[kk * u_plane_stride + jj * u_stride + ii] +
-                                          velocity_u_ptr_[kk * u_plane_stride + jj * u_stride + ii + 1]);
-                    double v_avg = 0.5 * (velocity_v_ptr_[kk * v_plane_stride + jj * v_stride + ii] +
-                                          velocity_v_ptr_[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
-                    double w_avg = 0.5 * (velocity_w_ptr_[kk * w_plane_stride + jj * w_stride + ii] +
-                                          velocity_w_ptr_[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
-                    double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
-                    if (u_mag > u_max) u_max = u_mag;
+                    // max|u| for CFL_x constraint
+                    double u_face = std::fabs(velocity_u_ptr_[kk * u_plane_stride + jj * u_stride + ii]);
+                    double u_face_e = std::fabs(velocity_u_ptr_[kk * u_plane_stride + jj * u_stride + ii + 1]);
+                    double u_local = std::max(u_face, u_face_e);
+                    if (u_local > u_abs_max) u_abs_max = u_local;
 
-                    // Compute |v|/dy_local for directional CFL_y
+                    // max|v| for CFL_y constraint and v_dy_ratio
                     double v_face = std::fabs(velocity_v_ptr_[kk * v_plane_stride + jj * v_stride + ii]);
                     double v_face_n = std::fabs(velocity_v_ptr_[kk * v_plane_stride + (jj + 1) * v_stride + ii]);
                     double v_local = std::max(v_face, v_face_n);
+                    if (v_local > v_abs_max) v_abs_max = v_local;
+
+                    // max|w| for CFL_z constraint
+                    double w_face = std::fabs(velocity_w_ptr_[kk * w_plane_stride + jj * w_stride + ii]);
+                    double w_face_t = std::fabs(velocity_w_ptr_[(kk + 1) * w_plane_stride + jj * w_stride + ii]);
+                    double w_local = std::max(w_face, w_face_t);
+                    if (w_local > w_abs_max) w_abs_max = w_local;
+
+                    // v_dy_ratio for directional CFL_y on stretched grids
                     double dy_local = y_stretched ? mesh_->dyv[j] : dy_uniform;
                     double ratio = v_local / dy_local;
                     if (ratio > v_dy_ratio_max) v_dy_ratio_max = ratio;
@@ -3204,30 +3230,56 @@ double RANSSolver::compute_adaptive_dt() const {
 #endif
     }
 
-    // Compute time step constraints (same for GPU and CPU)
-    // IMPORTANT: For stretched grids, use actual dy_min, not the average mesh_->dy
+    // Compute DIRECTIONAL time step constraints (same for GPU and CPU)
+    // Key insight: streamwise velocity u acts in x-direction (dx~0.2), not y-direction (dy_min~0.005)
+    // Using isotropic CFL with min(dx,dy,dz) / velocity_magnitude is overly conservative
+
+    // Compute effective dy for stretched grids
     double dy_eff = dy_uniform;
     if (y_stretched && !mesh_->dyv.empty()) {
         dy_eff = *std::min_element(mesh_->dyv.begin(), mesh_->dyv.end());
     }
-    double dx_min = mesh_->is2D() ? std::min(mesh_->dx, dy_eff)
-                                  : std::min({mesh_->dx, dy_eff, mesh_->dz});
-    double dt_cfl = config_.CFL_max * dx_min / u_max;
 
-    // Directional CFL_y constraint: critical for stretched grids with small dy near walls
-    // Use conservative target with safety factor since dt is computed from previous step's velocity
-    // but the current step's predictor can significantly increase velocity (especially during trip)
-    double cfl_y_target = 0.3;  // Target CFL_y (less conservative now that dx_min uses dy_eff)
+    // Directional CFL constraints: each velocity component constrained by its corresponding grid spacing
+    double dt_cfl_x = config_.CFL_max * mesh_->dx / u_abs_max;
+
+    // CFL_y for stretched grids: use v_dy_ratio_max = max(|v|/dy_local) which handles variable spacing
+    // For uniform grids, fall back to simple v_abs_max / dy
+    double cfl_y_target = config_.CFL_max;  // Use same CFL for all directions now
     if (config_.trip_enabled && current_time_ < config_.trip_duration) {
-        cfl_y_target = 0.2;  // Stricter during trip forcing (turbulence transition)
+        cfl_y_target = 0.3;  // Stricter during trip forcing (turbulence transition)
     }
     double dt_cfl_y = cfl_y_target / v_dy_ratio_max;
 
+    // CFL_z for 3D cases
+    double dt_cfl_z = mesh_->is2D() ? 1e10 : config_.CFL_max * mesh_->dz / w_abs_max;
+
     // Diffusive stability: dt < 0.25 * dx² / ν (hard limit from von Neumann analysis)
-    // NOTE: Do NOT scale by CFL_max - this is a stability constant, not a tuning parameter
+    // Use minimum grid spacing for diffusive constraint since diffusion acts in all directions
+    double dx_min = mesh_->is2D() ? std::min(mesh_->dx, dy_eff)
+                                  : std::min({mesh_->dx, dy_eff, mesh_->dz});
     double dt_diff = 0.25 * dx_min * dx_min / nu_eff_max;
 
-    return std::min({dt_cfl, dt_cfl_y, dt_diff});
+    // Take minimum of all directional constraints
+    double dt_new = std::min({dt_cfl_x, dt_cfl_y, dt_cfl_z, dt_diff});
+
+    // Debug output for adaptive dt diagnostics (only during trip or if dt is very small)
+    if ((config_.trip_enabled && current_time_ < config_.trip_duration) || dt_new < 1e-5) {
+        static int debug_counter = 0;
+        if (debug_counter++ % 10 == 0) {  // Print every 10th call
+            std::cerr << "[DT_DEBUG] dy_eff=" << dy_eff
+                      << " dx=" << mesh_->dx
+                      << " u_max=" << u_abs_max
+                      << " v_max=" << v_abs_max
+                      << " v_dy_max=" << v_dy_ratio_max
+                      << " dt_cfl_x=" << dt_cfl_x
+                      << " dt_cfl_y=" << dt_cfl_y
+                      << " dt_diff=" << dt_diff
+                      << " dt=" << dt_new << "\n";
+        }
+    }
+
+    return dt_new;
 }
 
 
