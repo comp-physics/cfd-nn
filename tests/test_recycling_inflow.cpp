@@ -101,8 +101,9 @@ void fill_sinusoidal_pattern(VectorField& vel, const Mesh& mesh) {
             int jg = j + Ng;
             for (int i = 0; i <= Nx; ++i) {
                 int ig = i + Ng;
-                // u = sin(2*pi*k/Nz) * (1 + 0.1*j/Ny)
-                vel.u(ig, jg, kg) = std::sin(2.0 * M_PI * k / Nz) * (1.0 + 0.1 * j / Ny);
+                // u = 1.0 + 0.3*sin(2*pi*k/Nz) * (1 + 0.1*j/Ny)
+                // Positive mean ensures mass flux correction doesn't corrupt the shift test
+                vel.u(ig, jg, kg) = 1.0 + 0.3 * std::sin(2.0 * M_PI * k / Nz) * (1.0 + 0.1 * j / Ny);
             }
         }
     }
@@ -183,14 +184,19 @@ bool test_shift_correctness() {
     solver.process_recycle_inflow();
     solver.apply_recycling_inlet_bc();
 
-    // Check: inlet should equal shifted recycle plane (approximately)
+    // Check: ghost cell at inlet should equal shifted recycle plane.
+    // apply_recycling_inlet_bc() does NOT set u at the inlet face (i=Ng) —
+    // it deliberately leaves that for correct_inlet_divergence() / projection.
+    // The recycled u values are written to ghost cells (i < Ng) only.
+    // With auto-calibrated target_bulk_u and no filter, the shift should be exact.
     double max_error = 0.0;
     const VectorField& result = solver.velocity();
+    const int i_ghost = Ng - 1;  // Innermost ghost cell where recycled u is written
     for (int k = 0; k < Nz; ++k) {
         int k_src = (k + shift_k) % Nz;
-        for (int j = 0; j < Ny; ++j) {
+        for (int j = 1; j < Ny - 1; ++j) {
             double u_recycle = vel.u(i_recycle, j + Ng, k_src + Ng);
-            double u_inlet = result.u(Ng, j + Ng, k + Ng);
+            double u_inlet = result.u(i_ghost, j + Ng, k + Ng);
             double error = std::abs(u_inlet - u_recycle);
             max_error = std::max(max_error, error);
         }
@@ -198,8 +204,8 @@ bool test_shift_correctness() {
 
     std::cout << "  Max shift error: " << std::scientific << max_error << "\n";
 
-    // With mass flux correction (target = initial mean), allow some tolerance
-    bool pass = (max_error < 0.15);
+    // Shift should be exact (no filter, auto-calibrated mass flux target = 1.0 scale)
+    bool pass = (max_error < 1e-10);
     std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n";
     return pass;
 }
