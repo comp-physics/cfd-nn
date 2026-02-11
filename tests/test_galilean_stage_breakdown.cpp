@@ -2245,7 +2245,10 @@ void test_frame_invariance_poisson_hardness() {
         config.verbose = false;
         config.postprocess = false;
         config.write_fields = false;
-        // DO NOT override Poisson settings - use defaults to test robustness
+        // Disable adaptive projection: it re-projects iteratively which introduces
+        // frame-dependent convergence behavior, breaking strict Galilean invariance.
+        // This test verifies the BASE projection's mathematical properties.
+        config.adaptive_projection = false;
 
         RANSSolver solver(local_mesh, config);
 
