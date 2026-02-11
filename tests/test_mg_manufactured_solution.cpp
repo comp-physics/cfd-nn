@@ -564,8 +564,8 @@ void apply_neumann_ghosts_y_3d(const Mesh& mesh, ScalarField& phi) {
 void test_stretched_3d_channel() {
     std::cout << "\n--- 3D Stretched Grid, Channel BCs (Periodic x/z, Neumann y) ---\n\n";
 
-    const int Nx = 32, Ny = 32, Nz = 16;
-    const double Lx = 2*M_PI, Lz = M_PI;
+    const int Nx = 32, Ny = 32, Nz = 32;
+    const double Lx = 2*M_PI, Lz = 2*M_PI;
     const double y_lo = -1.0, y_hi = 1.0;
     const double Ly = y_hi - y_lo;
     const double beta = 2.0;
