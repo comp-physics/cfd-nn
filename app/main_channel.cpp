@@ -459,7 +459,17 @@ int main(int argc, char** argv) {
         const int stats_start_step = config.max_steps / 2;
         bool stats_active = false;
 
+        // Transition health monitoring interval (every ~5% of run or 100 steps, whichever is larger)
+        const int health_interval = std::max(100, config.max_steps / 20);
+
         for (int step = 1; step <= config.max_steps; ++step) {
+            // Apply explicit velocity filter BEFORE the step so projection cleans up
+            // any divergence introduced by the independent-component Laplacian smoothing
+            if (config.filter_interval > 0 && config.filter_strength > 0 &&
+                step % config.filter_interval == 0) {
+                solver.apply_velocity_filter(config.filter_strength);
+            }
+
             if (config.adaptive_dt) {
                 solver.set_dt(solver.compute_adaptive_dt());
             }
@@ -498,6 +508,49 @@ int main(int argc, char** argv) {
             if (std::isnan(residual) || std::isinf(residual)) {
                 std::cerr << "ERROR: Solver diverged at step " << step << "\n";
                 return 1;
+            }
+
+            // Projection safety latch: halve dt if divergence or velocity is dangerously high
+            if (config.adaptive_dt) {
+                bool safety_triggered = false;
+                if (max_div > 1e-2) {
+                    std::cerr << "[SAFETY-DIV] step=" << step << " max|div u|=" << max_div
+                              << " > 1e-2\n";
+                    safety_triggered = true;
+                }
+                // Velocity magnitude safety: v_max > 50 in physical units is non-physical
+                // for Re_tau~180 channel (expected peak v_max+ ~ 5-10)
+                double v_max_phys = solver.diag_v_max();
+                if (v_max_phys > 50.0) {
+                    std::cerr << "[SAFETY-VEL] step=" << step << " v_max=" << v_max_phys
+                              << " > 50, energy pileup detected\n";
+                    safety_triggered = true;
+                }
+                if (safety_triggered) {
+                    double old_dt = solver.current_dt();
+                    solver.set_dt(old_dt * 0.5);
+                    std::cerr << "[SAFETY] halving dt: " << old_dt << " -> " << old_dt * 0.5 << "\n";
+                }
+            }
+
+            // Transition health monitoring: one-line summary every health_interval steps
+            if (step % health_interval == 0) {
+                double v_u_ratio = (solver.diag_u_max() > 0) ? solver.diag_v_max() / solver.diag_u_max() : 0;
+                double w_v_ratio = (solver.diag_v_max() > 1e-10) ? solver.diag_w_max() / solver.diag_v_max() : 0;
+                const char* state = (solver.diag_v_max() < 0.01) ? "LAMINAR" :
+                                    (v_u_ratio > 0.15) ? "TURBULENT" : "TRANSITIONAL";
+                double trip_ramp = solver.is_trip_active() ? solver.get_trip_time_ramp() : 0.0;
+                double re_tau = solver.Re_tau();
+                double u_b = solver.bulk_velocity();
+                std::cout << "    [HEALTH] step=" << step
+                          << " Re_tau=" << std::fixed << std::setprecision(1) << re_tau
+                          << " U_b=" << std::setprecision(1) << u_b
+                          << " v_max=" << std::scientific << std::setprecision(2) << solver.diag_v_max()
+                          << " w/v=" << std::fixed << std::setprecision(3) << w_v_ratio
+                          << " v/u=" << v_u_ratio
+                          << " dt=" << std::scientific << std::setprecision(2) << solver.current_dt()
+                          << " ramp=" << std::fixed << std::setprecision(2) << trip_ramp
+                          << " " << state << std::fixed << "\n" << std::flush;
             }
 
             // Start statistics accumulation at halfway point

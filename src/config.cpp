@@ -163,6 +163,10 @@ void Config::load(const std::string& filename) {
     // Time stepping
     dt = get_double("dt", dt);
     CFL_max = get_double("CFL_max", CFL_max);
+    CFL_xz = get_double("CFL_xz", CFL_xz);
+    dt_safety = get_double("dt_safety", dt_safety);
+    filter_strength = get_double("filter_strength", filter_strength);
+    filter_interval = get_int("filter_interval", filter_interval);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
     max_steps = get_int("max_steps", max_steps);
     T_final = get_double("T_final", T_final);
@@ -284,6 +288,7 @@ void Config::load(const std::string& filename) {
     trip_ramp_off_start = get_double("trip_ramp_off_start", trip_ramp_off_start);
     trip_n_modes_z = get_int("trip_n_modes_z", trip_n_modes_z);
     trip_force_w = get_bool("trip_force_w", trip_force_w);
+    trip_w_scale = get_double("trip_w_scale", trip_w_scale);
 
     // Recycling inflow parameters
     recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
@@ -462,6 +467,8 @@ void Config::parse_args(int argc, char** argv) {
             stretch_y = true;
         } else if (is_flag(arg, "--adaptive_dt")) {
             adaptive_dt = true;
+        } else if ((val = get_value(i, arg, "--CFL_xz")) != "") {
+            CFL_xz = std::stod(val);
         } else if ((val = get_value(i, arg, "--CFL")) != "") {
             CFL_max = std::stod(val);
         } else if ((val = get_value(i, arg, "--scheme")) != "") {

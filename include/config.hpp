@@ -86,7 +86,11 @@ struct Config {
     
     // Time stepping
     double dt = 0.001;          ///< Time step
-    double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt
+    double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt (used for y-direction)
+    double CFL_xz = -1.0;      ///< CFL for x/z directions (-1 = use CFL_max)
+    double dt_safety = 1.0;    ///< Safety factor for adaptive dt (0.5-1.0, applied after CFL)
+    double filter_strength = 0.0;  ///< Explicit velocity filter strength (0=off, 0.01-0.05 typical)
+    int filter_interval = 10;      ///< Apply filter every N steps (0=off)
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
     int max_steps = 10000;      ///< Maximum time steps for simulation
     double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_steps)
@@ -193,6 +197,7 @@ struct Config {
     double trip_ramp_off_start = 1.5;       ///< Start of ramp-off phase (t*)
     int trip_n_modes_z = 8;                 ///< Number of spanwise modes in trip forcing
     bool trip_force_w = true;               ///< Also force w* (creates vortical structures)
+    double trip_w_scale = 1.0;              ///< Scale factor for w trip forcing (>1 boosts 3D structures)
 
     // Recycling inflow (turbulent inlet BC for DNS/LES)
     bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo

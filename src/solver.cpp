@@ -722,22 +722,28 @@ void RANSSolver::initialize_trip_forcing() {
     }
 
     // Precompute z-modes for v (sine) and w (cosine, phase-shifted)
+    // Weight modes by 1/(m+1) to bias energy toward large-scale structures (low-k)
     if (is_3d) {
         const int n_modes = config_.trip_n_modes_z;
 
-        // For v*: sum of sines at cell centers
+        // Compute normalization sum for 1/(m+1) weighting
+        double weight_sum = 0.0;
+        for (int m = 0; m < n_modes; ++m) weight_sum += 1.0 / (m + 1);
+
+        // For v*: sum of weighted sines at cell centers
         trip_Fz_v_.resize(mesh_->total_Nz(), 0.0);
         for (int k = 0; k < mesh_->total_Nz(); ++k) {
             double z = mesh_->zc[k];
             double sum = 0.0;
             for (int m = 0; m < n_modes; ++m) {
                 double kz = 2.0 * M_PI * (m + 1) / Lz;
-                sum += std::sin(kz * z + trip_phases_[m]);
+                double w_m = (1.0 / (m + 1)) / weight_sum;  // Normalized weight
+                sum += w_m * std::sin(kz * z + trip_phases_[m]);
             }
-            trip_Fz_v_[k] = sum / n_modes;
+            trip_Fz_v_[k] = sum;
         }
 
-        // For w*: sum of cosines (phase-shifted) at z-faces for vortical structures
+        // For w*: sum of weighted cosines (phase-shifted) at z-faces for vortical structures
         trip_Fz_w_.resize(mesh_->total_Nz() + 1, 0.0);
         for (int k = 0; k < static_cast<int>(trip_Fz_w_.size()); ++k) {
             if (k < static_cast<int>(mesh_->zf.size())) {
@@ -745,10 +751,11 @@ void RANSSolver::initialize_trip_forcing() {
                 double sum = 0.0;
                 for (int m = 0; m < n_modes; ++m) {
                     double kz = 2.0 * M_PI * (m + 1) / Lz;
+                    double w_m = (1.0 / (m + 1)) / weight_sum;
                     // Use cosine (π/2 phase shift from v) for vortical coupling
-                    sum += std::cos(kz * z + trip_phases_[m]);
+                    sum += w_m * std::cos(kz * z + trip_phases_[m]);
                 }
-                trip_Fz_w_[k] = sum / n_modes;
+                trip_Fz_w_[k] = sum;
             }
         }
     } else {
@@ -1535,13 +1542,14 @@ double RANSSolver::step() {
             const int w_plane_stride_trip = v.w_plane_stride;
             double* w_star_trip = v.w_star_face;
             [[maybe_unused]] const size_t w_total_trip = velocity_.w_total_size();
+            const double trip_A_w = trip_A * config_.trip_w_scale;  // Boosted w forcing
 
             const int n_w_trip = Nx * Ny * (Nz + 1);
 
             #pragma omp target teams distribute parallel for \
                 map(present: w_star_trip[0:w_total_trip], \
                             env_x_ptr[0:env_x_size], g_y_ptr[0:g_y_size], Fz_w_ptr[0:Fz_w_size]) \
-                firstprivate(trip_A, dt, w_stride_trip, w_plane_stride_trip, Nx, Ny, Nz, Ng)
+                firstprivate(trip_A_w, dt, w_stride_trip, w_plane_stride_trip, Nx, Ny, Nz, Ng)
             for (int idx = 0; idx < n_w_trip; ++idx) {
                 int i_local = idx % Nx;
                 int j_local = (idx / Nx) % Ny;
@@ -1557,8 +1565,8 @@ double RANSSolver::step() {
                              0.5 * (g_y_ptr[j] + g_y_ptr[j+1]) : 0.0;
                 double Fz = Fz_w_ptr[k];
 
-                // Compute trip forcing (same amplitude as v for balanced vortices)
-                double f_trip = trip_A * env_x * g_y * Fz;
+                // Compute trip forcing (scaled amplitude for 3D vortical structures)
+                double f_trip = trip_A_w * env_x * g_y * Fz;
 
                 // Add to w*
                 int w_idx = k * w_plane_stride_trip + j * w_stride_trip + i;
@@ -3240,19 +3248,19 @@ double RANSSolver::compute_adaptive_dt() const {
         dy_eff = *std::min_element(mesh_->dyv.begin(), mesh_->dyv.end());
     }
 
+    // Split CFL: CFL_xz for streamwise/spanwise (large spacings), CFL_max for wall-normal (small spacing)
+    double cfl_xz = (config_.CFL_xz > 0) ? config_.CFL_xz : config_.CFL_max;
+
     // Directional CFL constraints: each velocity component constrained by its corresponding grid spacing
-    double dt_cfl_x = config_.CFL_max * mesh_->dx / u_abs_max;
+    double dt_cfl_x = cfl_xz * mesh_->dx / u_abs_max;
 
     // CFL_y for stretched grids: use v_dy_ratio_max = max(|v|/dy_local) which handles variable spacing
-    // For uniform grids, fall back to simple v_abs_max / dy
-    double cfl_y_target = config_.CFL_max;  // Use same CFL for all directions now
-    if (config_.trip_enabled && current_time_ < config_.trip_duration) {
-        cfl_y_target = 0.3;  // Stricter during trip forcing (turbulence transition)
-    }
+    // Always use CFL_max for y — no relaxation during trip (wall-normal needs strict CFL)
+    double cfl_y_target = config_.CFL_max;
     double dt_cfl_y = cfl_y_target / v_dy_ratio_max;
 
     // CFL_z for 3D cases
-    double dt_cfl_z = mesh_->is2D() ? 1e10 : config_.CFL_max * mesh_->dz / w_abs_max;
+    double dt_cfl_z = mesh_->is2D() ? 1e10 : cfl_xz * mesh_->dz / w_abs_max;
 
     // Diffusive stability: dt < 0.25 * dx² / ν (hard limit from von Neumann analysis)
     // Use minimum grid spacing for diffusive constraint since diffusion acts in all directions
@@ -3260,8 +3268,14 @@ double RANSSolver::compute_adaptive_dt() const {
                                   : std::min({mesh_->dx, dy_eff, mesh_->dz});
     double dt_diff = 0.25 * dx_min * dx_min / nu_eff_max;
 
-    // Take minimum of all directional constraints
-    double dt_new = std::min({dt_cfl_x, dt_cfl_y, dt_cfl_z, dt_diff});
+    // Take minimum of all directional constraints, apply safety factor
+    double dt_new = config_.dt_safety * std::min({dt_cfl_x, dt_cfl_y, dt_cfl_z, dt_diff});
+
+    // Store diagnostic values for health monitoring
+    diag_u_max_ = u_abs_max;
+    diag_v_max_ = v_abs_max;
+    diag_w_max_ = w_abs_max;
+    diag_v_dy_max_ = v_dy_ratio_max;
 
     // Debug output for adaptive dt diagnostics (only during trip or if dt is very small)
     if ((config_.trip_enabled && current_time_ < config_.trip_duration) || dt_new < 1e-5) {
@@ -3582,6 +3596,105 @@ void RANSSolver::sync_to_gpu() {
         #pragma omp target update to(k_ptr_[0:field_total_size_])
         #pragma omp target update to(omega_ptr_[0:field_total_size_])
     }
+}
+
+void RANSSolver::apply_velocity_filter(double strength) {
+    // Explicit Laplacian filter in x, y, and z
+    // u_new = u + alpha * (Lx + Ly + Lz)  where L = second-difference stencil
+    // y-direction uses reduced coefficient (alpha_y = alpha/2) to respect stretched grid
+    // v-component: skip wall faces (j=Ng and j=Ny+Ng where v=0)
+    // u/w: skip wall-adjacent cells (j=Ng and j=Ny+Ng-1) to avoid asymmetric stencil
+    if (strength <= 0.0) return;
+
+    const double alpha = strength * 0.25;    // x/z filter coefficient
+    const double alpha_y = alpha * 0.5;      // y filter coefficient (reduced for stretched grid)
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Nz = mesh_->Nz;
+    const int Ng = mesh_->Nghost;
+    const bool is_3d = !mesh_->is2D();
+
+#ifdef USE_GPU_OFFLOAD
+    if (gpu_ready_) {
+        auto v = get_solver_view();
+        double* u_ptr = v.u_face;
+        double* v_ptr = v.v_face;
+        const int u_stride = v.u_stride;
+        const int v_stride_val = v.v_stride;
+        [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
+        [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
+
+        if (is_3d) {
+            double* w_ptr = v.w_face;
+            const int u_ps = v.u_plane_stride;
+            const int v_ps = v.v_plane_stride;
+            const int w_stride_val = v.w_stride;
+            const int w_ps = v.w_plane_stride;
+            [[maybe_unused]] const size_t w_total = velocity_.w_total_size();
+
+            // Filter u in x, y (interior only), and z
+            // u is cell-centered in y: skip j=Ng and j=Ny+Ng-1 (wall-adjacent)
+            const int n_u = (Nx + 1) * Ny * Nz;
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total]) \
+                firstprivate(alpha, alpha_y, u_stride, u_ps, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_u; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+                int c = k * u_ps + j * u_stride + i;
+                double Lx = u_ptr[c - 1] - 2.0 * u_ptr[c] + u_ptr[c + 1];
+                double Lz = u_ptr[c - u_ps] - 2.0 * u_ptr[c] + u_ptr[c + u_ps];
+                double Ly = 0.0;
+                if (j > Ng && j < Ny + Ng - 1) {
+                    Ly = u_ptr[c - u_stride] - 2.0 * u_ptr[c] + u_ptr[c + u_stride];
+                }
+                u_ptr[c] += alpha * (Lx + Lz) + alpha_y * Ly;
+            }
+
+            // Filter v in x, y (interior faces only), and z
+            // v is face-centered in y: wall faces at j=Ng and j=Ny+Ng are v=0, skip them
+            // Interior faces: j = Ng+1 to Ny+Ng-1
+            const int n_v = Nx * (Ny + 1) * Nz;
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total]) \
+                firstprivate(alpha, alpha_y, v_stride_val, v_ps, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_v; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+                int c = k * v_ps + j * v_stride_val + i;
+                double Lx = v_ptr[c - 1] - 2.0 * v_ptr[c] + v_ptr[c + 1];
+                double Lz = v_ptr[c - v_ps] - 2.0 * v_ptr[c] + v_ptr[c + v_ps];
+                double Ly = 0.0;
+                if (j > Ng && j < Ny + Ng) {
+                    Ly = v_ptr[c - v_stride_val] - 2.0 * v_ptr[c] + v_ptr[c + v_stride_val];
+                }
+                v_ptr[c] += alpha * (Lx + Lz) + alpha_y * Ly;
+            }
+
+            // Filter w in x, y (interior only), and z
+            // w is cell-centered in y: skip j=Ng and j=Ny+Ng-1 (wall-adjacent)
+            const int n_w = Nx * Ny * (Nz + 1);
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total]) \
+                firstprivate(alpha, alpha_y, w_stride_val, w_ps, Nx, Ny, Nz, Ng)
+            for (int idx = 0; idx < n_w; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+                int c = k * w_ps + j * w_stride_val + i;
+                double Lx = w_ptr[c - 1] - 2.0 * w_ptr[c] + w_ptr[c + 1];
+                double Lz = w_ptr[c - w_ps] - 2.0 * w_ptr[c] + w_ptr[c + w_ps];
+                double Ly = 0.0;
+                if (j > Ng && j < Ny + Ng - 1) {
+                    Ly = w_ptr[c - w_stride_val] - 2.0 * w_ptr[c] + w_ptr[c + w_stride_val];
+                }
+                w_ptr[c] += alpha * (Lx + Lz) + alpha_y * Ly;
+            }
+        }
+    }
+#endif
 }
 
 void RANSSolver::sync_from_gpu() {

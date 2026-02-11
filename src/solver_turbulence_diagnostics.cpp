@@ -204,6 +204,12 @@ void RANSSolver::reset_statistics() {
 }
 
 void RANSSolver::accumulate_statistics() {
+    // Sync velocity data from GPU to CPU before computing statistics
+    // Without this, CPU reads stale initial-condition data (Poiseuille)
+    if (gpu_ready_) {
+        sync_solution_from_gpu();
+    }
+
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Nz = mesh_->Nz;
@@ -626,6 +632,9 @@ RANSSolver::TurbulenceRealismReport RANSSolver::validate_turbulence_realism() co
     report.resolution_ok = report.resolution.passes_resolution_gates();
     report.utau_consistency_ok = report.resolution.passes_utau_consistency(0.02);
 
+    // Turbulence presence indicators
+    report.presence = compute_turbulence_presence();
+
     // Momentum balance
     report.momentum_balance = compute_momentum_balance();
     double u_tau = report.resolution.u_tau_force;
@@ -647,6 +656,9 @@ RANSSolver::TurbulenceRealismReport RANSSolver::validate_turbulence_realism() co
     } else {
         report.spectrum_ok = true;  // Skip for 2D
     }
+
+    // Turbulence presence check
+    report.turbulence_present_ok = report.presence.is_turbulent_or_transitional();
 
     return report;
 }

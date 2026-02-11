@@ -219,6 +219,12 @@ public:
     /// Compute friction Reynolds number Re_tau
     double Re_tau() const;
 
+    /// Diagnostic velocity maxima from latest compute_adaptive_dt()
+    double diag_u_max() const { return diag_u_max_; }
+    double diag_v_max() const { return diag_v_max_; }
+    double diag_w_max() const { return diag_w_max_; }
+    double diag_v_dy_max() const { return diag_v_dy_max_; }
+
     /// Flow-through time based on bulk velocity: t* = t * U_b / δ
     /// Measures how many channel lengths the bulk flow has traveled
     double flow_through_time_bulk() const;
@@ -226,6 +232,10 @@ public:
     /// Flow-through time based on friction velocity: t+ = t * u_τ / δ
     /// Measures time in wall units (more relevant for turbulence development)
     double flow_through_time_friction() const;
+
+    /// Apply explicit high-wavenumber filter to velocity field (grid-scale dissipation)
+    /// strength in [0,1]: 0=no filter, 1=full Laplacian smoothing
+    void apply_velocity_filter(double strength);
 
     /// Compute convective KE production rate: <u, conv(u)>
     /// Returns the rate of KE change due to advection (should be ~0 for skew-symmetric form)
@@ -1029,6 +1039,12 @@ private:
     // Scratch buffer for sync_from_gpu workaround (NVHPC member pointer requirement)
     mutable std::vector<double> sync_scratch_;
     mutable double* sync_scratch_ptr_ = nullptr;
+
+    // Diagnostic values from last compute_adaptive_dt() call (for health monitoring)
+    mutable double diag_u_max_ = 0.0;
+    mutable double diag_v_max_ = 0.0;
+    mutable double diag_w_max_ = 0.0;
+    mutable double diag_v_dy_max_ = 0.0;
 
     void extract_field_pointers();  // Set raw pointers to field data (shared by CPU/GPU paths)
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)

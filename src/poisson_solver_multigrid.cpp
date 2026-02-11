@@ -2816,14 +2816,66 @@ void MultigridPoissonSolver::solve_coarse_pcg(int max_iters, double tol) {
 #endif
 
         if (std::abs(pAp) < 1e-30) {
-            // PCG breakdown - p is in null space or near-singular
-            static bool pcg_warn_printed = false;
-            if (!pcg_warn_printed) {
-                std::cerr << "[PCG BREAKDOWN] pAp=" << pAp << " < 1e-30 at iter " << iter
-                          << " (rho=" << rho << "). Solver may not converge.\n";
-                pcg_warn_printed = true;
+            // PCG breakdown - restart with p = z (preconditioned residual)
+            // Re-precondition current residual and reset search direction
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for is_device_ptr(u_ptr, r_ptr)
+            for (size_t ii = 0; ii < total_size; ++ii) u_ptr[ii] = r_ptr[ii];
+#else
+            for (size_t ii = 0; ii < total_size; ++ii) u_ptr[ii] = r_ptr[ii];
+#endif
+            apply_bc(coarsest);
+            smooth_y_lines(coarsest, 2);
+            // Project nullspace from preconditioned residual
+            if (needs_nullspace_projection) {
+                double z_sum2 = 0.0;
+#ifdef USE_GPU_OFFLOAD
+                #pragma omp target teams distribute parallel for collapse(3) reduction(+:z_sum2) is_device_ptr(u_ptr)
+                for (int kk = Ng; kk < Nz + Ng; ++kk)
+                    for (int jj = Ng; jj < Ny + Ng; ++jj)
+                        for (int ii = Ng; ii < Nx + Ng; ++ii)
+                            z_sum2 += u_ptr[kk * plane_stride + jj * stride + ii];
+#else
+                for (int kk = Ng; kk < Nz + Ng; ++kk)
+                    for (int jj = Ng; jj < Ny + Ng; ++jj)
+                        for (int ii = Ng; ii < Nx + Ng; ++ii)
+                            z_sum2 += u_ptr[kk * plane_stride + jj * stride + ii];
+#endif
+                double z_mean2 = z_sum2 / n_interior;
+#ifdef USE_GPU_OFFLOAD
+                #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(u_ptr) firstprivate(z_mean2)
+                for (int kk = Ng; kk < Nz + Ng; ++kk)
+                    for (int jj = Ng; jj < Ny + Ng; ++jj)
+                        for (int ii = Ng; ii < Nx + Ng; ++ii)
+                            u_ptr[kk * plane_stride + jj * stride + ii] -= z_mean2;
+#else
+                for (int kk = Ng; kk < Nz + Ng; ++kk)
+                    for (int jj = Ng; jj < Ny + Ng; ++jj)
+                        for (int ii = Ng; ii < Nx + Ng; ++ii)
+                            u_ptr[kk * plane_stride + jj * stride + ii] -= z_mean2;
+#endif
             }
-            break;
+            // Reset z = u, p = z, rho = r^T z
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for is_device_ptr(z, p, u_ptr)
+            for (size_t ii = 0; ii < total_size; ++ii) { z[ii] = u_ptr[ii]; p[ii] = u_ptr[ii]; }
+#else
+            for (size_t ii = 0; ii < total_size; ++ii) { z[ii] = u_ptr[ii]; p[ii] = u_ptr[ii]; }
+#endif
+            rho = 0.0;
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(3) reduction(+:rho) is_device_ptr(r_ptr, z)
+            for (int kk = Ng; kk < Nz + Ng; ++kk)
+                for (int jj = Ng; jj < Ny + Ng; ++jj)
+                    for (int ii = Ng; ii < Nx + Ng; ++ii)
+                        rho += r_ptr[kk * plane_stride + jj * stride + ii] * z[kk * plane_stride + jj * stride + ii];
+#else
+            for (int kk = Ng; kk < Nz + Ng; ++kk)
+                for (int jj = Ng; jj < Ny + Ng; ++jj)
+                    for (int ii = Ng; ii < Nx + Ng; ++ii)
+                        rho += r_ptr[kk * plane_stride + jj * stride + ii] * z[kk * plane_stride + jj * stride + ii];
+#endif
+            continue;  // Restart iteration with fresh search direction
         }
         double alpha = rho / pAp;
 
@@ -2835,27 +2887,25 @@ void MultigridPoissonSolver::solve_coarse_pcg(int max_iters, double tol) {
         }
 
         // Update: x += alpha * p, r -= alpha * Ap
-        double r_norm_sq = 0.0;
+        // Split from convergence check to avoid reduction sync every iteration
 #ifdef USE_GPU_OFFLOAD
         if (is_2d) {
-            #pragma omp target teams distribute parallel for collapse(2) reduction(+:r_norm_sq) is_device_ptr(x, u_ptr, r_ptr, Ap)
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(x, u_ptr, r_ptr, Ap)
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
                     int idx = j * stride + i;
                     x[idx] += alpha * u_ptr[idx];  // u_ptr has p with BCs
                     r_ptr[idx] -= alpha * Ap[idx];
-                    r_norm_sq += r_ptr[idx] * r_ptr[idx];
                 }
             }
         } else {
-            #pragma omp target teams distribute parallel for collapse(3) reduction(+:r_norm_sq) is_device_ptr(x, u_ptr, r_ptr, Ap)
+            #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(x, u_ptr, r_ptr, Ap)
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = k * plane_stride + j * stride + i;
                         x[idx] += alpha * u_ptr[idx];
                         r_ptr[idx] -= alpha * Ap[idx];
-                        r_norm_sq += r_ptr[idx] * r_ptr[idx];
                     }
                 }
             }
@@ -2867,15 +2917,48 @@ void MultigridPoissonSolver::solve_coarse_pcg(int max_iters, double tol) {
                     int idx = k * plane_stride + j * stride + i;
                     x[idx] += alpha * u_ptr[idx];
                     r_ptr[idx] -= alpha * Ap[idx];
-                    r_norm_sq += r_ptr[idx] * r_ptr[idx];
                 }
             }
         }
 #endif
 
-        // Check convergence
-        if (r_norm_sq < tol * tol * r_norm_sq_init) {
-            break;
+        // Check convergence every 4 iterations (reduces GPU→CPU sync overhead)
+        // The reduction for r_norm_sq is the bottleneck — skip it most iterations
+        if (iter % 4 == 3 || iter == max_iters - 1) {
+            double r_norm_sq = 0.0;
+#ifdef USE_GPU_OFFLOAD
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) reduction(+:r_norm_sq) is_device_ptr(r_ptr)
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = j * stride + i;
+                        r_norm_sq += r_ptr[idx] * r_ptr[idx];
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) reduction(+:r_norm_sq) is_device_ptr(r_ptr)
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            int idx = k * plane_stride + j * stride + i;
+                            r_norm_sq += r_ptr[idx] * r_ptr[idx];
+                        }
+                    }
+                }
+            }
+#else
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        r_norm_sq += r_ptr[idx] * r_ptr[idx];
+                    }
+                }
+            }
+#endif
+            if (r_norm_sq < tol * tol * r_norm_sq_init) {
+                break;
+            }
         }
 
         // Apply preconditioner: z = M^{-1} r
