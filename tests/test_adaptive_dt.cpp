@@ -175,8 +175,8 @@ void test_3d_adaptive_dt() {
 #endif
 
     double dt_computed = ts->compute_adaptive_dt();
-    double dx_min = std::min({dx, dy, dz});
-    double dt_cfl_expected = 0.5 * dx_min / 1.0;
+    // Directional CFL: v=0,w=0 → only x-CFL constrains (not isotropic min(dx,dy,dz))
+    double dt_cfl_expected = 0.5 * dx / 1.0;
     double relative_error = std::abs(dt_computed - dt_cfl_expected) / dt_cfl_expected;
 
     record("3D adaptive dt calculation", relative_error <= 0.15);
@@ -242,8 +242,8 @@ void test_anisotropic_grid() {
 #endif
 
     double dt_computed = ts->compute_adaptive_dt();
-    double dx_min = std::min(dx, dy);
-    double dt_cfl_expected = 0.5 * dx_min / 1.0;
+    // Directional CFL: v=0 → only x-CFL constrains (not isotropic min(dx,dy))
+    double dt_cfl_expected = 0.5 * dx / 1.0;
     double relative_error = std::abs(dt_computed - dt_cfl_expected) / dt_cfl_expected;
 
     record("Anisotropic grid", relative_error <= 0.15);

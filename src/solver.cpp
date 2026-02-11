@@ -2056,10 +2056,12 @@ double RANSSolver::step() {
 
     } // End Euler time integration path
 
-    // Post-projection divergence measurement (throttled by diag_interval for performance)
-    // Skip expensive GPU reduction except every diag_interval steps
-    // Stats from last measurement are preserved between updates
-    if (iter_ % config_.diag_interval == 0) {
+    // Post-projection divergence measurement (opt-in via NNCFD_POISSON_DIAGNOSTICS env var)
+    // NOTE: This overwrites div_velocity_ with post-projection divergence, so it must
+    // NOT run unconditionally — tests rely on div_velocity_ holding pre-projection values.
+    {
+    static bool div_diagnostics_enabled = (std::getenv("NNCFD_POISSON_DIAGNOSTICS") != nullptr);
+    if (div_diagnostics_enabled && iter_ % config_.diag_interval == 0) {
         // compute_divergence writes to device memory (div_velocity_ptr_)
         compute_divergence(VelocityWhich::Current, div_velocity_);
 
@@ -2209,7 +2211,8 @@ double RANSSolver::step() {
             }
         }
     }
-    
+    } // end div_diagnostics_enabled scope
+
     // Note: iter_ is managed by the outer solve loop, don't increment here
 
     // Return max velocity change as convergence criterion (unified view-based)
