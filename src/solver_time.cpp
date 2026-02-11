@@ -897,6 +897,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     // Track total cycles used across adaptive iterations
     int total_cycles_used = vcycles;
 
+#ifdef USE_GPU_OFFLOAD
     if (config_.adaptive_projection && selected_solver_ == PoissonSolverType::MG) {
         // Compute max|div u| after correction (GPU reduction)
         compute_divergence(VelocityWhich::Current, div_velocity_);
@@ -1062,6 +1063,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
         // Update stats with total cycles
         poisson_stats_.cycles = total_cycles_used;
     }
+#endif
 
     if (need_swap) {
         if (vel_id == VelFieldId::VelocityStar) {

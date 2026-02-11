@@ -463,12 +463,14 @@ int main(int argc, char** argv) {
         const int health_interval = std::max(100, config.max_steps / 20);
 
         for (int step = 1; step <= config.max_steps; ++step) {
+#ifdef USE_GPU_OFFLOAD
             // Apply explicit velocity filter BEFORE the step so projection cleans up
             // any divergence introduced by the independent-component Laplacian smoothing
             if (config.filter_interval > 0 && config.filter_strength > 0 &&
                 step % config.filter_interval == 0) {
                 solver.apply_velocity_filter(config.filter_strength);
             }
+#endif
 
             if (config.adaptive_dt) {
                 solver.set_dt(solver.compute_adaptive_dt());
@@ -491,7 +493,11 @@ int main(int argc, char** argv) {
 
             // Always show progress every ~10% for CI visibility
             // For diagnostic: also print max|div u| at early steps to catch instability onset
+#ifdef USE_GPU_OFFLOAD
             double max_div = solver.compute_divergence_linf_device();
+#else
+            double max_div = 0.0;  // GPU diagnostic not available in CPU builds
+#endif
             double t_star = solver.flow_through_time_bulk();
             if (step % progress_interval == 0 || step == 1 || step <= 50) {
                 std::cout << "    Step " << std::setw(6) << step << " / " << config.max_steps

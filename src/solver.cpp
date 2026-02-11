@@ -696,10 +696,6 @@ void RANSSolver::initialize_trip_forcing() {
     }
 
     // Precompute x-envelope: cosine window in trip region, zero outside
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Nz = mesh_->Nz;
-    const int Ng = mesh_->Nghost;
     const bool is_3d = !mesh_->is2D();
 
     trip_env_x_.resize(mesh_->total_Nx(), 0.0);

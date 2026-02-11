@@ -91,9 +91,11 @@ MultigridPoissonSolver::MultigridPoissonSolver(const Mesh& mesh) : mesh_(&mesh) 
         yLap_aP_ = mesh_->yLap_aP.data();
         y_metrics_size_ = mesh_->total_Ny();
 
+#ifdef USE_GPU_OFFLOAD
         // CRITICAL: Disable CUDA Graph for stretched grids
         // The graphed V-cycle uses uniform-y operators that don't have non-uniform y support yet
         use_vcycle_graph_ = false;
+#endif
 
         // Chebyshev smoother is now enabled for stretched grids using Gershgorin bounds.
         // The compute_gershgorin_bounds() function computes λmax per level based on
