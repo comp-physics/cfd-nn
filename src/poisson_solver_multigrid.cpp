@@ -3953,14 +3953,13 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                 double b_sum_sq = 0.0;
 
                 if (is_2d) {
-                    // 2D data lives at plane k=Ng (middle z-plane), not k=0
-                    // Memory layout: Sz = 1 + 2*Ng, data at plane Ng
-                    const int k_plane_offset = Ng * plane_stride;
+                    // 2D data lives at k=0 plane: ScalarField::index(i,j) = j*stride+i
+                    // (NOT k=Ng — the 2D accessor uses flat j*stride+i indexing)
                     #pragma omp target teams distribute parallel for collapse(2) \
                         is_device_ptr(f_ptr) reduction(+: b_sum_sq)
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
-                            int idx = k_plane_offset + j * stride + i;
+                            int idx = j * stride + i;
                             double val = f_ptr[idx];
                             b_sum_sq += val * val;
                         }
@@ -4096,14 +4095,13 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
         int device = omp_get_default_device();
         const double* f_dev = static_cast<const double*>(omp_get_mapped_ptr(f_level0_ptr_, device));
         if (is_2d_gpu) {
-            // 2D data lives at plane k=Ng (middle z-plane), not k=0
-            // Memory layout: Sz = 1 + 2*Ng, data at plane Ng
-            const int k_plane_offset = Ng * plane_stride_gpu;
+            // 2D data lives at k=0 plane: ScalarField::index(i,j) = j*stride+i
+            // (NOT k=Ng — the 2D accessor uses flat j*stride+i indexing)
             #pragma omp target teams distribute parallel for collapse(2) \
                 is_device_ptr(f_dev) reduction(max: b_inf_local) reduction(+: b_sum_sq)
             for (int j = Ng; j < Ny_g + Ng; ++j) {
                 for (int i = Ng; i < Nx_g + Ng; ++i) {
-                    int idx = k_plane_offset + j * stride_gpu + i;
+                    int idx = j * stride_gpu + i;
                     double val = f_dev[idx];
                     b_inf_local = std::max(b_inf_local, std::abs(val));
                     b_sum_sq += val * val;
