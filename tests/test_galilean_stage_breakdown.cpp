@@ -2249,6 +2249,17 @@ void test_frame_invariance_poisson_hardness() {
         // frame-dependent convergence behavior, breaking strict Galilean invariance.
         // This test verifies the BASE projection's mathematical properties.
         config.adaptive_projection = false;
+        // Use convergence-based Poisson solve (not fixed-cycle) with tight tolerance.
+        // Fixed-cycle mode (8 V-cycles) doesn't converge tightly enough on GPU:
+        // the Gershgorin-computed Chebyshev bounds (λmax=2.2) give slower per-cycle
+        // convergence, and GPU floating-point non-determinism in the smoother makes
+        // the residual frame-dependent. Convergence-based mode iterates until the
+        // residual is uniformly small, ensuring frame-invariant projection quality.
+        config.poisson_fixed_cycles = 0;     // Convergence-based mode
+        config.poisson_max_vcycles = 50;     // Enough room to converge
+        config.poisson_tol_rhs = 1e-10;      // Very tight RHS-relative tolerance
+        config.poisson_tol_rel = 1e-10;      // Very tight initial-residual relative
+        config.poisson_check_interval = 1;   // Check every cycle for tight convergence
 
         RANSSolver solver(local_mesh, config);
 
