@@ -221,6 +221,20 @@ Metric get_metric_with_tolerance(const std::string& scenario,
         rel_tol = 1e-6;
     }
 
+    // Pressure RMS is sensitive to Poisson solver FP ordering differences.
+    // Chebyshev smoother polynomial coefficients amplify CPU/GPU reduction
+    // ordering differences across V-cycles and time steps.
+    if (metric_name == "p_rms") {
+        abs_tol = 1e-6;
+        rel_tol = 1e-4;
+    }
+
+    // Weighted checksums can be near-zero for symmetric problems (e.g., TGV).
+    // CPU/GPU roundoff noise dominates when the true value is O(epsilon).
+    if (metric_name == "checksum_u" || metric_name == "checksum_v") {
+        abs_tol = std::max(abs_tol, 1e-8);
+    }
+
     return Metric(value, abs_tol, rel_tol);
 }
 
