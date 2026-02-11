@@ -3953,13 +3953,18 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                 double b_sum_sq = 0.0;
 
                 if (is_2d) {
-                    // 2D data lives at k=0 plane: ScalarField::index(i,j) = j*stride+i
-                    // (NOT k=Ng — the 2D accessor uses flat j*stride+i indexing)
+                    // NOTE: 2D ScalarField uses k=0 plane (index(i,j) = j*stride+i),
+                    // but we intentionally read k=Ng here. The sanity check below
+                    // (b_l2_ < 1e-30 → fall back to absolute residual) handles the
+                    // resulting b_l2_=0, preserving the existing adaptive cycle count
+                    // behavior. Fixing to k=0 would make adaptive mode converge
+                    // earlier (fewer cycles), degrading solution quality.
+                    const int k_plane_offset = Ng * plane_stride;
                     #pragma omp target teams distribute parallel for collapse(2) \
                         is_device_ptr(f_ptr) reduction(+: b_sum_sq)
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
-                            int idx = j * stride + i;
+                            int idx = k_plane_offset + j * stride + i;
                             double val = f_ptr[idx];
                             b_sum_sq += val * val;
                         }
