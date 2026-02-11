@@ -565,8 +565,8 @@ RANSSolver::SpanwiseSpectrum RANSSolver::compute_spanwise_spectrum(double y_plus
     return spec;
 }
 
-bool RANSSolver::SpanwiseSpectrum::has_recirculation_spike(double x_recycle,
-                                                            double U_bulk,
+bool RANSSolver::SpanwiseSpectrum::has_recirculation_spike(double /*x_recycle*/,
+                                                            double /*U_bulk*/,
                                                             double tol) const {
     if (k_z.empty() || E_uu.empty()) return false;
 
