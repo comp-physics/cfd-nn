@@ -2569,7 +2569,7 @@ int main() {
         test_advection_momentum_conservation();
         test_projection_diagnostics();  // Detailed diagnostic before skew test
         test_skew_symmetric_galilean();
-        test_frame_invariance_poisson_hardness();  // CI gate for projection quality
         test_skew_galilean();   // Skew-symmetric advection test
+        test_frame_invariance_poisson_hardness();  // CI gate for projection quality (LAST for log visibility)
     });
 }
