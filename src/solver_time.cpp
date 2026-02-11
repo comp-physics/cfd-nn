@@ -242,8 +242,10 @@ bool in_diagnostic_range(int step) {
     if (!initialized) {
         const char* start_env = std::getenv("NAN_DIAG_START");
         const char* end_env = std::getenv("NAN_DIAG_END");
-        diag_start = start_env ? std::atoi(start_env) : 180;
-        diag_end = end_env ? std::atoi(end_env) : 260;
+        // Disabled by default (avoids GPU sync overhead in tests/production).
+        // Set NAN_DIAG_START=180 NAN_DIAG_END=260 to enable for DNS debugging.
+        diag_start = start_env ? std::atoi(start_env) : -1;
+        diag_end = end_env ? std::atoi(end_env) : -1;
         initialized = true;
     }
     return step >= diag_start && step <= diag_end;
