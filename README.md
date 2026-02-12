@@ -648,7 +648,7 @@ Turbulent inflow BC from downstream recycle plane. See [`docs/RECYCLING_INFLOW_G
 | `poisson_use_l2_norm` | - | true | Use L2 norm (smoother than L∞) |
 | `poisson_linf_safety` | - | 10.0 | L∞ safety cap multiplier |
 | `poisson_fixed_cycles` | - | 8 | Fixed V-cycle count (0 = convergence-based) |
-| `poisson_adaptive_cycles` | - | false | Enable adaptive checking in fixed-cycle mode |
+| `poisson_adaptive_cycles` | - | true | Enable adaptive checking in fixed-cycle mode |
 | `poisson_check_after` | - | 4 | Check residual after this many cycles |
 | `poisson_nu1` | - | 0 | Pre-smoothing sweeps (0 = auto: 3 for walls) |
 | `poisson_nu2` | - | 0 | Post-smoothing sweeps (0 = auto: 1) |
