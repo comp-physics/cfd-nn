@@ -193,8 +193,8 @@ struct Config {
     double trip_x_start = -1.0;             ///< Start x-location of trip region (-1 = auto: 0.1*Lx)
     double trip_x_end = -1.0;               ///< End x-location of trip region (-1 = auto: 0.2*Lx)
     double trip_amplitude = 3.0;            ///< Trip forcing amplitude (A * u_tau^2) - 1-5 typical
-    double trip_duration = 2.0;             ///< Duration of trip forcing in friction time units (t*)
-    double trip_ramp_off_start = 1.5;       ///< Start of ramp-off phase (t*)
+    double trip_duration = 2.0;             ///< Duration of trip forcing in physical time units
+    double trip_ramp_off_start = 1.5;       ///< Start of ramp-off phase in physical time units
     int trip_n_modes_z = 8;                 ///< Number of spanwise modes in trip forcing
     bool trip_force_w = true;               ///< Also force w* (creates vortical structures)
     double trip_w_scale = 1.0;              ///< Scale factor for w trip forcing (>1 boosts 3D structures)

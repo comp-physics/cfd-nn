@@ -567,7 +567,7 @@ static void test_rk3_long_stability() {
               << ",\"ke_ratio\":" << (ke_final / ke_init)
               << "}\n" << std::flush;
 
-    record("[RK3] Long-time stability (500 steps)", valid && steps_completed == nsteps);
+    record("[RK3] Long-time stability (250 steps)", valid && steps_completed == nsteps);
 }
 
 // ============================================================================

@@ -290,4 +290,4 @@ Typical convergence:
 
 ---
 
-**Last updated:** February 2025 — Added DNS channel flow results, recycling inflow validation, MG manufactured solution tests, FFT unified tests
+**Last updated:** February 2026 — Added DNS channel flow results, recycling inflow validation, MG manufactured solution tests, FFT unified tests

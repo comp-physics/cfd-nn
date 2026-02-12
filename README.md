@@ -644,7 +644,7 @@ Turbulent inflow BC from downstream recycle plane. See [`docs/RECYCLING_INFLOW_G
 | `poisson_tol_abs` | - | 0.0 | Absolute tolerance on ‖r‖ (0 = disabled) |
 | `poisson_tol_rhs` | - | 1e-3 | RHS-relative: ‖r‖/‖b‖ (recommended) |
 | `poisson_tol_rel` | - | 1e-3 | Initial-residual relative: ‖r‖/‖r₀‖ |
-| `poisson_check_interval` | - | 1 | Check convergence every N V-cycles |
+| `poisson_check_interval` | - | 3 | Check convergence every N V-cycles |
 | `poisson_use_l2_norm` | - | true | Use L2 norm (smoother than L∞) |
 | `poisson_linf_safety` | - | 10.0 | L∞ safety cap multiplier |
 | `poisson_fixed_cycles` | - | 8 | Fixed V-cycle count (0 = convergence-based) |

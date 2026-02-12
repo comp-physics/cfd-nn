@@ -395,8 +395,8 @@ double RANSSolver::compute_viscous_dissipation() const {
             double u_jp = 0.5 * (u_ptr[k * u_plane + (j + 1) * u_stride + i] + u_ptr[k * u_plane + (j + 1) * u_stride + (i + 1)]);
             double dudy = (u_jp - u_jm) / (2.0 * dy);
 
-            double v_im = 0.5 * (u_ptr[k * v_plane + j * v_stride + (i - 1)] + u_ptr[k * v_plane + (j + 1) * v_stride + (i - 1)]);
-            double v_ip = 0.5 * (u_ptr[k * v_plane + j * v_stride + (i + 1)] + u_ptr[k * v_plane + (j + 1) * v_stride + (i + 1)]);
+            double v_im = 0.5 * (v_ptr[k * v_plane + j * v_stride + (i - 1)] + v_ptr[k * v_plane + (j + 1) * v_stride + (i - 1)]);
+            double v_ip = 0.5 * (v_ptr[k * v_plane + j * v_stride + (i + 1)] + v_ptr[k * v_plane + (j + 1) * v_stride + (i + 1)]);
             double dvdx = (v_ip - v_im) / (2.0 * dx);
 
             double u_km = 0.5 * (u_ptr[(k - 1) * u_plane + j * u_stride + i] + u_ptr[(k - 1) * u_plane + j * u_stride + (i + 1)]);

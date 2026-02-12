@@ -81,7 +81,7 @@ run_case() {
     echo ""
 
     build_if_needed
-    time "$exe" --config "$cfg_file" "$@"
+    time "$exe" --config "$cfg_file"
 }
 
 # List available cases
