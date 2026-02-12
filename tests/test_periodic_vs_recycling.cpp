@@ -319,19 +319,9 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
         solver.initialize_uniform(1.0, 0.0);
     }
 
-    // DEBUG: Check near-wall velocity BEFORE GPU sync
-    {
-        const int Ng = mesh.Nghost;
-        int j1 = Ng;
-        int j2 = Ng + 1;
-        double u1_pre = solver.velocity().u(Ng, j1, Ng);
-        double u2_pre = solver.velocity().u(Ng, j2, Ng);
-        std::cout << "  [DEBUG] Before GPU sync: u1=" << u1_pre << " u2=" << u2_pre
-                  << " (j1=" << j1 << ", j2=" << j2 << ")\n";
-    }
-
-    // Sync to GPU if needed
-    solver.sync_to_gpu();
+    // Note: initialize() already handles sync_to_gpu() + apply_velocity_bc().
+    // Do NOT call sync_to_gpu() again here — it would overwrite GPU-side BCs
+    // with raw CPU data that lacks proper ghost cell corrections.
 
     // Prime recycling buffers from initial velocity (avoids zero inlet on first step)
     if (use_recycling && solver.is_recycling_enabled()) {
@@ -339,18 +329,9 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
         solver.process_recycle_inflow();
     }
 
-    // Check initial velocity magnitude
+    // Sync GPU data back to CPU for diagnostics
     solver.sync_solution_from_gpu();
 
-    // DEBUG: Check near-wall velocity AFTER GPU sync round-trip
-    {
-        const int Ng = mesh.Nghost;
-        int j1 = Ng;
-        int j2 = Ng + 1;
-        double u1_post = solver.velocity().u(Ng, j1, Ng);
-        double u2_post = solver.velocity().u(Ng, j2, Ng);
-        std::cout << "  [DEBUG] After GPU sync: u1=" << u1_post << " u2=" << u2_post << "\n";
-    }
     double u_max_init = 0.0;
     double u_sum_init = 0.0;
     int u_count_init = 0;

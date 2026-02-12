@@ -807,6 +807,201 @@ void test_stretched_3d_channel_64cubed() {
 }
 
 //=============================================================================
+// Helper: Apply mixed recycling-like ghost cells
+//   x_lo: Dirichlet (p'=0)
+//   x_hi: Neumann (dp'/dx=0)
+//   y:    Neumann (dp'/dy=0)
+//   z:    Periodic
+//=============================================================================
+
+void apply_recycling_bc_ghosts_3d(const Mesh& mesh, ScalarField& phi,
+                                    double dirichlet_val) {
+    const int Ng = mesh.Nghost;
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+
+    // X boundaries: Dirichlet at x_lo, Neumann at x_hi
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        for (int j = 0; j < mesh.total_Ny(); ++j) {
+            for (int g = 0; g < Ng; ++g) {
+                // x_lo: Dirichlet mirror: ghost = 2*bc_val - interior
+                phi(g, j, k) = 2.0 * dirichlet_val - phi(Ng + g, j, k);
+                // x_hi: Neumann zero-gradient: ghost = last interior
+                phi(Nx + Ng + g, j, k) = phi(Nx + Ng - 1, j, k);
+            }
+        }
+    }
+
+    // Y boundaries: Neumann (zero gradient) at both
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        for (int i = 0; i < mesh.total_Nx(); ++i) {
+            for (int g = 0; g < Ng; ++g) {
+                phi(i, g, k) = phi(i, Ng, k);
+                phi(i, Ny + Ng + g, k) = phi(i, Ny + Ng - 1, k);
+            }
+        }
+    }
+
+    // Z boundaries: Periodic
+    for (int j = 0; j < mesh.total_Ny(); ++j) {
+        for (int i = 0; i < mesh.total_Nx(); ++i) {
+            for (int g = 0; g < Ng; ++g) {
+                phi(i, j, g) = phi(i, j, Nz + g);
+                phi(i, j, Nz + Ng + g) = phi(i, j, Ng + g);
+            }
+        }
+    }
+}
+
+//=============================================================================
+// Test Case 7: Recycling-like BCs (Dirichlet x_lo, Neumann x_hi, Neumann y, Periodic z)
+// This is the EXACT BC combination used by the recycling inflow channel.
+// Tests both CPU solve() and GPU solve_device() for cross-backend consistency.
+//=============================================================================
+
+void test_recycling_bcs_3d() {
+    std::cout << "\n--- 3D Uniform Grid, Recycling BCs (Dirichlet x_lo, Neumann x_hi, Neumann y, Periodic z) ---\n\n";
+
+    const int Nx = 32, Ny = 32, Nz = 16;
+    const double Lx = 2*M_PI, Lz = M_PI;
+    const double y_lo = -1.0, y_hi = 1.0;
+    const double Ly = y_hi - y_lo;
+
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, Nz, 0.0, Lx, y_lo, y_hi, 0.0, Lz, 2);
+
+    std::cout << "Grid: " << Nx << " x " << Ny << " x " << Nz << "\n";
+
+    // Manufactured solution: φ = sin(πx/(2Lx)) * cos(π(y-y_lo)/Ly) * cos(2πz/Lz)
+    // Properties:
+    //   φ(0, y, z) = sin(0) = 0           → satisfies Dirichlet x_lo = 0
+    //   dφ/dx(Lx, y, z) ∝ cos(π/2) = 0   → satisfies Neumann x_hi
+    //   dφ/dy(x, y_lo, z) ∝ sin(0) = 0   → satisfies Neumann y_lo
+    //   dφ/dy(x, y_hi, z) ∝ sin(π) = 0   → satisfies Neumann y_hi
+    //   Periodic in z                       → satisfies Periodic z
+
+    ScalarField phi_true(mesh);
+    const double kx = M_PI / (2.0 * Lx);   // π/(2Lx) for half-wave in x
+    const double ky = M_PI / Ly;             // π/Ly for full cosine in y
+    const double kz = 2*M_PI / Lz;           // 2π/Lz for periodic z
+
+    // Set interior cells
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double x = mesh.xc[i];
+                double y = mesh.yc[j];
+                double z = mesh.zc[k];
+                phi_true(i,j,k) = std::sin(kx * x) * std::cos(ky * (y - y_lo)) * std::cos(kz * z);
+            }
+        }
+    }
+
+    // Apply BCs matching the recycling configuration
+    apply_recycling_bc_ghosts_3d(mesh, phi_true, 0.0);
+
+    // Compute discrete RHS
+    ScalarField rhs(mesh);
+    apply_discrete_laplacian_3d(mesh, phi_true, rhs);
+
+    // NO mean removal - Dirichlet BC makes the problem non-singular
+
+    // --- CPU solve ---
+    ScalarField phi_cpu(mesh, 0.0);
+    // Apply BCs to initial guess
+    apply_recycling_bc_ghosts_3d(mesh, phi_cpu, 0.0);
+
+    MultigridPoissonSolver mg_cpu(mesh);
+    mg_cpu.set_bc(PoissonBC::Dirichlet, PoissonBC::Neumann,   // x: Dirichlet lo, Neumann hi
+                  PoissonBC::Neumann,   PoissonBC::Neumann,   // y: Neumann both
+                  PoissonBC::Periodic,  PoissonBC::Periodic);  // z: Periodic both
+
+    PoissonConfig cfg;
+    cfg.tol_rhs = 1e-10;
+    cfg.tol_abs = 1e-12;
+    cfg.max_vcycles = 200;
+    cfg.use_vcycle_graph = false;
+    cfg.fixed_cycles = 0;  // Convergence-based mode (same as recycling uses)
+
+    int cpu_cycles = mg_cpu.solve(rhs, phi_cpu, cfg);
+    double cpu_error = compute_max_error_3d(mesh, phi_cpu, phi_true);
+    double cpu_residual_rel = mg_cpu.residual_l2() / (mg_cpu.rhs_norm_l2() + 1e-30);
+
+    std::cout << "CPU solve: " << cpu_cycles << " V-cycles, residual_rel=" << std::scientific
+              << cpu_residual_rel << ", error=" << cpu_error << "\n";
+
+    bool cpu_residual_ok = cpu_residual_rel < 1e-3;
+    bool cpu_error_ok = cpu_error < 1e-4;
+    record("Recycling BCs CPU residual", cpu_residual_ok,
+           "res_rel=" + std::to_string(cpu_residual_rel));
+    record("Recycling BCs CPU solution error", cpu_error_ok,
+           "err=" + std::to_string(cpu_error));
+
+#ifdef USE_GPU_OFFLOAD
+    // --- GPU solve ---
+    ScalarField phi_gpu(mesh, 0.0);
+
+    MultigridPoissonSolver mg_gpu(mesh);
+    mg_gpu.set_bc(PoissonBC::Dirichlet, PoissonBC::Neumann,
+                  PoissonBC::Neumann,   PoissonBC::Neumann,
+                  PoissonBC::Periodic,  PoissonBC::Periodic);
+
+    // Map RHS and solution to GPU
+    double* rhs_ptr = rhs.data().data();
+    double* phi_gpu_ptr = phi_gpu.data().data();
+    size_t total_size = rhs.data().size();
+    #pragma omp target enter data map(to: rhs_ptr[0:total_size])
+    #pragma omp target enter data map(to: phi_gpu_ptr[0:total_size])
+
+    int gpu_cycles = mg_gpu.solve_device(rhs_ptr, phi_gpu_ptr, cfg);
+
+    // Copy result back from GPU
+    #pragma omp target update from(phi_gpu_ptr[0:total_size])
+
+    double gpu_error = compute_max_error_3d(mesh, phi_gpu, phi_true);
+    double gpu_residual_rel = mg_gpu.residual_l2() / (mg_gpu.rhs_norm_l2() + 1e-30);
+
+    std::cout << "GPU solve: " << gpu_cycles << " V-cycles, residual_rel=" << std::scientific
+              << gpu_residual_rel << ", error=" << gpu_error << "\n";
+
+    // Cross-backend comparison
+    double max_diff = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double diff = std::abs(phi_cpu(i,j,k) - phi_gpu(i,j,k));
+                max_diff = std::max(max_diff, diff);
+            }
+        }
+    }
+    std::cout << "CPU vs GPU max difference: " << std::scientific << max_diff << "\n";
+
+    bool gpu_residual_ok = gpu_residual_rel < 1e-3;
+    bool gpu_error_ok = gpu_error < 1e-4;
+    bool cross_backend_ok = max_diff < 1e-6;  // Should be very close
+
+    record("Recycling BCs GPU residual", gpu_residual_ok,
+           "res_rel=" + std::to_string(gpu_residual_rel));
+    record("Recycling BCs GPU solution error", gpu_error_ok,
+           "err=" + std::to_string(gpu_error));
+    record("Recycling BCs CPU vs GPU match", cross_backend_ok,
+           "max_diff=" + std::to_string(max_diff));
+
+    // Clean up GPU mappings
+    #pragma omp target exit data map(delete: rhs_ptr[0:total_size])
+    #pragma omp target exit data map(delete: phi_gpu_ptr[0:total_size])
+#else
+    std::cout << "GPU solve: SKIPPED (no GPU offload)\n";
+    record("Recycling BCs GPU residual", true, "skipped (no GPU)");
+    record("Recycling BCs GPU solution error", true, "skipped (no GPU)");
+    record("Recycling BCs CPU vs GPU match", true, "skipped (no GPU)");
+#endif
+
+    std::cout << std::fixed;
+}
+
+//=============================================================================
 // Main
 //=============================================================================
 
@@ -824,6 +1019,7 @@ int main() {
         {"3D Uniform", test_uniform_3d_dirichlet},
         {"3D Stretched", test_stretched_3d_dirichlet},
         {"3D Channel BCs", test_stretched_3d_channel},
-        {"3D Channel 64^3", test_stretched_3d_channel_64cubed}
+        {"3D Channel 64^3", test_stretched_3d_channel_64cubed},
+        {"3D Recycling BCs", test_recycling_bcs_3d}
     });
 }

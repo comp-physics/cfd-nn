@@ -238,6 +238,12 @@ void RANSSolver::initialize_recycling_inflow() {
             mg_poisson_solver_.set_bc(poisson_bc_x_lo_, poisson_bc_x_hi_,
                                       poisson_bc_y_lo_, poisson_bc_y_hi_);
         }
+
+        // Disable CUDA Graph for recycling if config requests it
+        // (Dirichlet/Neumann x BCs with time-varying inlet may not replay correctly)
+        if (!config_.poisson_use_vcycle_graph) {
+            mg_poisson_solver_.disable_vcycle_graph();
+        }
     }
 
     use_recycling_ = true;
@@ -1080,23 +1086,19 @@ void RANSSolver::correct_inlet_divergence() {
     const double dz_val = mesh_->dz;
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: compute u_inlet from div-free condition
+    // GPU path: compute u_inlet from div-free condition and write directly to velocity field.
     // u_inlet[j,k] = u_interior[j,k] + dx * [(v[j+1]-v[j])/dy + (w[k+1]-w[k])/dz]
+    //
+    // IMPORTANT: Do NOT use inlet_u_ptr_ as scratch here! It must retain the original
+    // recycled u values for apply_fringe_blending() which is called after this function.
+    // (Bug fix: previously overwrote inlet_u_ptr_, causing GPU fringe blending to use
+    // divergence-corrected values instead of recycled values, seeding spurious turbulence.)
 
     const int n_inlet = Ny * Nz;
-    double* in_u = inlet_u_ptr_;  // We'll store the computed values here
 
-    // Compute the divergence-corrected inlet u values
-    // Formula: u_inlet = u_interior + dx * (dv/dy + dw/dz)
-    // This ensures: div = (u_interior - u_inlet)/dx + dv/dy + dw/dz = 0
-    //
-    // IMPORTANT: Do NOT apply a bulk velocity offset after this correction!
-    // Adding a uniform offset to u_inlet alone breaks the div-free condition
-    // because u_interior is not adjusted. The mass flux is determined by the
-    // interior flow; the pressure gradient will adjust to drive the correct flow.
+    // Single kernel: compute corrected u and write to inlet face + ghost cells
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], w_ptr[0:w_total_size]) \
-        is_device_ptr(in_u) \
         firstprivate(Ny, Nz, Ng, dx, dy_val, dz_val, u_stride, v_stride, w_stride, \
                      u_plane_stride, v_plane_stride, w_plane_stride)
     for (int idx = 0; idx < n_inlet; ++idx) {
@@ -1128,39 +1130,17 @@ void RANSSolver::correct_inlet_divergence() {
 
         // Divergence-corrected inlet u: u_inlet = u_interior + dx * div_trans
         // This ensures: div = (u_interior - u_inlet) / dx + div_trans = 0
-        in_u[idx] = u_interior + dx * div_trans;
-    }
+        double u_corrected = u_interior + dx * div_trans;
 
-    // NO bulk correction here - it would break the div-free condition!
-    // The bulk correction is already applied in process_recycle_inflow() to v,w.
-    // The u at inlet is constrained by the div-free requirement.
-
-    // Finally, write corrected u values to inlet face
-    #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
-        firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride)
-    for (int idx = 0; idx < n_inlet; ++idx) {
-        int j = idx % Ny;
-        int k = idx / Ny;
-        int j_glob = j + Ng;
-        int k_glob = k + Ng;
+        // Write to inlet face
         int u_inlet_idx = k_glob * u_plane_stride + j_glob * u_stride + Ng;
-        u_ptr[u_inlet_idx] = in_u[idx];
-    }
+        u_ptr[u_inlet_idx] = u_corrected;
 
-    // Update ghost cells to match inlet value
-    for (int g = 0; g < Ng; ++g) {
-        int i_ghost = Ng - 1 - g;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size]) is_device_ptr(in_u) \
-            firstprivate(Ny, Nz, Ng, u_stride, u_plane_stride, i_ghost)
-        for (int idx = 0; idx < n_inlet; ++idx) {
-            int j = idx % Ny;
-            int k = idx / Ny;
-            int j_glob = j + Ng;
-            int k_glob = k + Ng;
+        // Write to ghost cells
+        for (int g = 0; g < Ng; ++g) {
+            int i_ghost = Ng - 1 - g;
             int dst_idx = k_glob * u_plane_stride + j_glob * u_stride + i_ghost;
-            u_ptr[dst_idx] = in_u[idx];
+            u_ptr[dst_idx] = u_corrected;
         }
     }
 
@@ -1288,7 +1268,53 @@ void RANSSolver::apply_fringe_blending() {
         u_ptr[field_idx] = beta * in_u[inlet_idx] + (1.0 - beta) * u_ptr[field_idx];
     }
 
-    // Similarly for v and w (omitted for brevity - same pattern)
+    // Blend v in fringe zone
+    const int n_fringe_v = (i_end - i_start) * (Ny + 1) * Nz;
+    #pragma omp target teams distribute parallel for \
+        map(present: v_ptr[0:v_total_size]) is_device_ptr(in_v) \
+        map(to: xc[0:mesh_->Nx + 2*Ng]) \
+        firstprivate(Ny, Nz, Ng, i_start, i_end, v_stride, v_plane_stride, x_min, L_fringe)
+    for (int idx = 0; idx < n_fringe_v; ++idx) {
+        int i = idx % (i_end - i_start) + i_start;
+        int rem = idx / (i_end - i_start);
+        int j = rem % (Ny + 1);
+        int k = rem / (Ny + 1);
+
+        int j_glob = j + Ng;
+        int k_glob = k + Ng;
+
+        double x_local = xc[i] - x_min;
+        double beta = 0.5 * (1.0 + cos(3.14159265358979 * x_local / L_fringe));
+
+        int field_idx = k_glob * v_plane_stride + j_glob * v_stride + i;
+        int inlet_idx = k * (Ny + 1) + j;
+
+        v_ptr[field_idx] = beta * in_v[inlet_idx] + (1.0 - beta) * v_ptr[field_idx];
+    }
+
+    // Blend w in fringe zone
+    const int n_fringe_w = (i_end - i_start) * Ny * (Nz + 1);
+    #pragma omp target teams distribute parallel for \
+        map(present: w_ptr[0:w_total_size]) is_device_ptr(in_w) \
+        map(to: xc[0:mesh_->Nx + 2*Ng]) \
+        firstprivate(Ny, Nz, Ng, i_start, i_end, w_stride, w_plane_stride, x_min, L_fringe)
+    for (int idx = 0; idx < n_fringe_w; ++idx) {
+        int i = idx % (i_end - i_start) + i_start;
+        int rem = idx / (i_end - i_start);
+        int j = rem % Ny;
+        int k = rem / Ny;
+
+        int j_glob = j + Ng;
+        int k_glob = k + Ng;
+
+        double x_local = xc[i] - x_min;
+        double beta = 0.5 * (1.0 + cos(3.14159265358979 * x_local / L_fringe));
+
+        int field_idx = k_glob * w_plane_stride + j_glob * w_stride + i;
+        int inlet_idx = k * Ny + j;
+
+        w_ptr[field_idx] = beta * in_w[inlet_idx] + (1.0 - beta) * w_ptr[field_idx];
+    }
 
 #else
     // CPU path

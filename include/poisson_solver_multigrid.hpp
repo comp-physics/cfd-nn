@@ -68,6 +68,13 @@ public:
     /// Get RHS norm ||b||_∞ (computed at start of solve)
     double rhs_norm() const { return b_inf_; }
 
+#ifdef USE_GPU_OFFLOAD
+    /// Disable V-cycle CUDA Graph (for debugging or when graph replay is unreliable)
+    void disable_vcycle_graph() { use_vcycle_graph_ = false; }
+#else
+    void disable_vcycle_graph() {}  // No-op without GPU
+#endif
+
     /// Get RHS norm ||b||_2 (computed at start of solve)
     double rhs_norm_l2() const { return b_l2_; }
 
