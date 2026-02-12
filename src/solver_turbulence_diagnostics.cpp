@@ -90,10 +90,6 @@ double RANSSolver::wall_shear_stress_2nd_order(bool bottom) const {
     double dudy_sum = 0.0;
     int count = 0;
 
-    // DEBUG: track NaN appearances
-    static int debug_count = 0;
-    static bool nan_detected = false;
-
     // Average over x (and z for 3D)
     if (Nz > 1) {
         // 3D case
@@ -101,24 +97,6 @@ double RANSSolver::wall_shear_stress_2nd_order(bool bottom) const {
             for (int i = Ng; i < Ng + Nx; ++i) {
                 double u1 = velocity_.u(i, j1, k);
                 double u2 = velocity_.u(i, j2, k);
-
-                // DEBUG: output first few calls AND when NaN first appears
-                if (bottom && i == Ng && k == Ng) {
-                    bool is_nan = std::isnan(u1) || std::isnan(u2);
-                    if (debug_count < 5 || (is_nan && !nan_detected)) {
-                        std::cerr << "[DEBUG wall_shear #" << debug_count << "] Nx=" << Nx
-                                  << " Ny=" << Ny << " Nz=" << Nz << " Ng=" << Ng
-                                  << " j1=" << j1 << " j2=" << j2
-                                  << " y1=" << y1 << " y2=" << y2
-                                  << " u1=" << u1 << " u2=" << u2
-                                  << " y_wall=" << y_wall << " yc[j1]=" << mesh_->yc[j1]
-                                  << " yc[j2]=" << mesh_->yc[j2];
-                        if (is_nan) std::cerr << " *** NAN DETECTED ***";
-                        std::cerr << "\n";
-                        if (is_nan) nan_detected = true;
-                    }
-                    ++debug_count;
-                }
 
                 // Quadratic fit: dU/dy|_w = (u1*y2^2 - u2*y1^2) / (y1*y2*(y2-y1))
                 double dudy = (u1 * y2 * y2 - u2 * y1 * y1) / (y1 * y2 * (y2 - y1));

@@ -3277,22 +3277,6 @@ double RANSSolver::compute_adaptive_dt() const {
     diag_w_max_ = w_abs_max;
     diag_v_dy_max_ = v_dy_ratio_max;
 
-    // Debug output for adaptive dt diagnostics (only during trip or if dt is very small)
-    if ((config_.trip_enabled && current_time_ < config_.trip_duration) || dt_new < 1e-5) {
-        static int debug_counter = 0;
-        if (debug_counter++ % 10 == 0) {  // Print every 10th call
-            std::cerr << "[DT_DEBUG] dy_eff=" << dy_eff
-                      << " dx=" << mesh_->dx
-                      << " u_max=" << u_abs_max
-                      << " v_max=" << v_abs_max
-                      << " v_dy_max=" << v_dy_ratio_max
-                      << " dt_cfl_x=" << dt_cfl_x
-                      << " dt_cfl_y=" << dt_cfl_y
-                      << " dt_diff=" << dt_diff
-                      << " dt=" << dt_new << "\n";
-        }
-    }
-
     return dt_new;
 }
 
