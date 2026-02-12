@@ -968,12 +968,17 @@ void RANSSolver::initialize(const VectorField& initial_velocity) {
 #ifdef USE_GPU_OFFLOAD
     // Ensure initialized fields are mirrored to device for GPU runs
     sync_to_gpu();
-    // Re-apply velocity BCs on GPU after sync. The earlier apply_velocity_bc()
-    // (before sync) ran on GPU with stale data from initialize_gpu_buffers().
-    // sync_to_gpu() overwrites GPU memory with CPU data, but CPU ghost cells
-    // were never filled (apply_velocity_bc only ran on GPU). This second call
-    // fills GPU ghost cells from the now-correct GPU interior data.
-    apply_velocity_bc();
+    // For recycling inflow, re-apply velocity BCs on GPU after sync.
+    // The earlier apply_velocity_bc() (before sync) ran on GPU with stale data
+    // from initialize_gpu_buffers(). sync_to_gpu() overwrites GPU memory with
+    // CPU data, but CPU ghost cells were never filled (apply_velocity_bc only
+    // ran on GPU). For Inflow/Outflow BCs, zero ghost cells create massive
+    // artificial gradients that cause energy loss. This second call fills GPU
+    // ghost cells from the now-correct GPU interior data.
+    // (For periodic/no-slip BCs this is benign — step() applies BCs before use.)
+    if (config_.recycling_inflow) {
+        apply_velocity_bc();
+    }
 #endif
 }
 
