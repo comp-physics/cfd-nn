@@ -241,7 +241,6 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
     // Disable CUDA Graph for stretched grids (graphed V-cycle uses uniform-y operators)
     if (cfg.stretch_y) {
         config.poisson_use_vcycle_graph = false;
-        std::cout << "  [DEBUG] Disabled CUDA Graph for stretched grid\n";
     }
     config.convective_scheme = cfg.convection;
     config.time_integrator = TimeIntegrator::RK3;
@@ -272,19 +271,6 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
                           config.x_min, config.x_max,
                           config.y_min, config.y_max,
                           config.z_min, config.z_max, 2);
-    }
-
-    // DEBUG: Print y-metrics to verify they're computed correctly
-    if (mesh.is_y_stretched()) {
-        std::cout << "  [DEBUG Y-Metrics] y_stretched=YES\n";
-        std::cout << "    dyv[Ng]=" << mesh.dyv[mesh.Nghost] << " (first interior cell height)\n";
-        std::cout << "    dyv[Ng+Ny/2]=" << mesh.dyv[mesh.Nghost + cfg.Ny/2] << " (mid-channel cell height)\n";
-        std::cout << "    dyc[Ng]=" << mesh.dyc[mesh.Nghost] << " (first interior center-spacing)\n";
-        std::cout << "    dyc[Ng+Ny/2]=" << mesh.dyc[mesh.Nghost + cfg.Ny/2] << " (mid-channel center-spacing)\n";
-        std::cout << "    yLap_aS[Ng]=" << mesh.yLap_aS[mesh.Nghost] << " yLap_aN[Ng]=" << mesh.yLap_aN[mesh.Nghost] << "\n";
-        std::cout << "    yLap_aP[Ng]=" << mesh.yLap_aP[mesh.Nghost] << " (should be -(aS+aN)=" << -(mesh.yLap_aS[mesh.Nghost]+mesh.yLap_aN[mesh.Nghost]) << ")\n";
-    } else {
-        std::cout << "  [DEBUG Y-Metrics] y_stretched=NO (uniform)\n";
     }
 
     // Create solver
@@ -369,19 +355,6 @@ CaseResults run_case(const std::string& name, const ValidationConfig& cfg,
 
     for (int step = 0; step < cfg.spinup_steps; ++step) {
         solver.step();
-
-        // DEBUG: Check first step specifically
-        if (step == 0) {
-            solver.sync_solution_from_gpu();
-            const int Ng = mesh.Nghost;
-            int j1 = Ng;
-            int j2 = Ng + 1;
-            double u1 = solver.velocity().u(Ng, j1, Ng);
-            double u2 = solver.velocity().u(Ng, j2, Ng);
-            std::cout << "  [DEBUG] After step 1: u1=" << u1 << " u2=" << u2;
-            if (std::isnan(u1) || std::isnan(u2)) std::cout << " *** NAN ***";
-            std::cout << "\n";
-        }
 
         // Record wall shear and turbulence samples for settling detection
         if ((step + 1) % shear_sample_interval == 0) {
