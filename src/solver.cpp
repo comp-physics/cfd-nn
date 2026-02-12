@@ -1161,6 +1161,10 @@ double RANSSolver::step() {
     
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
     // GPU path: compute directly on GPU without CPU fill
+    // CRITICAL: Must fill ALL cells (including ghosts) with nu first, matching
+    // the CPU path's fill(). Ghost cells of nu_eff are read by the diffusion
+    // stencil at boundary faces (inlet, outlet, walls). Leaving them at 0
+    // causes nu_avg = nu/2 at boundaries, leading to systematic energy loss.
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_) {
         NVTX_PUSH("nu_eff_computation");
@@ -1176,10 +1180,20 @@ double RANSSolver::step() {
         const double* nu_t_ptr = nu_t_ptr_;
         const bool is_2d = mesh_->is2D();
 
-        if (is_2d) {
-            // 2D path
-            const int n_cells = Nx * Ny;
-            if (turb_model_) {
+        // Step 1: Fill ALL cells (including ghosts) with molecular viscosity
+        // This matches the CPU path's nu_eff_.fill(config_.nu) and ensures
+        // diffusion stencils at boundary faces use correct nu_avg values
+        #pragma omp target teams distribute parallel for \
+            map(present: nu_eff_ptr[0:total_size]) \
+            firstprivate(nu)
+        for (size_t idx = 0; idx < total_size; ++idx) {
+            nu_eff_ptr[idx] = nu;
+        }
+
+        // Step 2: Add nu_t to interior cells if turbulence model is active
+        if (turb_model_) {
+            if (is_2d) {
+                const int n_cells = Nx * Ny;
                 #pragma omp target teams distribute parallel for \
                     map(present: nu_eff_ptr[0:total_size]) \
                     map(present: nu_t_ptr[0:total_size]) \
@@ -1191,20 +1205,7 @@ double RANSSolver::step() {
                     nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
                 }
             } else {
-                #pragma omp target teams distribute parallel for \
-                    map(present: nu_eff_ptr[0:total_size]) \
-                    firstprivate(nu, stride, Nx, Ng)
-                for (int idx = 0; idx < n_cells; ++idx) {
-                    int i = idx % Nx + Ng;
-                    int j = idx / Nx + Ng;
-                    int cell_idx = j * stride + i;
-                    nu_eff_ptr[cell_idx] = nu;
-                }
-            }
-        } else {
-            // 3D path
-            const int n_cells = Nx * Ny * Nz;
-            if (turb_model_) {
+                const int n_cells = Nx * Ny * Nz;
                 #pragma omp target teams distribute parallel for \
                     map(present: nu_eff_ptr[0:total_size]) \
                     map(present: nu_t_ptr[0:total_size]) \
@@ -1215,17 +1216,6 @@ double RANSSolver::step() {
                     int k = idx / (Nx * Ny) + Ng;
                     int cell_idx = k * plane_stride + j * stride + i;
                     nu_eff_ptr[cell_idx] = nu + nu_t_ptr[cell_idx];
-                }
-            } else {
-                #pragma omp target teams distribute parallel for \
-                    map(present: nu_eff_ptr[0:total_size]) \
-                    firstprivate(nu, stride, plane_stride, Nx, Ny, Ng)
-                for (int idx = 0; idx < n_cells; ++idx) {
-                    int i = idx % Nx + Ng;
-                    int j = (idx / Nx) % Ny + Ng;
-                    int k = idx / (Nx * Ny) + Ng;
-                    int cell_idx = k * plane_stride + j * stride + i;
-                    nu_eff_ptr[cell_idx] = nu;
                 }
             }
         }

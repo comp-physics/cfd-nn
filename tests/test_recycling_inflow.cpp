@@ -6,6 +6,7 @@
 #include "mesh.hpp"
 #include "config.hpp"
 #include "fields.hpp"
+#include "test_utilities.hpp"
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -14,6 +15,7 @@
 #include <vector>
 
 using namespace nncfd;
+using nncfd::test::gpu::ensure_synced;
 
 // Test tolerance
 constexpr double TOL = 1e-10;
@@ -183,6 +185,7 @@ bool test_shift_correctness() {
     solver.extract_recycle_plane();
     solver.process_recycle_inflow();
     solver.apply_recycling_inlet_bc();
+    ensure_synced(solver);
 
     // Check: ghost cell at inlet should equal shifted recycle plane.
     // apply_recycling_inlet_bc() does NOT set u at the inlet face (i=Ng) —
@@ -265,6 +268,7 @@ bool test_flux_correction() {
     solver.extract_recycle_plane();
     solver.process_recycle_inflow();
     solver.apply_recycling_inlet_bc();
+    ensure_synced(solver);
 
     // Get inlet stats after
     double mean_after = plane_mean_u(solver.velocity(), mesh, Ng);
@@ -325,6 +329,7 @@ bool test_inlet_projection_enforcement() {
 
     // Take one step
     solver.step();
+    ensure_synced(solver);
 
     // Check inlet velocity is sane
     double mean_inlet = plane_mean_u(solver.velocity(), mesh, mesh.Nghost);
@@ -400,6 +405,7 @@ bool test_laminar_stability() {
     double final_rms = rms_initial;
     for (int i = 0; i < nsteps; ++i) {
         solver.step();
+        ensure_synced(solver);
         final_rms = plane_rms_u(solver.velocity(), mesh, mesh.Nghost + mesh.Nx/2);
 
         if (!std::isfinite(final_rms)) {
@@ -417,6 +423,7 @@ bool test_laminar_stability() {
     std::cout << "  RMS change: " << (rms_change * 100.0) << "% (limit: 5%)\n";
     std::cout << "  Laminar preserved: " << (rms_ok ? "OK" : "FAIL") << "\n";
 
+    ensure_synced(solver);
     double mean_final = plane_mean_u(solver.velocity(), mesh, mesh.Nghost + mesh.Nx/2);
     double expected_mean = u_max * 2.0 / 3.0;
     bool mean_ok = std::abs(mean_final - expected_mean) / expected_mean < 0.1;
@@ -488,6 +495,7 @@ bool test_perturbed_stability() {
 
     for (int i = 0; i < nsteps; ++i) {
         solver.step();
+        ensure_synced(solver);
 
         // Track max velocity
         for (int k = 0; k < mesh.Nz; ++k) {
@@ -563,6 +571,7 @@ bool test_inlet_recycle_similarity() {
     solver.extract_recycle_plane();
     solver.process_recycle_inflow();
     solver.apply_recycling_inlet_bc();
+    ensure_synced(solver);
 
     // Compute L2 difference
     double sum_sq_diff = 0.0;
@@ -628,11 +637,17 @@ bool test_energy_balance() {
     fill_poiseuille(vel, mesh, u_max);
     solver.initialize(vel);
 
+    // Print initial KE (step 0, before any stepping)
+    ensure_synced(solver);
+    double K_init = solver.compute_kinetic_energy();
+    double Ub_init = solver.compute_bulk_velocity();
+    std::cout << "  Step 0 (init): K=" << K_init << ", U_b=" << Ub_init << "\n";
+
     std::cout << "  Running 500 steps to approach steady state...\n";
 
     // Track energy balance over time
     std::vector<double> dKdt_samples, P_minus_eps_samples;
-    double K_prev = 0.0;
+    double K_prev = K_init;
 
     const int nsteps = 500;
     const int sample_interval = 50;
@@ -640,10 +655,22 @@ bool test_energy_balance() {
     for (int step = 0; step < nsteps; ++step) {
         solver.step();
 
+        // Early diagnostic: print Poisson info for first few steps
+        if (step < 3) {
+            auto& ps = solver.poisson_stats();
+            std::cout << "  Step " << (step+1) << " Poisson: cycles=" << ps.cycles
+                      << " status=" << ps.status_string()
+                      << " |r|/|b|=" << ps.res_over_rhs
+                      << " |b|_L2=" << ps.rhs_norm_l2
+                      << " |r|_L2=" << ps.res_norm_l2 << "\n";
+        }
+
         if (step % sample_interval == 0 && step > 0) {
+            ensure_synced(solver);
             double K = solver.compute_kinetic_energy();
             double P_in = solver.compute_power_input();
             double eps = solver.compute_viscous_dissipation();
+            double Ub = solver.compute_bulk_velocity();
 
             double dKdt = (K - K_prev) / (sample_interval * config.dt);
             double imbalance = P_in - eps;
@@ -651,17 +678,20 @@ bool test_energy_balance() {
             dKdt_samples.push_back(dKdt);
             P_minus_eps_samples.push_back(imbalance);
 
-            if (step == sample_interval || step == nsteps - sample_interval) {
-                std::cout << "  Step " << step << ": K=" << K
-                          << ", P_in=" << P_in << ", eps=" << eps
-                          << ", P-eps=" << imbalance << "\n";
-            }
+            auto& ps = solver.poisson_stats();
+            std::cout << "  Step " << (step+1) << ": K=" << K
+                      << ", U_b=" << Ub
+                      << ", P_in=" << P_in << ", eps=" << eps
+                      << ", Poisson=" << ps.cycles << "/" << ps.status_string()
+                      << " |r/b|=" << ps.res_over_rhs << "\n";
 
             K_prev = K;
         }
 
         if (step == 0) {
+            ensure_synced(solver);
             K_prev = solver.compute_kinetic_energy();
+            std::cout << "  Step 1: K=" << K_prev << "\n";
         }
     }
 
@@ -680,6 +710,7 @@ bool test_energy_balance() {
     std::cout << "  Mean P_in - eps (second half): " << mean_P_eps << "\n";
 
     // In steady state, |dK/dt| should be small compared to P_in
+    ensure_synced(solver);
     double P_in_final = solver.compute_power_input();
     bool dKdt_ok = std::abs(mean_dKdt) < 0.1 * std::abs(P_in_final);
     std::cout << "  dK/dt check: " << (dKdt_ok ? "OK" : "FAIL") << "\n";
@@ -1153,6 +1184,7 @@ bool test_inlet_memory() {
         u_history.clear();
         for (int step = 0; step < 500; ++step) {
             solver.step();
+            ensure_synced(solver);
             u_history.push_back(solver.velocity().u(i_probe, j_probe, k_probe));
         }
     };

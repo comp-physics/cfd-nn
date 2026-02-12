@@ -129,6 +129,32 @@ double gpu_weighted_sum_reduce(double* dev_ptr, double* area_ptr, int n_param) {
     }
     return sum;
 }
+
+/// Sum of squares reduction: sum(u^2)
+double gpu_sum_sq_reduce(double* dev_ptr, int n_param) {
+    const int n = n_param;
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for reduction(+:sum) \
+        is_device_ptr(dev_ptr) firstprivate(n)
+    for (int i = 0; i < n; ++i) {
+        sum += dev_ptr[i] * dev_ptr[i];
+    }
+    return sum;
+}
+
+/// Sum of squared deviations from mean: sum((u - mean)^2)
+double gpu_sum_fluct_sq(double* dev_ptr, int n_param, double mean_param) {
+    const int n = n_param;
+    const double mean = mean_param;
+    double sum = 0.0;
+    #pragma omp target teams distribute parallel for reduction(+:sum) \
+        is_device_ptr(dev_ptr) firstprivate(n, mean)
+    for (int i = 0; i < n; ++i) {
+        double d = dev_ptr[i] - mean;
+        sum += d * d;
+    }
+    return sum;
+}
 #endif
 
 } // anonymous namespace
@@ -521,6 +547,8 @@ void RANSSolver::process_recycle_inflow() {
     double* in_u = inlet_u_ptr_;
     double* in_v = inlet_v_ptr_;
     double* in_w = inlet_w_ptr_;
+    const bool track_diag = (config_.recycle_diag_interval > 0) && !diag_u_copy_.empty();
+    const double eps = 1e-14;
 
     // Step 1: Apply spanwise shift to u (Ny × Nz)
     const int n_u = Ny * Nz;
@@ -556,10 +584,30 @@ void RANSSolver::process_recycle_inflow() {
         in_w[k * Ny + j] = rec_w[k_src * Ny + j];
     }
 
+    // [Diag] Capture state after copy+shift (GPU)
+    if (track_diag) {
+        recycle_diag_.L2_copy = std::sqrt(gpu_sum_sq_reduce(in_u, n_u));
+    }
+
     // Step 2: Temporal filtering (if enabled)
     if (use_filter) {
         // Would need inlet_u_filt_ptr_ etc. on GPU - skipping for now
         // In practice, filtering on GPU requires additional device buffers
+    }
+
+    // [Diag] Capture state after AR1 filter (GPU) - same as copy when no filter
+    if (track_diag) {
+        recycle_diag_.L2_ar1 = recycle_diag_.L2_copy;
+        recycle_diag_.rel_d_copy_ar1 = 0.0;
+    }
+
+    // [Diag] Capture u_mean and u'_rms BEFORE mean correction (GPU)
+    if (track_diag) {
+        double sum_u_diag = gpu_sum_reduce(in_u, n_u);
+        double mean_u_diag = sum_u_diag / static_cast<double>(n_u);
+        double fluct_sq = gpu_sum_fluct_sq(in_u, n_u, mean_u_diag);
+        recycle_diag_.u_mean_before_corr = mean_u_diag;
+        recycle_diag_.u_rms_before_corr = std::sqrt(fluct_sq / static_cast<double>(n_u));
     }
 
     // Step 3: Compute bulk velocity and adjust for target
@@ -596,6 +644,22 @@ void RANSSolver::process_recycle_inflow() {
     double bulk_adjust = bulk_u * (scale - 1.0);
     gpu_add_scalar(in_u, n_u, bulk_adjust);
 
+    // [Diag] Capture state after mean correction (GPU)
+    if (track_diag) {
+        recycle_diag_.L2_mean = std::sqrt(gpu_sum_sq_reduce(in_u, n_u));
+        double L2_diff = std::abs(bulk_adjust) * std::sqrt(static_cast<double>(n_u));
+        recycle_diag_.rel_d_ar1_mean = L2_diff / (recycle_diag_.L2_ar1 + eps);
+
+        double sum_u_diag = gpu_sum_reduce(in_u, n_u);
+        double mean_u_diag = sum_u_diag / static_cast<double>(n_u);
+        double fluct_sq = gpu_sum_fluct_sq(in_u, n_u, mean_u_diag);
+        recycle_diag_.u_mean_after_corr = mean_u_diag;
+        recycle_diag_.u_rms_after_corr = std::sqrt(fluct_sq / static_cast<double>(n_u));
+
+        recycle_diag_.scale_factor = scale;
+        recycle_diag_.clamp_hit = (raw_scale != scale);
+    }
+
     // Step 4: Remove net transverse flow (optional)
     if (config_.recycle_remove_transverse_mean) {
         // Subtract mean v (using helper to avoid 'this' transfer)
@@ -607,6 +671,22 @@ void RANSSolver::process_recycle_inflow() {
         double sum_w = gpu_sum_reduce(in_w, n_w);
         double mean_w = sum_w / static_cast<double>(n_w);
         gpu_sub_scalar(in_w, n_w, mean_w);
+    }
+
+    // [Diag] Final diagnostics (GPU)
+    if (track_diag) {
+        recycle_diag_.L2_final = recycle_diag_.L2_mean;  // u unchanged by transverse removal
+        recycle_diag_.rel_d_mean_final = 0.0;
+        recycle_diag_.rel_d_total = recycle_diag_.rel_d_ar1_mean;
+
+        // Compute final transverse means (should be ~0 after removal)
+        double v_mean_fin = gpu_sum_reduce(in_v, n_v) / static_cast<double>(n_v);
+        double w_mean_fin = gpu_sum_reduce(in_w, n_w) / static_cast<double>(n_w);
+        recycle_diag_.v_mean_final = v_mean_fin;
+        recycle_diag_.w_mean_final = w_mean_fin;
+
+        recycle_diag_.step = iter_;
+        recycle_diag_.shift_k = shift_k;
     }
 
     // Always accumulate running statistics (GPU path)
