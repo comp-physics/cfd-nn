@@ -92,7 +92,7 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 # MLP model
 ./channel --model nn_mlp --nn_preset example_scalar_nut --Nx 16 --Ny 32
 
-# TBNN model  
+# TBNN model
 ./channel --model nn_tbnn --nn_preset example_tbnn --Nx 16 --Ny 32
 ```
 
@@ -108,6 +108,49 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 - Most time in NN inference (larger networks are slower)
 
 **Note:** Real trained weights from published models are needed for meaningful validation.
+
+### DNS Channel Flow (No Turbulence Model)
+
+DNS resolves all turbulence scales directly without any model. See `docs/DNS_CHANNEL_GUIDE.md` for the full guide.
+
+**Target:** Re_tau = 180 channel (Moser, Kim & Mansour 1999)
+
+**Grid:** 192 x 96 x 192, Lx = 4pi, Ly = 2, Lz = 2pi, stretch_beta = 2.0
+
+**Run history:**
+
+| Run | Filter | CFL | Result | Re_tau | Notes |
+|-----|--------|-----|--------|--------|-------|
+| v9 | none | CFL_xz=0.30, CFL_max=0.15 | Blew up ~step 1700 | N/A | Turbulent before blow-up |
+| v10 | strength=0.02, interval=10 (x/z only) | same | Blew up ~step 2000 | N/A | Survived longer |
+| v11 | strength=0.05, interval=1 (x/y/z) | same | Stable, 3600+ steps | ~255 | First stable run |
+| v13 | strength=0.03, interval=2 (x/y/z) | same | Stable, 2400+ steps | ~278 | Best balance |
+
+**Key results from v11 (first fully stable DNS):**
+
+| Step | Re_tau | v_max | w/v ratio | State |
+|------|--------|-------|-----------|-------|
+| 1200 | 222 | 16.7 | 0.054 | TURBULENT, trip OFF |
+| 1800 | 250 | 15.2 | 0.609 | TURBULENT |
+| 2400 | 307 | 15.3 | 1.454 | TURBULENT (peak Re_tau) |
+| 3600 | 255 | 20.6 | 1.21 | TURBULENT (stabilizing) |
+
+**Known gap:** The velocity filter adds effective viscosity, so the achieved Re_tau (~255-278) exceeds the target of 180. Reaching the exact target would require a less dissipative convective scheme (e.g., hybrid skew-symmetric/upwind).
+
+### Recycling Inflow Validation
+
+See `docs/RECYCLING_INFLOW_GUIDE.md` for the full guide.
+
+**PeriodicVsRecyclingTest:** Runs identical channel flow with periodic BCs and with recycling inflow BCs, then compares plane-averaged statistics:
+
+| Metric | Tolerance | Achieved |
+|--------|-----------|----------|
+| Shear stress difference | < 5% | ~0.3% |
+| Streamwise stress difference | < 5% | ~3.6% |
+
+**RecyclingInflowTest:** 12 checks covering symmetry, mass conservation, divergence, fringe blending, ghost cells. All 12 passing on both CPU and GPU.
+
+---
 
 ## Unit Tests
 
@@ -130,6 +173,35 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 - Convergence for manufactured solution
 - Boundary conditions (Dirichlet, Neumann, periodic)
 
+### Multigrid Manufactured Solution
+```bash
+./test_mg_manufactured_solution
+```
+**Tests:**
+- Standard channel BCs (periodic x/z, Neumann y)
+- Duct BCs (periodic x, Neumann y/z)
+- Recycling inflow BCs (Dirichlet x_lo, Neumann x_hi, Neumann y, periodic z)
+- CPU/GPU consistency (max difference = 0.0 for identical inputs)
+
+### FFT Unified Test
+```bash
+./test_fft_unified
+```
+**Tests:**
+- FFT 3D solver (periodic x/z channel)
+- FFT 1D solver (periodic x duct)
+- Grid convergence (error decreases with resolution)
+- GPU/CPU consistency
+
+### Recycling Inflow Tests
+```bash
+./test_recycling_inflow
+./test_periodic_vs_recycling
+```
+**Tests:**
+- RecyclingInflowTest: 12 checks (symmetry, u_tau, mass conservation, fringe, divergence, ghost cells, etc.)
+- PeriodicVsRecyclingTest: recycling matches periodic within 5% for shear and streamwise stress
+
 ### Neural Network Loading
 ```bash
 ./test_nn_simple
@@ -140,18 +212,20 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 - Feature computation
 - TurbulenceNNMLP and TurbulenceNNTBNN initialization
 
+---
+
 ## Known Issues and Limitations
 
 ### Numerical
 
 1. **Explicit time stepping** limits timestep for low viscosity
-   - **Solution:** Add semi-implicit diffusion or adaptive timestepping
+   - **Mitigation:** Adaptive time stepping with directional CFL is now implemented. See `docs/DNS_CHANNEL_GUIDE.md`.
 
-2. **SOR Poisson solver** is slow and non-optimal
-   - **Solution:** Implement multigrid or conjugate gradient
+2. **Central differences require velocity filter for DNS stability**
+   - Second-order central schemes have zero numerical dissipation, causing grid-scale blow-up in DNS. The velocity filter (`filter_strength`, `filter_interval`) provides explicit diffusion but adds effective viscosity. See `docs/DNS_CHANNEL_GUIDE.md`.
 
-3. **First-order upwind** for convection is diffusive
-   - **Solution:** Use central differences (default) or implement higher-order schemes
+3. **Filter-limited Re_tau in DNS**
+   - The velocity filter prevents reaching the exact target Re_tau = 180. Best achieved: Re_tau ~ 278 with strength=0.03, interval=2. A higher-order or hybrid convective scheme would reduce filter requirements.
 
 ### Model-Related
 
@@ -163,6 +237,14 @@ For nu = 0.01, dy = 0.03125, the diffusion limit gives dt_max ~= 0.000049, requi
 
 6. **No automatic feature set detection**
    - **Solution:** Manually configure features per model for now
+
+### GPU-Specific
+
+7. **CPU-side diagnostics require GPU sync**
+   - Functions that read velocity data on the CPU (e.g., `accumulate_statistics()`, `validate_turbulence_realism()`) must call `sync_solution_from_gpu()` first. The solver handles this internally for built-in diagnostics, but custom code must sync manually.
+
+8. **Recycling inflow disables CUDA Graph V-cycle**
+   - Because recycling modifies inlet BCs each step, the CUDA Graph is invalid. The solver falls back to the standard V-cycle path (~10-20% slower for Poisson solves).
 
 ## Convergence Criteria
 
@@ -176,6 +258,7 @@ Typical convergence:
 - **Laminar:** Exponential decay, reaches tol=1e-8 reliably
 - **Baseline turbulence:** Slower convergence, reaches tol=1e-6
 - **NN models:** Depends on weights (untrained weights diverge)
+- **DNS (unsteady):** Residual does not converge to zero; use `max_steps` to control run length
 
 ## Performance Summary
 
@@ -197,28 +280,14 @@ Typical convergence:
 - NN inference: 95%
 - Rest of solver: 5%
 
-## Recommendations
-
-### For Production Use
-
-1. **Implement adaptive timestepping** - essential for robustness
-2. **Optimize Poisson solver** - currently the bottleneck
-3. **Add real trained NN models** - examples are just infrastructure tests
-4. **Validate against DNS data** - obtain reference solutions for target cases
-
-### For Development
-
-1. **Add VTK output** - for visualization in ParaView
-2. **Create comprehensive test suite** - automated validation
-3. **Profile and optimize NN inference** - batch operations, reduce allocations
-4. **Add OpenMP parallelization** - easy speedup for field operations
-
 ## References
 
 - **Poiseuille flow:** Classical analytical solution
 - **Mixing length:** Pope, "Turbulent Flows" (2000)
 - **TBNN:** Ling et al., JFM 807 (2016)
+- **DNS channel:** Moser, Kim & Mansour, Physics of Fluids 11.4 (1999)
+- **Recycling inflow:** Lund, Wu & Squires, J. Comput. Phys. 140.2 (1998)
 
 ---
 
-**Last updated:** Implementation of laminar solver, baseline turbulence model, and NN infrastructure (2024)
+**Last updated:** February 2025 — Added DNS channel flow results, recycling inflow validation, MG manufactured solution tests, FFT unified tests

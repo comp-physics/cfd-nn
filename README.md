@@ -7,10 +7,13 @@ A **high-performance C++ solver** for **incompressible turbulent flow** with **p
 ## Features
 
 - **Fractional-step projection method** for incompressible Navier-Stokes
-  - Explicit Euler time integration with adaptive CFL-based time stepping
+  - Explicit time integration (Euler, RK2, RK3) with adaptive CFL-based time stepping
+  - Directional CFL constraints for stretched grids
   - Multiple Poisson solvers with automatic selection (FFT, Multigrid, HYPRE)
   - Pressure projection for divergence-free velocity
 - **Staggered MAC grid** with second-order central finite differences
+- **DNS capability** with trip forcing, velocity filter, and turbulence diagnostics
+- **Recycling inflow BC** for spatially-developing turbulent flows (Lund et al. 1998)
 - **10 turbulence closures**: algebraic, transport, EARSM, and neural network models
 - **Pure C++ NN inference** - no Python/TensorFlow at runtime
 - **GPU acceleration** via OpenMP target directives for NVIDIA and AMD GPUs
@@ -24,9 +27,10 @@ A **high-performance C++ solver** for **incompressible turbulent flow** with **p
 - [Poisson Solvers](#poisson-solvers)
 - [Turbulence Closures](#turbulence-closures)
 - [Supported Flow Configurations](#supported-flow-configurations)
-- [Command-Line Options](#command-line-options)
+- [Configuration Reference](#configuration-reference)
 - [GPU Acceleration](#gpu-acceleration)
 - [Validation](#validation)
+- [Detailed Guides](#detailed-guides)
 - [References](#references)
 
 ---
@@ -134,11 +138,24 @@ where $\nu_e, \nu_w$ are face-averaged effective viscosities.
 
 ### Time Integration
 
-**Explicit Euler** with adaptive time stepping:
+**Explicit integrators** (Euler, RK2, RK3) with adaptive time stepping.
 
-$$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delta y}{|v|_{\max}}, \frac{\Delta z}{|w|_{\max}}\right)$$
+#### Directional CFL
 
-- **CFL number**: Default 0.5 (configurable via `--CFL`)
+For stretched grids (common in wall-bounded DNS), the solver supports **separate CFL numbers** for different directions to avoid unnecessarily small time steps:
+
+$$\Delta t = \text{dt\_safety} \cdot \min\left(\frac{\text{CFL}_{xz} \cdot \Delta x}{|u|_{\max}},\; \frac{\text{CFL}_{\max}}{(|v|/\Delta y)_{\max}},\; \frac{\text{CFL}_{xz} \cdot \Delta z}{|w|_{\max}},\; \Delta t_{\text{diff}}\right)$$
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `CFL_max` | 0.5 | CFL for y-direction (strict on stretched grids) |
+| `CFL_xz` | -1 | CFL for x/z directions (-1 = use CFL_max) |
+| `dt_safety` | 1.0 | Safety multiplier on computed dt |
+
+The y-direction uses `CFL_max` with per-cell $|v|/\Delta y$ to account for variable grid spacing. For DNS, typical values are `CFL_max = 0.15`, `CFL_xz = 0.30`, `dt_safety = 0.85`.
+
+See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) for details on directional CFL tuning.
+
 - **Steady-state convergence**: Iterate until $\|\mathbf{u}^{n+1} - \mathbf{u}^n\|_\infty < \text{tol}$
 
 ---
@@ -153,8 +170,9 @@ $$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delt
 | **No-slip (Wall)** | Zero velocity at solid surfaces | $u = v = w = 0$ at wall |
 | **Inflow** | Prescribed velocity profile | User-defined function callbacks |
 | **Outflow** | Convective/zero-gradient outflow | Extrapolation from interior |
+| **Recycling Inflow** | Turbulent inflow from downstream recycle plane | Lund et al. (1998) with fringe blending |
 
-**Note:** Inflow/Outflow boundary conditions are defined in the code interface but not yet fully implemented for all solvers.
+**Recycling Inflow:** Generates realistic turbulent inlet data by extracting, shifting, and blending a downstream velocity plane back to the inlet. Includes mass flux correction and divergence correction for clean pressure solves. See [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md) for details.
 
 ### Pressure (Poisson) Boundary Conditions
 
@@ -201,7 +219,7 @@ FFT (3D) → FFT2D (2D) → FFT1D (3D partial-periodic) → HYPRE → Multigrid
 | **FFT2D** | O(N log N) | 2D channel flows | 2D mesh, periodic x |
 | **FFT1D** | O(N log N) + 2D solve | 3D duct flows | Periodic x OR z (one only) |
 | **HYPRE PFMG** | O(N) | Stretched grids, GPU | `USE_HYPRE` build flag |
-| **Multigrid** | O(N) | General fallback | Always available |
+| **Multigrid** | O(N) | General fallback, stretched grids | Always available |
 | **SOR** | O(N²) | Testing/debugging | Always available |
 
 ### Geometric Multigrid (V-Cycle)
@@ -217,8 +235,12 @@ The default solver implements a geometric multigrid V-cycle:
 **Features:**
 - O(N) complexity (optimal)
 - 5-15 V-cycles to convergence (vs 1000-10000 SOR iterations)
+- **Semi-coarsening** for stretched y-grids: coarsens x/z only, uses y-line Thomas smoother
+- **PCG coarse solver** with breakdown restart and convergence check throttling
 - **CUDA Graph optimization**: Entire V-cycle captured as single GPU graph (NVHPC compilers)
-- Chebyshev polynomial smoother (faster than Jacobi)
+- Chebyshev polynomial smoother with Gershgorin eigenvalue bounds
+
+See [`docs/POISSON_SOLVER_GUIDE.md`](docs/POISSON_SOLVER_GUIDE.md) for the full guide including semi-coarsening details.
 
 **Convergence Criteria** (any triggers exit):
 - `tol_rhs`: RHS-relative $\|r\|/\|b\| < \epsilon$ (recommended for projection)
@@ -393,6 +415,26 @@ Pressure-driven flow in square cross-section.
 | Laminar duct | Periodic x, walls y and z | 3D solver validation |
 | Turbulent duct | Periodic x, walls y and z | Secondary flow study |
 
+### 3D DNS Channel Flow
+
+Direct Numerical Simulation of turbulent channel flow without any turbulence model.
+
+| Configuration | BCs | Use Case |
+|---------------|-----|----------|
+| DNS Re_tau=180 | Periodic x/z, walls y | Turbulence benchmark (MKM 1999) |
+
+Requires trip forcing for transition, velocity filter for stability, directional CFL for stretched grids. See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md).
+
+### Spatially-Developing Channel (Recycling Inflow)
+
+Channel flow with turbulent inflow generated by recycling from a downstream plane.
+
+| Configuration | BCs | Use Case |
+|---------------|-----|----------|
+| Recycling inflow | Inflow x_lo, outflow x_hi, walls y, periodic z | Spatially-developing turbulence |
+
+See [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md).
+
 ### 3D Taylor-Green Vortex
 
 Classic benchmark for unsteady flow and energy decay.
@@ -462,13 +504,15 @@ The solver uses the relationship: $\text{Re} = \frac{-dp/dx \cdot \delta^3}{3\nu
 |-----------|-----|---------|-------------|
 | `dt` | `--dt` | 0.001 | Time step size (when not using adaptive) |
 | `adaptive_dt` | `--adaptive_dt` | true | Enable CFL-based adaptive time stepping |
-| `CFL_max` | `--CFL` | 0.5 | Maximum CFL number for adaptive dt |
+| `CFL_max` | `--CFL` | 0.5 | Maximum CFL number for adaptive dt (used for y-direction) |
+| `CFL_xz` | - | -1.0 | CFL for x/z directions (-1 = use CFL_max). Set higher than CFL_max for stretched grids |
+| `dt_safety` | - | 1.0 | Safety multiplier on computed dt (0.5-1.0). Provides headroom for within-step CFL growth |
+| `time_integrator` | - | `euler` | Time integrator: `euler`, `rk2`, or `rk3` |
 | `max_steps` | `--max_steps` | 10000 | Maximum iterations (steady) or time steps (unsteady) |
 | `T_final` | - | -1.0 | Final simulation time (-1 = use max_iter instead) |
 | `tol` | `--tol` | 1e-6 | Convergence tolerance for steady-state |
 
-**When adaptive_dt is enabled** (default), the time step is computed each iteration as:
-$$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delta y}{|v|_{\max}}, \frac{\Delta z}{|w|_{\max}}\right)$$
+**Directional CFL:** When `CFL_xz` is set, the x/z directions use `CFL_xz` while y uses the stricter `CFL_max`. This is essential for stretched grids where dy_min << dx. See [Directional CFL](docs/DNS_CHANNEL_GUIDE.md#time-stepping-directional-cfl).
 
 ### Simulation Mode
 
@@ -516,6 +560,59 @@ $$\Delta t = \text{CFL} \cdot \min\left(\frac{\Delta x}{|u|_{\max}}, \frac{\Delt
 - `--weights DIR --scaling DIR` (explicit paths)
 
 Available presets: `tbnn_channel_caseholdout`, `tbnn_phll_caseholdout`, `example_tbnn`, `example_scalar_nut`
+
+### Trip Forcing (DNS Transition)
+
+Body forcing to trigger laminar-to-turbulent transition in DNS. See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) for details.
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `trip_enabled` | - | false | Enable trip forcing |
+| `trip_amplitude` | - | 3.0 | Forcing amplitude (scaled by u_tau^2). 1-5 typical |
+| `trip_duration` | - | 2.0 | Total duration of trip forcing (**physical time**, not steps) |
+| `trip_ramp_off_start` | - | 1.5 | When ramp-off begins (**physical time**) |
+| `trip_x_start` | - | -1.0 | Start x-location of trip region (-1 = auto: 0.1*Lx) |
+| `trip_x_end` | - | -1.0 | End x-location (-1 = auto: 0.2*Lx) |
+| `trip_n_modes_z` | - | 8 | Number of spanwise Fourier modes |
+| `trip_force_w` | - | true | Also force w-velocity (creates vortical structures) |
+| `trip_w_scale` | - | 1.0 | Scale factor for w forcing (>1 boosts 3D structures) |
+
+**Important:** `trip_duration` and `trip_ramp_off_start` are in **physical simulation time** (compared against `current_time_`), not in friction time units or step counts.
+
+### Velocity Filter
+
+Explicit Laplacian filter for DNS stability. See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) for tuning guide.
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `filter_strength` | - | 0.0 | Filter coefficient (0 = disabled). Range: 0.01-0.05 |
+| `filter_interval` | - | 10 | Apply filter every N steps (0 = disabled) |
+
+The filter applies a 3D discrete Laplacian: `u_new = u + alpha*(Lx+Lz) + alpha_y*Ly` where `alpha = strength*0.25` and `alpha_y = alpha*0.5`. Must be applied **before** projection step.
+
+### Recycling Inflow
+
+Turbulent inflow BC from downstream recycle plane. See [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md) for the full guide.
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `recycling_inflow` | - | false | Enable recycling inflow at x_lo |
+| `recycle_x` | - | -1.0 | x-location of recycle plane (-1 = auto: x_min + 10*delta) |
+| `recycle_shift_z` | - | -1 | Spanwise shift in cells (-1 = auto: Nz/4) |
+| `recycle_shift_interval` | - | 100 | Steps between shift updates (0 = constant) |
+| `recycle_filter_tau` | - | -1.0 | AR1 filter timescale (-1 = disabled) |
+| `recycle_fringe_length` | - | -1.0 | Fringe zone length (-1 = auto: 2*delta) |
+| `recycle_target_bulk_u` | - | -1.0 | Target bulk velocity (-1 = from initial condition) |
+| `recycle_remove_transverse_mean` | - | true | Remove mean v,w at inlet |
+| `recycle_diag_interval` | - | 0 | Recycling diagnostics frequency (0 = disabled) |
+
+### Performance Modes
+
+| Parameter | CLI | Default | Description |
+|-----------|-----|---------|-------------|
+| `perf_mode` | - | false | Reduced diagnostics (auto-sets diag_interval=50, poisson_check_interval=5) |
+| `gpu_only_mode` | - | false | Strict GPU-only (no CPU fallbacks, no full-field host reads) |
+| `diag_interval` | - | 1 | Expensive diagnostics frequency (set >1 for performance) |
 
 ### Poisson Solver
 
@@ -651,6 +748,10 @@ CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_HYPRE=ON
 - Turbulence transport equations (k, ω)
 - EARSM tensor basis computations
 - Neural network inference
+- Recycling inflow (plane extraction, shift, mass correction, divergence correction, fringe blending)
+- Velocity filter
+- Trip forcing
+- Adaptive dt computation (directional CFL reductions)
 
 ### CUDA Graph Optimization
 
@@ -658,6 +759,14 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 - Eliminates per-kernel launch overhead
 - Single `cudaGraphLaunch()` replaces O(levels × kernels) launches
 - Automatically recaptured if boundary conditions change
+- Disabled automatically for recycling inflow (BCs change each step) and semi-coarsening
+- Can be disabled via `poisson_use_vcycle_graph = false` or `disable_vcycle_graph()` API
+
+### GPU-Specific Notes
+
+- **`gpu_only_mode`**: When enabled, avoids CPU fallbacks and full-field host reads for maximum performance. Diagnostics that require CPU-side data are skipped.
+- **GPU sync**: CPU-side diagnostics (statistics, validation) call `sync_solution_from_gpu()` internally. Custom diagnostic code must sync manually before reading velocity data on the host.
+- **Build with compute capability**: For specific GPU architectures, use `cmake .. -DGPU_CC=90` (H200) or appropriate value.
 
 ---
 
@@ -678,12 +787,28 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 | Momentum balance | Body force = wall shear (< 10% imbalance) |
 | Channel symmetry | $u(y) = u(-y)$ (machine precision) |
 
-### DNS Benchmarks
+### DNS Channel Flow
 
-| Test Case | Reference |
-|-----------|-----------|
-| Channel Re_τ = 180, 395, 590 | Moser, Kim & Mansour (1999) |
-| McConkey et al. dataset | Scientific Data 8, 255 (2021) |
+| Test Case | Status | Re_tau Achieved | Reference |
+|-----------|--------|-----------------|-----------|
+| Channel Re_tau = 180 | Stable (filter-limited) | ~255-278 | Moser, Kim & Mansour (1999) |
+
+See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) and [`docs/VALIDATION.md`](docs/VALIDATION.md) for run history and tuning details.
+
+### Recycling Inflow
+
+| Test | Status | Tolerance |
+|------|--------|-----------|
+| PeriodicVsRecycling | Pass | < 5% shear stress, < 5% streamwise stress |
+| RecyclingInflow (12 checks) | Pass | All passing on CPU and GPU |
+
+See [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md).
+
+### Dataset
+
+| Dataset | Reference |
+|---------|-----------|
+| McConkey et al. | Scientific Data 8, 255 (2021) |
 
 ---
 
@@ -712,6 +837,19 @@ python scripts/train_tbnn_mcconkey.py \
 
 ---
 
+## Detailed Guides
+
+| Guide | Description |
+|-------|-------------|
+| [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) | DNS channel flow: grid requirements, trip forcing, directional CFL, velocity filter, diagnostics, troubleshooting |
+| [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md) | Recycling inflow BC: theory, configuration, GPU implementation, testing |
+| [`docs/POISSON_SOLVER_GUIDE.md`](docs/POISSON_SOLVER_GUIDE.md) | All Poisson solvers: FFT, MG (semi-coarsening, CUDA Graph), HYPRE, selection guide |
+| [`docs/VALIDATION.md`](docs/VALIDATION.md) | Validation results: Poiseuille, DNS, recycling inflow, test suite |
+| [`docs/HYPRE_POISSON_SOLVER.md`](docs/HYPRE_POISSON_SOLVER.md) | HYPRE PFMG GPU solver details |
+| [`docs/TRAINING_GUIDE.md`](docs/TRAINING_GUIDE.md) | Training neural network turbulence models |
+
+---
+
 ## References
 
 ### Numerical Methods
@@ -731,6 +869,11 @@ python scripts/train_tbnn_mcconkey.py \
 
 - Ling, J., Kurzawski, A., & Templeton, J. "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance." *J. Fluid Mech.* 807 (2016): 155-166
 - Weatheritt, J., & Sandberg, R. D. "A novel evolutionary algorithm applied to algebraic modifications of the RANS stress-strain relationship." *J. Comput. Phys.* 325 (2016): 22-37
+
+### DNS and Inflow Methods
+
+- Moser, R. D., Kim, J., & Mansour, N. N. "Direct numerical simulation of turbulent channel flow up to Re_tau = 590." *Physics of Fluids* 11.4 (1999): 943-945
+- Lund, T. S., Wu, X., & Squires, K. D. "Generation of turbulent inflow data for spatially-developing boundary layer simulations." *J. Comput. Phys.* 140.2 (1998): 233-258
 
 ### Dataset
 
