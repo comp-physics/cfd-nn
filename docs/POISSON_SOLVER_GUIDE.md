@@ -10,7 +10,7 @@ This document provides a comprehensive overview of all Poisson solvers available
 | **FFT2D** | 2D channel flows | Yes | y only | Periodic x, uniform dx, 2D mesh |
 | **FFT1D** | 3D duct flows | Yes | Non-periodic dirs | Periodic x OR z (exactly one), 3D |
 | **HYPRE PFMG** | Stretched grids | Yes | All dirs | USE_HYPRE build |
-| **Native Multigrid** | General fallback | Yes | Limited | Always available |
+| **Native Multigrid** | General fallback | Yes | Yes (semi-coarsening) | Always available |
 | **SOR** | Testing only | No | Yes | Always available |
 
 ## Solver Selection
@@ -176,7 +176,6 @@ Geometric multigrid with V-cycle and Chebyshev smoothing. Implemented with OpenM
 
 ### When NOT to Use
 - When FFT variants or HYPRE is applicable (both are faster for their specific cases)
-- Heavily stretched grids (HYPRE handles better)
 
 ### V-Cycle Algorithm
 ```
@@ -224,6 +223,63 @@ config.poisson_use_vcycle_graph = false;  // Disable for debugging
 - 2D meshes: V-cycle graph disabled (not fully optimized for 2D)
 - Graph capture failure: Falls back to non-graphed path with warning
 
+### Semi-Coarsening for Stretched Grids
+
+Standard geometric multigrid coarsens uniformly in all directions. This fails for stretched y-grids (common in wall-bounded flows) because dy_min << dx, dz — coarsening in y destroys the wall-normal resolution that the stretching was designed to provide.
+
+**Solution:** Semi-coarsening coarsens only x and z, keeping y resolution constant across all levels.
+
+**How it works:**
+1. If `stretch_y = true`, semi-coarsening is automatically enabled
+2. Each coarser level halves Nx and Nz but **keeps Ny unchanged**
+3. Grid spacing: dx and dz double per level, dy stays constant
+4. All levels share the same y-metric coefficients (precomputed on the finest level)
+5. Coarsening stops when Nx or Nz reaches 8 cells (minimum coarse size)
+
+**Why this works:** The y-direction anisotropy is handled by the **y-line smoother** (Thomas algorithm), which solves tridiagonal systems along each y-column exactly. The x/z modes are handled by standard geometric multigrid coarsening.
+
+**Y-line Smoother (Thomas Algorithm):**
+
+For each (i, k) pair, a tridiagonal system is solved along the y-direction:
+
+```
+-aS[j]*u[j-1] + diag[j]*u[j] - aN[j]*u[j+1] = rhs[j]
+```
+
+where `rhs[j] = f[j] - Lx(u) - Lz(u)` (x/z Laplacian terms frozen from current iterate).
+
+The Thomas algorithm is O(Ny) per line and massively parallel on GPU (Nx x Nz independent lines). For GPU execution, thread-local stack arrays are used (limited to Ny <= 128). A pivot guard (eps = 1e-14) prevents NaN from zero pivots.
+
+### PCG Coarse Solver
+
+The coarsest multigrid level uses a **Preconditioned Conjugate Gradient (PCG)** solver instead of direct smoothing. The preconditioner is 2 sweeps of the y-line smoother.
+
+**Breakdown Restart:**
+
+PCG can fail when `p^T A p` approaches zero (search direction becomes orthogonal to the operator). Instead of aborting, the solver detects this and restarts:
+
+```
+if |p^T A p| < 1e-30:
+    Re-precondition current residual (2 y-line sweeps)
+    Project out nullspace (if Neumann/periodic BCs)
+    Reset search direction: p = z (preconditioned residual)
+    Continue CG iteration
+```
+
+This is critical for robustness — without it, the coarse solver would occasionally abort and the entire Poisson solve would fail.
+
+**Convergence Check Throttling:**
+
+Computing the residual norm requires a GPU-to-CPU reduction (synchronization point). To minimize this overhead, the residual is only checked every 4th CG iteration:
+
+```
+if (iter % 4 == 3 || iter == max_iters - 1):
+    compute ||r||^2 (GPU reduction)
+    if ||r||^2 < tol^2 * ||r0||^2: converged
+```
+
+This reduces GPU→CPU sync overhead by ~75% with negligible impact on convergence (at most 3 extra iterations).
+
 ### Chebyshev Smoothing
 
 The MG solver uses Chebyshev polynomial smoothing instead of Jacobi/Gauss-Seidel:
@@ -233,15 +289,60 @@ The MG solver uses Chebyshev polynomial smoothing instead of Jacobi/Gauss-Seidel
 - Fully parallel (no red-black ordering needed)
 - Optimal for GPU execution
 
-**Eigenvalue bounds:**
-- For the 7-point discrete Laplacian, eigenvalues of D⁻¹A are in (0, 2)
-- Conservative bounds [0.05, 1.95] used for numerical stability
-- Defined as `CHEBYSHEV_LAMBDA_MIN` and `CHEBYSHEV_LAMBDA_MAX` constants
+**Eigenvalue bounds (Gershgorin):**
+
+The optimal Chebyshev weights require bounds on the eigenvalues of the Jacobi-preconditioned operator D^{-1}A. These are computed per-level using the Gershgorin Circle Theorem:
+
+```
+lambda_max <= max_i (1 + sum_j |a_ij| / d_i)
+```
+
+For non-uniform y-grids, this requires iterating over all y-cells to find the maximum ratio. The implementation:
+
+1. Computes the Gershgorin bound for each level accounting for y-metric coefficients
+2. Applies a 10% safety margin: `lambda_max *= 1.10`
+3. Enforces a floor: `lambda_max = max(1.8, lambda_max)`
+4. Sets `lambda_min = 0.1 * lambda_max` (conservative wide interval)
+
+The Chebyshev weights are then:
+
+```
+theta_k = pi * (2k + 1) / (2 * degree)
+omega_k = 1 / (d - c * cos(theta_k))
+```
+
+where `d = (lambda_max + lambda_min) / 2` and `c = (lambda_max - lambda_min) / 2`. Weights are clamped to a maximum of 2.0 for stability.
+
+**Configuration:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `poisson_chebyshev_degree` | 4 | Polynomial degree per smoothing sweep (3-4 typical) |
+| `poisson_nu1` | 0 | Pre-smoothing sweeps (0 = auto: 3 for wall BCs) |
+| `poisson_nu2` | 0 | Post-smoothing sweeps (0 = auto: 1) |
+
+### CUDA Graph V-Cycle: disable_vcycle_graph() API
+
+The V-cycle graph can be disabled programmatically:
+
+```cpp
+auto& mg = dynamic_cast<MultigridPoissonSolver&>(poisson_solver);
+mg.disable_vcycle_graph();
+```
+
+**When to disable:**
+- Recycling inflow BCs that change the inlet condition each step
+- Debugging: to compare graphed vs non-graphed results
+- Via config: `poisson_use_vcycle_graph = false`
+
+The graph is also automatically disabled for:
+- Y-stretched grids with semi-coarsening (different operator structure)
+- 2D meshes (not optimized for 2D)
 
 ### Implementation Files
 - `include/poisson_solver_multigrid.hpp`
 - `src/poisson_solver_multigrid.cpp`
-- `src/mg_cuda_kernels.cpp` (CUDA Graph implementation)
+- `include/mg_cuda_kernels.hpp` (CUDA Graph implementation)
 
 ---
 

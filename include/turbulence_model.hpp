@@ -109,6 +109,12 @@ struct SolverDeviceView {
     int Nx = 0, Ny = 0, Nz = 1, Ng = 0;
     double dx = 0.0, dy = 0.0, dz = 1.0, dt = 0.0;
 
+    // Y-metric arrays for non-uniform grids (nullptr if uniform y)
+    // These enable D·G = L consistency for stretched y-grids
+    const double* dyv = nullptr;  ///< Cell height at row j: yf[j+1] - yf[j]
+    const double* dyc = nullptr;  ///< Center-to-center y-spacing at face j: yc[j] - yc[j-1]
+    bool y_stretched = false;     ///< True if y is non-uniform
+
     bool is_valid() const {
         return (u_face && v_face && p && nu_eff && Nx > 0 && Ny > 0);
     }

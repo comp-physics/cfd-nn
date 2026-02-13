@@ -194,6 +194,73 @@ VectorField create_perturbed_channel_field(const Mesh& mesh, double amplitude = 
     return vel;
 }
 
+/// Create Poiseuille (parabolic) velocity field for channel flow
+/// u(y) = u_max * (1 - y^2/H^2) where u_max = -dp_dx * H^2 / (2*nu)
+/// Optionally adds divergence-free perturbations on top
+VectorField create_poiseuille_field(const Mesh& mesh, double dp_dx, double nu,
+                                    double perturbation_amplitude = 0.0) {
+    VectorField vel(mesh);
+    double H = (mesh.y_max - mesh.y_min) / 2.0;
+    double y_center = (mesh.y_min + mesh.y_max) / 2.0;
+    double u_max = -dp_dx * H * H / (2.0 * nu);
+
+    // Set parabolic u profile
+    if (mesh.is2D()) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j) - y_center;
+            double u_val = u_max * (1.0 - (y * y) / (H * H));
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                vel.u(i, j) = u_val;
+            }
+        }
+    } else {
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                double y = mesh.y(j) - y_center;
+                double u_val = u_max * (1.0 - (y * y) / (H * H));
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    vel.u(i, j, k) = u_val;
+                }
+            }
+        }
+    }
+    // v and w remain zero (divergence-free for uniform u in x and z)
+
+    // Add perturbations if requested
+    if (perturbation_amplitude > 0.0) {
+        VectorField pert = create_perturbed_channel_field(mesh, perturbation_amplitude);
+        if (mesh.is2D()) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    vel.u(i, j) += pert.u(i, j);
+                }
+            }
+            for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    vel.v(i, j) += pert.v(i, j);
+                }
+            }
+        } else {
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        vel.u(i, j, k) += pert.u(i, j, k);
+                    }
+                }
+            }
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                        vel.v(i, j, k) += pert.v(i, j, k);
+                    }
+                }
+            }
+        }
+    }
+
+    return vel;
+}
+
 int main(int argc, char** argv) {
     std::cout << "=== Channel Flow Solver ===\n\n";
 
@@ -351,14 +418,33 @@ int main(int argc, char** argv) {
         // Force laminar for unsteady developing flow
         config.turb_model = TurbulenceModelType::None;
 
-        // Initialize with divergence-free perturbation
+        // Initialize velocity field
         std::cout << "Perturbation amplitude: " << config.perturbation_amplitude << "\n";
-        solver.initialize(create_perturbed_channel_field(mesh, config.perturbation_amplitude));
+        if (config.recycling_inflow || config.trip_enabled) {
+            // Recycling or trip forcing requires established mean flow - start with Poiseuille
+            // profile plus optional perturbations to trigger turbulence
+            std::cout << "Initializing with Poiseuille profile";
+            if (config.trip_enabled) std::cout << " (trip mode)";
+            if (config.recycling_inflow) std::cout << " (recycling mode)";
+            std::cout << "\n";
+            solver.initialize(create_poiseuille_field(mesh, config.dp_dx, config.nu,
+                                                      config.perturbation_amplitude));
+        } else {
+            // Pure developing flow: start with divergence-free perturbation
+            solver.initialize(create_perturbed_channel_field(mesh, config.perturbation_amplitude));
+        }
         
     #ifdef USE_GPU_OFFLOAD
         solver.sync_to_gpu();
     #endif
-        
+
+        // Initialize recycling inlet buffers from initial condition BEFORE first step
+        // This prevents the inlet buffers being zero (from initialization) on step 1
+        if (config.recycling_inflow) {
+            solver.extract_recycle_plane();
+            solver.process_recycle_inflow();
+        }
+
         const std::string prefix = config.write_fields ? (config.output_dir + "developing_channel") : "";
         const int snapshot_freq = (config.num_snapshots > 0) ?
             std::max(1, config.max_steps / config.num_snapshots) : 0;
@@ -369,9 +455,25 @@ int main(int argc, char** argv) {
         // Progress output interval for CI visibility (always enabled)
         const int progress_interval = std::max(1, config.max_steps / 10);
 
+        // Statistics accumulation for Stage F validation (last 50% of run)
+        const int stats_start_step = config.max_steps / 2;
+        bool stats_active = false;
+
+        // Transition health monitoring interval (every ~5% of run or 100 steps, whichever is larger)
+        const int health_interval = std::max(100, config.max_steps / 20);
+
         for (int step = 1; step <= config.max_steps; ++step) {
+#ifdef USE_GPU_OFFLOAD
+            // Apply explicit velocity filter BEFORE the step so projection cleans up
+            // any divergence introduced by the independent-component Laplacian smoothing
+            if (config.filter_interval > 0 && config.filter_strength > 0 &&
+                step % config.filter_interval == 0) {
+                solver.apply_velocity_filter(config.filter_strength);
+            }
+#endif
+
             if (config.adaptive_dt) {
-                (void)solver.compute_adaptive_dt();
+                solver.set_dt(solver.compute_adaptive_dt());
             }
             double residual = solver.step();
 
@@ -390,10 +492,19 @@ int main(int argc, char** argv) {
             }
 
             // Always show progress every ~10% for CI visibility
-            if (step % progress_interval == 0 || step == 1) {
+            // For diagnostic: also print max|div u| at early steps to catch instability onset
+#ifdef USE_GPU_OFFLOAD
+            double max_div = solver.compute_divergence_linf_device();
+#else
+            double max_div = 0.0;  // GPU diagnostic not available in CPU builds
+#endif
+            double t_star = solver.flow_through_time_bulk();
+            if (step % progress_interval == 0 || step == 1 || step <= 50) {
                 std::cout << "    Step " << std::setw(6) << step << " / " << config.max_steps
                           << "  (" << std::setw(3) << (100 * step / config.max_steps) << "%)"
+                          << "  t*=" << std::fixed << std::setprecision(2) << t_star
                           << "  residual = " << std::scientific << std::setprecision(3) << residual
+                          << "  max|div u| = " << std::setprecision(3) << max_div
                           << std::fixed << "\n" << std::flush;
             } else if (config.verbose && (step % config.output_freq == 0)) {
                 std::cout << "Step " << step << " / " << config.max_steps
@@ -404,7 +515,60 @@ int main(int argc, char** argv) {
                 std::cerr << "ERROR: Solver diverged at step " << step << "\n";
                 return 1;
             }
-            
+
+            // Projection safety latch: halve dt if divergence or velocity is dangerously high
+            if (config.adaptive_dt) {
+                bool safety_triggered = false;
+                if (max_div > 1e-2) {
+                    std::cerr << "[SAFETY-DIV] step=" << step << " max|div u|=" << max_div
+                              << " > 1e-2\n";
+                    safety_triggered = true;
+                }
+                // Velocity magnitude safety: v_max > 50 in physical units is non-physical
+                // for Re_tau~180 channel (expected peak v_max+ ~ 5-10)
+                double v_max_phys = solver.diag_v_max();
+                if (v_max_phys > 50.0) {
+                    std::cerr << "[SAFETY-VEL] step=" << step << " v_max=" << v_max_phys
+                              << " > 50, energy pileup detected\n";
+                    safety_triggered = true;
+                }
+                if (safety_triggered) {
+                    double old_dt = solver.current_dt();
+                    solver.set_dt(old_dt * 0.5);
+                    std::cerr << "[SAFETY] halving dt: " << old_dt << " -> " << old_dt * 0.5 << "\n";
+                }
+            }
+
+            // Transition health monitoring: one-line summary every health_interval steps
+            if (step % health_interval == 0) {
+                double v_u_ratio = (solver.diag_u_max() > 0) ? solver.diag_v_max() / solver.diag_u_max() : 0;
+                double w_v_ratio = (solver.diag_v_max() > 1e-10) ? solver.diag_w_max() / solver.diag_v_max() : 0;
+                const char* state = (solver.diag_v_max() < 0.01) ? "LAMINAR" :
+                                    (v_u_ratio > 0.15) ? "TURBULENT" : "TRANSITIONAL";
+                double trip_ramp = solver.is_trip_active() ? solver.get_trip_time_ramp() : 0.0;
+                double re_tau = solver.Re_tau();
+                double u_b = solver.bulk_velocity();
+                std::cout << "    [HEALTH] step=" << step
+                          << " Re_tau=" << std::fixed << std::setprecision(1) << re_tau
+                          << " U_b=" << std::setprecision(1) << u_b
+                          << " v_max=" << std::scientific << std::setprecision(2) << solver.diag_v_max()
+                          << " w/v=" << std::fixed << std::setprecision(3) << w_v_ratio
+                          << " v/u=" << v_u_ratio
+                          << " dt=" << std::scientific << std::setprecision(2) << solver.current_dt()
+                          << " ramp=" << std::fixed << std::setprecision(2) << trip_ramp
+                          << " " << state << std::fixed << "\n" << std::flush;
+            }
+
+            // Start statistics accumulation at halfway point
+            if (step == stats_start_step) {
+                solver.reset_statistics();
+                stats_active = true;
+                std::cout << "    [Statistics accumulation started at step " << step << "]\n";
+            }
+            if (stats_active) {
+                solver.accumulate_statistics();
+            }
+
             final_residual = residual;
         }
         
@@ -414,8 +578,22 @@ int main(int argc, char** argv) {
         
         total_timer.stop();
         total_iterations = config.max_steps;
-        
+
         std::cout << "\n=== Unsteady simulation complete ===\n";
+
+        // Stage F validation for turbulence runs
+        if (stats_active && solver.statistics_samples() > 100) {
+            std::cout << "\n=== Stage F: Turbulence Realism Validation ===\n";
+            std::cout << "Statistics samples: " << solver.statistics_samples() << "\n\n";
+            auto report = solver.validate_turbulence_realism();
+            report.print();
+
+            // Write momentum balance for analysis
+            auto mb = solver.compute_momentum_balance();
+            std::cout << "\nMomentum balance (max residual / tau_wall): "
+                      << std::scientific << std::setprecision(3)
+                      << mb.max_residual_normalized(solver.friction_velocity()) * 100 << "%\n";
+        }
         
     } else {
         // ============================================================

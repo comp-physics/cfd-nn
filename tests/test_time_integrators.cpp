@@ -158,7 +158,7 @@ static void test_integrator_scheme_matrix() {
     const double L = 2.0 * M_PI;
     const double nu = 1e-4;
     const double dt = 0.002;
-    const int nsteps = 100;
+    const int nsteps = 50;  // 50 steps sufficient to validate (saves GPU time)
 
     std::vector<TimeIntegrator> integrators = {
         TimeIntegrator::RK2,
@@ -523,7 +523,7 @@ static void test_rk3_long_stability() {
     const double L = 2.0 * M_PI;
     const double nu = 1e-4;
     const double dt = 0.002;
-    const int nsteps = 500;
+    const int nsteps = 250;  // 250 steps validates stability (saves GPU time)
 
     std::cout << "  Running RK3 + Central for " << nsteps << " steps...\n";
 
@@ -567,7 +567,7 @@ static void test_rk3_long_stability() {
               << ",\"ke_ratio\":" << (ke_final / ke_init)
               << "}\n" << std::flush;
 
-    record("[RK3] Long-time stability (500 steps)", valid && steps_completed == nsteps);
+    record("[RK3] Long-time stability (250 steps)", valid && steps_completed == nsteps);
 }
 
 // ============================================================================

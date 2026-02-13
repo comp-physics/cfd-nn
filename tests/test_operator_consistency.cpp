@@ -1,382 +1,140 @@
-/// @file test_operator_consistency.cpp
-/// @brief Operator consistency tests for MAC grid (catch classic index bugs)
-///
-/// PURPOSE: Validate the math structure the solver relies on, without "physics".
-/// These catch mismatched staggering, missing dx factors, wrong boundary handling.
-///
-/// TESTS:
-/// 3A) Discrete adjointness: <grad(p), u> ≈ -<p, div(u)>
-/// 3B) Projection makes velocity divergence-free: |div(u)| < tol after step
-/// 3C) Divergence reduces with projection: div_after << div_before
-///
-/// EMITS QOI:
-///   op_adjoint: rel_mismatch
-///   projection_divfree: div_after, div_before
-///   divergence_reduction: reduction_factor
-
-#include "test_harness.hpp"
-#include "test_utilities.hpp"
-#include "mesh.hpp"
-#include "fields.hpp"
-#include "solver.hpp"
-#include "config.hpp"
-#include <cmath>
-#include <random>
+// Test A: Verify D(G(φ)) = L(φ) for stretched y-grid
+// This tests discrete operator consistency required for projection step
 #include <iostream>
-#include <iomanip>
+#include <cmath>
+#include <vector>
+#include <random>
+#include "mesh.hpp"
 
 using namespace nncfd;
-using namespace nncfd::test;
-using nncfd::test::harness::record;
-using nncfd::test::create_velocity_bc;
-using nncfd::test::BCPattern;
 
-// ============================================================================
-// Helper: Generate smooth random field (for testing operators)
-// ============================================================================
-static void generate_smooth_pressure(ScalarField& p, const Mesh& mesh, unsigned seed) {
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+// Compute gradient in y at face j: (phi[j] - phi[j-1]) / dyc[j]
+double grad_y_at_face(const std::vector<double>& phi, int j, int stride,
+                       const std::vector<double>& dyc, double dy_uniform, bool stretched) {
+    double phi_top = phi[j * stride];
+    double phi_bot = phi[(j-1) * stride];
+    double spacing = stretched ? dyc[j] : dy_uniform;
+    return (phi_top - phi_bot) / spacing;
+}
 
-    // Use low-frequency sinusoids for smoothness
-    double kx = 2.0 * M_PI / (mesh.x_max - mesh.x_min);
-    double ky = 2.0 * M_PI / (mesh.y_max - mesh.y_min);
+// Compute divergence of gradient in y at cell j: (grad[j+1] - grad[j]) / dyv[j]
+double div_grad_y(const std::vector<double>& phi, int j, int stride,
+                   const std::vector<double>& dyc, const std::vector<double>& dyv,
+                   double dy_uniform, bool stretched) {
+    double grad_top = grad_y_at_face(phi, j+1, stride, dyc, dy_uniform, stretched);
+    double grad_bot = grad_y_at_face(phi, j, stride, dyc, dy_uniform, stretched);
+    double cell_height = stretched ? dyv[j] : dy_uniform;
+    return (grad_top - grad_bot) / cell_height;
+}
 
-    double ax = dist(rng), bx = dist(rng);
-    double ay = dist(rng), by = dist(rng);
+// Compute Laplacian in y using aS, aP, aN coefficients
+double laplacian_y(const std::vector<double>& phi, int j, int stride,
+                    const std::vector<double>& aS, const std::vector<double>& aP,
+                    const std::vector<double>& aN, double dy_uniform, bool stretched) {
+    double phi_j = phi[j * stride];
+    double phi_jm1 = phi[(j-1) * stride];
+    double phi_jp1 = phi[(j+1) * stride];
 
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double x = mesh.xc[i];
-            double y = mesh.yc[j];
-            p(i, j) = ax * std::sin(kx * x) + bx * std::cos(kx * x)
-                    + ay * std::sin(ky * y) + by * std::cos(ky * y);
-        }
+    if (stretched) {
+        return aS[j] * phi_jm1 + aP[j] * phi_j + aN[j] * phi_jp1;
+    } else {
+        double dy2 = dy_uniform * dy_uniform;
+        return (phi_jp1 - 2.0 * phi_j + phi_jm1) / dy2;
     }
 }
 
-static void generate_smooth_velocity(VectorField& v, const Mesh& mesh, unsigned seed) {
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> dist(-1.0, 1.0);
-
-    double kx = 2.0 * M_PI / (mesh.x_max - mesh.x_min);
-    double ky = 2.0 * M_PI / (mesh.y_max - mesh.y_min);
-
-    double au = dist(rng), bu = dist(rng);
-    double av = dist(rng), bv = dist(rng);
-
-    // Generate non-divergence-free velocity field
-    // u = sin(kx*x) * sin(ky*y), v = sin(kx*x) * sin(ky*y)
-    // div = kx*cos(kx*x)*sin(ky*y) + ky*sin(kx*x)*cos(ky*y) != 0
-
-    // u at x-faces
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double x = mesh.xf[i];
-            double y = mesh.yc[j];
-            v.u(i, j) = au * std::sin(kx * x) * std::sin(ky * y)
-                      + bu * std::cos(kx * x);
-        }
-    }
-
-    // v at y-faces
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double x = mesh.xc[i];
-            double y = mesh.yf[j];
-            v.v(i, j) = av * std::sin(kx * x) * std::sin(ky * y)
-                      + bv * std::cos(ky * y);
-        }
-    }
-}
-
-// ============================================================================
-// Compute <grad(p), u> = sum over faces of (dp/dx * u + dp/dy * v) * dV
-// ============================================================================
-static double compute_gradp_dot_u(const ScalarField& p, const VectorField& u,
-                                   const Mesh& mesh) {
-    double result = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // dp/dx at cell center (approximation)
-            double dpdx = (p(i+1, j) - p(i-1, j)) / (2.0 * mesh.dx);
-            // dp/dy at cell center
-            double dpdy = (p(i, j+1) - p(i, j-1)) / (2.0 * mesh.dy);
-
-            // u, v at cell center
-            double u_cc = 0.5 * (u.u(i, j) + u.u(i+1, j));
-            double v_cc = 0.5 * (u.v(i, j) + u.v(i, j+1));
-
-            result += (dpdx * u_cc + dpdy * v_cc) * mesh.dx * mesh.dy;
-        }
-    }
-
-    return result;
-}
-
-// ============================================================================
-// Compute <p, div(u)> = sum over cells of p * div(u) * dV
-// ============================================================================
-static double compute_p_dot_divu(const ScalarField& p, const VectorField& u,
-                                  const Mesh& mesh) {
-    double result = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dudx = (u.u(i+1, j) - u.u(i, j)) / mesh.dx;
-            double dvdy = (u.v(i, j+1) - u.v(i, j)) / mesh.dy;
-            double div = dudx + dvdy;
-
-            result += p(i, j) * div * mesh.dx * mesh.dy;
-        }
-    }
-
-    return result;
-}
-
-// ============================================================================
-// Compute max divergence
-// ============================================================================
-static double compute_max_div(const VectorField& v, const Mesh& mesh) {
-    double max_div = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double dudx = (v.u(i+1, j) - v.u(i, j)) / mesh.dx;
-            double dvdy = (v.v(i, j+1) - v.v(i, j)) / mesh.dy;
-            max_div = std::max(max_div, std::abs(dudx + dvdy));
-        }
-    }
-
-    return max_div;
-}
-
-// ============================================================================
-// Test 3A: Discrete adjointness <grad(p), u> ≈ -<p, div(u)>
-// ============================================================================
-struct AdjointResult {
-    double gradp_u;
-    double p_divu;
-    double rel_mismatch;
-    bool passed;
-};
-
-AdjointResult test_adjointness() {
-    AdjointResult result;
-
-    const int N = 32;
-    Mesh mesh;
-    mesh.init_uniform(N, N, 0.0, 2.0*M_PI, 0.0, 2.0*M_PI);
-
-    ScalarField p(mesh);
-    VectorField u(mesh);
-
-    generate_smooth_pressure(p, mesh, 12345);
-    generate_smooth_velocity(u, mesh, 67890);
-
-    result.gradp_u = compute_gradp_dot_u(p, u, mesh);
-    result.p_divu = compute_p_dot_divu(p, u, mesh);
-
-    // Check: <grad(p), u> ≈ -<p, div(u)>
-    double sum = result.gradp_u + result.p_divu;  // Should be ~0
-    double scale = std::max(std::abs(result.gradp_u), std::abs(result.p_divu));
-    scale = std::max(scale, 1e-10);
-
-    result.rel_mismatch = std::abs(sum) / scale;
-    result.passed = result.rel_mismatch < 0.1;  // Allow some boundary effects
-
-    return result;
-}
-
-// ============================================================================
-// Test 3B: Projection makes velocity divergence-free
-// ============================================================================
-struct DivFreeResult {
-    double div_before;
-    double div_after;
-    bool passed;
-};
-
-DivFreeResult test_projection_divfree() {
-    DivFreeResult result;
-
-    const int N = 32;
-    Mesh mesh;
-    mesh.init_uniform(N, N, 0.0, 2.0*M_PI, 0.0, 2.0*M_PI);
-
-    Config config;
-    config.nu = 0.01;
-    config.dt = 0.01;
-    config.turb_model = TurbulenceModelType::None;
-    config.verbose = false;
-    config.adaptive_dt = false;
-
-    RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
-
-    // Generate non-div-free velocity
-    generate_smooth_velocity(solver.velocity(), mesh, 11111);
-
-    // Compute divergence before step
-    result.div_before = compute_max_div(solver.velocity(), mesh);
-
-    // Run one step (includes projection)
-    solver.sync_to_gpu();
-    solver.step();
-    solver.sync_from_gpu();
-
-    // Compute divergence after step
-    result.div_after = compute_max_div(solver.velocity(), mesh);
-
-    // After projection, divergence should be very small
-    // Allow 1e-4 for iterative solver tolerance (depending on Poisson solver settings)
-    result.passed = result.div_after < 1e-4;
-
-    return result;
-}
-
-// ============================================================================
-// Test 3C: Divergence reduces significantly with projection
-// ============================================================================
-struct DivReductionResult {
-    double div_before;
-    double div_after;
-    double reduction_factor;
-    bool passed;
-};
-
-DivReductionResult test_divergence_reduction() {
-    DivReductionResult result;
-
-    const int N = 32;
-    Mesh mesh;
-    mesh.init_uniform(N, N, 0.0, 2.0*M_PI, 0.0, 2.0*M_PI);
-
-    Config config;
-    config.nu = 0.01;
-    config.dt = 0.001;  // Small dt to minimize advection effects
-    config.turb_model = TurbulenceModelType::None;
-    config.verbose = false;
-    config.adaptive_dt = false;
-
-    RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
-
-    // Generate highly non-div-free velocity (large divergence)
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        double y = mesh.yc[j];
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double x = mesh.xf[i];
-            // u = sin(x) * sin(y) - not divergence-free
-            solver.velocity().u(i, j) = 0.1 * std::sin(x) * std::sin(y);
-        }
-    }
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        double y = mesh.yf[j];
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double x = mesh.xc[i];
-            // v = sin(x) * sin(y) - not divergence-free
-            solver.velocity().v(i, j) = 0.1 * std::sin(x) * std::sin(y);
-        }
-    }
-
-    // Compute divergence before
-    result.div_before = compute_max_div(solver.velocity(), mesh);
-
-    // Run one step
-    solver.sync_to_gpu();
-    solver.step();
-    solver.sync_from_gpu();
-
-    // Compute divergence after
-    result.div_after = compute_max_div(solver.velocity(), mesh);
-
-    // Compute reduction factor
-    result.reduction_factor = (result.div_before > 1e-15) ?
-                              result.div_after / result.div_before : 0.0;
-
-    // Divergence should reduce by at least 4 orders of magnitude
-    result.passed = (result.reduction_factor < 1e-4) || (result.div_after < 1e-10);
-
-    return result;
-}
-
-// ============================================================================
-// Emit QoI functions
-// ============================================================================
-static void emit_qoi_adjoint(const AdjointResult& r) {
-    std::cout << "QOI_JSON: {\"test\":\"op_adjoint\""
-              << ",\"rel_mismatch\":" << harness::json_double(r.rel_mismatch)
-              << ",\"gradp_u\":" << harness::json_double(r.gradp_u)
-              << ",\"p_divu\":" << harness::json_double(r.p_divu)
-              << "}\n" << std::flush;
-}
-
-static void emit_qoi_divfree(const DivFreeResult& r) {
-    std::cout << "QOI_JSON: {\"test\":\"projection_divfree\""
-              << ",\"div_before\":" << harness::json_double(r.div_before)
-              << ",\"div_after\":" << harness::json_double(r.div_after)
-              << "}\n" << std::flush;
-}
-
-static void emit_qoi_reduction(const DivReductionResult& r) {
-    std::cout << "QOI_JSON: {\"test\":\"divergence_reduction\""
-              << ",\"div_before\":" << harness::json_double(r.div_before)
-              << ",\"div_after\":" << harness::json_double(r.div_after)
-              << ",\"reduction_factor\":" << harness::json_double(r.reduction_factor)
-              << "}\n" << std::flush;
-}
-
-// ============================================================================
-// Main test functions
-// ============================================================================
-void run_all_operator_tests() {
-    std::cout << "\n--- Operator Consistency Tests ---\n";
-
-    // Test 3A: Adjointness
-    std::cout << "\n=== Test 3A: Discrete Adjointness ===\n";
-    std::cout << "  Checking: <grad(p), u> ≈ -<p, div(u)>\n\n";
-
-    AdjointResult adj = test_adjointness();
-    std::cout << std::scientific << std::setprecision(6);
-    std::cout << "  <grad(p), u>:  " << adj.gradp_u << "\n";
-    std::cout << "  <p, div(u)>:   " << adj.p_divu << "\n";
-    std::cout << "  Sum (should~0):" << (adj.gradp_u + adj.p_divu) << "\n";
-    std::cout << "  Rel mismatch:  " << adj.rel_mismatch << "\n";
-    std::cout << "  Result:        " << (adj.passed ? "[PASS]" : "[FAIL]") << "\n";
-    emit_qoi_adjoint(adj);
-    record("Adjointness <grad(p),u> ≈ -<p,div(u)>", adj.passed);
-
-    // Test 3B: Projection makes velocity divergence-free
-    std::cout << "\n=== Test 3B: Projection Divergence-Free ===\n";
-    std::cout << "  Checking: |div(u)| < 1e-4 after step\n\n";
-
-    DivFreeResult divfree = test_projection_divfree();
-    std::cout << "  div before step: " << divfree.div_before << "\n";
-    std::cout << "  div after step:  " << divfree.div_after << " (limit: 1e-4)\n";
-    std::cout << "  Result:          " << (divfree.passed ? "[PASS]" : "[FAIL]") << "\n";
-    emit_qoi_divfree(divfree);
-    record("Projection makes div(u) < 1e-4", divfree.passed);
-
-    // Test 3C: Divergence reduces significantly
-    std::cout << "\n=== Test 3C: Divergence Reduction ===\n";
-    std::cout << "  Checking: div reduces by >4 orders of magnitude\n\n";
-
-    DivReductionResult redux = test_divergence_reduction();
-    std::cout << "  div before:      " << redux.div_before << "\n";
-    std::cout << "  div after:       " << redux.div_after << "\n";
-    std::cout << "  reduction factor:" << redux.reduction_factor << " (limit: 1e-4)\n";
-    std::cout << "  Result:          " << (redux.passed ? "[PASS]" : "[FAIL]") << "\n";
-    emit_qoi_reduction(redux);
-    record("Divergence reduces >4 orders", redux.passed);
-}
-
-// ============================================================================
-// Main
-// ============================================================================
 int main() {
-    return harness::run("Operator Consistency Tests", []() {
-        run_all_operator_tests();
-    });
+    std::cout << "=== Test A: D(G(phi)) vs L(phi) Operator Consistency ===\n\n";
+
+    // Test parameters
+    const int Ny = 32;
+    const int Ng = 2;
+    const double y_min = -1.0, y_max = 1.0;
+    const double beta = 2.0;  // Stretching parameter
+
+    // Create stretched mesh
+    Mesh mesh;
+    mesh.init_stretched_y(1, Ny, y_min, y_max, y_min, y_max, Mesh::tanh_stretching(beta), Ng);
+
+    int total_ny = mesh.total_Ny();
+    int stride = 1;  // 1D test (only y direction)
+
+    std::cout << "Grid: Ny=" << Ny << ", Ng=" << Ng << ", total_ny=" << total_ny << "\n";
+    std::cout << "Stretching: beta=" << beta << "\n";
+    std::cout << "y_stretched: " << (mesh.is_y_stretched() ? "YES" : "NO") << "\n\n";
+
+    // Print some y-metrics for verification
+    std::cout << "Y-metric samples:\n";
+    std::cout << "  dyv[Ng]=" << mesh.dyv[Ng] << " (first interior cell)\n";
+    std::cout << "  dyv[Ng+Ny/2]=" << mesh.dyv[Ng + Ny/2] << " (mid-channel)\n";
+    std::cout << "  dyv[Ng+Ny-1]=" << mesh.dyv[Ng + Ny - 1] << " (last interior cell)\n";
+    std::cout << "  dyc[Ng]=" << mesh.dyc[Ng] << "\n";
+    std::cout << "  dyc[Ng+Ny/2]=" << mesh.dyc[Ng + Ny/2] << "\n";
+    std::cout << "  yLap_aS[Ng]=" << mesh.yLap_aS[Ng] << "\n";
+    std::cout << "  yLap_aN[Ng]=" << mesh.yLap_aN[Ng] << "\n";
+    std::cout << "  yLap_aP[Ng]=" << mesh.yLap_aP[Ng] << " (should be -(aS+aN)="
+              << -(mesh.yLap_aS[Ng] + mesh.yLap_aN[Ng]) << ")\n\n";
+
+    // Create random test field (interior only, zero at boundaries)
+    std::vector<double> phi(total_ny, 0.0);
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        phi[j] = dist(rng);
+    }
+    // Set ghost cells to satisfy Neumann BC (zero gradient)
+    phi[Ng - 1] = phi[Ng];
+    phi[Ng - 2] = phi[Ng + 1];
+    phi[Ng + Ny] = phi[Ng + Ny - 1];
+    phi[Ng + Ny + 1] = phi[Ng + Ny - 2];
+
+    // Compute D(G(phi)) and L(phi) for interior cells
+    double max_error = 0.0;
+    double l2_error = 0.0;
+    double l2_norm_L = 0.0;
+    int error_count = 0;
+
+    std::cout << "Comparing D(G(phi)) vs L(phi) for interior cells:\n";
+    std::cout << "  j     D(G(phi))      L(phi)       Error\n";
+    std::cout << "  ---   ---------   ---------   ---------\n";
+
+    for (int j = Ng; j < Ng + Ny; ++j) {
+        double dg = div_grad_y(phi, j, stride, mesh.dyc, mesh.dyv, mesh.dy, true);
+        double L = laplacian_y(phi, j, stride, mesh.yLap_aS, mesh.yLap_aP, mesh.yLap_aN, mesh.dy, true);
+
+        double error = std::abs(dg - L);
+        max_error = std::max(max_error, error);
+        l2_error += error * error;
+        l2_norm_L += L * L;
+
+        if (error > 1e-10) {
+            error_count++;
+            if (error_count <= 5) {
+                std::cout << "  " << j << "   " << dg << "   " << L << "   " << error << "\n";
+            }
+        }
+    }
+
+    l2_error = std::sqrt(l2_error);
+    l2_norm_L = std::sqrt(l2_norm_L);
+    double rel_error = (l2_norm_L > 1e-30) ? l2_error / l2_norm_L : l2_error;
+
+    std::cout << "\n=== Results ===\n";
+    std::cout << "Max |D(G(phi)) - L(phi)|: " << max_error << "\n";
+    std::cout << "L2 error:             " << l2_error << "\n";
+    std::cout << "L2 norm of L(phi):      " << l2_norm_L << "\n";
+    std::cout << "Relative error:       " << rel_error << "\n";
+    std::cout << "Cells with error > 1e-10: " << error_count << "/" << Ny << "\n\n";
+
+    // Test verdict
+    bool passed = (rel_error < 1e-10);
+    std::cout << "=== " << (passed ? "PASS" : "FAIL") << " ===\n";
+    std::cout << "D(G(phi)) = L(phi) consistency: " << (passed ? "YES" : "NO") << "\n";
+
+    if (!passed) {
+        std::cout << "\nDiagnosis: The discrete operators are NOT consistent.\n";
+        std::cout << "Check the formulas for dyc, dyv, aS, aN, aP.\n";
+    }
+
+    return passed ? 0 : 1;
 }

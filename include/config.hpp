@@ -86,7 +86,11 @@ struct Config {
     
     // Time stepping
     double dt = 0.001;          ///< Time step
-    double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt
+    double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt (used for y-direction)
+    double CFL_xz = -1.0;      ///< CFL for x/z directions (-1 = use CFL_max)
+    double dt_safety = 1.0;    ///< Safety factor for adaptive dt (0.5-1.0, applied after CFL)
+    double filter_strength = 0.0;  ///< Explicit velocity filter strength (0=off, 0.01-0.05 typical)
+    int filter_interval = 10;      ///< Apply filter every N steps (0=off)
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
     int max_steps = 10000;      ///< Maximum time steps for simulation
     double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_steps)
@@ -117,6 +121,7 @@ struct Config {
     int output_freq = 100;      ///< Console output frequency (iterations)
     int num_snapshots = 10;     ///< Number of VTK snapshots during simulation
     bool verbose = true;
+    int diag_interval = 1;      ///< Expensive diagnostics frequency (div norms, Poisson stats). Set >1 for perf runs.
     
     // Benchmark / postprocessing controls
     // - postprocess: Poiseuille table + L2 error + velocity_profile.dat
@@ -139,7 +144,7 @@ struct Config {
     double poisson_tol_abs = 0.0;    ///< Absolute tolerance on ||r||_∞ (0 = disabled)
     double poisson_tol_rhs = 1e-6;   ///< RHS-relative: ||r||/||b|| (tight for Galilean invariance)
     double poisson_tol_rel = 1e-3;   ///< Initial-residual relative: ||r||/||r0||
-    int poisson_check_interval = 1;  ///< Check convergence every N V-cycles (fused norms are cheap)
+    int poisson_check_interval = 3;  ///< Check convergence every N V-cycles (reduces GPU→CPU sync frequency)
     bool poisson_use_l2_norm = true; ///< Use L2 norm for convergence (smoother than L∞, less hot-cell sensitive)
     double poisson_linf_safety = 10.0; ///< L∞ safety cap multiplier (prevent L2 from hiding bad cells)
     int poisson_fixed_cycles = 8;    ///< Fixed V-cycle count (optimal: 8 cycles with nu1=2,nu2=1)
@@ -165,7 +170,46 @@ struct Config {
 
     // Benchmark mode
     bool benchmark = false;                 ///< Enable benchmark mode (optimized for timing)
-    
+
+    // Performance mode - reduces GPU sync overhead for production runs
+    // When enabled, automatically sets: diag_interval=50, poisson_check_interval=5
+    // Use for turbulence runs after validation; disable for debugging
+    bool perf_mode = false;                 ///< Enable performance mode (reduced diagnostics)
+
+    // Projection health watchdog - alerts on poor projection quality
+    double div_threshold = 1e-5;            ///< Alert if div_scaled_linf exceeds this (0 = disabled)
+    double div_tol_acceptable = 1e-6;       ///< Suppress MG stall alerts if div_scaled_linf below this
+    bool projection_watchdog = true;        ///< Enable projection health monitoring
+    bool gpu_only_mode = false;             ///< Strict GPU-only mode (no CPU fallbacks, no full-field host reads)
+
+    // Adaptive projection - increase cycles when divergence is high
+    bool adaptive_projection = true;        ///< Enable adaptive projection (more cycles when div is high)
+    double div_target = 1e-4;               ///< Target max|div u| for adaptive projection
+    int projection_max_cycles = 60;         ///< Max total cycles for adaptive projection
+    int projection_extra_chunk = 5;         ///< Extra cycles per adaptive iteration
+
+    // Trip region forcing (triggers turbulence transition for DNS)
+    bool trip_enabled = false;              ///< Enable trip region forcing for transition
+    double trip_x_start = -1.0;             ///< Start x-location of trip region (-1 = auto: 0.1*Lx)
+    double trip_x_end = -1.0;               ///< End x-location of trip region (-1 = auto: 0.2*Lx)
+    double trip_amplitude = 3.0;            ///< Trip forcing amplitude (A * u_tau^2) - 1-5 typical
+    double trip_duration = 2.0;             ///< Duration of trip forcing in physical time units
+    double trip_ramp_off_start = 1.5;       ///< Start of ramp-off phase in physical time units
+    int trip_n_modes_z = 8;                 ///< Number of spanwise modes in trip forcing
+    bool trip_force_w = true;               ///< Also force w* (creates vortical structures)
+    double trip_w_scale = 1.0;              ///< Scale factor for w trip forcing (>1 boosts 3D structures)
+
+    // Recycling inflow (turbulent inlet BC for DNS/LES)
+    bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo
+    double recycle_x = -1.0;                ///< x-location of recycle plane (-1 = auto: 10*delta)
+    int recycle_shift_z = -1;               ///< Spanwise shift for decorrelation (-1 = auto: Nz/4)
+    int recycle_shift_interval = 100;       ///< Timesteps between shift updates (0 = constant shift)
+    double recycle_filter_tau = -1.0;       ///< Temporal filter timescale (-1 = disabled, >0 = AR1 smoothing)
+    double recycle_fringe_length = -1.0;    ///< Fringe blending zone length (-1 = auto: 2*delta)
+    double recycle_target_bulk_u = -1.0;    ///< Target bulk velocity (-1 = from initial condition)
+    bool recycle_remove_transverse_mean = true; ///< Remove mean v,w at inlet (enforce zero net transverse flow)
+    int recycle_diag_interval = 0;          ///< Log recycling diagnostics every N steps (0 = disabled)
+
     /// Load configuration from file
     void load(const std::string& filename);
     

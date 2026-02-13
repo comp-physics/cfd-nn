@@ -6,11 +6,252 @@
 
 #include "solver.hpp"
 #include "solver_time_kernels.hpp"
+#include "gpu_utils.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <cstdlib>
 
 namespace nncfd {
+
+// ============================================================================
+// Diagnostic: NaN sentinel check with location reporting
+// ============================================================================
+
+namespace {
+
+/// Check for NaN in velocity field and return location of first NaN found
+/// Returns true if NaN found, sets (nan_i, nan_j, nan_k) to location
+bool check_nan_with_location(const double* u_ptr, const double* v_ptr, const double* w_ptr,
+                              int Nx, int Ny, int Nz, int Ng,
+                              int u_stride, int v_stride, int w_stride,
+                              int u_plane, int v_plane, int w_plane,
+                              bool is_2d,
+                              int& nan_i, int& nan_j, int& nan_k, char& nan_component) {
+    nan_i = nan_j = nan_k = -1;
+    nan_component = '?';
+
+#ifdef USE_GPU_OFFLOAD
+    // GPU reduction to find first NaN location
+    const double* u_dev = gpu::dev_ptr(const_cast<double*>(u_ptr));
+    const double* v_dev = gpu::dev_ptr(const_cast<double*>(v_ptr));
+    const double* w_dev = w_ptr ? gpu::dev_ptr(const_cast<double*>(w_ptr)) : nullptr;
+
+    // First pass: check if any NaN exists
+    int has_nan_u = 0, has_nan_v = 0, has_nan_w = 0;
+
+    if (is_2d) {
+        #pragma omp target teams distribute parallel for collapse(2) reduction(|:has_nan_u) \
+            is_device_ptr(u_dev)
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i <= Nx + Ng; ++i) {
+                int idx = j * u_stride + i;
+                double val = u_dev[idx];
+                if (val != val) has_nan_u = 1;  // NaN check
+            }
+        }
+        #pragma omp target teams distribute parallel for collapse(2) reduction(|:has_nan_v) \
+            is_device_ptr(v_dev)
+        for (int j = Ng; j <= Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * v_stride + i;
+                double val = v_dev[idx];
+                if (val != val) has_nan_v = 1;
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(3) reduction(|:has_nan_u) \
+            is_device_ptr(u_dev)
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i <= Nx + Ng; ++i) {
+                    int idx = k * u_plane + j * u_stride + i;
+                    double val = u_dev[idx];
+                    if (val != val) has_nan_u = 1;
+                }
+            }
+        }
+        #pragma omp target teams distribute parallel for collapse(3) reduction(|:has_nan_v) \
+            is_device_ptr(v_dev)
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j <= Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * v_plane + j * v_stride + i;
+                    double val = v_dev[idx];
+                    if (val != val) has_nan_v = 1;
+                }
+            }
+        }
+        if (w_dev) {
+            #pragma omp target teams distribute parallel for collapse(3) reduction(|:has_nan_w) \
+                is_device_ptr(w_dev)
+            for (int k = Ng; k <= Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * w_plane + j * w_stride + i;
+                        double val = w_dev[idx];
+                        if (val != val) has_nan_w = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (has_nan_u == 0 && has_nan_v == 0 && has_nan_w == 0) {
+        return false;  // No NaN
+    }
+
+    // Second pass (CPU): find first NaN location by copying a small amount of data
+    // For production, just report which component has NaN
+    if (has_nan_u) {
+        nan_component = 'u';
+        nan_i = nan_j = nan_k = 0;  // Location not pinpointed on GPU
+    } else if (has_nan_v) {
+        nan_component = 'v';
+        nan_i = nan_j = nan_k = 0;
+    } else if (has_nan_w) {
+        nan_component = 'w';
+        nan_i = nan_j = nan_k = 0;
+    }
+    return true;
+#else
+    // CPU path: full scan with location
+    if (is_2d) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i <= Nx + Ng; ++i) {
+                if (std::isnan(u_ptr[j * u_stride + i])) {
+                    nan_i = i - Ng; nan_j = j - Ng; nan_k = 0;
+                    nan_component = 'u';
+                    return true;
+                }
+            }
+        }
+        for (int j = Ng; j <= Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                if (std::isnan(v_ptr[j * v_stride + i])) {
+                    nan_i = i - Ng; nan_j = j - Ng; nan_k = 0;
+                    nan_component = 'v';
+                    return true;
+                }
+            }
+        }
+    } else {
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i <= Nx + Ng; ++i) {
+                    if (std::isnan(u_ptr[k * u_plane + j * u_stride + i])) {
+                        nan_i = i - Ng; nan_j = j - Ng; nan_k = k - Ng;
+                        nan_component = 'u';
+                        return true;
+                    }
+                }
+            }
+        }
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j <= Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    if (std::isnan(v_ptr[k * v_plane + j * v_stride + i])) {
+                        nan_i = i - Ng; nan_j = j - Ng; nan_k = k - Ng;
+                        nan_component = 'v';
+                        return true;
+                    }
+                }
+            }
+        }
+        if (w_ptr) {
+            for (int k = Ng; k <= Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        if (std::isnan(w_ptr[k * w_plane + j * w_stride + i])) {
+                            nan_i = i - Ng; nan_j = j - Ng; nan_k = k - Ng;
+                            nan_component = 'w';
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return false;
+#endif
+}
+
+/// Compute CFL_y_max = max|v| * dt / dy_local(j) for stretched grids
+double compute_cfl_y_max(const double* v_ptr,
+                          int Nx, int Ny, int Nz, int Ng,
+                          int v_stride, int v_plane,
+                          bool is_2d, double dt,
+                          const std::vector<double>& dyv, double dy_uniform) {
+    double cfl_y_max = 0.0;
+
+#ifdef USE_GPU_OFFLOAD
+    const double* v_dev = gpu::dev_ptr(const_cast<double*>(v_ptr));
+    const double* dyv_ptr = dyv.empty() ? nullptr : dyv.data();
+    const double dy_u = dy_uniform;
+    const bool use_dyv = !dyv.empty();
+
+    if (is_2d) {
+        #pragma omp target teams distribute parallel for collapse(2) reduction(max:cfl_y_max) \
+            is_device_ptr(v_dev) map(to: dyv_ptr[:dyv.size()])
+        for (int j = Ng; j <= Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = j * v_stride + i;
+                double v_abs = v_dev[idx];
+                if (v_abs < 0) v_abs = -v_abs;
+                double dy_local = use_dyv ? dyv_ptr[j] : dy_u;
+                double cfl = v_abs * dt / dy_local;
+                if (cfl > cfl_y_max) cfl_y_max = cfl;
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(3) reduction(max:cfl_y_max) \
+            is_device_ptr(v_dev) map(to: dyv_ptr[:dyv.size()])
+        for (int k = Ng; k < Nz + Ng; ++k) {
+            for (int j = Ng; j <= Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = k * v_plane + j * v_stride + i;
+                    double v_abs = v_dev[idx];
+                    if (v_abs < 0) v_abs = -v_abs;
+                    double dy_local = use_dyv ? dyv_ptr[j] : dy_u;
+                    double cfl = v_abs * dt / dy_local;
+                    if (cfl > cfl_y_max) cfl_y_max = cfl;
+                }
+            }
+        }
+    }
+#else
+    for (int k = Ng; k < (is_2d ? Ng + 1 : Nz + Ng); ++k) {
+        for (int j = Ng; j <= Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                int idx = is_2d ? (j * v_stride + i) : (k * v_plane + j * v_stride + i);
+                double v_abs = std::abs(v_ptr[idx]);
+                double dy_local = dyv.empty() ? dy_uniform : dyv[j];
+                double cfl = v_abs * dt / dy_local;
+                if (cfl > cfl_y_max) cfl_y_max = cfl;
+            }
+        }
+    }
+#endif
+    return cfl_y_max;
+}
+
+/// Check if step is in diagnostic range (controlled by NAN_DIAG_START/NAN_DIAG_END env vars)
+bool in_diagnostic_range(int step) {
+    static int diag_start = -1, diag_end = -1;
+    static bool initialized = false;
+    if (!initialized) {
+        const char* start_env = std::getenv("NAN_DIAG_START");
+        const char* end_env = std::getenv("NAN_DIAG_END");
+        // Disabled by default (avoids GPU sync overhead in tests/production).
+        // Set NAN_DIAG_START=180 NAN_DIAG_END=260 to enable for DNS debugging.
+        diag_start = start_env ? std::atoi(start_env) : -1;
+        diag_end = end_env ? std::atoi(end_env) : -1;
+        initialized = true;
+    }
+    return step >= diag_start && step <= diag_end;
+}
+
+} // anonymous namespace
 
 // ============================================================================
 // Helper: Identify velocity field for pointer lookup (used by project_velocity)
@@ -569,14 +810,59 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     vcycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
 #endif
 
+    // Populate PoissonStats for external access (for RK paths that call project_velocity)
+    if (selected_solver_ == PoissonSolverType::MG) {
+        poisson_stats_.cycles = vcycles;
+        // Determine solve status from MG solver flags
+        if (mg_poisson_solver_.used_fixed_cycles()) {
+            poisson_stats_.status = PoissonSolveStatus::FixedCycles;
+        } else if (mg_poisson_solver_.converged()) {
+            poisson_stats_.status = PoissonSolveStatus::ConvergedToTol;
+        } else {
+            poisson_stats_.status = PoissonSolveStatus::HitMaxCycles;
+        }
+        poisson_stats_.rhs_norm_l2 = mg_poisson_solver_.rhs_norm_l2();
+        poisson_stats_.rhs_norm_inf = mg_poisson_solver_.rhs_norm();
+        poisson_stats_.res_norm_l2 = mg_poisson_solver_.residual_l2();
+        poisson_stats_.res_norm_inf = mg_poisson_solver_.residual();
+        double b_norm = pcfg.use_l2_norm ? poisson_stats_.rhs_norm_l2 : poisson_stats_.rhs_norm_inf;
+        double r_norm = pcfg.use_l2_norm ? poisson_stats_.res_norm_l2 : poisson_stats_.res_norm_inf;
+        poisson_stats_.res_over_rhs = (b_norm > 1e-30) ? r_norm / b_norm : 0.0;
+    }
+
     // Track Poisson solve stats for benchmarking (enable with POISSON_STATS=1)
     static bool print_stats = (std::getenv("POISSON_STATS") != nullptr);
+    static bool print_debug = (std::getenv("POISSON_DEBUG") != nullptr);
     static int poisson_solve_count = 0;
     static int total_vcycles = 0;
     poisson_solve_count++;
     total_vcycles += vcycles;
     if (print_stats) {
         std::cerr << "[Poisson] solve #" << poisson_solve_count << " vcycles=" << vcycles << "\n";
+    }
+
+    // Debug: print RHS and solution norms (enable with POISSON_DEBUG=1)
+    if (print_debug && poisson_solve_count <= 10) {
+        // Compute max|rhs| and max|p| on device
+        double rhs_max = 0.0, p_max = 0.0;
+        const double* rhs_dev = gpu::dev_ptr(rhs_poisson_ptr_);
+        const double* p_dev = gpu::dev_ptr(pressure_corr_ptr_);
+        const int n_cells = Nx * Ny * (is_2d ? 1 : Nz);
+        #pragma omp target teams distribute parallel for reduction(max:rhs_max,p_max) is_device_ptr(rhs_dev, p_dev)
+        for (int idx = 0; idx < n_cells; ++idx) {
+            int ii = idx % Nx + Ng;
+            int jk = idx / Nx;
+            int jj = (is_2d ? jk : jk % Ny) + Ng;
+            int kk = (is_2d ? 0 : jk / Ny) + Ng;
+            int flat = kk * plane_stride + jj * stride + ii;
+            rhs_max = std::max(rhs_max, std::abs(rhs_dev[flat]));
+            p_max = std::max(p_max, std::abs(p_dev[flat]));
+        }
+        // Also get MG residual if using MG
+        double mg_res = (selected_solver_ == PoissonSolverType::MG) ? mg_poisson_solver_.residual() : 0.0;
+        std::cerr << "[Poisson DEBUG] solve #" << poisson_solve_count
+                  << "  max|rhs|=" << rhs_max << "  max|p|=" << p_max
+                  << "  residual=" << mg_res << "  vcycles=" << vcycles << "\n";
     }
 
     // Copy velocity_ to velocity_star_ for correct_velocity()
@@ -608,6 +894,178 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     correct_velocity();
     apply_velocity_bc();
     // Note: correct_velocity() already updates pressure internally
+
+    // Adaptive projection: if div is too high, run more cycles
+    // Track total cycles used across adaptive iterations
+    int total_cycles_used = vcycles;
+
+#ifdef USE_GPU_OFFLOAD
+    if (config_.adaptive_projection && selected_solver_ == PoissonSolverType::MG) {
+        // Compute max|div u| after correction (GPU reduction)
+        compute_divergence(VelocityWhich::Current, div_velocity_);
+
+        double max_div = 0.0;
+        const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
+
+        if (is_2d) {
+            #pragma omp target teams distribute parallel for collapse(2) \
+                is_device_ptr(div_dev) reduction(max: max_div)
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double d = div_dev[idx];
+                    double abs_d = (d >= 0.0) ? d : -d;
+                    if (abs_d > max_div) max_div = abs_d;
+                }
+            }
+        } else {
+            #pragma omp target teams distribute parallel for collapse(3) \
+                is_device_ptr(div_dev) reduction(max: max_div)
+            for (int k = Ng; k < Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * plane_stride + j * stride + i;
+                        double d = div_dev[idx];
+                        double abs_d = (d >= 0.0) ? d : -d;
+                        if (abs_d > max_div) max_div = abs_d;
+                    }
+                }
+            }
+        }
+
+        // Adaptive iteration: if div > target and haven't hit max cycles, do more
+        int adaptive_iter = 0;
+        while (max_div > config_.div_target && total_cycles_used < config_.projection_max_cycles) {
+            adaptive_iter++;
+
+            // Recompute RHS from current (partially corrected) velocity
+            double mean_div_adapt = 0.0;
+            double sum_adapt = 0.0;
+
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum_adapt) \
+                    is_device_ptr(div_dev)
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int idx = (j + Ng) * stride + (i + Ng);
+                        sum_adapt += div_dev[idx];
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum_adapt) \
+                    is_device_ptr(div_dev)
+                for (int k = 0; k < Nz; ++k) {
+                    for (int j = 0; j < Ny; ++j) {
+                        for (int i = 0; i < Nx; ++i) {
+                            int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
+                            sum_adapt += div_dev[idx];
+                        }
+                    }
+                }
+            }
+            mean_div_adapt = (count > 0) ? sum_adapt / count : 0.0;
+
+            // Build Poisson RHS
+            double* rhs_dev_adapt = gpu::dev_ptr(rhs_poisson_ptr_);
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    is_device_ptr(div_dev, rhs_dev_adapt)
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int idx = (j + Ng) * stride + (i + Ng);
+                        rhs_dev_adapt[idx] = (div_dev[idx] - mean_div_adapt) * dt_inv;
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) \
+                    is_device_ptr(div_dev, rhs_dev_adapt)
+                for (int k = 0; k < Nz; ++k) {
+                    for (int j = 0; j < Ny; ++j) {
+                        for (int i = 0; i < Nx; ++i) {
+                            int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
+                            rhs_dev_adapt[idx] = (div_dev[idx] - mean_div_adapt) * dt_inv;
+                        }
+                    }
+                }
+            }
+
+            // Copy current (corrected) velocity to velocity_star_ for incremental correction
+            // This ensures correct_velocity() uses the latest corrected velocity as input
+            if (is_2d) {
+                time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_star_u_ptr_,
+                                         velocity_v_ptr_, velocity_star_v_ptr_,
+                                         Nx, Ny, Ng, u_stride, v_stride,
+                                         velocity_.u_total_size(), velocity_.v_total_size());
+            } else {
+                const int u_plane = u_stride * (Ny + 2 * Ng);
+                const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+                const int w_stride_local = Nx + 2 * Ng;
+                const int w_plane = w_stride_local * (Ny + 2 * Ng);
+                time_kernels::copy_3d_uvw(velocity_u_ptr_, velocity_star_u_ptr_,
+                                          velocity_v_ptr_, velocity_star_v_ptr_,
+                                          velocity_w_ptr_, velocity_star_w_ptr_,
+                                          Nx, Ny, Nz, Ng,
+                                          u_stride, v_stride, w_stride_local,
+                                          u_plane, v_plane, w_plane,
+                                          velocity_.u_total_size(), velocity_.v_total_size(),
+                                          velocity_.w_total_size());
+            }
+
+            // Solve Poisson with extra cycles
+            PoissonConfig pcfg_adapt;
+            pcfg_adapt.max_vcycles = config_.projection_extra_chunk;
+            pcfg_adapt.tol_rhs = config_.poisson_tol_rhs;
+            pcfg_adapt.fixed_cycles = config_.projection_extra_chunk;
+
+            int extra_cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg_adapt);
+            total_cycles_used += extra_cycles;
+
+            // Correct velocity again (now from updated velocity_star_)
+            correct_velocity();
+            apply_velocity_bc();
+
+            // Recompute divergence
+            compute_divergence(VelocityWhich::Current, div_velocity_);
+
+            max_div = 0.0;
+            if (is_2d) {
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    is_device_ptr(div_dev) reduction(max: max_div)
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = j * stride + i;
+                        double d = div_dev[idx];
+                        double abs_d = (d >= 0.0) ? d : -d;
+                        if (abs_d > max_div) max_div = abs_d;
+                    }
+                }
+            } else {
+                #pragma omp target teams distribute parallel for collapse(3) \
+                    is_device_ptr(div_dev) reduction(max: max_div)
+                for (int k = Ng; k < Nz + Ng; ++k) {
+                    for (int j = Ng; j < Ny + Ng; ++j) {
+                        for (int i = Ng; i < Nx + Ng; ++i) {
+                            int idx = k * plane_stride + j * stride + i;
+                            double d = div_dev[idx];
+                            double abs_d = (d >= 0.0) ? d : -d;
+                            if (abs_d > max_div) max_div = abs_d;
+                        }
+                    }
+                }
+            }
+
+            // Log adaptive iteration
+            static bool adaptive_verbose = (std::getenv("ADAPTIVE_PROJECTION_VERBOSE") != nullptr);
+            if (adaptive_verbose) {
+                std::cerr << "[Adaptive Projection] iter=" << adaptive_iter
+                          << " max|div|=" << max_div << " total_cycles=" << total_cycles_used << "\n";
+            }
+        }
+
+        // Update stats with total cycles
+        poisson_stats_.cycles = total_cycles_used;
+    }
+#endif
 
     if (need_swap) {
         if (vel_id == VelFieldId::VelocityStar) {
@@ -659,6 +1117,9 @@ void RANSSolver::ssprk2_step(double dt) {
 
     // Stage 1: u^(1) = u^n + dt * L(u^n)
     euler_substep(velocity_, velocity_star_, dt);
+    // Apply inlet BC before projection so Poisson sees correct u^*_n = u_bc
+    // This ensures ∂φ/∂n = 0 is consistent at the velocity-Dirichlet inflow
+    if (use_recycling_) apply_recycling_inlet_bc();
     project_velocity(velocity_star_, dt);
 
     // Stage 2: temp = u^(1) + dt * L(u^(1))
@@ -688,7 +1149,21 @@ void RANSSolver::ssprk2_step(double dt) {
                                    velocity_.w_total_size());
     }
 
+    // Apply inlet BC BEFORE projection so Poisson can make it div-free
+    // Sequence: 1) set v,w at inlet, 2) correct u for div-free, 3) optional fringe blend
+    if (use_recycling_) {
+        apply_recycling_inlet_bc();     // Sets v, w at inlet
+        correct_inlet_divergence();     // Computes u_inlet to make first slab div-free
+        apply_fringe_blending();        // Optional smoothing
+    }
     project_velocity(velocity_, dt);
+
+    // Recycling inflow: extract from projected (div-free) flow and prepare data for next step
+    if (use_recycling_) {
+        extract_recycle_plane();
+        process_recycle_inflow();
+        // Note: DO NOT apply BC after projection - it would introduce divergence
+    }
 
 #ifndef NDEBUG
     // Verify pointer consistency at end of RK2 step
@@ -707,6 +1182,14 @@ void RANSSolver::ssprk3_step(double dt) {
     [[maybe_unused]] const int u_stride = Nx + 2 * Ng + 1;
     [[maybe_unused]] const int v_stride = Nx + 2 * Ng;
     const bool is_2d = mesh_->is2D();
+    const int Nz = is_2d ? 1 : mesh_->Nz;
+    const int u_plane = u_stride * (Ny + 2 * Ng);
+    const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+    const int w_stride_local = Nx + 2 * Ng;
+    const int w_plane = w_stride_local * (Ny + 2 * Ng);
+
+    // Check if in diagnostic range for NaN sentinels
+    const bool run_diag = in_diagnostic_range(step_count_);
 
     // Store u^n in velocity_rk_ (use kernel calls to avoid inlining)
     if (is_2d) {
@@ -715,11 +1198,6 @@ void RANSSolver::ssprk3_step(double dt) {
                                  Nx, Ny, Ng, u_stride, v_stride,
                                  velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        const int Nz = mesh_->Nz;
-        const int u_plane = u_stride * (Ny + 2 * Ng);
-        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-        const int w_stride_local = Nx + 2 * Ng;
-        const int w_plane = w_stride_local * (Ny + 2 * Ng);
         time_kernels::copy_3d_uvw(velocity_u_ptr_, velocity_rk_u_ptr_,
                                   velocity_v_ptr_, velocity_rk_v_ptr_,
                                   velocity_w_ptr_, velocity_rk_w_ptr_,
@@ -732,10 +1210,66 @@ void RANSSolver::ssprk3_step(double dt) {
 
     // Stage 1: u^(1) = u^n + dt * L(u^n)
     euler_substep(velocity_, velocity_star_, dt);
+
+    // SENTINEL A1: Check for NaN after predictor (Stage 1)
+    if (run_diag) {
+        int nan_i, nan_j, nan_k;
+        char nan_comp;
+        if (check_nan_with_location(velocity_star_u_ptr_, velocity_star_v_ptr_,
+                                    is_2d ? nullptr : velocity_star_w_ptr_,
+                                    Nx, Ny, Nz, Ng,
+                                    u_stride, v_stride, w_stride_local,
+                                    u_plane, v_plane, w_plane, is_2d,
+                                    nan_i, nan_j, nan_k, nan_comp)) {
+            std::cerr << "[SENTINEL-A1] Step " << step_count_ << " Stage 1 PREDICTOR: NaN in "
+                      << nan_comp << " at (" << nan_i << "," << nan_j << "," << nan_k << ")\n";
+            // Compute CFL_y for context
+            double cfl_y = compute_cfl_y_max(velocity_v_ptr_, Nx, Ny, Nz, Ng,
+                                              v_stride, v_plane, is_2d, dt,
+                                              mesh_->dyv, mesh_->dy);
+            std::cerr << "[SENTINEL-A1] CFL_y_max = " << cfl_y << " (dt=" << dt << ")\n";
+            std::abort();
+        }
+    }
+
+    // Apply inlet BC before projection so Poisson sees correct u^*_n = u_bc
+    if (use_recycling_) apply_recycling_inlet_bc();
     project_velocity(velocity_star_, dt);
+
+    // SENTINEL B1: Check for NaN after projection (Stage 1)
+    if (run_diag) {
+        int nan_i, nan_j, nan_k;
+        char nan_comp;
+        if (check_nan_with_location(velocity_star_u_ptr_, velocity_star_v_ptr_,
+                                    is_2d ? nullptr : velocity_star_w_ptr_,
+                                    Nx, Ny, Nz, Ng,
+                                    u_stride, v_stride, w_stride_local,
+                                    u_plane, v_plane, w_plane, is_2d,
+                                    nan_i, nan_j, nan_k, nan_comp)) {
+            std::cerr << "[SENTINEL-B1] Step " << step_count_ << " Stage 1 PROJECTION: NaN in "
+                      << nan_comp << " at (" << nan_i << "," << nan_j << "," << nan_k << ")\n";
+            std::abort();
+        }
+    }
 
     // Stage 2: u^(2) = 0.75 * u^n + 0.25 * (u^(1) + dt * L(u^(1)))
     euler_substep(velocity_star_, velocity_, dt);
+
+    // SENTINEL A2: Check for NaN after predictor (Stage 2)
+    if (run_diag) {
+        int nan_i, nan_j, nan_k;
+        char nan_comp;
+        if (check_nan_with_location(velocity_u_ptr_, velocity_v_ptr_,
+                                    is_2d ? nullptr : velocity_w_ptr_,
+                                    Nx, Ny, Nz, Ng,
+                                    u_stride, v_stride, w_stride_local,
+                                    u_plane, v_plane, w_plane, is_2d,
+                                    nan_i, nan_j, nan_k, nan_comp)) {
+            std::cerr << "[SENTINEL-A2] Step " << step_count_ << " Stage 2 PREDICTOR: NaN in "
+                      << nan_comp << " at (" << nan_i << "," << nan_j << "," << nan_k << ")\n";
+            std::abort();
+        }
+    }
 
     // Blend to velocity_star_: 0.75 * velocity_rk_ + 0.25 * velocity_
     if (is_2d) {
@@ -761,10 +1295,28 @@ void RANSSolver::ssprk3_step(double dt) {
                                       velocity_.w_total_size());
     }
 
+    // Apply inlet BC before projection
+    if (use_recycling_) apply_recycling_inlet_bc();
     project_velocity(velocity_star_, dt);
 
     // Stage 3: u^{n+1} = (1/3) * u^n + (2/3) * (u^(2) + dt * L(u^(2)))
     euler_substep(velocity_star_, velocity_, dt);
+
+    // SENTINEL A3: Check for NaN after predictor (Stage 3)
+    if (run_diag) {
+        int nan_i, nan_j, nan_k;
+        char nan_comp;
+        if (check_nan_with_location(velocity_u_ptr_, velocity_v_ptr_,
+                                    is_2d ? nullptr : velocity_w_ptr_,
+                                    Nx, Ny, Nz, Ng,
+                                    u_stride, v_stride, w_stride_local,
+                                    u_plane, v_plane, w_plane, is_2d,
+                                    nan_i, nan_j, nan_k, nan_comp)) {
+            std::cerr << "[SENTINEL-A3] Step " << step_count_ << " Stage 3 PREDICTOR: NaN in "
+                      << nan_comp << " at (" << nan_i << "," << nan_j << "," << nan_k << ")\n";
+            std::abort();
+        }
+    }
 
     // Final blend: velocity_ = (1/3) * velocity_rk_ + (2/3) * velocity_
     if (is_2d) {
@@ -774,11 +1326,6 @@ void RANSSolver::ssprk3_step(double dt) {
                                   Nx, Ny, Ng, u_stride, v_stride,
                                   velocity_.u_total_size(), velocity_.v_total_size());
     } else {
-        const int Nz = mesh_->Nz;
-        const int u_plane = u_stride * (Ny + 2 * Ng);
-        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-        const int w_stride_local = Nx + 2 * Ng;
-        const int w_plane = w_stride_local * (Ny + 2 * Ng);
         time_kernels::blend_3d_uvw(velocity_rk_u_ptr_, velocity_u_ptr_,
                                    velocity_rk_v_ptr_, velocity_v_ptr_,
                                    velocity_rk_w_ptr_, velocity_w_ptr_,
@@ -790,8 +1337,45 @@ void RANSSolver::ssprk3_step(double dt) {
                                    velocity_.w_total_size());
     }
 
+    // Apply inlet BC BEFORE projection so Poisson can make it div-free
+    // Sequence: 1) set v,w at inlet, 2) correct u for div-free, 3) optional fringe blend
+    if (use_recycling_) {
+        apply_recycling_inlet_bc();     // Sets v, w at inlet
+        correct_inlet_divergence();     // Computes u_inlet to make first slab div-free
+        apply_fringe_blending();        // Optional smoothing
+    }
     project_velocity(velocity_, dt);
+
+    // SENTINEL B3: Check for NaN after final projection (Stage 3)
+    if (run_diag) {
+        int nan_i, nan_j, nan_k;
+        char nan_comp;
+        if (check_nan_with_location(velocity_u_ptr_, velocity_v_ptr_,
+                                    is_2d ? nullptr : velocity_w_ptr_,
+                                    Nx, Ny, Nz, Ng,
+                                    u_stride, v_stride, w_stride_local,
+                                    u_plane, v_plane, w_plane, is_2d,
+                                    nan_i, nan_j, nan_k, nan_comp)) {
+            std::cerr << "[SENTINEL-B3] Step " << step_count_ << " Stage 3 PROJECTION: NaN in "
+                      << nan_comp << " at (" << nan_i << "," << nan_j << "," << nan_k << ")\n";
+            std::abort();
+        }
+
+        // Log CFL_y_max at end of step (diagnostic range only)
+        double cfl_y = compute_cfl_y_max(velocity_v_ptr_, Nx, Ny, Nz, Ng,
+                                          v_stride, v_plane, is_2d, dt,
+                                          mesh_->dyv, mesh_->dy);
+        std::cerr << "[CFL_Y] Step " << step_count_ << " CFL_y_max = " << cfl_y << "\n";
+    }
+
     apply_velocity_bc();
+
+    // Recycling inflow: extract from projected (div-free) flow and prepare data for next step
+    if (use_recycling_) {
+        extract_recycle_plane();
+        process_recycle_inflow();
+        // Note: DO NOT apply BC after projection - it would introduce divergence
+    }
 
 #ifndef NDEBUG
     // Verify pointer consistency at end of RK3 step

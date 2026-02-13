@@ -68,6 +68,13 @@ public:
     /// Get RHS norm ||b||_∞ (computed at start of solve)
     double rhs_norm() const { return b_inf_; }
 
+#ifdef USE_GPU_OFFLOAD
+    /// Disable V-cycle CUDA Graph (for debugging or when graph replay is unreliable)
+    void disable_vcycle_graph() { use_vcycle_graph_ = false; }
+#else
+    void disable_vcycle_graph() {}  // No-op without GPU
+#endif
+
     /// Get RHS norm ||b||_2 (computed at start of solve)
     double rhs_norm_l2() const { return b_l2_; }
 
@@ -76,6 +83,13 @@ public:
 
     /// Get initial residual ||r0||_2
     double initial_residual_l2() const { return r0_l2_; }
+
+    /// Check if last solve converged (reached tolerance) vs hit max_vcycles
+    /// Returns false for fixed-cycle mode (no convergence check performed)
+    bool converged() const { return converged_; }
+
+    /// Check if last solve used fixed-cycle mode (no convergence checking)
+    bool used_fixed_cycles() const { return fixed_cycle_mode_; }
 
     /// Set smoother type (Jacobi for reference/debugging, Chebyshev for performance)
     /// Can also be set via environment variable MG_SMOOTHER=jacobi|chebyshev
@@ -140,7 +154,21 @@ private:
     
     const Mesh* mesh_;
     std::vector<std::unique_ptr<GridLevel>> levels_;
-    
+
+    // Y-metric arrays for non-uniform y-spacing at level 0 (D·G = L consistency)
+    // These are pointers to the original mesh's precomputed coefficients (nullptr if uniform)
+    const double* yLap_aS_ = nullptr;  ///< Laplacian south coeff: 1/(dyv[j] * dyc[j])
+    const double* yLap_aN_ = nullptr;  ///< Laplacian north coeff: 1/(dyv[j] * dyc[j+1])
+    const double* yLap_aP_ = nullptr;  ///< Laplacian diagonal: -(aS + aN)
+    bool y_stretched_ = false;         ///< True if y is non-uniform
+    bool semi_coarsening_ = false;     ///< True if using x-z semi-coarsening (y unchanged across levels)
+    size_t y_metrics_size_ = 0;        ///< Size of y-metric arrays
+
+    // Per-level Chebyshev eigenvalue bounds (computed via Gershgorin for D⁻¹A)
+    // λmax is the upper bound on spectrum of Jacobi-preconditioned operator
+    // λmin is set to 0.1 * λmax (smoothing doesn't need tight lower bound)
+    std::vector<double> cheby_lambda_max_;  ///< Per-level λmax for Chebyshev
+
     // Boundary conditions
     PoissonBC bc_x_lo_ = PoissonBC::Periodic;
     PoissonBC bc_x_hi_ = PoissonBC::Periodic;
@@ -155,6 +183,8 @@ private:
     double b_l2_ = 0.0;          // ||b||_2 from last solve
     double r0_ = 0.0;            // Initial residual ||r0||_∞ from last solve
     double r0_l2_ = 0.0;         // Initial residual ||r0||_2 from last solve
+    bool converged_ = false;     // True if solve reached tolerance (vs hitting max_vcycles)
+    bool fixed_cycle_mode_ = false; // True if last solve used fixed-cycle mode
     double dirichlet_val_ = 0.0;
     MGSmootherType smoother_type_ = MGSmootherType::Chebyshev;  // Default to faster smoother
 
@@ -171,17 +201,33 @@ private:
 
     // Core multigrid operations
     void create_hierarchy();
+    void compute_gershgorin_bounds();  // Compute per-level Chebyshev eigenvalue bounds
     void smooth_jacobi(int level, int iterations, double omega = 0.8);  // GPU-optimized Jacobi
+    void smooth_y_lines(int level, int iterations);  // Y-line relaxation for anisotropic grids
+    void smooth_xz_plane_rbgs(int level, int iterations);  // Red-black GS in xz-planes (attacks y-constant modes)
     void smooth_chebyshev(int level, int degree = 4);  // Chebyshev polynomial smoother
     void compute_residual(int level);
     void restrict_residual(int fine_level);
+    void restrict_residual_xz(int fine_level);  // Semi-coarsening: x-z only
     void prolongate_correction(int coarse_level);
+    void prolongate_correction_xz(int coarse_level);  // Semi-coarsening: x-z only
     void apply_bc(int level);
     void apply_bc_to_residual(int level);  // Apply periodic BCs to residual for restriction
     void vcycle(int level, int nu1 = 2, int nu2 = 2, int degree = 4);
     
     // Direct solver for coarsest level
     void solve_coarsest(int iterations = 100);
+
+    // PCG solver for coarsest level with y-line preconditioner
+    // This properly handles x/z low-frequency modes that y-line smoothing alone misses
+    void solve_coarse_pcg(int max_iters = 100, double tol = 1e-10);
+
+    // Apply Laplacian operator: y = A * x (for PCG)
+    // Uses same stencil as compute_residual but without subtracting from f
+    void apply_laplacian_coarse(const double* x, double* y);
+
+    // GPU-resident dot product with reduction
+    double dot_product_gpu(const double* a, const double* b, size_t n);
     
     // Utility
     double compute_max_residual(int level);
@@ -192,6 +238,10 @@ private:
     void compute_residual_and_norms(int level, double& r_inf, double& r_l2);
 
     void subtract_mean(int level);
+
+    /// Make RHS mean-free for compatibility with Neumann/Periodic BCs
+    /// Call BEFORE V-cycles - this is the proper Neumann handling
+    void make_rhs_mean_free(int level);
 
     /// Check if the problem has a nullspace (solution unique only up to a constant)
     ///
@@ -220,6 +270,14 @@ private:
     std::vector<double*> f_ptrs_;  // Device pointers for f at each level
     std::vector<double*> r_ptrs_;  // Device pointers for r at each level
     std::vector<double*> tmp_ptrs_;  // Scratch buffer for Jacobi ping-pong
+
+    // PCG scratch buffers for coarsest level
+    double* pcg_p_ = nullptr;    // Search direction
+    double* pcg_z_ = nullptr;    // Preconditioned residual
+    double* pcg_Ap_ = nullptr;   // A * p
+    double* pcg_x_ = nullptr;    // Solution accumulator (separate from u for preconditioner)
+    double* pcg_f_save_ = nullptr;  // Saved RHS for preconditioner
+    size_t pcg_buf_size_ = 0;    // Allocated size
     std::vector<size_t> level_sizes_;  // Total size for each level
 
     // NVHPC WORKAROUND: Level-0 member pointers for direct use in target regions.

@@ -97,14 +97,47 @@ public:
     /// Returns a human-readable string explaining why the solver was chosen
     const std::string& selection_reason() const { return selection_reason_; }
 
+    /// Poisson solve termination status
+    enum class PoissonSolveStatus {
+        ConvergedToTol,  ///< Met tolerance criterion before max_vcycles
+        HitMaxCycles,    ///< Ran max_vcycles without meeting tolerance
+        FixedCycles      ///< Ran exactly fixed_cycles (no convergence check)
+    };
+
     /// Poisson solve statistics from last step (for testing/diagnostics)
     struct PoissonStats {
         int cycles = 0;           ///< V-cycles (or iterations) performed
+        PoissonSolveStatus status = PoissonSolveStatus::ConvergedToTol;
+
+        // Poisson residual norms
         double rhs_norm_l2 = 0.0; ///< ||b||_L2 at start of solve
         double rhs_norm_inf = 0.0;///< ||b||_∞ at start of solve
         double res_norm_l2 = 0.0; ///< ||r||_L2 after solve
         double res_norm_inf = 0.0;///< ||r||_∞ after solve
-        double res_over_rhs = 0.0;///< ||r||/||b|| (relative residual)
+        double res_over_rhs = 0.0;///< ||r||/||b|| (relative residual) - key metric
+
+        // Post-projection divergence (raw)
+        double div_after_proj_linf = 0.0; ///< ||div(u)||_∞ after projection
+        double div_after_proj_l2 = 0.0;   ///< ||div(u)||_L2 after projection
+
+        // Dimensionless divergence (scaled by dx_min / u_ref for portable thresholds)
+        double div_scaled_linf = 0.0;     ///< ||div(u)||_∞ * dx_min / u_ref
+        double div_scaled_l2 = 0.0;       ///< ||div(u)||_L2 * dx_min / u_ref
+        double dx_min = 0.0;              ///< Min cell size used for scaling
+        double u_ref = 1.0;               ///< Reference velocity (u_tau or bulk)
+
+        /// Helper to get status string for logging
+        const char* status_string() const {
+            switch (status) {
+                case PoissonSolveStatus::ConvergedToTol: return "TOL";
+                case PoissonSolveStatus::HitMaxCycles:   return "MAX_CYCLES";
+                case PoissonSolveStatus::FixedCycles:    return "FIXED";
+            }
+            return "UNKNOWN";
+        }
+
+        /// Check if solve achieved tolerance (not fixed-cycle or max-cycles)
+        bool converged_to_tol() const { return status == PoissonSolveStatus::ConvergedToTol; }
     };
 
     /// Get statistics from last Poisson solve (updated after each step())
@@ -153,6 +186,9 @@ public:
     
     /// Get current time step
     double current_dt() const { return current_dt_; }
+
+    /// Set current time step (for external adaptive dt control)
+    void set_dt(double dt) { current_dt_ = dt; }
     
     /// Access fields
     const VectorField& velocity() const { return velocity_; }
@@ -182,6 +218,24 @@ public:
     
     /// Compute friction Reynolds number Re_tau
     double Re_tau() const;
+
+    /// Diagnostic velocity maxima from latest compute_adaptive_dt()
+    double diag_u_max() const { return diag_u_max_; }
+    double diag_v_max() const { return diag_v_max_; }
+    double diag_w_max() const { return diag_w_max_; }
+    double diag_v_dy_max() const { return diag_v_dy_max_; }
+
+    /// Flow-through time based on bulk velocity: t* = t * U_b / δ
+    /// Measures how many channel lengths the bulk flow has traveled
+    double flow_through_time_bulk() const;
+
+    /// Flow-through time based on friction velocity: t+ = t * u_τ / δ
+    /// Measures time in wall units (more relevant for turbulence development)
+    double flow_through_time_friction() const;
+
+    /// Apply explicit high-wavenumber filter to velocity field (grid-scale dissipation)
+    /// strength in [0,1]: 0=no filter, 1=full Laplacian smoothing
+    void apply_velocity_filter(double strength);
 
     /// Compute convective KE production rate: <u, conv(u)>
     /// Returns the rate of KE change due to advection (should be ~0 for skew-symmetric form)
@@ -217,12 +271,524 @@ public:
     double compute_divergence_l2_device() const;    // L2 norm of divergence
     double compute_max_conv_device() const;         // max(|conv_u|, |conv_v|, |conv_w|) - verify convection active
 
+    /// Energy balance diagnostics (for recycling/inflow validation)
+    /// @{
+    double compute_kinetic_energy() const;          // KE = 0.5 * integral(u^2+v^2+w^2) dV (CPU version)
+    double compute_bulk_velocity() const;           // U_b = integral(u) / V
+    double compute_power_input() const;             // P_in = f_x * integral(u) dV
+    double compute_viscous_dissipation() const;     // epsilon = 2*nu * integral(S_ij S_ij) dV
+    /// @}
+
+    /// Plane-averaged turbulence statistics at x-index i
+    struct PlaneStats {
+        double u_mean;      // Mean streamwise velocity
+        double v_mean;      // Mean wall-normal velocity
+        double w_mean;      // Mean spanwise velocity
+        double u_rms;       // RMS of u fluctuations
+        double v_rms;       // RMS of v fluctuations
+        double w_rms;       // RMS of w fluctuations
+        double uv_reynolds; // Reynolds shear stress -<u'v'>
+    };
+    PlaneStats compute_plane_stats(int i_global) const;  // i_global is x-index (0 to Nx-1)
+
+    //=========================================================================
+    // Turbulence Presence Indicators (robust turbulence detection)
+    //=========================================================================
+
+    /// Turbulence state classification
+    enum class TurbulenceState {
+        LAMINAR,       ///< Flow is laminar (no turbulent fluctuations)
+        TRANSITIONAL,  ///< Flow is transitioning (some fluctuations, unstable)
+        TURBULENT      ///< Flow is fully turbulent (sustained fluctuations)
+    };
+
+    /// Validation mode for Stage F
+    enum class ValidationMode {
+        Quick,  ///< Machinery validation: looser thresholds, coarse grids OK
+        Full    ///< DNS realism: strict resolution gates, production quality
+    };
+
+    /// Turbulence presence indicators (robust detection beyond just -<u'v'>+)
+    struct TurbulencePresenceIndicators {
+        // Mid-channel RMS (time-averaged after spin-up)
+        double u_rms_mid = 0.0;         ///< u'_rms at y/delta=0.5
+        double v_rms_mid = 0.0;         ///< v'_rms at y/delta=0.5
+        double w_rms_mid = 0.0;         ///< w'_rms at y/delta=0.5 (3D only)
+
+        // Turbulent kinetic energy at mid-channel
+        double tke_mid = 0.0;           ///< k = 0.5*(u'² + v'² + w'²) at y/delta=0.5
+
+        // Wall shear tracking (use forcing-based reference for consistency)
+        double u_tau_current = 0.0;     ///< Current u_tau from wall shear
+        double u_tau_force = 0.0;       ///< Reference u_tau from forcing: sqrt(delta * |dp/dx_effective|)
+        double u_tau_ratio = 0.0;       ///< u_tau_current / u_tau_force
+
+        // Reynolds stress peak
+        double max_uv_plus = 0.0;       ///< max(-<u'v'>+) in trust region
+        int max_uv_plus_y_index = 0;    ///< y-index where max occurs
+
+        // Trust region bounds (exclude fringe + 2δ at inlet, 2δ at outlet)
+        int trust_x_start = 0;          ///< Start x-index of trust region
+        int trust_x_end = 0;            ///< End x-index of trust region
+        double trust_x_min = 0.0;       ///< Physical x-coordinate of trust region start
+        double trust_x_max = 0.0;       ///< Physical x-coordinate of trust region end
+
+        // Temporal stability (check if turbulence is sustained)
+        double u_tau_drift_rate = 0.0;  ///< d(u_tau)/dt normalized by u_tau
+        bool is_settling = false;       ///< True if u_tau is still drifting
+
+        /// Classify turbulence state based on instantaneous indicators
+        TurbulenceState classify() const {
+            // Primary criterion: wall shear ratio
+            if (u_tau_ratio > 1.2) {
+                return TurbulenceState::TURBULENT;
+            } else if (u_tau_ratio > 1.05) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+
+            // Secondary: Reynolds stress presence
+            if (max_uv_plus >= 0.5) {
+                return TurbulenceState::TURBULENT;
+            } else if (max_uv_plus >= 0.1) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+
+            // Tertiary: mid-channel TKE (more robust than RMS alone)
+            if (tke_mid > 0.01 * u_tau_force * u_tau_force) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+
+            return TurbulenceState::LAMINAR;
+        }
+
+        /// Get human-readable state string
+        const char* state_string() const {
+            switch (classify()) {
+                case TurbulenceState::LAMINAR:      return "LAMINAR";
+                case TurbulenceState::TRANSITIONAL: return "TRANSITIONAL";
+                case TurbulenceState::TURBULENT:    return "TURBULENT";
+            }
+            return "UNKNOWN";
+        }
+
+        /// Check if turbulence is present (transitional or turbulent)
+        bool is_turbulent_or_transitional() const {
+            return classify() != TurbulenceState::LAMINAR;
+        }
+    };
+
+    /// Sample for time-windowed turbulence tracking
+    struct TurbulenceSample {
+        double time = 0.0;
+        double u_tau_ratio = 0.0;
+        double u_rms_mid = 0.0;
+        double tke_mid = 0.0;
+        double max_uv_plus = 0.0;
+        TurbulenceState state = TurbulenceState::LAMINAR;
+    };
+
+    /// Time-windowed turbulence classifier with hysteresis
+    /// Prevents flickering classifications from momentary spikes/dips
+    struct TurbulenceClassifier {
+        // Window configuration
+        static constexpr int DEFAULT_WINDOW_SIZE = 20;     ///< Samples in rolling window
+        static constexpr int DEFAULT_HYSTERESIS = 5;       ///< Consecutive windows to change state
+
+        // Window statistics (computed from rolling buffer)
+        double u_tau_ratio_mean = 0.0;
+        double u_rms_mid_mean = 0.0;
+        double tke_mid_mean = 0.0;
+        double max_uv_plus_mean = 0.0;
+
+        // Current confirmed state (with hysteresis)
+        TurbulenceState confirmed_state = TurbulenceState::LAMINAR;
+        int consecutive_turbulent = 0;      ///< Consecutive windows classified turbulent
+        int consecutive_transitional = 0;   ///< Consecutive windows classified transitional
+        int consecutive_laminar = 0;        ///< Consecutive windows classified laminar
+
+        // Configuration
+        int window_size = DEFAULT_WINDOW_SIZE;
+        int hysteresis_count = DEFAULT_HYSTERESIS;
+
+        /// Classify based on windowed means (used internally)
+        TurbulenceState classify_instant() const {
+            if (u_tau_ratio_mean > 1.2 || max_uv_plus_mean >= 0.5) {
+                return TurbulenceState::TURBULENT;
+            } else if (u_tau_ratio_mean > 1.05 || max_uv_plus_mean >= 0.1 || tke_mid_mean > 0.01) {
+                return TurbulenceState::TRANSITIONAL;
+            }
+            return TurbulenceState::LAMINAR;
+        }
+
+        /// Get confirmed state (with hysteresis applied)
+        TurbulenceState state() const { return confirmed_state; }
+
+        /// Get state string
+        const char* state_string() const {
+            switch (confirmed_state) {
+                case TurbulenceState::LAMINAR:      return "LAMINAR";
+                case TurbulenceState::TRANSITIONAL: return "TRANSITIONAL";
+                case TurbulenceState::TURBULENT:    return "TURBULENT";
+            }
+            return "UNKNOWN";
+        }
+    };
+
+    /// Wall shear history sample (for temporal tracking)
+    struct WallShearSample {
+        double time = 0.0;              ///< Simulation time
+        double u_tau_bot = 0.0;         ///< u_tau at bottom wall
+        double u_tau_top = 0.0;         ///< u_tau at top wall
+        double u_tau_avg = 0.0;         ///< Average of both walls
+    };
+
+    //=========================================================================
+    // Stage F: Turbulence Realism Validation (DNS/LES quality checks)
+    //=========================================================================
+
+    /// Resolution diagnostics for DNS/LES validation
+    struct ResolutionDiagnostics {
+        double u_tau_force = 0.0;   ///< u_tau from forcing: sqrt(delta * |dp/dx|)
+        double u_tau_bot = 0.0;     ///< u_tau from wall shear at bottom wall
+        double u_tau_top = 0.0;     ///< u_tau from wall shear at top wall
+        double y1_plus_bot = 0.0;   ///< First cell y+ at bottom wall
+        double y1_plus_top = 0.0;   ///< First cell y+ at top wall
+        double dx_plus = 0.0;       ///< Streamwise spacing in wall units
+        double dz_plus = 0.0;       ///< Spanwise spacing in wall units
+
+        /// Pass resolution gates (y1+ <= 1, dx+ <= 15, dz+ <= 8)
+        bool passes_resolution_gates() const {
+            return y1_plus_bot <= 1.0 && y1_plus_top <= 1.0 &&
+                   dx_plus <= 15.0 && (dz_plus <= 8.0 || dz_plus == 0.0);
+        }
+
+        /// Pass u_tau consistency check (wall vs forcing)
+        bool passes_utau_consistency(double tol = 0.02) const {
+            double err_bot = std::abs(u_tau_bot - u_tau_force) / (u_tau_force + 1e-12);
+            double err_top = std::abs(u_tau_top - u_tau_force) / (u_tau_force + 1e-12);
+            return err_bot <= tol && err_top <= tol;
+        }
+    };
+
+    /// Momentum balance diagnostics: tau_tot(y) vs tau_lin(y)
+    struct MomentumBalanceDiagnostics {
+        std::vector<double> y;           ///< Distance from wall
+        std::vector<double> y_plus;      ///< Wall units y+
+        std::vector<double> tau_visc;    ///< Viscous stress: nu * dU/dy
+        std::vector<double> tau_reynolds;///< Reynolds stress: -<u'v'>
+        std::vector<double> tau_total;   ///< Total: tau_visc + tau_reynolds
+        std::vector<double> tau_theory;  ///< Linear theory: u_tau^2 * (1 - y/delta)
+        std::vector<double> residual;    ///< tau_total - tau_theory
+
+        /// Max |residual| / u_tau^2
+        double max_residual_normalized(double u_tau) const {
+            double u_tau_sq = u_tau * u_tau;
+            double max_res = 0.0;
+            for (double r : residual) {
+                max_res = std::max(max_res, std::abs(r) / (u_tau_sq + 1e-12));
+            }
+            return max_res;
+        }
+
+        /// L2 residual / u_tau^2
+        double l2_residual_normalized(double u_tau) const {
+            double u_tau_sq = u_tau * u_tau;
+            double sum_sq = 0.0;
+            for (double r : residual) {
+                sum_sq += (r * r) / (u_tau_sq * u_tau_sq + 1e-24);
+            }
+            return std::sqrt(sum_sq / (residual.size() + 1));
+        }
+    };
+
+    /// Reynolds stress profiles in wall units
+    struct ReynoldsStressProfiles {
+        std::vector<double> y_plus;   ///< Wall coordinate y+
+        std::vector<double> uu_plus;  ///< <u'u'>+
+        std::vector<double> vv_plus;  ///< <v'v'>+
+        std::vector<double> ww_plus;  ///< <w'w'>+
+        std::vector<double> uv_plus;  ///< -<u'v'>+
+
+        /// Check stress ordering: <u'u'> > <w'w'> > <v'v'> in buffer/log layer
+        bool passes_stress_ordering() const;
+
+        /// Check -<u'v'>+ shape: near-zero at wall, positive interior
+        bool passes_uv_shape() const;
+    };
+
+    /// Spanwise energy spectrum for recycling artifact detection
+    struct SpanwiseSpectrum {
+        std::vector<double> k_z;      ///< Wavenumbers
+        std::vector<double> E_uu;     ///< Energy spectrum of u
+
+        /// Check for narrow spike at recirculation frequency
+        bool has_recirculation_spike(double x_recycle, double U_bulk, double tol = 5.0) const;
+
+        /// Check for aliasing pileup at high wavenumbers
+        bool has_aliasing_pileup(double tol = 1.5) const;
+    };
+
+    /// Full turbulence realism validation report
+    struct TurbulenceRealismReport {
+        ResolutionDiagnostics resolution;
+        MomentumBalanceDiagnostics momentum_balance;
+        ReynoldsStressProfiles stress_profiles;
+        TurbulencePresenceIndicators presence;  ///< Turbulence presence indicators
+
+        ValidationMode mode = ValidationMode::Full;  ///< Validation mode used
+
+        bool resolution_ok = false;
+        bool utau_consistency_ok = false;
+        bool momentum_closure_ok = false;
+        bool stress_shape_ok = false;
+        bool spectrum_ok = false;
+        bool turbulence_present_ok = false;  ///< True if turbulence is detected (Quick mode)
+
+        /// Pass criteria depend on validation mode:
+        /// - Full: all checks must pass (DNS quality)
+        /// - Quick: turbulence present + no explosion (machinery validation)
+        bool passes_all() const {
+            if (mode == ValidationMode::Quick) {
+                // Quick mode: turbulence present, closure reasonable, not exploding
+                return turbulence_present_ok &&
+                       (momentum_balance.max_residual_normalized(resolution.u_tau_force) < 1.0);
+            }
+            // Full mode: all checks must pass
+            return resolution_ok && utau_consistency_ok &&
+                   momentum_closure_ok && stress_shape_ok && spectrum_ok;
+        }
+
+        void print() const;  ///< Print detailed report to stdout
+
+        /// Thresholds for Quick mode (machinery validation on coarse grids)
+        static constexpr double QUICK_CLOSURE_TOL = 0.50;      ///< 50% momentum closure
+        static constexpr double QUICK_UTAU_CONSISTENCY = 0.20; ///< 20% u_tau consistency
+
+        /// Thresholds for Full mode (DNS realism)
+        static constexpr double FULL_CLOSURE_TOL = 0.02;       ///< 2% momentum closure
+        static constexpr double FULL_UTAU_CONSISTENCY = 0.02;  ///< 2% u_tau consistency
+    };
+
+    /// Friction velocity from body forcing (exact for fully-developed channel)
+    double u_tau_from_forcing() const;
+
+    /// Re_tau from current forcing and viscosity
+    double Re_tau_from_forcing() const;
+
+    /// Compute nu for target Re_tau: nu = sqrt(delta * |dp/dx|) * delta / Re_tau
+    static double nu_for_Re_tau(double Re_tau_target, double dp_dx, double delta = 1.0);
+
+    /// Compute dp/dx for target Re_tau: dp/dx = -(Re_tau * nu / delta)^2 / delta
+    static double dp_dx_for_Re_tau(double Re_tau_target, double nu, double delta = 1.0);
+
+    /// Wall shear stress using 2nd-order accurate quadratic fit
+    double wall_shear_stress_2nd_order(bool bottom = true) const;
+
+    /// Friction velocity from 2nd-order wall shear
+    double friction_velocity_2nd_order(bool bottom = true) const;
+
+    /// Compute resolution diagnostics (y+, dx+, dz+, u_tau consistency)
+    ResolutionDiagnostics compute_resolution_diagnostics() const;
+
+    /// Reset time-averaged statistics
+    void reset_statistics();
+
+    /// Accumulate statistics sample (call after each timestep during averaging window)
+    void accumulate_statistics();
+
+    /// Number of statistics samples accumulated
+    int statistics_samples() const { return stats_samples_; }
+
+    /// Compute momentum balance (requires accumulated statistics)
+    MomentumBalanceDiagnostics compute_momentum_balance() const;
+
+    /// Compute Reynolds stress profiles (requires accumulated statistics)
+    ReynoldsStressProfiles compute_reynolds_stress_profiles() const;
+
+    /// Compute spanwise energy spectrum at target y+ location
+    SpanwiseSpectrum compute_spanwise_spectrum(double y_plus_target) const;
+
+    /// Run full Stage F turbulence realism validation
+    TurbulenceRealismReport validate_turbulence_realism() const;
+
+    /// Run Stage F validation with specified mode (Quick or Full)
+    TurbulenceRealismReport validate_turbulence_realism(ValidationMode mode) const;
+
+    /// Compute turbulence presence indicators (robust detection)
+    /// @param trust_x_start Start x-index for trust region (auto-computed if -1)
+    /// @param trust_x_end End x-index for trust region (auto-computed if -1)
+    TurbulencePresenceIndicators compute_turbulence_presence(int trust_x_start = -1,
+                                                              int trust_x_end = -1) const;
+
+    /// Record wall shear sample (call periodically during spinup for drift detection)
+    void record_wall_shear_sample(double time);
+
+    /// Get wall shear history
+    const std::vector<WallShearSample>& get_wall_shear_history() const { return wall_shear_history_; }
+
+    /// Clear wall shear history (call when starting statistics collection)
+    void clear_wall_shear_history() { wall_shear_history_.clear(); }
+
+    /// Check if wall shear has settled (drift rate below threshold)
+    /// @param window_samples Number of recent samples to check
+    /// @param drift_threshold Max allowed |d(u_tau)/dt| / u_tau per unit time
+    /// @note Only meaningful after force ramp is complete
+    bool is_wall_shear_settled(int window_samples = 10, double drift_threshold = 0.01) const;
+
+    //=========================================================================
+    // Time-windowed turbulence classifier
+    //=========================================================================
+
+    /// Record turbulence sample for windowed classification
+    /// Call this periodically (e.g., every 10-50 steps) during spinup/stats
+    void record_turbulence_sample();
+
+    /// Get the time-windowed turbulence classifier state
+    const TurbulenceClassifier& turbulence_classifier() const { return turb_classifier_; }
+
+    /// Clear turbulence sample history (call when starting fresh)
+    void clear_turbulence_samples() {
+        turb_samples_.clear();
+        turb_classifier_ = TurbulenceClassifier();
+    }
+
+    /// Configure turbulence classifier window
+    void configure_turbulence_classifier(int window_size, int hysteresis_count) {
+        turb_classifier_.window_size = window_size;
+        turb_classifier_.hysteresis_count = hysteresis_count;
+    }
+
+    //=========================================================================
+    // Ramped forcing for startup stabilization
+    //=========================================================================
+
+    /// Enable ramped forcing: dp/dx(t) = (1 - e^{-t/T}) * dp/dx_target
+    /// @param ramp_time Time constant T for exponential ramp (bulk time units)
+    void enable_force_ramp(double ramp_time);
+
+    /// Disable force ramping (use constant forcing)
+    void disable_force_ramp() { force_ramp_enabled_ = false; }
+
+    /// Check if force ramping is active
+    bool is_force_ramp_active() const { return force_ramp_enabled_ && current_time_ < 5.0 * force_ramp_tau_; }
+
+    /// Get current effective body force (accounts for ramping)
+    double get_effective_fx() const;
+    double get_effective_fy() const;
+    double get_effective_fz() const;
+
+    /// Get current simulation time
+    double current_time() const { return current_time_; }
+
+    //=========================================================================
+    // Trip region forcing (for turbulence transition)
+    //=========================================================================
+
+    /// Initialize trip region forcing (call after set_body_force for correct u_tau)
+    void initialize_trip_forcing();
+
+    /// Check if trip forcing is currently active
+    bool is_trip_active() const { return trip_active_ && current_time_ < config_.trip_duration; }
+
+    /// Compute trip forcing amplitude multiplier at current time (includes ramp-off)
+    double get_trip_time_ramp() const;
+
+    /// Project velocity field to remove divergence (one-time cleanup after perturbation)
+    /// This performs a single pressure projection without advancing time
+    void project_initial_velocity();
+
+    //=========================================================================
+
+    /// Stage-by-stage diagnostics for recycling inflow pipeline
+    /// Tracks L2 norms and invariants to catch regressions
+    struct RecycleDiagnostics {
+        // Stage L2 norms (u-component, area-weighted)
+        double L2_copy = 0.0;      // After copy+shift from recycle plane
+        double L2_ar1 = 0.0;       // After AR1 filter (or =L2_copy if disabled)
+        double L2_mean = 0.0;      // After mean correction
+        double L2_final = 0.0;     // After transverse mean removal (final inlet)
+
+        // Stage-to-stage relative deltas (for regression detection)
+        double rel_d_copy_ar1 = 0.0;    // |u_ar1 - u_copy| / |u_copy|
+        double rel_d_ar1_mean = 0.0;    // |u_mean - u_ar1| / |u_ar1|
+        double rel_d_mean_final = 0.0;  // |u_final - u_mean| / |u_mean|
+        double rel_d_total = 0.0;       // |u_final - u_copy| / |u_copy|
+
+        // Invariants
+        double u_mean_before_corr = 0.0;  // Mean u before mean correction
+        double u_mean_after_corr = 0.0;   // Mean u after mean correction
+        double u_rms_before_corr = 0.0;   // u' RMS before mean correction
+        double u_rms_after_corr = 0.0;    // u' RMS after mean correction (should match)
+        double v_mean_final = 0.0;        // Mean v after transverse removal (should be ~0)
+        double w_mean_final = 0.0;        // Mean w after transverse removal (should be ~0)
+
+        // Clamp/scale telemetry
+        double scale_factor = 1.0;      // Applied scale for mean correction
+        bool clamp_hit = false;         // Whether scale was clamped
+
+        // Metadata
+        int step = 0;
+        int shift_k = 0;
+    };
+
+    /// Get the most recent recycling diagnostics (call after process_recycle_inflow)
+    const RecycleDiagnostics& get_recycle_diagnostics() const { return recycle_diag_; }
+
+    /// Log recycling diagnostics to stdout (called every recycle_diag_interval steps)
+    void log_recycle_diagnostics() const;
+
+    /// Running statistics for recycling controller health monitoring
+    struct RecycleRunningStats {
+        int n_samples = 0;           // Number of samples collected
+        int n_clamp_hits = 0;        // Number of times clamp was hit
+        double scale_sum = 0.0;      // Sum of scale factors
+        double scale_sum_sq = 0.0;   // Sum of scale factors squared
+
+        void reset() {
+            n_samples = 0;
+            n_clamp_hits = 0;
+            scale_sum = 0.0;
+            scale_sum_sq = 0.0;
+        }
+
+        double clamp_hit_rate() const {
+            return (n_samples > 0) ? static_cast<double>(n_clamp_hits) / n_samples : 0.0;
+        }
+
+        double scale_mean() const {
+            return (n_samples > 0) ? scale_sum / n_samples : 1.0;
+        }
+
+        double scale_std() const {
+            if (n_samples < 2) return 0.0;
+            double mean = scale_mean();
+            double var = scale_sum_sq / n_samples - mean * mean;
+            return (var > 0.0) ? std::sqrt(var) : 0.0;
+        }
+    };
+
+    /// Get running statistics for recycling controller
+    const RecycleRunningStats& get_recycle_running_stats() const { return recycle_stats_; }
+
+    /// Reset running statistics (call after spin-up to measure steady-state behavior)
+    void reset_recycle_running_stats() { recycle_stats_.reset(); }
+
     /// Check for NaN/Inf in solution fields and abort if detected
     /// @param step Current step number (used for guard interval checking)
     /// @throws std::runtime_error if NaN/Inf detected and guard is enabled
     /// @note Checks velocity, pressure, nu_t, and transport fields (k, omega)
     void check_for_nan_inf(int step) const;
-    
+
+    /// Recycling inflow public interface (for testing and advanced use)
+    /// @{
+    void extract_recycle_plane();          ///< Copy velocity at recycle plane to buffers
+    void process_recycle_inflow();         ///< Apply shift, filter, mass-flux correction
+    void apply_recycling_inlet_bc();       ///< Apply processed inflow as inlet BC
+    void apply_fringe_blending();          ///< Blend inlet velocity in fringe zone
+    void correct_inlet_divergence();       ///< Make first slab div-free by correcting inlet u
+    bool is_recycling_enabled() const { return use_recycling_; }
+    /// @}
+
 private:
     const Mesh* mesh_;
     Config config_;
@@ -280,11 +846,80 @@ private:
     PoissonBC poisson_bc_z_lo_ = PoissonBC::Periodic;
     PoissonBC poisson_bc_z_hi_ = PoissonBC::Periodic;
     double fx_ = 0.0, fy_ = 0.0, fz_ = 0.0;  // Body force (3D)
-    
+
+    // Recycling inflow state and buffers
+    bool use_recycling_ = false;           ///< Recycling inflow enabled
+    int recycle_i_ = -1;                   ///< Grid index of recycle plane
+    int recycle_shift_k_ = 0;              ///< Current spanwise shift (z-index units)
+    int recycle_shift_step_ = 0;           ///< Steps since last shift update
+    double recycle_target_Q_ = -1.0;       ///< Target mass flux for flow rate control
+    double recycle_filter_alpha_ = 0.0;    ///< AR1 filter coefficient (0 = no filter)
+    int fringe_i_end_ = -1;                ///< Grid index where fringe zone ends
+
+    // Recycling inflow plane buffers (Ny × Nz for 3D)
+    // u at inlet: Ny × Nz (cell-face values at i=Ng)
+    // v at inlet: (Ny+1) × Nz (y-face values at i=Ng)
+    // w at inlet: Ny × (Nz+1) (z-face values at i=Ng)
+    std::vector<double> recycle_u_buf_;    ///< Recycled u at inlet (Ny × Nz)
+    std::vector<double> recycle_v_buf_;    ///< Recycled v at inlet ((Ny+1) × Nz)
+    std::vector<double> recycle_w_buf_;    ///< Recycled w at inlet (Ny × (Nz+1))
+    std::vector<double> inlet_u_buf_;      ///< Processed inlet u (after shift/filter)
+    std::vector<double> inlet_v_buf_;      ///< Processed inlet v
+    std::vector<double> inlet_w_buf_;      ///< Processed inlet w
+    std::vector<double> inlet_u_filt_;     ///< Temporally filtered u (for AR1)
+    std::vector<double> inlet_v_filt_;     ///< Temporally filtered v
+    std::vector<double> inlet_w_filt_;     ///< Temporally filtered w
+
+    // Diagnostics staging buffers (for L2 breakdown - only allocated if diag enabled)
+    std::vector<double> diag_u_copy_;      ///< u after copy+shift stage
+    std::vector<double> diag_u_ar1_;       ///< u after AR1 stage
+    std::vector<double> diag_u_mean_;      ///< u after mean correction stage
+    RecycleDiagnostics recycle_diag_;      ///< Most recent diagnostics snapshot
+    RecycleRunningStats recycle_stats_;    ///< Running statistics for controller health
+
+    // Stage F: Time-averaged turbulence statistics
+    int stats_samples_ = 0;                ///< Number of samples accumulated
+    std::vector<double> stats_U_mean_;     ///< Mean streamwise velocity U(y)
+    std::vector<double> stats_uu_;         ///< <u'u'>(y)
+    std::vector<double> stats_vv_;         ///< <v'v'>(y)
+    std::vector<double> stats_ww_;         ///< <w'w'>(y)
+    std::vector<double> stats_uv_;         ///< <u'v'>(y)
+    std::vector<double> stats_dUdy_;       ///< dU/dy(y) for momentum balance
+
     // State
     int iter_ = 0;
     int step_count_ = 0;  // Track current step for guard
     double current_dt_;
+    double current_time_ = 0.0;  // Simulation time (accumulated from dt)
+
+    // Force ramping state (for startup stabilization)
+    bool force_ramp_enabled_ = false;
+    double force_ramp_tau_ = 1.0;     // Ramp time constant (bulk time units)
+    double fx_target_ = 0.0;          // Target body force (used when ramping)
+    double fy_target_ = 0.0;
+    double fz_target_ = 0.0;
+
+    // Trip region forcing state (for turbulence transition)
+    bool trip_active_ = false;            // Trip forcing currently active
+    double trip_u_tau_ = 1.0;             // Reference u_tau for scaling
+    std::vector<double> trip_phases_;     // Random phases for spanwise modes
+
+    // Precomputed trip forcing arrays (GPU-resident for fast kernel)
+    std::vector<double> trip_env_x_;      // x-envelope: cosine window [Nx]
+    std::vector<double> trip_g_y_;        // y-profile for v-faces [Ny+1]
+    std::vector<double> trip_Fz_v_;       // z-modes for v (sine) [Nz]
+    std::vector<double> trip_Fz_w_;       // z-modes for w (cosine) [Nz+1]
+    double* trip_env_x_ptr_ = nullptr;    // GPU pointer
+    double* trip_g_y_ptr_ = nullptr;
+    double* trip_Fz_v_ptr_ = nullptr;
+    double* trip_Fz_w_ptr_ = nullptr;
+
+    // Wall shear history for turbulence settling detection
+    std::vector<WallShearSample> wall_shear_history_;
+
+    // Turbulence sample buffer for windowed classification
+    std::vector<TurbulenceSample> turb_samples_;
+    TurbulenceClassifier turb_classifier_;
     
     // Original internal methods
     void apply_velocity_bc();
@@ -315,7 +950,10 @@ private:
     /// Fill periodic ghost layers on device for a velocity field (GPU-resident, no swaps)
     /// This is called after predictor and after correction to ensure halos are consistent.
     void enforce_periodic_halos_device(double* u_ptr, double* v_ptr, double* w_ptr = nullptr);
-    
+
+    // Recycling inflow initialization (public methods declared above)
+    void initialize_recycling_inflow();    ///< Setup recycling (compute indices, allocate buffers)
+
     // Gradient computations
     void compute_pressure_gradient(ScalarField& dp_dx, ScalarField& dp_dy);
     
@@ -372,12 +1010,41 @@ private:
     double* dwdy_ptr_ = nullptr;  // 3D
     double* dwdz_ptr_ = nullptr;  // 3D
     double* wall_distance_ptr_ = nullptr;
-    
+
+    // Recycling inflow GPU pointers (mapped for solver lifetime when enabled)
+    double* recycle_u_ptr_ = nullptr;      ///< Device: recycled u at recycle plane
+    double* recycle_v_ptr_ = nullptr;      ///< Device: recycled v at recycle plane
+    double* recycle_w_ptr_ = nullptr;      ///< Device: recycled w at recycle plane
+    double* inlet_u_ptr_ = nullptr;        ///< Device: processed inlet u
+    double* inlet_v_ptr_ = nullptr;        ///< Device: processed inlet v
+    double* inlet_w_ptr_ = nullptr;        ///< Device: processed inlet w
+    size_t recycle_u_size_ = 0;            ///< Size of u recycle buffer
+    size_t recycle_v_size_ = 0;            ///< Size of v recycle buffer
+    size_t recycle_w_size_ = 0;            ///< Size of w recycle buffer
+
+    // Area-weighting for mass flux correction (stretched mesh support)
+    std::vector<double> inlet_area_weights_;  ///< Host: dy[j] * dz[k] for each inlet cell
+    double* inlet_area_ptr_ = nullptr;        ///< Device: area weights for weighted reduction
+    double total_inlet_area_ = 0.0;           ///< Total inlet area: sum(dy[j] * dz[k])
+    bool inlet_needs_area_weight_ = false;    ///< True if mesh is stretched (dyv or dzv non-empty)
+
+    // Y-metric arrays for non-uniform y-spacing (D·G = L consistency for projection step)
+    // These are const pointers to mesh_->dyv/dyc data, mapped to GPU for stretched grids
+    const double* dyv_ptr_ = nullptr;  ///< Cell height at row j: yf[j+1] - yf[j]
+    const double* dyc_ptr_ = nullptr;  ///< Center-to-center spacing at face j: yc[j] - yc[j-1]
+    size_t y_metrics_size_ = 0;        ///< Size of dyv/dyc arrays (total_Ny())
+
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
 
     // Scratch buffer for sync_from_gpu workaround (NVHPC member pointer requirement)
     mutable std::vector<double> sync_scratch_;
     mutable double* sync_scratch_ptr_ = nullptr;
+
+    // Diagnostic values from last compute_adaptive_dt() call (for health monitoring)
+    mutable double diag_u_max_ = 0.0;
+    mutable double diag_v_max_ = 0.0;
+    mutable double diag_w_max_ = 0.0;
+    mutable double diag_v_dy_max_ = 0.0;
 
     void extract_field_pointers();  // Set raw pointers to field data (shared by CPU/GPU paths)
     void initialize_gpu_buffers();  // Map data to GPU (called once in constructor)

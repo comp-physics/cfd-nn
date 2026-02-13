@@ -163,6 +163,10 @@ void Config::load(const std::string& filename) {
     // Time stepping
     dt = get_double("dt", dt);
     CFL_max = get_double("CFL_max", CFL_max);
+    CFL_xz = get_double("CFL_xz", CFL_xz);
+    dt_safety = get_double("dt_safety", dt_safety);
+    filter_strength = get_double("filter_strength", filter_strength);
+    filter_interval = get_int("filter_interval", filter_interval);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
     max_steps = get_int("max_steps", max_steps);
     T_final = get_double("T_final", T_final);
@@ -275,6 +279,39 @@ void Config::load(const std::string& filename) {
         poisson_solver = PoissonSolverType::FFT;
     }
 
+    // Trip region forcing parameters
+    trip_enabled = get_bool("trip_enabled", trip_enabled);
+    trip_x_start = get_double("trip_x_start", trip_x_start);
+    trip_x_end = get_double("trip_x_end", trip_x_end);
+    trip_amplitude = get_double("trip_amplitude", trip_amplitude);
+    trip_duration = get_double("trip_duration", trip_duration);
+    trip_ramp_off_start = get_double("trip_ramp_off_start", trip_ramp_off_start);
+    trip_n_modes_z = get_int("trip_n_modes_z", trip_n_modes_z);
+    trip_force_w = get_bool("trip_force_w", trip_force_w);
+    trip_w_scale = get_double("trip_w_scale", trip_w_scale);
+
+    // Recycling inflow parameters
+    recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
+    recycle_x = get_double("recycle_x", recycle_x);
+    recycle_shift_z = get_int("recycle_shift_z", recycle_shift_z);
+    recycle_shift_interval = get_int("recycle_shift_interval", recycle_shift_interval);
+    recycle_filter_tau = get_double("recycle_filter_tau", recycle_filter_tau);
+    recycle_fringe_length = get_double("recycle_fringe_length", recycle_fringe_length);
+    recycle_target_bulk_u = get_double("recycle_target_bulk_u", recycle_target_bulk_u);
+    recycle_remove_transverse_mean = get_bool("recycle_remove_transverse_mean", recycle_remove_transverse_mean);
+
+    // Projection health watchdog
+    div_threshold = get_double("div_threshold", div_threshold);
+    div_tol_acceptable = get_double("div_tol_acceptable", div_tol_acceptable);
+    projection_watchdog = get_bool("projection_watchdog", projection_watchdog);
+    gpu_only_mode = get_bool("gpu_only_mode", gpu_only_mode);
+
+    // Adaptive projection
+    adaptive_projection = get_bool("adaptive_projection", adaptive_projection);
+    div_target = get_double("div_target", div_target);
+    projection_max_cycles = get_int("projection_max_cycles", projection_max_cycles);
+    projection_extra_chunk = get_int("projection_extra_chunk", projection_extra_chunk);
+
     finalize();
 }
 
@@ -361,12 +398,28 @@ void Config::parse_args(int argc, char** argv) {
             poisson_solver = PoissonSolverType::FFT;
         } else if ((val = get_value(i, arg, "--poisson_abs_tol_floor")) != "") {
             poisson_abs_tol_floor = std::stod(val);
+        } else if (is_flag(arg, "--no_poisson_vcycle_graph")) {
+            poisson_use_vcycle_graph = false;
         } else if ((val = get_value(i, arg, "--turb_guard_enabled")) != "") {
             turb_guard_enabled = (val == "true" || val == "1" || val == "yes");
         } else if (is_flag(arg, "--turb_guard_enabled")) {
             turb_guard_enabled = true;
         } else if ((val = get_value(i, arg, "--turb_guard_interval")) != "") {
             turb_guard_interval = std::stoi(val);
+        } else if (is_flag(arg, "--recycling_inflow")) {
+            recycling_inflow = true;
+        } else if ((val = get_value(i, arg, "--recycle_x")) != "") {
+            recycle_x = std::stod(val);
+        } else if ((val = get_value(i, arg, "--recycle_shift_z")) != "") {
+            recycle_shift_z = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--recycle_shift_interval")) != "") {
+            recycle_shift_interval = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--recycle_filter_tau")) != "") {
+            recycle_filter_tau = std::stod(val);
+        } else if ((val = get_value(i, arg, "--recycle_fringe_length")) != "") {
+            recycle_fringe_length = std::stod(val);
+        } else if ((val = get_value(i, arg, "--recycle_target_bulk_u")) != "") {
+            recycle_target_bulk_u = std::stod(val);
         } else if ((val = get_value(i, arg, "--model")) != "") {
             std::string model = val;
             if (model == "none" || model == "laminar") {
@@ -414,6 +467,8 @@ void Config::parse_args(int argc, char** argv) {
             stretch_y = true;
         } else if (is_flag(arg, "--adaptive_dt")) {
             adaptive_dt = true;
+        } else if ((val = get_value(i, arg, "--CFL_xz")) != "") {
+            CFL_xz = std::stod(val);
         } else if ((val = get_value(i, arg, "--CFL")) != "") {
             CFL_max = std::stod(val);
         } else if ((val = get_value(i, arg, "--scheme")) != "") {
@@ -462,6 +517,10 @@ void Config::parse_args(int argc, char** argv) {
             // Fixed time step (no adaptive dt for consistent timing)
             adaptive_dt = false;
             dt = 0.001;
+        } else if (is_flag(arg, "--perf_mode") || is_flag(arg, "--perf")) {
+            // Performance mode: reduce GPU sync overhead for production turbulence runs
+            // Sets diag_interval=50, poisson_check_interval=5 in finalize()
+            perf_mode = true;
         } else if (is_flag(arg, "--help") || is_flag(arg, "-h")) {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -493,6 +552,16 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --poisson_abs_tol_floor V  Absolute tolerance floor for Poisson (default 0)\n"
                       << "  --turb_guard_enabled  Enable turbulence guard (NaN/Inf checks)\n"
                       << "  --turb_guard_interval N  Check interval for turb guard (default 5)\n"
+                      << "\n"
+                      << "Recycling inflow (turbulent inlet BC for DNS/LES):\n"
+                      << "  --recycling_inflow  Enable recycling inflow at x_lo boundary\n"
+                      << "  --recycle_x V     x-location of recycle plane (-1 = auto: 10*delta)\n"
+                      << "  --recycle_shift_z N  Spanwise shift for decorrelation (-1 = auto: Nz/4)\n"
+                      << "  --recycle_shift_interval N  Timesteps between shift updates (default 100)\n"
+                      << "  --recycle_filter_tau V  Temporal filter timescale (-1 = disabled)\n"
+                      << "  --recycle_fringe_length V  Fringe zone length (-1 = auto: 2*delta)\n"
+                      << "  --recycle_target_bulk_u V  Target bulk velocity (-1 = from IC)\n"
+                      << "\n"
                       << "  --model M         Turbulence model:\n"
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
                       << "                      sst, komega (transport models)\n"
@@ -516,6 +585,8 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --warmup_steps N  Warmup steps excluded from timing (default 0)\n"
                       << "  --benchmark       Benchmark mode: 192^3 3D duct, upwind, 1 Poisson cycle,\n"
                       << "                      no output/turbulence (all overridable by other flags)\n"
+                      << "  --perf_mode       Performance mode: reduce GPU sync overhead for production runs\n"
+                      << "                      (sets diag_interval=50, poisson_check_interval=5)\n"
                       << "  --verbose/--quiet Print progress\n"
                       << "  --help            Show this message\n"
                       << "\nPhysical Parameter Coupling:\n"
@@ -909,6 +980,20 @@ void Config::finalize() {
                   << "  --model none      (laminar, no turbulence model)\n"
                   << "  --model baseline  (simple mixing length, if mild turbulence expected)\n";
         std::exit(1);
+    }
+
+    // =========================================================================
+    // PERFORMANCE MODE - reduce GPU sync overhead for production runs
+    // =========================================================================
+    if (perf_mode) {
+        // Only override if user didn't explicitly set these values
+        if (diag_interval == 1) {
+            diag_interval = 50;  // Reduce div norm computation frequency
+        }
+        if (poisson_check_interval == 3) {  // 3 is the new default
+            poisson_check_interval = 5;  // Further reduce MG sync frequency
+        }
+        // Note: NaN/Inf guard still runs at turb_guard_interval (default=5)
     }
 }
 

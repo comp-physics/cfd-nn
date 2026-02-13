@@ -7,6 +7,7 @@
 #ifdef USE_GPU_OFFLOAD
 
 #include "mg_cuda_kernels.hpp"
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <iostream>
@@ -858,12 +859,14 @@ void CudaVCycleGraph::capture_vcycle_level(cudaStream_t stream, int level) {
 
     if (level == num_levels - 1) {
         // Coarsest level - just smooth more
-        capture_smoother(stream, level, 8);  // More iterations at coarsest
+        // Match non-graphed path: coarsest uses degree*2 iterations
+        capture_smoother(stream, level, std::max(8, degree_ * 2));
         return;
     }
 
-    // Pre-smoothing
-    capture_smoother(stream, level, nu1_);
+    // Pre-smoothing: nu1 passes of degree iterations each = nu1*degree total
+    // This matches the non-graphed vcycle() which calls smooth_chebyshev(level, degree) nu1 times
+    capture_smoother(stream, level, nu1_ * degree_);
 
     // Compute residual: r = f - L(u)
     launch_residual_3d(stream, cfg.u, cfg.f, cfg.r,
@@ -895,8 +898,8 @@ void CudaVCycleGraph::capture_vcycle_level(cudaStream_t stream, int level) {
     launch_bc_3d(stream, cfg.u, cfg.Nx, cfg.Ny, cfg.Nz, cfg.Ng,
                  bc_x_lo_, bc_x_hi_, bc_y_lo_, bc_y_hi_, bc_z_lo_, bc_z_hi_, 0.0);
 
-    // Post-smoothing
-    capture_smoother(stream, level, nu2_);
+    // Post-smoothing: nu2 passes of degree iterations each = nu2*degree total
+    capture_smoother(stream, level, nu2_ * degree_);
 }
 
 void CudaVCycleGraph::capture_smoother(cudaStream_t stream, int level, int iterations) {

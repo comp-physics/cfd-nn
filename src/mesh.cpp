@@ -99,6 +99,10 @@ void Mesh::init_uniform(int nx, int ny, int nz,
     dxv.clear();
     dyv.clear();
     dzv.clear();
+    dyc.clear();
+    yLap_aS.clear();
+    yLap_aN.clear();
+    yLap_aP.clear();
 }
 
 void Mesh::init_stretched_y(int nx, int ny,
@@ -183,6 +187,40 @@ void Mesh::init_stretched_y(int nx, int ny, int nz,
     for (int j = 0; j < total_ny; ++j) {
         yc[j] = 0.5 * (yf[j] + yf[j + 1]);
         dyv[j] = yf[j + 1] - yf[j];
+    }
+
+    // Compute y-metric coefficients for projection step (D·G = L compatibility)
+    // dyc[j] = center-to-center spacing at y-face j = yc[j] - yc[j-1]
+    // For interior cells: j in [Nghost, Nghost + Ny)
+    // For Laplacian coefficients: aS, aN, aP
+    dyc.resize(total_ny + 1);  // Face-centered (one more than cells)
+    yLap_aS.resize(total_ny);  // Cell-centered
+    yLap_aN.resize(total_ny);
+    yLap_aP.resize(total_ny);
+
+    for (int j = 1; j < total_ny + 1; ++j) {
+        // dyc at face j is distance from center j-1 to center j
+        // Handle boundary: for j=0 face, there's no j=-1 center
+        if (j == 0) {
+            dyc[j] = yc[0] - yf[0];  // extrapolate
+        } else if (j < total_ny) {
+            dyc[j] = yc[j] - yc[j - 1];
+        } else {
+            dyc[j] = yf[total_ny] - yc[total_ny - 1];  // extrapolate
+        }
+    }
+    dyc[0] = dyc[1];  // Copy for ghost face
+
+    for (int j = 0; j < total_ny; ++j) {
+        // Laplacian: d²p/dy² = (1/dyv[j]) * [(p[j+1]-p[j])/dyc[j+1] - (p[j]-p[j-1])/dyc[j]]
+        //          = aS*p[j-1] + aP*p[j] + aN*p[j+1]
+        // where aS = 1/(dyv[j]*dyc[j]), aN = 1/(dyv[j]*dyc[j+1]), aP = -(aS+aN)
+        double dyc_south = (j > 0) ? (yc[j] - yc[j - 1]) : dyv[j];  // Fallback for ghost
+        double dyc_north = (j < total_ny - 1) ? (yc[j + 1] - yc[j]) : dyv[j];  // Fallback for ghost
+
+        yLap_aS[j] = 1.0 / (dyv[j] * dyc_south);
+        yLap_aN[j] = 1.0 / (dyv[j] * dyc_north);
+        yLap_aP[j] = -(yLap_aS[j] + yLap_aN[j]);
     }
 
     // z coordinates (uniform)

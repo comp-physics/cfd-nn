@@ -232,11 +232,15 @@ set(LIB_SOURCES
     src/solver.cpp
     src/solver_vtk.cpp
     src/solver_time.cpp
+    src/solver_recycling.cpp
     src/solver_time_kernels_blend.cpp
     src/solver_time_kernels_euler.cpp
     src/solver_time_kernels_periodic.cpp
     src/solver_time_kernels_projection.cpp
     src/solver_periodic_halos.cpp
+    src/solver_energy_diagnostics.cpp
+    src/solver_turbulence_diagnostics.cpp
+    src/solver_operators.cpp
     src/timing.cpp
     src/config.cpp
     src/features.cpp
@@ -477,6 +481,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest LABELS medium)
     add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest LABELS medium)
     add_nncfd_test(test_poisson_unified LABELS medium)
+    add_nncfd_test(test_mg_manufactured_solution LABELS medium)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest LABELS medium)
     add_nncfd_test(test_turbulence_unified LABELS medium)
     add_nncfd_test(test_projection_invariants LABELS medium)
@@ -496,6 +501,9 @@ if(BUILD_TESTS)
     add_nncfd_test(test_2d_3d_comparison TEST_NAME_SUFFIX Comparison2D3DTest LABELS slow)
     add_nncfd_test(test_3d_unified TEST_NAME_SUFFIX ThreeDUnifiedTest LABELS slow)
     add_nncfd_test(test_perturbed_channel LABELS slow)
+    add_nncfd_test(test_recycling_inflow LABELS slow)
+    add_nncfd_test(test_turbulence_realism LABELS slow)
+    add_nncfd_test(test_periodic_vs_recycling LABELS slow)
     add_nncfd_test(test_endurance_stability LABELS slow)
     add_nncfd_test(test_repeatability LABELS slow)
     add_nncfd_test(test_physics_validation_advanced LABELS slow)
@@ -518,6 +526,10 @@ if(BUILD_TESTS)
         add_nncfd_test(test_gpu_utilization TEST_NAME_SUFFIX GPUUtilizationTest LABELS gpu)
         # MANDATORY ensures GPU offload actually happens (no silent CPU fallback)
         set_tests_properties(GPUUtilizationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+        # GPU turbulence readiness acceptance test - validates all systems before production runs
+        add_nncfd_test(test_gpu_turbulence_readiness TEST_NAME_SUFFIX GPUTurbulenceReadinessTest LABELS "gpu;acceptance")
+        set_tests_properties(GPUTurbulenceReadinessTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
     endif()
 
     # =========================================================================
