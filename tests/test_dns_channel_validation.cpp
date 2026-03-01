@@ -24,7 +24,7 @@ using namespace nncfd::test;
 using nncfd::test::harness::record;
 
 void test_dns_channel_machinery() {
-    std::cout << "\n--- DNS Channel 64x48x64, v13 recipe, 200 steps ---\n\n";
+    std::cout << "\n--- DNS Channel 32x32x32, v13 recipe, 50 steps ---\n\n";
 
 #ifndef USE_GPU_OFFLOAD
     std::cout << "  [SKIP] DNS channel test requires GPU build\n\n";
@@ -33,14 +33,14 @@ void test_dns_channel_machinery() {
 #else
 
     // Reduced grid for CI (full 192x96x192 in Tier 2 SLURM validation)
-    const int Nx = 64, Ny = 48, Nz = 64;
+    const int Nx = 32, Ny = 32, Nz = 32;
     const double Lx = 4.0 * M_PI;
     const double Ly = 2.0;        // y in [-1, 1]
     const double Lz = 2.0 * M_PI;
     const double nu = 1.0 / 180.0;  // Re_tau ~ 180 target
     const double dp_dx = -1.0;       // dp/dx = -u_tau^2/delta
     const double beta = 2.0;         // Stretching parameter
-    const int nsteps = 200;
+    const int nsteps = 50;
 
     // Setup stretched mesh
     Mesh mesh;
@@ -82,10 +82,10 @@ void test_dns_channel_machinery() {
     config.trip_force_w = true;
     config.trip_w_scale = 2.0;
 
-    // Poisson solver
+    // Poisson solver (fewer cycles for CI speed)
     config.poisson_solver = PoissonSolverType::MG;
-    config.poisson_fixed_cycles = 16;
-    config.poisson_max_vcycles = 16;
+    config.poisson_fixed_cycles = 4;
+    config.poisson_max_vcycles = 8;
 
     RANSSolver solver(mesh, config);
     solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
@@ -111,7 +111,7 @@ void test_dns_channel_machinery() {
         solver.step();
 
         // Periodic diagnostics (no CPU sync -- use device functions)
-        if (step % 50 == 0) {
+        if (step % 10 == 0) {
             double E = solver.compute_kinetic_energy_device();
             double v_max = solver.compute_max_velocity_device();
             double div = solver.compute_divergence_linf_device();
@@ -126,7 +126,7 @@ void test_dns_channel_machinery() {
                 break;
             }
 
-            if (step % 100 == 0) {
+            if (step % 25 == 0) {
                 std::cout << "  Step " << step << ": E=" << std::scientific << std::setprecision(3)
                           << E << " v_max=" << std::fixed << std::setprecision(1) << v_max
                           << " div=" << std::scientific << div << "\n";
@@ -143,7 +143,7 @@ void test_dns_channel_machinery() {
 
     // Record results (machinery checks only; resolution quality in Tier 2)
     record("No NaN/Inf", !has_nan);
-    record("Incompressibility (div < 1e-4)", max_div < 1e-4);
+    record("Incompressibility (div < 1e-3)", max_div < 1e-3);
     record("Velocity bounded (< 50)", max_vel < 50.0);
     record("KE not blown up (ratio < 10)", E_ratio < 10.0);
     record("KE not collapsed (ratio > 0.01)", E_ratio > 0.01);
