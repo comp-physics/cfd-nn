@@ -499,6 +499,8 @@ if(BUILD_TESTS)
     add_nncfd_test(test_scheme_combinations TEST_NAME_SUFFIX SchemeCombinationsTest LABELS medium)
     add_nncfd_test(test_poiseuille_validation TEST_NAME_SUFFIX PoiseuilleValidationTest LABELS "gpu;medium")
     set_tests_properties(PoiseuilleValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+    add_nncfd_test(test_rans_channel_validation TEST_NAME_SUFFIX RANSChannelValidationTest LABELS "gpu;medium")
+    set_tests_properties(RANSChannelValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
