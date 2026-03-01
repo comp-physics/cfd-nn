@@ -495,6 +495,8 @@ if(BUILD_TESTS)
     add_nncfd_test(test_o4_integration TEST_NAME_SUFFIX O4IntegrationTest LABELS medium)
     add_nncfd_test(test_time_integrators TEST_NAME_SUFFIX TimeIntegratorsTest LABELS medium)
     add_nncfd_test(test_scheme_combinations TEST_NAME_SUFFIX SchemeCombinationsTest LABELS medium)
+    add_nncfd_test(test_poiseuille_validation TEST_NAME_SUFFIX PoiseuilleValidationTest LABELS "gpu;medium")
+    set_tests_properties(PoiseuilleValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
