@@ -9,14 +9,11 @@
 #include "turbulence_gep.hpp"
 #include "turbulence_earsm.hpp"
 #include <cmath>
-#include <limits>
 
 using namespace nncfd;
 using nncfd::test::harness::record;
 using nncfd::test::BCPattern;
 using nncfd::test::create_velocity_bc;
-using nncfd::test::make_test_solver_3d_domain;
-using nncfd::test::TestSolver;
 
 // ============================================================================
 // Helpers (shared across sections)
@@ -216,8 +213,9 @@ static void test_3d_tgv_smoke() {
             solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
             if (type != TurbulenceModelType::None)
                 solver.set_turbulence_model(create_turbulence_model(type));
+            solver.initialize_uniform(0.0, 0.0);
 
-            // TGV initial condition
+            // TGV initial condition (overwrites velocity from initialize_uniform)
             for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
                 for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
                     for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i)
@@ -251,7 +249,7 @@ static void test_3d_tgv_smoke() {
                 }
             }
 
-            // Energy should decay (TGV is pure dissipation)
+            // Energy should decay (unforced viscous TGV has no energy input)
             ok = ok && (E_final <= E_initial * 1.01);  // Small tolerance for numerics
 
             record(label.c_str(), ok);
@@ -367,12 +365,12 @@ static void test_transport_realizability_3d() {
 }
 
 // ============================================================================
-// Section 6: EARSM Trace-Free 3D — 3 EARSM models, 100 steps
+// Section 6: EARSM Trace-Free — 3 EARSM models, direct model update
 // ============================================================================
 
-static void test_earsm_trace_free_3d() {
-    // EARSM closures are intrinsically 2D. Verify trace-free property with a
-    // different mesh/IC than test_turbulence_unified (16x16 channel, shear profile).
+static void test_earsm_trace_free() {
+    // EARSM implementation uses a 2D tensor basis. Verify trace-free property
+    // with a different mesh/IC than test_turbulence_unified (Poiseuille profile).
     Mesh mesh;
     mesh.init_uniform(16, 16, 0.0, 2.0, -1.0, 1.0);
 
@@ -391,24 +389,29 @@ static void test_earsm_trace_free_3d() {
     std::vector<std::string> names = {"EARSM-WJ", "EARSM-GS", "EARSM-Pope"};
 
     for (size_t idx = 0; idx < types.size(); ++idx) {
-        TensorField tau_ij(mesh);
-        SSTWithEARSM model(types[idx]);
-        model.set_nu(0.001);
-        model.set_delta(1.0);
-        model.initialize(mesh, vel);
-        model.update(mesh, vel, k_field, omega_field, nu_t, &tau_ij);
-
-        double max_trace_err = 0.0;
-        FOR_INTERIOR_2D(mesh, i, j) {
-            if (k_field(i, j) < 1e-10) continue;
-            double b_trace = tau_ij.trace(i, j) / (2.0 * k_field(i, j)) - 2.0 / 3.0;
-            max_trace_err = std::max(max_trace_err, std::abs(b_trace));
-        }
-
         std::string label = "Trace-free EARSM: " + names[idx];
-        record(label.c_str(), max_trace_err < 1e-8);
-        if (max_trace_err >= 1e-8)
-            std::cerr << "  " << names[idx] << " max trace error: " << max_trace_err << "\n";
+        try {
+            TensorField tau_ij(mesh);
+            SSTWithEARSM model(types[idx]);
+            model.set_nu(0.001);
+            model.set_delta(1.0);
+            model.initialize(mesh, vel);
+            model.update(mesh, vel, k_field, omega_field, nu_t, &tau_ij);
+
+            double max_trace_err = 0.0;
+            FOR_INTERIOR_2D(mesh, i, j) {
+                if (k_field(i, j) < 1e-10) continue;
+                double b_trace = tau_ij.trace(i, j) / (2.0 * k_field(i, j)) - 2.0 / 3.0;
+                max_trace_err = std::max(max_trace_err, std::abs(b_trace));
+            }
+
+            record(label.c_str(), max_trace_err < 1e-8);
+            if (max_trace_err >= 1e-8)
+                std::cerr << "  " << names[idx] << " max trace error: " << max_trace_err << "\n";
+        } catch (const std::exception& e) {
+            record(label.c_str(), false);
+            std::cerr << "  " << names[idx] << " exception: " << e.what() << "\n";
+        }
     }
 }
 
@@ -451,6 +454,7 @@ static void test_cross_geometry_consistency() {
                 RANSSolver solver(mesh, config);
                 solver.set_velocity_bc(create_velocity_bc(geom.bc));
                 solver.set_turbulence_model(create_turbulence_model(type));
+                solver.initialize_uniform(0.1, 0.0);
 
                 if (geom.bc != BCPattern::FullyPeriodic) {
                     solver.set_body_force(0.001, 0.0, 0.0);
@@ -550,8 +554,10 @@ static ModelMetrics run_model_metrics(TurbulenceModelType type, int num_steps = 
         m.bulk_u = sum_u / count;
         m.mean_nu_t = sum_nut / count;
         m.ok = std::isfinite(m.u_max) && std::isfinite(m.bulk_u);
-    } catch (...) {
+    } catch (const std::exception& e) {
         m.ok = false;
+        std::cerr << "  run_model_metrics(" << model_name(type) << ") exception: "
+                  << e.what() << "\n";
     }
     return m;
 }
@@ -589,98 +595,108 @@ static void test_model_ordering() {
 
 static void test_transport_profile_shape() {
     // Use 2D mesh — turbulence model CPU paths are 2D-only
-    Mesh mesh;
-    mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
+    try {
+        Mesh mesh;
+        mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
 
-    Config config;
-    config.nu = 0.001;
-    config.dt = 0.001;
-    config.turb_model = TurbulenceModelType::SSTKOmega;
-    config.verbose = false;
+        Config config;
+        config.nu = 0.001;
+        config.dt = 0.001;
+        config.turb_model = TurbulenceModelType::SSTKOmega;
+        config.verbose = false;
 
-    RANSSolver solver(mesh, config);
-    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
-    solver.set_body_force(0.01, 0.0);
-    solver.set_turbulence_model(create_turbulence_model(TurbulenceModelType::SSTKOmega));
-    solver.initialize_uniform(1.0, 0.0);
+        RANSSolver solver(mesh, config);
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+        solver.set_body_force(0.01, 0.0);
+        solver.set_turbulence_model(create_turbulence_model(TurbulenceModelType::SSTKOmega));
+        solver.initialize_uniform(1.0, 0.0);
 
-    // Poiseuille IC
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double y = mesh.y(j);
-            solver.velocity().u(i, j) = 0.5 * (1.0 - y * y);
+        // Poiseuille IC
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                double y = mesh.y(j);
+                solver.velocity().u(i, j) = 0.5 * (1.0 - y * y);
+            }
+        solver.sync_to_gpu();
+
+        for (int step = 0; step < 200; ++step) solver.step();
+        solver.sync_from_gpu();
+
+        const auto& k_field = solver.k();
+        const auto& omega_field = solver.omega();
+        const auto& nu_t_field = solver.nu_t();
+
+        // Build x-averaged profiles: k(y), omega(y), nu_t(y)
+        int Ny = mesh.Ny;
+        std::vector<double> k_prof(Ny, 0.0), omega_prof(Ny, 0.0), nut_prof(Ny, 0.0);
+        for (int jj = 0; jj < Ny; ++jj) {
+            int j = mesh.j_begin() + jj;
+            double sum_k = 0.0, sum_om = 0.0, sum_nut = 0.0;
+            int cnt = 0;
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                sum_k   += k_field(i, j);
+                sum_om  += omega_field(i, j);
+                sum_nut += nu_t_field(i, j);
+                ++cnt;
+            }
+            k_prof[jj]     = sum_k / cnt;
+            omega_prof[jj]  = sum_om / cnt;
+            nut_prof[jj]    = sum_nut / cnt;
         }
-    solver.sync_to_gpu();
 
-    for (int step = 0; step < 200; ++step) solver.step();
-    solver.sync_from_gpu();
+        // Check 1: k > 0 everywhere in interior
+        bool k_positive = true;
+        for (int jj = 0; jj < Ny; ++jj)
+            if (k_prof[jj] < 1e-12) k_positive = false;
+        record("Profile: k > 0 throughout", k_positive);
 
-    const auto& k_field = solver.k();
-    const auto& omega_field = solver.omega();
-    const auto& nu_t_field = solver.nu_t();
+        // Check 2: omega at walls > omega at center
+        double omega_wall = std::max(omega_prof[0], omega_prof[Ny - 1]);
+        double omega_center = omega_prof[Ny / 2];
+        record("Profile: omega_wall > omega_center",
+               omega_wall > omega_center);
+        std::cerr << "  omega_wall=" << omega_wall
+                  << ", omega_center=" << omega_center << "\n";
 
-    // Build x-averaged profiles: k(y), omega(y), nu_t(y)
-    int Ny = mesh.Ny;
-    std::vector<double> k_prof(Ny, 0.0), omega_prof(Ny, 0.0), nut_prof(Ny, 0.0);
-    for (int jj = 0; jj < Ny; ++jj) {
-        int j = mesh.j_begin() + jj;
-        double sum_k = 0.0, sum_om = 0.0, sum_nut = 0.0;
-        int cnt = 0;
+        // Check 3: nu_t at walls should be small relative to interior
+        double nut_wall = std::min(nut_prof[0], nut_prof[Ny - 1]);
+        double nut_max = *std::max_element(nut_prof.begin(), nut_prof.end());
+        record("Profile: nu_t_wall < nu_t_max",
+               nut_wall < nut_max);
+        record("Profile: nu_t_wall < 50% of nu_t_max",
+               nut_wall < 0.5 * nut_max);
+        std::cerr << "  nu_t_wall=" << nut_wall << ", nu_t_max=" << nut_max << "\n";
+
+        // Check 4: velocity profile is roughly parabolic (u_center > u_wall)
+        const auto& vel = solver.velocity();
+        double u_center = 0.0, u_wall_val = 0.0;
+        int j_center = mesh.j_begin() + Ny / 2;
+        int j_wall = mesh.j_begin();
+        int ucnt = 0;
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            sum_k   += k_field(i, j);
-            sum_om  += omega_field(i, j);
-            sum_nut += nu_t_field(i, j);
-            ++cnt;
+            u_center += 0.5 * (vel.u(i, j_center) + vel.u(i + 1, j_center));
+            u_wall_val += 0.5 * (vel.u(i, j_wall) + vel.u(i + 1, j_wall));
+            ++ucnt;
         }
-        k_prof[jj]     = sum_k / cnt;
-        omega_prof[jj]  = sum_om / cnt;
-        nut_prof[jj]    = sum_nut / cnt;
+        u_center /= ucnt;
+        u_wall_val /= ucnt;
+        record("Profile: u_center > u_wall", u_center > u_wall_val);
+
+        // Check 5: k profile should have peak away from walls (not monotonic)
+        int k_peak_idx = static_cast<int>(
+            std::max_element(k_prof.begin(), k_prof.end()) - k_prof.begin());
+        bool k_peak_interior = (k_peak_idx > 0) && (k_peak_idx < Ny - 1);
+        record("Profile: k peaks in interior (not at wall)", k_peak_interior);
+        std::cerr << "  k peak at y-index " << k_peak_idx << "/" << Ny << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "  Transport profile exception: " << e.what() << "\n";
+        record("Profile: k > 0 throughout", false);
+        record("Profile: omega_wall > omega_center", false);
+        record("Profile: nu_t_wall < nu_t_max", false);
+        record("Profile: nu_t_wall < 50% of nu_t_max", false);
+        record("Profile: u_center > u_wall", false);
+        record("Profile: k peaks in interior (not at wall)", false);
     }
-
-    // Check 1: k > 0 everywhere in interior
-    bool k_positive = true;
-    for (int jj = 0; jj < Ny; ++jj)
-        if (k_prof[jj] < 1e-12) k_positive = false;
-    record("Profile: k > 0 throughout", k_positive);
-
-    // Check 2: omega at walls > omega at center
-    double omega_wall = std::max(omega_prof[0], omega_prof[Ny - 1]);
-    double omega_center = omega_prof[Ny / 2];
-    record("Profile: omega_wall > omega_center",
-           omega_wall > omega_center);
-    std::cerr << "  omega_wall=" << omega_wall
-              << ", omega_center=" << omega_center << "\n";
-
-    // Check 3: nu_t at walls should be small relative to interior
-    double nut_wall = std::min(nut_prof[0], nut_prof[Ny - 1]);
-    double nut_max = *std::max_element(nut_prof.begin(), nut_prof.end());
-    record("Profile: nu_t_wall < nu_t_max",
-           nut_wall < nut_max);
-    record("Profile: nu_t_wall < 50% of nu_t_max",
-           nut_wall < 0.5 * nut_max);
-    std::cerr << "  nu_t_wall=" << nut_wall << ", nu_t_max=" << nut_max << "\n";
-
-    // Check 4: velocity profile is roughly parabolic (u_center > u_wall)
-    const auto& vel = solver.velocity();
-    double u_center = 0.0, u_wall_val = 0.0;
-    int j_center = mesh.j_begin() + Ny / 2;
-    int j_wall = mesh.j_begin();
-    int ucnt = 0;
-    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-        u_center += 0.5 * (vel.u(i, j_center) + vel.u(i + 1, j_center));
-        u_wall_val += 0.5 * (vel.u(i, j_wall) + vel.u(i + 1, j_wall));
-        ++ucnt;
-    }
-    u_center /= ucnt;
-    u_wall_val /= ucnt;
-    record("Profile: u_center > u_wall", u_center > u_wall_val);
-
-    // Check 5: k profile should have peak away from walls (not monotonic)
-    int k_peak_idx = static_cast<int>(
-        std::max_element(k_prof.begin(), k_prof.end()) - k_prof.begin());
-    bool k_peak_interior = (k_peak_idx > 0) && (k_peak_idx < Ny - 1);
-    record("Profile: k peaks in interior (not at wall)", k_peak_interior);
-    std::cerr << "  k peak at y-index " << k_peak_idx << "/" << Ny << "\n";
 }
 
 // ============================================================================
@@ -688,57 +704,64 @@ static void test_transport_profile_shape() {
 // ============================================================================
 
 static void test_tgv_energy_ordering() {
-    double L = 2.0 * M_PI;
-    Mesh mesh;
-    mesh.init_uniform(16, 16, 16, 0.0, L, 0.0, L, 0.0, L);
+    try {
+        double L = 2.0 * M_PI;
+        Mesh mesh;
+        mesh.init_uniform(16, 16, 16, 0.0, L, 0.0, L, 0.0, L);
 
-    auto run_tgv = [&](TurbulenceModelType type) -> double {
-        Config config;
-        config.nu = 0.01;
-        config.dt = 0.005;
-        config.turb_model = type;
-        config.verbose = false;
+        auto run_tgv = [&](TurbulenceModelType type) -> double {
+            Config config;
+            config.nu = 0.01;
+            config.dt = 0.005;
+            config.turb_model = type;
+            config.verbose = false;
 
-        RANSSolver solver(mesh, config);
-        solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
-        if (type != TurbulenceModelType::None)
-            solver.set_turbulence_model(create_turbulence_model(type));
+            RANSSolver solver(mesh, config);
+            solver.set_velocity_bc(create_velocity_bc(BCPattern::FullyPeriodic));
+            if (type != TurbulenceModelType::None)
+                solver.set_turbulence_model(create_turbulence_model(type));
+            solver.initialize_uniform(0.0, 0.0);
 
-        // TGV IC
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
-                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i)
-                    solver.velocity().u(i, j, k) =
-                        std::sin(mesh.xf[i]) * std::cos(mesh.y(j)) * std::cos(mesh.z(k));
-        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
-            for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j)
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
-                    solver.velocity().v(i, j, k) =
-                        -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]) * std::cos(mesh.z(k));
-        solver.sync_to_gpu();
+            // TGV IC (overwrites velocity from initialize_uniform)
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i)
+                        solver.velocity().u(i, j, k) =
+                            std::sin(mesh.xf[i]) * std::cos(mesh.y(j)) * std::cos(mesh.z(k));
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+                for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j)
+                    for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
+                        solver.velocity().v(i, j, k) =
+                            -std::cos(mesh.x(i)) * std::sin(mesh.yf[j]) * std::cos(mesh.z(k));
+            solver.sync_to_gpu();
 
-        for (int step = 0; step < 100; ++step) solver.step();
-        solver.sync_from_gpu();
-        return solver.compute_kinetic_energy();
-    };
+            for (int step = 0; step < 100; ++step) solver.step();
+            solver.sync_from_gpu();
+            return solver.compute_kinetic_energy();
+        };
 
-    double E_laminar  = run_tgv(TurbulenceModelType::None);
-    double E_baseline = run_tgv(TurbulenceModelType::Baseline);
-    double E_sst      = run_tgv(TurbulenceModelType::SSTKOmega);
+        double E_laminar  = run_tgv(TurbulenceModelType::None);
+        double E_baseline = run_tgv(TurbulenceModelType::Baseline);
+        double E_sst      = run_tgv(TurbulenceModelType::SSTKOmega);
 
-    std::cerr << "  TGV E_final: Laminar=" << E_laminar
-              << ", Baseline=" << E_baseline
-              << ", SST=" << E_sst << "\n";
+        std::cerr << "  TGV E_final: Laminar=" << E_laminar
+                  << ", Baseline=" << E_baseline
+                  << ", SST=" << E_sst << "\n";
 
-    // More effective viscosity → faster energy decay → lower final energy
-    // Baseline adds Smagorinsky-like nu_t → should decay faster than laminar
-    record("TGV ordering: E_baseline <= E_laminar",
-           E_baseline <= E_laminar * 1.01);  // 1% tolerance
+        // More effective viscosity → faster energy decay → lower final energy
+        // Baseline adds mixing-length nu_t → should decay faster than laminar
+        record("TGV ordering: E_baseline <= E_laminar",
+               E_baseline <= E_laminar * 1.01);  // 1% tolerance
 
-    // All energies should be positive and finite
-    record("TGV ordering: all energies valid",
-           std::isfinite(E_laminar) && std::isfinite(E_baseline) &&
-           std::isfinite(E_sst) && E_laminar > 0 && E_baseline > 0 && E_sst > 0);
+        // All energies should be positive and finite
+        record("TGV ordering: all energies valid",
+               std::isfinite(E_laminar) && std::isfinite(E_baseline) &&
+               std::isfinite(E_sst) && E_laminar > 0 && E_baseline > 0 && E_sst > 0);
+    } catch (const std::exception& e) {
+        std::cerr << "  TGV energy ordering exception: " << e.what() << "\n";
+        record("TGV ordering: E_baseline <= E_laminar", false);
+        record("TGV ordering: all energies valid", false);
+    }
 }
 
 // ============================================================================
@@ -746,54 +769,57 @@ static void test_tgv_energy_ordering() {
 // ============================================================================
 
 static void test_earsm_anisotropy() {
-    // In shear flow, EARSM should produce tau_xy that differs from the
-    // Boussinesq approximation (tau_xy = -2 * nu_t * S_12).
-    // More specifically: EARSM should produce nonzero normal stress differences
-    // (tau_xx != tau_yy), which Boussinesq-based models cannot.
-    Mesh mesh;
-    mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
+    // EARSM should produce nonzero normal stress differences (tau_xx != tau_yy)
+    // in shear flow, which Boussinesq-based models cannot.
+    try {
+        Mesh mesh;
+        mesh.init_uniform(16, 32, 0.0, 2.0, -1.0, 1.0);
 
-    VectorField vel(mesh);
-    for (int j = 0; j < mesh.total_Ny(); ++j)
-        for (int i = 0; i < mesh.total_Nx(); ++i) {
-            vel.u(i, j) = 1.0 - mesh.y(j) * mesh.y(j);  // Strong Poiseuille
-            vel.v(i, j) = 0.0;
+        VectorField vel(mesh);
+        for (int j = 0; j < mesh.total_Ny(); ++j)
+            for (int i = 0; i < mesh.total_Nx(); ++i) {
+                vel.u(i, j) = 1.0 - mesh.y(j) * mesh.y(j);  // Strong Poiseuille
+                vel.v(i, j) = 0.0;
+            }
+
+        ScalarField k_field(mesh, 0.1), omega_field(mesh, 10.0), nu_t_field(mesh);
+
+        TensorField tau_earsm(mesh);
+        SSTWithEARSM earsm(EARSMType::WallinJohansson2000);
+        earsm.set_nu(0.001);
+        earsm.set_delta(1.0);
+        earsm.initialize(mesh, vel);
+        earsm.update(mesh, vel, k_field, omega_field, nu_t_field, &tau_earsm);
+
+        // In Boussinesq: tau_xx - tau_yy = -2*nu_t*(S_11 - S_22) = 0 for channel
+        // since S_11 = du/dx = 0 and S_22 = dv/dy = 0. But EARSM gives nonzero.
+        double max_anisotropy = 0.0;
+        double max_tau_xy = 0.0;
+        FOR_INTERIOR_2D(mesh, i, j) {
+            double aniso = std::abs(tau_earsm.xx(i, j) - tau_earsm.yy(i, j));
+            max_anisotropy = std::max(max_anisotropy, aniso);
+            max_tau_xy = std::max(max_tau_xy, std::abs(tau_earsm.xy(i, j)));
         }
 
-    ScalarField k_field(mesh, 0.1), omega_field(mesh, 10.0), nu_t_field(mesh);
+        record("EARSM: nonzero tau_xy in shear flow", max_tau_xy > 1e-10);
+        record("EARSM: normal stress anisotropy (non-Boussinesq)",
+               max_anisotropy > 1e-10);
+        std::cerr << "  max|tau_xx - tau_yy|=" << max_anisotropy
+                  << ", max|tau_xy|=" << max_tau_xy << "\n";
 
-    // EARSM model
-    TensorField tau_earsm(mesh);
-    SSTWithEARSM earsm(EARSMType::WallinJohansson2000);
-    earsm.set_nu(0.001);
-    earsm.set_delta(1.0);
-    earsm.initialize(mesh, vel);
-    earsm.update(mesh, vel, k_field, omega_field, nu_t_field, &tau_earsm);
-
-    // Check: EARSM produces nonzero normal stress anisotropy (tau_xx != tau_yy)
-    // In Boussinesq: tau_xx - tau_yy = -2*nu_t*(S_11 - S_22) = 0 for channel
-    // since S_11 = du/dx = 0 and S_22 = dv/dy = 0. But EARSM gives nonzero.
-    double max_anisotropy = 0.0;
-    double max_tau_xy = 0.0;
-    FOR_INTERIOR_2D(mesh, i, j) {
-        double aniso = std::abs(tau_earsm.xx(i, j) - tau_earsm.yy(i, j));
-        max_anisotropy = std::max(max_anisotropy, aniso);
-        max_tau_xy = std::max(max_tau_xy, std::abs(tau_earsm.xy(i, j)));
+        // The anisotropy should be physically meaningful relative to 2k
+        // |b_xx - b_yy| = |tau_xx - tau_yy| / (2k) should be O(0.01-1)
+        double k_val = k_field(mesh.i_begin() + mesh.Nx / 2, mesh.j_begin() + mesh.Ny / 2);
+        double b_aniso = max_anisotropy / (2.0 * k_val + 1e-15);
+        record("EARSM: anisotropy magnitude plausible (b_aniso > 0.01)",
+               b_aniso > 0.01);
+        std::cerr << "  b_aniso (normalized)=" << b_aniso << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "  EARSM anisotropy exception: " << e.what() << "\n";
+        record("EARSM: nonzero tau_xy in shear flow", false);
+        record("EARSM: normal stress anisotropy (non-Boussinesq)", false);
+        record("EARSM: anisotropy magnitude plausible (b_aniso > 0.01)", false);
     }
-
-    record("EARSM: nonzero tau_xy in shear flow", max_tau_xy > 1e-10);
-    record("EARSM: normal stress anisotropy (non-Boussinesq)",
-           max_anisotropy > 1e-10);
-    std::cerr << "  max|tau_xx - tau_yy|=" << max_anisotropy
-              << ", max|tau_xy|=" << max_tau_xy << "\n";
-
-    // The anisotropy should be physically meaningful relative to 2k
-    // |b_xx - b_yy| = |tau_xx - tau_yy| / (2k) should be O(0.01-1)
-    double k_val = k_field(mesh.i_begin() + mesh.Nx / 2, mesh.j_begin() + mesh.Ny / 2);
-    double b_aniso = max_anisotropy / (2.0 * k_val + 1e-15);
-    record("EARSM: anisotropy magnitude plausible (b_aniso > 0.01)",
-           b_aniso > 0.01);
-    std::cerr << "  b_aniso (normalized)=" << b_aniso << "\n";
 }
 
 // ============================================================================
@@ -808,7 +834,7 @@ int main() {
         {"3D TGV Smoke (8 models, 50 steps)",              test_3d_tgv_smoke},
         {"DNS Combo (trip + filter, 150 steps)",           test_dns_combo},
         {"Transport Realizability 3D (200 steps)",         test_transport_realizability_3d},
-        {"EARSM Trace-Free",                               test_earsm_trace_free_3d},
+        {"EARSM Trace-Free",                               test_earsm_trace_free},
         {"Cross-Geometry Consistency (2 models x 3 geom)", test_cross_geometry_consistency},
         {"Model Ordering (turbulent > laminar mixing)",    test_model_ordering},
         {"Transport Profile Shape (k/omega/nu_t)",         test_transport_profile_shape},
