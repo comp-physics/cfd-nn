@@ -27,6 +27,12 @@ using nncfd::test::harness::record;
 void test_dns_channel_machinery() {
     std::cout << "\n--- DNS Channel 192x96x192, v13 recipe, 500 steps ---\n\n";
 
+#ifndef USE_GPU_OFFLOAD
+    std::cout << "  [SKIP] DNS channel test requires GPU build\n\n";
+    record("GPU build required", true, true);  // skip
+    return;
+#else
+
     // v13 DNS recipe
     const int Nx = 192, Ny = 96, Nz = 192;
     const double Lx = 4.0 * M_PI;
@@ -157,6 +163,7 @@ void test_dns_channel_machinery() {
     record("dx+ < 20", res.dx_plus < 20.0);
     record("dz+ < 10", res.dz_plus < 10.0);
     record("Re_tau > 50 (turbulence developing)", re_tau > 50.0);
+#endif // USE_GPU_OFFLOAD
 }
 
 int main() {

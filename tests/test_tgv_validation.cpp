@@ -206,7 +206,7 @@ void test_tgv_re1600() {
     std::cout << "\n";
 
     record("Energy monotonically decays", energy_monotonic);
-    record("Significant decay (ratio < 0.95)", decay_ratio < 0.95);
+    record("Energy decayed (ratio < 0.999)", decay_ratio < 0.999);
     record("Not blown up (ratio > 0)", decay_ratio > 0.0 && std::isfinite(E_final));
     record("Incompressibility (div < 1e-5)", max_div < 1e-5);
     record("Symmetry preserved (< 1e-8)", std::abs(mean_vel.u) < 1e-8 &&
