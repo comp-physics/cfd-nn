@@ -1,15 +1,14 @@
 /// @file test_dns_channel_validation.cpp
 /// @brief DNS channel flow machinery validation (GPU, 3D)
 ///
-/// Runs 192x96x192 channel with v13 recipe (trip + filter) for ~500 steps.
+/// Runs 64x48x64 channel with v13 recipe (trip + filter) for 200 steps.
 /// Validates DNS machinery works correctly, not converged statistics.
+/// Full-resolution (192x96x192) validation is in Tier 2 SLURM scripts.
 ///
 /// Validates:
-///   1. Turbulence triggered (TKE > 0, velocity fluctuations present)
-///   2. Incompressibility: max|div(u)| < 1e-4
-///   3. Stability: max velocity bounded, no NaN/Inf
-///   4. Resolution quality: y+ < 1, dx+ < 20, dz+ < 10
-///   5. Energy evolution: KE doesn't grow unboundedly
+///   1. Incompressibility: max|div(u)| < 1e-4
+///   2. Stability: max velocity bounded, no NaN/Inf
+///   3. Energy evolution: KE doesn't grow unboundedly
 
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
@@ -25,7 +24,7 @@ using namespace nncfd::test;
 using nncfd::test::harness::record;
 
 void test_dns_channel_machinery() {
-    std::cout << "\n--- DNS Channel 192x96x192, v13 recipe, 500 steps ---\n\n";
+    std::cout << "\n--- DNS Channel 64x48x64, v13 recipe, 200 steps ---\n\n";
 
 #ifndef USE_GPU_OFFLOAD
     std::cout << "  [SKIP] DNS channel test requires GPU build\n\n";
@@ -33,15 +32,15 @@ void test_dns_channel_machinery() {
     return;
 #else
 
-    // v13 DNS recipe
-    const int Nx = 192, Ny = 96, Nz = 192;
+    // Reduced grid for CI (full 192x96x192 in Tier 2 SLURM validation)
+    const int Nx = 64, Ny = 48, Nz = 64;
     const double Lx = 4.0 * M_PI;
     const double Ly = 2.0;        // y in [-1, 1]
     const double Lz = 2.0 * M_PI;
     const double nu = 1.0 / 180.0;  // Re_tau ~ 180 target
     const double dp_dx = -1.0;       // dp/dx = -u_tau^2/delta
     const double beta = 2.0;         // Stretching parameter
-    const int nsteps = 500;
+    const int nsteps = 200;
 
     // Setup stretched mesh
     Mesh mesh;
@@ -135,34 +134,19 @@ void test_dns_channel_machinery() {
         }
     }
 
-    // Resolution diagnostics (requires GPU sync)
-    solver.sync_solution_from_gpu();
-    auto res = solver.compute_resolution_diagnostics();
-
     double E_final = E_history.back();
     double E_ratio = E_final / E_initial;
-    double delta = Ly / 2.0;  // Channel half-height
-    double re_tau = res.u_tau_force * delta / nu;
-    double y_plus_first = std::max(res.y1_plus_bot, res.y1_plus_top);
 
-    std::cout << "\n  Resolution: y1+=" << std::fixed << std::setprecision(2) << y_plus_first
-              << " dx+=" << res.dx_plus << " dz+=" << res.dz_plus << "\n";
-    std::cout << "  u_tau(force)=" << std::setprecision(4) << res.u_tau_force
-              << " Re_tau=" << std::setprecision(1) << re_tau << "\n";
-    std::cout << "  max|vel|=" << std::setprecision(1) << max_vel
+    std::cout << "\n  max|vel|=" << std::fixed << std::setprecision(1) << max_vel
               << " max|div|=" << std::scientific << max_div << "\n";
     std::cout << "  KE ratio (final/initial)=" << std::fixed << std::setprecision(4) << E_ratio << "\n\n";
 
-    // Record results
+    // Record results (machinery checks only; resolution quality in Tier 2)
     record("No NaN/Inf", !has_nan);
     record("Incompressibility (div < 1e-4)", max_div < 1e-4);
     record("Velocity bounded (< 50)", max_vel < 50.0);
     record("KE not blown up (ratio < 10)", E_ratio < 10.0);
     record("KE not collapsed (ratio > 0.01)", E_ratio > 0.01);
-    record("y+ < 1", y_plus_first < 1.0);
-    record("dx+ < 20", res.dx_plus < 20.0);
-    record("dz+ < 10", res.dz_plus < 10.0);
-    record("Re_tau > 50 (turbulence developing)", re_tau > 50.0);
 #endif // USE_GPU_OFFLOAD
 }
 
