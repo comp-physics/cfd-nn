@@ -148,10 +148,11 @@ echo "================================================================"
 echo "  RANS Model Sweep (steady, 64x128, stretched)"
 echo "================================================================"
 
-for model in none baseline gep sst komega earsm_wj earsm_gs earsm_pope nn_mlp nn_tbnn; do
+for model in none baseline gep sst komega earsm_wj earsm_gs earsm_pope; do
     echo "--- RANS model: $model ---"
     $BUILD/channel --config $PROJECT/examples/06_steady_rans_channel/baseline.cfg \
         --model $model \
+        --nu 0.005556 --dp_dx -1.0 \
         --max_steps 20000 --tol 1e-8 \
         --output $OUT/rans_${model}/ \
         2>&1 | tee $OUT/rans_${model}.log || \
