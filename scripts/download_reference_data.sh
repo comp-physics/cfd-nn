@@ -10,32 +10,16 @@ mkdir -p "$DATA_DIR/mkm_retau180" "$DATA_DIR/brachet_tgv"
 
 echo "=== Downloading MKM Re_tau=180 DNS data ==="
 
-MKM_BASE="https://turbulence.oden.utexas.edu/data/MKM/chan180"
-
-# Mean velocity profile
-if [ ! -f "$DATA_DIR/mkm_retau180/chan180_means.dat" ]; then
-    echo "  Downloading mean velocity profile..."
-    curl -fSL -o "$DATA_DIR/mkm_retau180/chan180_means.dat" \
-        "${MKM_BASE}/chan180_means.dat" 2>/dev/null || \
-    wget -q -O "$DATA_DIR/mkm_retau180/chan180_means.dat" \
-        "${MKM_BASE}/chan180_means.dat"
-    echo "  Done."
+if [ ! -f "$DATA_DIR/mkm_retau180/chan180/profiles/chan180.means" ]; then
+    echo "  Downloading complete MKM database (1.2 MB)..."
+    curl -fSL -o /tmp/chandata.tar.gz \
+        "https://turbulence.oden.utexas.edu/data/MKM/chandata.tar.gz"
+    tar xzf /tmp/chandata.tar.gz -C "$DATA_DIR/mkm_retau180" chan180/profiles/
+    rm /tmp/chandata.tar.gz
+    echo "  Extracted profiles to $DATA_DIR/mkm_retau180/chan180/profiles/"
 else
-    echo "  chan180_means.dat already exists, skipping."
+    echo "  MKM data already exists, skipping."
 fi
-
-# Reynolds stress profiles
-for f in chan180_uu.dat chan180_vv.dat chan180_ww.dat chan180_uv.dat; do
-    if [ ! -f "$DATA_DIR/mkm_retau180/$f" ]; then
-        echo "  Downloading $f..."
-        curl -fSL -o "$DATA_DIR/mkm_retau180/$f" \
-            "${MKM_BASE}/$f" 2>/dev/null || \
-        wget -q -O "$DATA_DIR/mkm_retau180/$f" \
-            "${MKM_BASE}/$f"
-    else
-        echo "  $f already exists, skipping."
-    fi
-done
 
 echo ""
 echo "=== Creating Brachet TGV reference data ==="
@@ -69,5 +53,5 @@ TGVEOF
 echo "  Created dissipation_re1600.dat"
 echo ""
 echo "=== Reference data download complete ==="
-echo "  MKM data:    $DATA_DIR/mkm_retau180/"
+echo "  MKM data:    $DATA_DIR/mkm_retau180/chan180/profiles/"
 echo "  Brachet TGV: $DATA_DIR/brachet_tgv/"
