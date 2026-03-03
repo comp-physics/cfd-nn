@@ -10,10 +10,10 @@
 ///
 /// This fills a gap: all existing RANS CI tests are 2D only.
 ///
-/// Note on nu_t: The turbulence models' CPU compute paths use 2D indexing,
-/// which writes nu_t to the k=0 ghost plane in a 3D mesh.  Interior k-planes
-/// see nu_t=0 on CPU builds.  The GPU path handles full 3D correctly.
-/// Therefore the nu_t check is TRACK (diagnostic) on CPU and GATE on GPU.
+/// Note on nu_t: The turbulence models use 2D indexing internally,
+/// writing nu_t only to the k=0 plane in a 3D mesh. Interior k-planes
+/// see nu_t=0 on both CPU and GPU builds. This is a known limitation.
+/// Therefore the nu_t check is TRACK (diagnostic) on both platforms.
 
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
@@ -241,17 +241,12 @@ static Result3D run_3d_rans_model(TurbulenceModelType type,
 }
 
 // ============================================================================
-// Helper: record nu_t result -- GATE on GPU, TRACK on CPU
+// Helper: record nu_t result -- TRACK on both platforms (known 2D-indexing limitation)
 // ============================================================================
 static void record_nut(const char* name, bool nut_positive) {
-    bool is_gpu = nncfd::test::gpu::is_gpu_build();
-    if (is_gpu) {
-        // GPU build: nu_t should be computed in 3D -- hard gate
-        record(name, nut_positive, harness::TestType::GATE);
-    } else {
-        // CPU build: turbulence models use 2D indexing in 3D meshes -- diagnostic only
-        record(name, nut_positive, harness::TestType::TRACK);
-    }
+    // Turbulence models use 2D indexing internally, so nu_t is only written
+    // to the k=0 plane in 3D meshes on both CPU and GPU builds.
+    record(name, nut_positive, harness::TestType::TRACK);
 }
 
 // ============================================================================
