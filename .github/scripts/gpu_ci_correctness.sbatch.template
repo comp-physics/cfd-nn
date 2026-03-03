@@ -172,6 +172,8 @@ chmod +x scripts/ci.sh
 chmod +x scripts/check_code_sharing.sh
 
 # Run tests, capturing output to log file
+# Temporarily disable set -e so we capture the exit code instead of aborting
+set +e
 {
     echo "==================================================================="
     echo "  GPU CI Test Log"
@@ -185,6 +187,7 @@ chmod +x scripts/check_code_sharing.sh
     ./scripts/ci.sh full
 } > "$TEST_LOG" 2>&1
 TEST_EXIT_CODE=$?
+set -e
 
 # Show test summary (last 30 lines usually contain the summary)
 echo ""
