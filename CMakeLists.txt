@@ -472,6 +472,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_mg_ramp_diagnostic TEST_NAME_SUFFIX MGRampDiagnosticTest LABELS fast)
     add_nncfd_test(test_projection_trace TEST_NAME_SUFFIX ProjectionTraceTest LABELS fast)
     add_nncfd_test(test_conv_diff_constant TEST_NAME_SUFFIX ConvDiffConstantTest LABELS fast)
+    add_nncfd_test(test_stretched_gradient TEST_NAME_SUFFIX StretchedGradientTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s) - run with: ctest -L medium
@@ -504,6 +505,9 @@ if(BUILD_TESTS)
     set_tests_properties(RANSChannelValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
     add_nncfd_test(test_dns_channel_validation TEST_NAME_SUFFIX DNSChannelValidationTest LABELS "gpu;medium")
     set_tests_properties(DNSChannelValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+    add_nncfd_test(test_rans_accuracy TEST_NAME_SUFFIX RANSAccuracyTest LABELS medium)
+    add_nncfd_test(test_rans_3d_channel TEST_NAME_SUFFIX RANS3DChannelTest LABELS medium)
+    add_nncfd_test(test_duct_poiseuille TEST_NAME_SUFFIX DuctPoiseuilleTest LABELS medium)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
