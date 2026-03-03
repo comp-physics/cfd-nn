@@ -611,7 +611,9 @@ void SSTWithEARSM::update(
             stride,
             velocity.u_total_size(),
             velocity.v_total_size(),
-            stride * (Ny + 2*Ng)
+            stride * (Ny + 2*Ng),
+            device_view->dyc,
+            device_view->dyc_size
         );
         
         // Determine which EARSM model

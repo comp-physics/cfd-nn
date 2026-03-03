@@ -46,6 +46,10 @@ void compute_gradients_from_mac(
     const int v_stride = velocity.v_stride();
     const int cell_stride = mesh.total_Nx();
 
+    // Pass dyc for stretched grids (nullptr for uniform)
+    const double* dyc_ptr = mesh.dyc.empty() ? nullptr : mesh.dyc.data();
+    int dyc_size = static_cast<int>(mesh.dyc.size());
+
     // Call the unified implementation (uses CPU path when USE_GPU_OFFLOAD not defined)
     gpu_kernels::compute_gradients_from_mac_gpu(
         u_face, v_face,
@@ -55,7 +59,8 @@ void compute_gradients_from_mac(
         u_stride, v_stride, cell_stride,
         velocity.u_total_size(),
         velocity.v_total_size(),
-        static_cast<int>(dudx.data().size())
+        static_cast<int>(dudx.data().size()),
+        dyc_ptr, dyc_size
     );
 }
 

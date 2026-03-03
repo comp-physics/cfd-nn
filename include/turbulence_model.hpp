@@ -47,6 +47,11 @@ struct TurbulenceDeviceView {
     // Wall distance (cell-centered, precomputed, persistent on GPU)
     double* wall_distance = nullptr;
     
+    // Y-metric arrays for stretched grids (persistent on GPU via solver mapping)
+    const double* dyc = nullptr;        ///< Center-to-center y-spacing: yc[j]-yc[j-1]
+    int dyc_size = 0;                   ///< Size of dyc array
+    bool is_y_stretched = false;        ///< Whether grid uses non-uniform y-spacing
+
     // Mesh parameters (scalars, passed by value to GPU kernels)
     int Nx = 0;                         // Interior cells in x
     int Ny = 0;                         // Interior cells in y

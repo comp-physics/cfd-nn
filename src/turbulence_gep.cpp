@@ -243,7 +243,9 @@ void TurbulenceGEP::update(const Mesh& mesh,
             Nx, Ny, Ng,
             mesh.dx, mesh.dy,
             device_view->u_stride, device_view->v_stride, cell_stride,
-            u_total_size, v_total_size, cell_total_size
+            u_total_size, v_total_size, cell_total_size,
+            device_view->dyc,
+            device_view->dyc_size
         );
         
         // Then run GEP algebraic model on GPU

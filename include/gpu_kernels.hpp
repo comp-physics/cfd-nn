@@ -42,7 +42,9 @@ void compute_gradients_from_mac_gpu(
     int cell_stride,             // cell row stride = Nx+2Ng
     int u_total_size,            // Total u array size
     int v_total_size,            // Total v array size
-    int cell_total_size          // Total cell array size
+    int cell_total_size,         // Total cell array size
+    const double* dyc = nullptr, // Center-to-center y-spacing for stretched grids
+    int dyc_size = 0             // Size of dyc array (for map clause)
 );
 
 // ============================================================================

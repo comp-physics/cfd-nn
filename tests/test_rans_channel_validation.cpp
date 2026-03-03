@@ -288,8 +288,7 @@ void test_law_of_wall_baseline() {
     std::cout << "\n--- Law-of-Wall Check (Baseline, solve_steady) ---\n\n";
 
     Mesh mesh;
-    mesh.init_stretched_y(32, 96, 0.0, 4.0, -1.0, 1.0,
-                          Mesh::tanh_stretching(2.0));
+    mesh.init_uniform(32, 96, 0.0, 4.0, -1.0, 1.0);
 
     double nu = 1.0 / 180.0;
     double dp_dx = -1.0;

@@ -89,6 +89,8 @@ double gpu_max_du_residual(const double* u_new_dev, const double* u_old_dev,
         int u_idx = is_2d ? (j * u_stride + i) : (k * u_plane_stride + j * u_stride + i);
         double du = u_new_dev[u_idx] - u_old_dev[u_idx];
         if (du < 0.0) du = -du;
+        // IEEE 754: NaN fails all comparisons — detect explicitly
+        if (!(du == du)) du = 1.0e30;
         if (du > max_du) max_du = du;
     }
     return max_du;
@@ -117,6 +119,7 @@ double gpu_max_dv_residual(const double* v_new_dev, const double* v_old_dev,
         int v_idx = is_2d ? (j * v_stride + i) : (k * v_plane_stride + j * v_stride + i);
         double dv = v_new_dev[v_idx] - v_old_dev[v_idx];
         if (dv < 0.0) dv = -dv;
+        if (!(dv == dv)) dv = 1.0e30;
         if (dv > max_dv) max_dv = dv;
     }
     return max_dv;
@@ -144,6 +147,7 @@ double gpu_max_dw_residual(const double* w_new_dev, const double* w_old_dev,
         int w_idx = k * w_plane_stride + j * w_stride + i;
         double dw = w_new_dev[w_idx] - w_old_dev[w_idx];
         if (dw < 0.0) dw = -dw;
+        if (!(dw == dw)) dw = 1.0e30;
         if (dw > max_dw) max_dw = dw;
     }
     return max_dw;
@@ -326,10 +330,12 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
     // FFT solvers use tridiagonal solves in y that assume uniform spacing
     // If y is stretched, the FFT solver's tridiagonal system is incorrect
-    bool uniform_y = !config.stretch_y;
+    // Check both config flag AND actual mesh (test code may stretch mesh without setting config)
+    bool uniform_y = !config.stretch_y && !mesh.is_y_stretched();
 
-    if (mesh.is2D()) {
-        // 2D mesh: try FFT2D solver (periodic x, non-periodic y)
+    if (mesh.is2D() && uniform_y) {
+        // 2D mesh with uniform y: try FFT2D solver (periodic x, non-periodic y)
+        // FFT2D uses tridiagonal solves in y that assume uniform spacing
         try {
             fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
             fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
@@ -340,6 +346,8 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
             std::cerr << "[Solver] FFT2D solver initialization failed: " << e.what() << "\n";
             fft2d_applicable = false;
         }
+    } else if (mesh.is2D()) {
+        std::cout << "[Solver] FFT2D solver skipped: y-stretching requires MG solver\n";
     } else {
         // 3D mesh: try 2D FFT first (periodic x AND z)
         // Note: FFT solver requires uniform y spacing for its tridiagonal solves
@@ -1255,6 +1263,87 @@ double RANSSolver::step() {
         }
     }
 
+    // Re-check diffusion CFL after turbulence update.
+    // compute_adaptive_dt() used OLD nu_t from the previous step, but the turbulence
+    // model just computed NEW nu_t which may be significantly larger. Enforce the
+    // diffusion stability limit dt < 0.25 * dx_min^2 / nu_eff_max with current nu_eff.
+    if (config_.adaptive_dt && turb_model_) {
+        double nu_eff_max_new = config_.nu;
+        const int Nx_dc = mesh_->Nx;
+        const int Ny_dc = mesh_->Ny;
+        const int Ng_dc = mesh_->Nghost;
+        const int stride_dc = Nx_dc + 2 * Ng_dc;
+
+#ifdef USE_GPU_OFFLOAD
+        if (gpu_ready_) {
+            const double* nue = nu_eff_ptr_;
+            const size_t n_f = field_total_size_;
+
+            if (mesh_->is2D()) {
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: nue[0:n_f]) reduction(max:nu_eff_max_new)
+                for (int j = 0; j < Ny_dc; ++j) {
+                    for (int i = 0; i < Nx_dc; ++i) {
+                        int idx = (j + Ng_dc) * stride_dc + (i + Ng_dc);
+                        if (nue[idx] > nu_eff_max_new) nu_eff_max_new = nue[idx];
+                    }
+                }
+            } else {
+                const int Nz_dc = mesh_->Nz;
+                const int plane_dc = stride_dc * (Ny_dc + 2 * Ng_dc);
+                #pragma omp target teams distribute parallel for collapse(3) \
+                    map(present: nue[0:n_f]) reduction(max:nu_eff_max_new)
+                for (int k = 0; k < Nz_dc; ++k) {
+                    for (int j = 0; j < Ny_dc; ++j) {
+                        for (int i = 0; i < Nx_dc; ++i) {
+                            int idx = (k + Ng_dc) * plane_dc + (j + Ng_dc) * stride_dc + (i + Ng_dc);
+                            if (nue[idx] > nu_eff_max_new) nu_eff_max_new = nue[idx];
+                        }
+                    }
+                }
+            }
+        } else
+#endif
+        {
+            if (mesh_->is2D()) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        int idx = j * stride_dc + i;
+                        if (nu_eff_ptr_[idx] > nu_eff_max_new) nu_eff_max_new = nu_eff_ptr_[idx];
+                    }
+                }
+            } else {
+                const int plane_dc = stride_dc * (Ny_dc + 2 * Ng_dc);
+                for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k) {
+                    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                        for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                            int idx = k * plane_dc + j * stride_dc + i;
+                            if (nu_eff_ptr_[idx] > nu_eff_max_new) nu_eff_max_new = nu_eff_ptr_[idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        double dy_eff_dc = mesh_->dy;
+        if (mesh_->is_y_stretched() && !mesh_->dyv.empty()) {
+            dy_eff_dc = *std::min_element(mesh_->dyv.begin(), mesh_->dyv.end());
+        }
+        double dx_min_dc_full = mesh_->is2D() ? std::min(mesh_->dx, dy_eff_dc)
+                                              : std::min({mesh_->dx, dy_eff_dc, mesh_->dz});
+        double dx_min_dc;
+        if (config_.implicit_y_diffusion && !(turb_model_ && turb_model_->uses_transport_equations())) {
+            dx_min_dc = mesh_->is2D() ? mesh_->dx : std::min(mesh_->dx, mesh_->dz);
+        } else {
+            dx_min_dc = dx_min_dc_full;
+        }
+        double dt_diff_limit = 0.25 * dx_min_dc * dx_min_dc / nu_eff_max_new;
+
+        if (current_dt_ > dt_diff_limit) {
+            current_dt_ = std::max(config_.dt_safety * dt_diff_limit, 1e-15);
+        }
+    }
+
     // Dispatch to appropriate time integrator
     // RK methods handle their own convective/diffusive terms and projection
     if (config_.time_integrator != TimeIntegrator::Euler) {
@@ -1607,6 +1696,11 @@ double RANSSolver::step() {
     }
 #endif
     NVTX_POP();  // End predictor_step
+
+    // Implicit y-diffusion: solve (I - dt * nu_eff * d²/dy²) on velocity_star_
+    if (config_.implicit_y_diffusion) {
+        implicit_y_diffusion_step(velocity_star_, dt);
+    }
 
     // Apply recycling inlet BC BEFORE Poisson solve
     // Sequence: 1) set v,w at inlet, 2) correct u for div-free, 3) optional fringe blend
@@ -2258,6 +2352,7 @@ double RANSSolver::step() {
                               : (k * u_plane_stride_res + j * u_stride_res + i);
         double du = u_new_ptr[u_idx] - u_old_ptr[u_idx];
         if (du < 0.0) du = -du;
+        if (!(du == du)) du = 1.0e30;
         if (du > max_du) max_du = du;
     }
 #endif
@@ -2285,6 +2380,7 @@ double RANSSolver::step() {
                               : (k * v_plane_stride_res + j * v_stride_res + i);
         double dv = v_new_ptr[v_idx] - v_old_ptr[v_idx];
         if (dv < 0.0) dv = -dv;
+        if (!(dv == dv)) dv = 1.0e30;
         if (dv > max_dv) max_dv = dv;
     }
 #endif
@@ -2317,6 +2413,7 @@ double RANSSolver::step() {
             int w_idx = k * w_plane_stride_res + j * w_stride_res + i;
             double dw = w_new_ptr[w_idx] - w_old_ptr[w_idx];
             if (dw < 0.0) dw = -dw;
+            if (!(dw == dw)) dw = 1.0e30;
             if (dw > max_dw) max_dw = dw;
         }
 #endif
@@ -3263,10 +3360,22 @@ double RANSSolver::compute_adaptive_dt() const {
     double dt_cfl_z = mesh_->is2D() ? 1e10 : cfl_xz * mesh_->dz / w_abs_max;
 
     // Diffusive stability: dt < 0.25 * dx² / ν (hard limit from von Neumann analysis)
-    // Use minimum grid spacing for diffusive constraint since diffusion acts in all directions
-    double dx_min = mesh_->is2D() ? std::min(mesh_->dx, dy_eff)
-                                  : std::min({mesh_->dx, dy_eff, mesh_->dz});
+    // When implicit_y_diffusion is enabled, y-direction momentum diffusion is implicit,
+    // but transport equations (k, omega) still use explicit y-diffusion
+    double dx_min_full = mesh_->is2D() ? std::min(mesh_->dx, dy_eff)
+                                       : std::min({mesh_->dx, dy_eff, mesh_->dz});
+    double dx_min;
+    if (config_.implicit_y_diffusion) {
+        dx_min = mesh_->is2D() ? mesh_->dx : std::min(mesh_->dx, mesh_->dz);
+    } else {
+        dx_min = dx_min_full;
+    }
     double dt_diff = 0.25 * dx_min * dx_min / nu_eff_max;
+    // Transport models still need dy constraint for k/omega y-diffusion
+    if (config_.implicit_y_diffusion && turb_model_ && turb_model_->uses_transport_equations()) {
+        double dt_diff_transport = 0.25 * dx_min_full * dx_min_full / nu_eff_max;
+        dt_diff = std::min(dt_diff, dt_diff_transport);
+    }
 
     // Take minimum of all directional constraints, apply safety factor
     double dt_new = config_.dt_safety * std::min({dt_cfl_x, dt_cfl_y, dt_cfl_z, dt_diff});
@@ -3750,6 +3859,11 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     // Wall distance
     view.wall_distance = wall_distance_ptr_;
     
+    // Y-metric arrays for stretched grids
+    view.dyc = dyc_ptr_;
+    view.dyc_size = static_cast<int>(y_metrics_size_);
+    view.is_y_stretched = mesh_->is_y_stretched();
+
     // Mesh parameters
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;
@@ -3757,7 +3871,7 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
     view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
-    
+
     return view;
 }
 
@@ -4272,6 +4386,11 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
 
     // Wall distance
     view.wall_distance = wall_distance_ptr_;
+
+    // Y-metric arrays for stretched grids
+    view.dyc = dyc_ptr_;
+    view.dyc_size = static_cast<int>(y_metrics_size_);
+    view.is_y_stretched = mesh_->is_y_stretched();
 
     // Mesh parameters
     view.Nx = mesh_->Nx;
