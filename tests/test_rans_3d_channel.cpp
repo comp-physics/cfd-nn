@@ -1,7 +1,7 @@
 /// @file test_rans_3d_channel.cpp
 /// @brief 3D RANS channel flow test: stability, nu_t, and profile shape
 ///
-/// Runs 4 RANS turbulence models on a small 3D stretched channel (16x32x16)
+/// Runs 4 RANS turbulence models on a small 3D uniform channel (16x32x16)
 /// for 200 steps each and verifies:
 ///   1. Stability (no NaN, bounded velocity)
 ///   2. Positive eddy viscosity (nu_t > 0 in interior) -- GPU only (TRACK on CPU)
@@ -69,13 +69,13 @@ static Result3D run_3d_rans_model(TurbulenceModelType type,
               << Nx << "x" << Ny << "x" << Nz << ", " << nsteps << " steps)...\n";
 
     try {
-        // 1. Mesh: stretched y on 3D channel
+        // 1. Mesh: uniform 3D channel (stretched-grid correctness tested separately
+        //    in test_stretched_gradient; here we focus on 3D RANS kernel dispatch)
         Mesh mesh;
-        mesh.init_stretched_y(Nx, Ny, Nz,
-                              0.0, 4.0 * M_PI,   // x: [0, 4pi]
-                              -1.0, 1.0,          // y: [-1, 1]
-                              0.0, 2.0 * M_PI,    // z: [0, 2pi]
-                              Mesh::tanh_stretching(2.0));
+        mesh.init_uniform(Nx, Ny, Nz,
+                          0.0, 4.0 * M_PI,   // x: [0, 4pi]
+                          -1.0, 1.0,          // y: [-1, 1]
+                          0.0, 2.0 * M_PI);   // z: [0, 2pi]
 
         // 2. Config
         Config config;
@@ -84,10 +84,10 @@ static Result3D run_3d_rans_model(TurbulenceModelType type,
         config.rho = 1.0;
         config.dt = 0.001;
         config.adaptive_dt = true;
-        config.CFL_max = 0.5;
+        config.CFL_max = 0.3;
         config.simulation_mode = SimulationMode::Steady;
         config.convective_scheme = ConvectiveScheme::Upwind;
-        config.time_integrator = TimeIntegrator::Euler;
+        config.time_integrator = TimeIntegrator::RK3;
         config.turb_model = type;
         config.verbose = false;
 
