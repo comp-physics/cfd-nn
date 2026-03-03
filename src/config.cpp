@@ -168,6 +168,7 @@ void Config::load(const std::string& filename) {
     filter_strength = get_double("filter_strength", filter_strength);
     filter_interval = get_int("filter_interval", filter_interval);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
+    implicit_y_diffusion = get_bool("implicit_y_diffusion", implicit_y_diffusion);
     max_steps = get_int("max_steps", max_steps);
     T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);

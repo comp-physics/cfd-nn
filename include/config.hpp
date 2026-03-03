@@ -92,6 +92,7 @@ struct Config {
     double filter_strength = 0.0;  ///< Explicit velocity filter strength (0=off, 0.01-0.05 typical)
     int filter_interval = 10;      ///< Apply filter every N steps (0=off)
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
+    bool implicit_y_diffusion = false;  ///< Implicit y-diffusion via Thomas algorithm (RANS stability, experimental)
     int max_steps = 10000;      ///< Maximum time steps for simulation
     double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_steps)
     double tol = 1e-6;          ///< Convergence tolerance for steady-state

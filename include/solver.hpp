@@ -938,8 +938,7 @@ private:
     double compute_residual();
     
     // IMEX methods
-    void solve_implicit_diffusion(const VectorField& u_explicit, const ScalarField& nu_eff, 
-                                  VectorField& u_new, double dt);
+    void implicit_y_diffusion_step(VectorField& vel, double dt);
     
     // Time integration methods
     void euler_substep(VectorField& vel_in, VectorField& vel_out, double dt);

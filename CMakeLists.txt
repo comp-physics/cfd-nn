@@ -235,6 +235,7 @@ set(LIB_SOURCES
     src/solver_recycling.cpp
     src/solver_time_kernels_blend.cpp
     src/solver_time_kernels_euler.cpp
+    src/solver_time_kernels_implicit.cpp
     src/solver_time_kernels_periodic.cpp
     src/solver_time_kernels_projection.cpp
     src/solver_periodic_halos.cpp
@@ -570,6 +571,11 @@ if(BUILD_TESTS)
         add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
         target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
     endif()
+
+    # Verification tool (not a registered test — manual use only)
+    add_executable(verify_implicit_ydiff tests/verify_implicit_ydiff.cpp)
+    target_link_libraries(verify_implicit_ydiff PRIVATE nn_cfd_core)
+    target_include_directories(verify_implicit_ydiff PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 
     # =========================================================================
     # Convenience targets for running tests
