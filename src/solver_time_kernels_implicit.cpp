@@ -23,7 +23,7 @@ void thomas_y_diffusion_2d(double* u_ptr, double* v_ptr, double* nu_ptr,
         // No-slip: u_ghost = -u_interior → diagonal = 1+3*alpha at walls
         #pragma omp target teams distribute parallel for
         for (int i = Ng; i <= Ng + Nx; ++i) {
-            double c_prime[256], d_prime[256];
+            double c_prime[256] = {0.0}, d_prime[256] = {0.0};
             // Forward elimination
             for (int jj = 0; jj < Ny; ++jj) {
                 int j = jj + Ng;
@@ -61,7 +61,7 @@ void thomas_y_diffusion_2d(double* u_ptr, double* v_ptr, double* nu_ptr,
         if (Nv_int > 0) {
             #pragma omp target teams distribute parallel for
             for (int i = Ng; i < Ng + Nx; ++i) {
-                double c_prime[256], d_prime[256];
+                double c_prime[256] = {0.0}, d_prime[256] = {0.0};
                 for (int jj = 0; jj < Nv_int; ++jj) {
                     int j = jj + Ng + 1;
                     double nu_avg = 0.5 * (nu_ptr[(j - 1) * cell_stride + i] +
@@ -109,7 +109,7 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
         #pragma omp target teams distribute parallel for collapse(2)
         for (int k = Ng; k < Ng + Nz; ++k) {
             for (int i = Ng; i <= Ng + Nx; ++i) {
-                double c_prime[256], d_prime[256];
+                double c_prime[256] = {0.0}, d_prime[256] = {0.0};
                 for (int jj = 0; jj < Ny; ++jj) {
                     int j = jj + Ng;
                     int idx = k * u_plane + j * u_stride + i;
@@ -147,7 +147,7 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
             #pragma omp target teams distribute parallel for collapse(2)
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
-                    double c_prime[256], d_prime[256];
+                    double c_prime[256] = {0.0}, d_prime[256] = {0.0};
                     for (int jj = 0; jj < Nv_int; ++jj) {
                         int j = jj + Ng + 1;
                         int idx = k * v_plane + j * v_stride + i;
@@ -183,7 +183,7 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
         #pragma omp target teams distribute parallel for collapse(2)
         for (int k = Ng; k <= Ng + Nz; ++k) {
             for (int i = Ng; i < Ng + Nx; ++i) {
-                double c_prime[256], d_prime[256];
+                double c_prime[256] = {0.0}, d_prime[256] = {0.0};
                 for (int jj = 0; jj < Ny; ++jj) {
                     int j = jj + Ng;
                     int idx = k * w_plane + j * w_stride + i;

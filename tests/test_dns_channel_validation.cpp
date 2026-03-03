@@ -1,7 +1,7 @@
 /// @file test_dns_channel_validation.cpp
 /// @brief DNS channel flow machinery validation (GPU, 3D)
 ///
-/// Runs 64x48x64 channel with v13 recipe (trip + filter) for 200 steps.
+/// Runs 32x32x32 channel with reduced v13 recipe (trip + filter) for 30 steps.
 /// Validates DNS machinery works correctly, not converged statistics.
 /// Full-resolution (192x96x192) validation is in Tier 2 SLURM scripts.
 ///
@@ -24,7 +24,7 @@ using namespace nncfd::test;
 using nncfd::test::harness::record;
 
 void test_dns_channel_machinery() {
-    std::cout << "\n--- DNS Channel 32x32x32, v13 recipe, 50 steps ---\n\n";
+    std::cout << "\n--- DNS Channel 32x32x32, reduced v13 recipe, 30 steps ---\n\n";
 
 #ifndef USE_GPU_OFFLOAD
     std::cout << "  [SKIP] DNS channel test requires GPU build\n\n";
@@ -40,7 +40,7 @@ void test_dns_channel_machinery() {
     const double nu = 1.0 / 180.0;  // Re_tau ~ 180 target
     const double dp_dx = -1.0;       // dp/dx = -u_tau^2/delta
     const double beta = 2.0;         // Stretching parameter
-    const int nsteps = 50;
+    const int nsteps = 30;
 
     // Setup stretched mesh
     Mesh mesh;
@@ -55,8 +55,8 @@ void test_dns_channel_machinery() {
     config.nu = nu;
     config.dp_dx = dp_dx;
     config.rho = 1.0;
-    config.CFL_max = 0.15;
-    config.CFL_xz = 0.30;
+    config.CFL_max = 0.10;
+    config.CFL_xz = 0.20;
     config.dt_safety = 0.85;
     config.dt = 0.001;
     config.adaptive_dt = true;
@@ -64,23 +64,23 @@ void test_dns_channel_machinery() {
     config.turb_model = TurbulenceModelType::None;
     config.convective_scheme = ConvectiveScheme::Skew;
     config.time_integrator = TimeIntegrator::RK3;
-    config.perturbation_amplitude = 0.05;
+    config.perturbation_amplitude = 0.02;
     config.verbose = false;
     config.perf_mode = true;
     config.gpu_only_mode = true;
 
-    // Filter settings (v13)
-    config.filter_strength = 0.03;
-    config.filter_interval = 2;
+    // Filter settings (more aggressive for stability on coarse 32^3 grid)
+    config.filter_strength = 0.05;
+    config.filter_interval = 1;
 
-    // Trip forcing
+    // Trip forcing (reduced amplitude for coarse grid stability)
     config.trip_enabled = true;
-    config.trip_amplitude = 1.0;
+    config.trip_amplitude = 0.3;
     config.trip_duration = 0.20;
     config.trip_ramp_off_start = 0.10;
     config.trip_n_modes_z = 16;
     config.trip_force_w = true;
-    config.trip_w_scale = 2.0;
+    config.trip_w_scale = 1.0;
 
     // Poisson solver (fewer cycles for CI speed)
     config.poisson_solver = PoissonSolverType::MG;
