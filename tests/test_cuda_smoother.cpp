@@ -4,6 +4,7 @@
 #ifdef USE_CUDA_KERNELS
 
 #include "cuda_smoother.hpp"
+#include "cuda_reductions.hpp"
 #include "mg_cuda_kernels.hpp"
 #include <cmath>
 #include <vector>
@@ -196,7 +197,39 @@ int main() {
     test_smem_matches_global();
     test_smem_reduces_residual();
 
-    std::cout << "\nAll CUDA smoother tests PASSED" << std::endl;
+    // cuBLAS reduction tests
+    {
+        const int N = 100000;
+        std::vector<double> h_data(N);
+        for (int i = 0; i < N; ++i) h_data[i] = sin(0.01 * i);
+
+        double expected_l2 = 0.0;
+        for (int i = 0; i < N; ++i) expected_l2 += h_data[i] * h_data[i];
+        expected_l2 = sqrt(expected_l2);
+
+        double* d_data;
+        CUDA_CHECK(cudaMalloc(&d_data, N * sizeof(double)));
+        CUDA_CHECK(cudaMemcpy(d_data, h_data.data(), N * sizeof(double), cudaMemcpyHostToDevice));
+
+        double result_l2 = cuda_kernels::device_norm_l2(d_data, N);
+        double rel_err = std::abs(result_l2 - expected_l2) / expected_l2;
+        std::cout << "cuBLAS L2 norm rel error: " << rel_err << std::endl;
+        assert(rel_err < 1e-14 && "cuBLAS L2 norm must match CPU reference");
+        std::cout << "PASS: cuBLAS L2 norm" << std::endl;
+
+        double result_linf = cuda_kernels::device_norm_linf(d_data, N);
+        double expected_linf = 0.0;
+        for (int i = 0; i < N; ++i) expected_linf = std::max(expected_linf, std::abs(h_data[i]));
+        double linf_err = std::abs(result_linf - expected_linf) / expected_linf;
+        std::cout << "cuBLAS Linf norm rel error: " << linf_err << std::endl;
+        assert(linf_err < 1e-14 && "cuBLAS Linf norm must match CPU reference");
+        std::cout << "PASS: cuBLAS Linf norm" << std::endl;
+
+        cudaFree(d_data);
+        cuda_kernels::finalize_cublas();
+    }
+
+    std::cout << "\nAll CUDA smoother + reduction tests PASSED" << std::endl;
     return 0;
 }
 
