@@ -1579,6 +1579,41 @@ inline double compute_mean_kinetic_energy(const VectorField& vel, const Mesh& me
 // Taylor-Green Vortex Initialization
 //-----------------------------------------------------------------------------
 
+/// Initialize 3D Taylor-Green vortex on staggered grid
+/// u = sin(x)cos(y)cos(z), v = -cos(x)sin(y)cos(z), w = 0
+inline void init_taylor_green_3d(RANSSolver& solver, const Mesh& mesh) {
+    // u at x-faces
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                double x = mesh.xf[i];
+                double y = mesh.y(j);
+                double z = mesh.z(k);
+                solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
+            }
+        }
+    }
+    // v at y-faces
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double x = mesh.x(i);
+                double y = mesh.yf[j];
+                double z = mesh.z(k);
+                solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
+            }
+        }
+    }
+    // w at z-faces (zero for classic TGV)
+    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                solver.velocity().w(i, j, k) = 0.0;
+            }
+        }
+    }
+}
+
 /// Initialize Taylor-Green vortex (MAC grid: u at x-faces, v at y-faces)
 inline void init_taylor_green(RANSSolver& solver, const Mesh& mesh) {
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -1906,6 +1941,122 @@ inline std::string get_gpu_name() {
     }
 #endif
     return "";
+}
+
+//=============================================================================
+// Poiseuille Flow Helpers
+//=============================================================================
+
+/// Exact Poiseuille flow solution for channel between parallel plates
+struct PoiseuilleExact {
+    double dp_dx;   // pressure gradient (negative for flow in +x)
+    double nu;      // kinematic viscosity
+    double H;       // channel height
+    double y_min;   // lower wall y-coordinate
+
+    /// Exact velocity profile: u(y) = -(dp/dx)/(2*nu) * (y-y_min) * (H - (y-y_min))
+    double u(double y) const {
+        double y_rel = y - y_min;
+        return (-dp_dx / (2.0 * nu)) * y_rel * (H - y_rel);
+    }
+
+    /// Exact bulk velocity: U_bulk = -(dp/dx) * H^2 / (12*nu)
+    double U_bulk() const {
+        return (-dp_dx) * H * H / (12.0 * nu);
+    }
+
+    /// Exact wall shear stress magnitude (positive for flow in +x direction)
+    double tau_w() const {
+        return (-dp_dx) * H / 2.0;
+    }
+
+    /// Exact du/dy at lower wall (y = y_min)
+    double dudy_lower() const {
+        return (-dp_dx / (2.0 * nu)) * H;
+    }
+
+    /// Exact du/dy at upper wall (y = y_min + H)
+    double dudy_upper() const {
+        return -(-dp_dx / (2.0 * nu)) * H;
+    }
+};
+
+/// Compute relative L2 error of u-velocity profile against exact Poiseuille
+inline double compute_poiseuille_profile_relL2(const VectorField& vel, const Mesh& mesh,
+                                                const PoiseuilleExact& exact) {
+    double error_sq = 0.0;
+    double norm_sq = 0.0;
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.yc[j];
+        double u_exact = exact.u(y);
+
+        double u_avg = 0.0;
+        int count = 0;
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            u_avg += 0.5 * (vel.u(i, j) + vel.u(i+1, j));
+            count++;
+        }
+        u_avg /= count;
+
+        double diff = u_avg - u_exact;
+        error_sq += diff * diff * mesh.dy;
+        norm_sq += u_exact * u_exact * mesh.dy;
+    }
+
+    return (norm_sq > 1e-30) ? std::sqrt(error_sq / norm_sq) : std::sqrt(error_sq);
+}
+
+/// Compute relative L2 norm of velocity change between two fields (u-component only)
+inline double compute_velocity_change_relL2(const VectorField& v_new,
+                                             const VectorField& v_old,
+                                             const Mesh& mesh) {
+    double diff_sq = 0.0;
+    double norm_sq = 0.0;
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            double du = v_new.u(i, j) - v_old.u(i, j);
+            diff_sq += du * du;
+            norm_sq += v_new.u(i, j) * v_new.u(i, j);
+        }
+    }
+
+    return (norm_sq > 1e-30) ? std::sqrt(diff_sq / norm_sq) : std::sqrt(diff_sq);
+}
+
+/// Copy 2D velocity field (u and v components)
+inline void copy_velocity_2d(VectorField& dst, const VectorField& src, const Mesh& mesh) {
+    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            dst.u(i, j) = src.u(i, j);
+            dst.v(i, j) = src.v(i, j);
+        }
+    }
+}
+
+//=============================================================================
+// RANS Channel Profile Helpers
+//=============================================================================
+
+/// Compute x-averaged U profile: U(y) = <u(x,y)>_x
+/// Returns vector of size Ny with one value per j-index
+inline std::vector<double> compute_u_profile(const RANSSolver& solver, const Mesh& mesh) {
+    int Ny = mesh.Ny;
+    std::vector<double> U(Ny, 0.0);
+
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double u_sum = 0.0;
+        int count = 0;
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double u_val = 0.5 * (solver.velocity().u(i, j) + solver.velocity().u(i+1, j));
+            u_sum += u_val;
+            ++count;
+        }
+        int j_idx = j - mesh.j_begin();
+        U[j_idx] = u_sum / count;
+    }
+    return U;
 }
 
 } // namespace test

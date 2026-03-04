@@ -23,43 +23,7 @@ using namespace nncfd;
 using namespace nncfd::test;
 using nncfd::test::harness::record;
 
-// ============================================================================
-// Helper: Initialize 3D Taylor-Green vortex on staggered grid
-// ============================================================================
-static void init_taylor_green_3d(RANSSolver& solver, const Mesh& mesh) {
-    // u at x-faces: u = sin(x) * cos(y) * cos(z)
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                double x = mesh.xf[i];
-                double y = mesh.y(j);
-                double z = mesh.z(k);
-                solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
-            }
-        }
-    }
-
-    // v at y-faces: v = -cos(x) * sin(y) * cos(z)
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double x = mesh.x(i);
-                double y = mesh.yf[j];
-                double z = mesh.z(k);
-                solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
-            }
-        }
-    }
-
-    // w at z-faces: w = 0
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                solver.velocity().w(i, j, k) = 0.0;
-            }
-        }
-    }
-}
+// Note: init_taylor_green_3d is provided by test_utilities.hpp
 
 // ============================================================================
 // Section 1: TGV Re=100 (viscous decay, short time)

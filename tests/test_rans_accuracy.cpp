@@ -291,107 +291,54 @@ static void print_profile_summary(const std::string& model_name,
 }
 
 // ============================================================================
-// Test: Baseline mixing-length accuracy
+// Parameterized model accuracy test
 // ============================================================================
 
-void test_baseline_accuracy() {
-    std::cout << "\n  Running Baseline mixing-length model (3000 steps)...\n";
+struct ModelAccuracyParams {
+    TurbulenceModelType type;
+    std::string name;
+    double buffer_threshold;
+    double log_threshold;
+};
 
-    auto prof = run_and_extract_profile(TurbulenceModelType::Baseline);
+static void test_model_accuracy(const ModelAccuracyParams& p) {
+    std::cout << "\n  Running " << p.name << " model (3000 steps)...\n";
+
+    auto prof = run_and_extract_profile(p.type);
+
+    std::string buf_label = p.name + ": buffer-layer u+ error < " +
+        std::to_string((int)(p.buffer_threshold * 100)) + "%";
+    std::string log_label = p.name + ": log-layer u+ error < " +
+        std::to_string((int)(p.log_threshold * 100)) + "%";
 
     if (!prof.ok) {
-        record("Baseline: simulation completed", false);
-        record("Baseline: u_tau reasonable", false);
-        record("Baseline: buffer-layer u+ error < 50%", false);
-        record("Baseline: log-layer u+ error < 30%", false);
+        record(p.name + ": simulation completed", false);
+        record(p.name + ": u_tau reasonable", false);
+        record(buf_label, false);
+        record(log_label, false);
         return;
     }
 
     auto err = compute_errors(prof);
-    print_profile_summary("Baseline", prof, err);
-
-    // Record results
-    std::ostringstream ss;
-
-    record("Baseline: simulation completed", true);
-
-    ss.str(""); ss << std::fixed << std::setprecision(4) << "(u_tau=" << prof.u_tau << ")";
-    record("Baseline: u_tau reasonable (0.3-2.0)", prof.u_tau > 0.3 && prof.u_tau < 2.0, ss.str());
-
-    ss.str(""); ss << std::fixed << std::setprecision(1) << "(err=" << err.max_buffer_error * 100 << "%, n=" << err.n_buffer << ")";
-    record("Baseline: buffer-layer u+ error < 50%", err.max_buffer_error < 0.50, ss.str());
-
-    ss.str(""); ss << std::fixed << std::setprecision(1) << "(err=" << err.max_log_error * 100 << "%, n=" << err.n_log << ")";
-    record("Baseline: log-layer u+ error < 30%", err.max_log_error < 0.30, ss.str());
-}
-
-// ============================================================================
-// Test: GEP accuracy
-// ============================================================================
-
-void test_gep_accuracy() {
-    std::cout << "\n  Running GEP algebraic model (3000 steps)...\n";
-
-    auto prof = run_and_extract_profile(TurbulenceModelType::GEP);
-
-    if (!prof.ok) {
-        record("GEP: simulation completed", false);
-        record("GEP: u_tau reasonable", false);
-        record("GEP: buffer-layer u+ error < 50%", false);
-        record("GEP: log-layer u+ error < 30%", false);
-        return;
-    }
-
-    auto err = compute_errors(prof);
-    print_profile_summary("GEP", prof, err);
+    print_profile_summary(p.name, prof, err);
 
     std::ostringstream ss;
 
-    record("GEP: simulation completed", true);
+    record(p.name + ": simulation completed", true);
 
     ss.str(""); ss << std::fixed << std::setprecision(4) << "(u_tau=" << prof.u_tau << ")";
-    record("GEP: u_tau reasonable (0.3-2.0)", prof.u_tau > 0.3 && prof.u_tau < 2.0, ss.str());
+    record(p.name + ": u_tau reasonable (0.3-2.0)", prof.u_tau > 0.3 && prof.u_tau < 2.0, ss.str());
 
     ss.str(""); ss << std::fixed << std::setprecision(1) << "(err=" << err.max_buffer_error * 100 << "%, n=" << err.n_buffer << ")";
-    record("GEP: buffer-layer u+ error < 50%", err.max_buffer_error < 0.50, ss.str());
+    record(buf_label, err.max_buffer_error < p.buffer_threshold, ss.str());
 
     ss.str(""); ss << std::fixed << std::setprecision(1) << "(err=" << err.max_log_error * 100 << "%, n=" << err.n_log << ")";
-    record("GEP: log-layer u+ error < 30%", err.max_log_error < 0.30, ss.str());
+    record(log_label, err.max_log_error < p.log_threshold, ss.str());
 }
 
-// ============================================================================
-// Test: SST k-omega accuracy
-// ============================================================================
-
-void test_sst_accuracy() {
-    std::cout << "\n  Running SST k-omega model (3000 steps)...\n";
-
-    auto prof = run_and_extract_profile(TurbulenceModelType::SSTKOmega);
-
-    if (!prof.ok) {
-        record("SST: simulation completed", false);
-        record("SST: u_tau reasonable", false);
-        record("SST: buffer-layer u+ error < 40%", false);
-        record("SST: log-layer u+ error < 20%", false);
-        return;
-    }
-
-    auto err = compute_errors(prof);
-    print_profile_summary("SST", prof, err);
-
-    std::ostringstream ss;
-
-    record("SST: simulation completed", true);
-
-    ss.str(""); ss << std::fixed << std::setprecision(4) << "(u_tau=" << prof.u_tau << ")";
-    record("SST: u_tau reasonable (0.3-2.0)", prof.u_tau > 0.3 && prof.u_tau < 2.0, ss.str());
-
-    ss.str(""); ss << std::fixed << std::setprecision(1) << "(err=" << err.max_buffer_error * 100 << "%, n=" << err.n_buffer << ")";
-    record("SST: buffer-layer u+ error < 40%", err.max_buffer_error < 0.40, ss.str());
-
-    ss.str(""); ss << std::fixed << std::setprecision(1) << "(err=" << err.max_log_error * 100 << "%, n=" << err.n_log << ")";
-    record("SST: log-layer u+ error < 60%", err.max_log_error < 0.60, ss.str());
-}
+void test_baseline_accuracy() { test_model_accuracy({TurbulenceModelType::Baseline, "Baseline", 0.50, 0.30}); }
+void test_gep_accuracy()      { test_model_accuracy({TurbulenceModelType::GEP, "GEP", 0.50, 0.30}); }
+void test_sst_accuracy()      { test_model_accuracy({TurbulenceModelType::SSTKOmega, "SST", 0.40, 0.60}); }
 
 // ============================================================================
 // Main
