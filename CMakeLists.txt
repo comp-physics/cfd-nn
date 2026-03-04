@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
 project(nn_cfd VERSION 0.1.0 LANGUAGES CXX)
 
+# Enable CUDA for custom kernels when GPU offload is enabled
+if(USE_GPU_OFFLOAD)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CMAKE_CUDA_STANDARD 17)
+        set(CMAKE_CUDA_ARCHITECTURES ${GPU_CC})
+        message(STATUS "CUDA enabled for custom kernels (arch: ${GPU_CC})")
+    endif()
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(CMAKE_EXPORT_COMPILE_COMMANDS)
   add_custom_target(clangd_compile_commands ALL
@@ -267,6 +279,18 @@ if(USE_GPU_OFFLOAD)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
     target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
+
+    # Custom CUDA kernels (shared-memory smoothers, reductions, halo packing)
+    if(CMAKE_CUDA_COMPILER)
+        file(GLOB CUDA_KERNEL_SOURCES "src/cuda_kernels/*.cu")
+        if(CUDA_KERNEL_SOURCES)
+            target_sources(nn_cfd_core PRIVATE ${CUDA_KERNEL_SOURCES})
+            set_source_files_properties(${CUDA_KERNEL_SOURCES} PROPERTIES LANGUAGE CUDA)
+            target_link_libraries(nn_cfd_core CUDA::cublas)
+            target_compile_definitions(nn_cfd_core PUBLIC USE_CUDA_KERNELS)
+            message(STATUS "  Custom CUDA kernels added: ${CUDA_KERNEL_SOURCES}")
+        endif()
+    endif()
 endif()
 
 # Add HYPRE Poisson solver when enabled
