@@ -554,6 +554,12 @@ if(BUILD_TESTS)
         # GPU turbulence readiness acceptance test - validates all systems before production runs
         add_nncfd_test(test_gpu_turbulence_readiness TEST_NAME_SUFFIX GPUTurbulenceReadinessTest LABELS "gpu;acceptance")
         set_tests_properties(GPUTurbulenceReadinessTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+        # CUDA shared-memory smoother test
+        if(CMAKE_CUDA_COMPILER)
+            add_nncfd_test(test_cuda_smoother TEST_NAME_SUFFIX CUDASmootherTest LABELS "gpu;fast")
+            set_tests_properties(CUDASmootherTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+        endif()
     endif()
 
     # =========================================================================
