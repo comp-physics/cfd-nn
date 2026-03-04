@@ -506,6 +506,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_rans_accuracy TEST_NAME_SUFFIX RANSAccuracyTest LABELS medium)
     add_nncfd_test(test_rans_3d_channel TEST_NAME_SUFFIX RANS3DChannelTest LABELS medium)
     add_nncfd_test(test_duct_poiseuille TEST_NAME_SUFFIX DuctPoiseuilleTest LABELS medium)
+    add_nncfd_test(test_duct_validation TEST_NAME_SUFFIX DuctValidationTest LABELS fast)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
@@ -549,6 +550,7 @@ if(BUILD_TESTS)
     # =========================================================================
     if(USE_GPU_OFFLOAD AND CUDAToolkit_FOUND)
         add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest LABELS "fft;gpu")
+        add_nncfd_test(test_fft_stretched TEST_NAME_SUFFIX FFTStretchedTest LABELS "fft;gpu")
     endif()
 
     # =========================================================================
@@ -565,6 +567,8 @@ if(BUILD_TESTS)
     # =========================================================================
     add_executable(bench_fft_vs_mg tests/bench_fft_vs_mg.cpp)
     target_link_libraries(bench_fft_vs_mg PRIVATE nn_cfd_core)
+    add_executable(bench_fft_stretched_timing tests/bench_fft_stretched_timing.cpp)
+    target_link_libraries(bench_fft_stretched_timing PRIVATE nn_cfd_core)
     add_executable(bench_mg_tuning tests/bench_mg_tuning.cpp)
     target_link_libraries(bench_mg_tuning PRIVATE nn_cfd_core)
     add_executable(bench_mg_bc_sweep tests/bench_mg_bc_sweep.cpp)

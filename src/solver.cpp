@@ -333,25 +333,24 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     // Check both config flag AND actual mesh (test code may stretch mesh without setting config)
     bool uniform_y = !config.stretch_y && !mesh.is_y_stretched();
 
-    if (mesh.is2D() && uniform_y) {
-        // 2D mesh with uniform y: try FFT2D solver (periodic x, non-periodic y)
-        // FFT2D uses tridiagonal solves in y that assume uniform spacing
+    if (mesh.is2D()) {
+        // 2D mesh: try FFT2D solver (periodic x, non-periodic y)
+        // FFT2D now supports stretched y via mesh yLap coefficients
         try {
             fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
             fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                                           PoissonBC::Neumann, PoissonBC::Neumann);
             fft2d_applicable = true;
-            std::cout << "[Solver] FFT2D solver initialized for 2D mesh\n";
+            std::cout << "[Solver] FFT2D solver initialized for 2D mesh"
+                      << (uniform_y ? "" : " (stretched y)") << "\n";
         } catch (const std::exception& e) {
             std::cerr << "[Solver] FFT2D solver initialization failed: " << e.what() << "\n";
             fft2d_applicable = false;
         }
-    } else if (mesh.is2D()) {
-        std::cout << "[Solver] FFT2D solver skipped: y-stretching requires MG solver\n";
     } else {
         // 3D mesh: try 2D FFT first (periodic x AND z)
-        // Note: FFT solver requires uniform y spacing for its tridiagonal solves
-        if (periodic_xz && uniform_xz && uniform_y) {
+        // FFT now supports stretched y via mesh yLap coefficients
+        if (periodic_xz && uniform_xz) {
             try {
                 fft_poisson_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
                 fft_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
@@ -363,21 +362,24 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
             } catch (const std::exception& e) {
                 std::cerr << "[Solver] FFT solver initialization failed: " << e.what() << "\n";
             }
-        } else if (!uniform_y) {
-            std::cout << "[Solver] FFT solver skipped: y-stretching requires uniform-y compatible solver\n";
         }
 
         // Also initialize 1D FFT solver (for cases like duct flow)
         // Will be used if 2D FFT becomes incompatible after BC update
-        try {
-            // Default to x-periodic (duct flow typical case)
-            fft1d_poisson_solver_ = std::make_unique<FFT1DPoissonSolver>(mesh, 0);
-            fft1d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                                           PoissonBC::Neumann, PoissonBC::Neumann,
-                                           PoissonBC::Neumann, PoissonBC::Neumann);
-            fft1d_applicable = true;
-        } catch (const std::exception& e) {
-            std::cerr << "[Solver] FFT1D solver initialization failed: " << e.what() << "\n";
+        // FFT1D's internal 2D MG uses uniform 1/(dy*dy) — skip for stretched y
+        if (!uniform_y) {
+            std::cout << "[Solver] FFT1D solver skipped: internal MG uses uniform dy\n";
+        } else {
+            try {
+                // Default to x-periodic (duct flow typical case)
+                fft1d_poisson_solver_ = std::make_unique<FFT1DPoissonSolver>(mesh, 0);
+                fft1d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                               PoissonBC::Neumann, PoissonBC::Neumann,
+                                               PoissonBC::Neumann, PoissonBC::Neumann);
+                fft1d_applicable = true;
+            } catch (const std::exception& e) {
+                std::cerr << "[Solver] FFT1D solver initialization failed: " << e.what() << "\n";
+            }
         }
     }
 #endif
@@ -466,6 +468,22 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         std::cerr << "Using MG.\n";
         selection_reason_ ="fallback from FFT1D: not built";
 #endif
+    } else if (requested == PoissonSolverType::FFT2D) {
+#ifdef USE_FFT_POISSON
+        if (fft2d_applicable) {
+            selected_solver_ = PoissonSolverType::FFT2D;
+            selection_reason_ ="explicit: user requested FFT2D";
+        } else {
+            std::cerr << "[Solver] Warning: FFT2D requested but not applicable "
+                      << "(requires 2D mesh, periodic x). Using MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason_ ="fallback from FFT2D: not applicable";
+        }
+#else
+        std::cerr << "[Solver] Warning: FFT2D requested but USE_FFT_POISSON not built. Using MG.\n";
+        selected_solver_ = PoissonSolverType::MG;
+        selection_reason_ ="fallback from FFT2D: not built";
+#endif
     } else if (requested == PoissonSolverType::HYPRE) {
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
@@ -553,6 +571,9 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     }
 
     velocity_bc_ = bc;
+
+    // Set z-wall flag for duct geometries (non-periodic z BCs with 3D mesh)
+    mesh_->z_has_walls_ = (bc.z_lo != VelocityBC::Periodic && mesh_->Nz > 1);
 
     // Update Poisson BCs based on velocity BCs
     PoissonBC p_x_lo = (bc.x_lo == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;

@@ -132,7 +132,11 @@ struct Mesh {
     /// Get center-to-center y-spacing at face j (for gradient)
     double dyc_at(int j) const { return dyc.empty() ? dy : dyc[j]; }
     
-    /// Wall distance (for channel: distance to nearest wall in y)
+    /// Whether z-direction has walls (non-periodic BCs, e.g. duct flow)
+    /// Mutable: set by solver after BC configuration, not part of mesh geometry
+    mutable bool z_has_walls_ = false;
+
+    /// Wall distance (for channel: distance to nearest wall in y; for duct: min to y and z walls)
     double wall_distance(int i, int j) const;
     double wall_distance(int i, int j, int k) const;
 
