@@ -6,7 +6,7 @@
 #SBATCH -p gpu-h200
 #SBATCH -G 1
 #SBATCH --qos=embers
-#SBATCH -t 00:40:00
+#SBATCH -t 01:00:00
 #SBATCH -o __SLURM_OUT__
 #SBATCH -e __SLURM_ERR__
 
