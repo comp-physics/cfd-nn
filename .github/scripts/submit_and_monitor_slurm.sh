@@ -22,6 +22,14 @@ echo "Submitting Slurm job from ${TEMPLATE}..."
 JOB_ID=$(sbatch --parsable "${SBATCH_SCRIPT}")
 echo "Submitted job ID: ${JOB_ID}"
 
+# Cancel SLURM job if this script is killed (e.g., by CI timeout)
+cleanup() {
+  echo "Monitoring script interrupted — cancelling SLURM job ${JOB_ID}..."
+  scancel "${JOB_ID}" 2>/dev/null || true
+  exit 1
+}
+trap cleanup SIGTERM SIGINT SIGHUP
+
 # Monitor job with periodic output
 LAST_OUT_SIZE=0
 while true; do

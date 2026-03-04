@@ -194,11 +194,16 @@ echo ""
 echo "=== Test Summary ==="
 grep -E '(\[PASS\]|\[FAIL\]|\[SKIP\]|passed|failed|Passed:|Failed:|Results:|===.*===)' "$TEST_LOG" | tail -40 || true
 
+echo "ci.sh exit code: $TEST_EXIT_CODE"
+
 if [ $TEST_EXIT_CODE -eq 0 ]; then
     echo ""
     echo "[PASS] GPU Correctness Suite completed successfully"
 else
     echo ""
-    echo "[FAIL] GPU Correctness Suite failed - see 'Show Test Output' step for details"
+    echo "[FAIL] GPU Correctness Suite failed (ci.sh exit code: $TEST_EXIT_CODE)"
+    echo ""
+    echo "=== Last 50 lines of test log ==="
+    tail -50 "$TEST_LOG" || true
     exit 1
 fi
