@@ -127,8 +127,9 @@ void HaloExchange::exchange_device(double* d_field, int stride, int plane_stride
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_hi_, Nx_, Ny_, Nz_local_, Ng_, false);
     cudaDeviceSynchronize();
 #else
-    // Fallback: use CPU exchange (field must be host-accessible)
-    exchange(d_field, stride, plane_stride);
+    // No CUDA kernels + MPI: cannot safely exchange GPU-resident data
+    throw std::runtime_error("[HaloExchange] exchange_device() requires USE_CUDA_KERNELS + USE_MPI. "
+                             "Cannot exchange GPU pointers without CUDA pack/unpack kernels.");
 #endif
 }
 
