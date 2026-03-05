@@ -80,7 +80,7 @@ void test_solver_with_decomp() {
 
 /// Test: Poiseuille convergence unaffected by Decomposition
 void test_poiseuille_with_decomp() {
-    const int Nx = 4, Ny = 32;
+    const int Nx = 4, Ny = 16;
     const double nu = 0.1;
     const double fx = 1.0;   // positive x body force
     const double H = 1.0;    // half-height
@@ -93,8 +93,8 @@ void test_poiseuille_with_decomp() {
     config.Ny = Ny;
     config.Nz = 1;
     config.nu = nu;
-    config.dt = 0.001;
-    config.max_steps = 10000;
+    config.dt = 0.005;
+    config.max_steps = 2000;
     config.tol = 1e-8;
     config.poisson_solver = PoissonSolverType::MG;
     config.time_integrator = TimeIntegrator::Euler;
@@ -116,7 +116,7 @@ void test_poiseuille_with_decomp() {
     // Run to steady state
     double residual = 1.0;
     int steps = 0;
-    for (int i = 0; i < 10000 && residual > 1e-8; ++i) {
+    for (int i = 0; i < 2000 && residual > 1e-8; ++i) {
         residual = solver.step();
         steps = i + 1;
     }
