@@ -373,19 +373,36 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     //
     // 1. Pack RHS from ghost layout to contiguous array + compute volume-weighted sum
     // Solvability on stretched grids requires Σ f*dyv = 0, not Σ f = 0
-    const double* dyv_ptr = mesh_->dyv.data();
+    // On uniform grids, dyv is empty — all cells have equal weight (dy), so
+    // volume-weighted mean reduces to arithmetic mean.
+    const bool stretched = mesh_->is_y_stretched();
+    const double* dyv_ptr = stretched ? mesh_->dyv.data() : nullptr;
+    const double uniform_dy = mesh_->dy;
     double weighted_sum = 0.0;
-    #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
-        map(present: rhs_ptr[0:plane_size], dyv_ptr[0:Ny_full]) is_device_ptr(packed)
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            // Source: 2D indexing [j+Ng][i+Ng] - matches solver's 2D path
-            const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
-            // Dest: [j * Nx + i] (contiguous for FFT)
-            const size_t dst_idx = (size_t)j * Nx + i;
-            double val = rhs_ptr[src_idx];
-            packed[dst_idx] = val;
-            weighted_sum += val * dyv_ptr[j + Ng];
+
+    if (stretched) {
+        #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
+            map(present: rhs_ptr[0:plane_size], dyv_ptr[0:Ny_full]) is_device_ptr(packed)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
+                const size_t dst_idx = (size_t)j * Nx + i;
+                double val = rhs_ptr[src_idx];
+                packed[dst_idx] = val;
+                weighted_sum += val * dyv_ptr[j + Ng];
+            }
+        }
+    } else {
+        #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
+            map(present: rhs_ptr[0:plane_size]) is_device_ptr(packed)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
+                const size_t dst_idx = (size_t)j * Nx + i;
+                double val = rhs_ptr[src_idx];
+                packed[dst_idx] = val;
+                weighted_sum += val * uniform_dy;
+            }
         }
     }
 

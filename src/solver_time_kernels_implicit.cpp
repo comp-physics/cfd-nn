@@ -6,14 +6,21 @@
 /// Uses use_device_ptr pattern for zero host-device data transfer.
 
 #include "solver_time_kernels.hpp"
+#include <stdexcept>
 
 namespace nncfd {
 namespace time_kernels {
+
+static constexpr int MAX_NY = 4096;
 
 void thomas_y_diffusion_2d(double* u_ptr, double* v_ptr, double* nu_ptr,
                            int Nx, int Ny, int Ng,
                            int u_stride, int v_stride, int cell_stride,
                            double dt, double dy) {
+    if (Ny > MAX_NY) {
+        throw std::runtime_error("thomas_y_diffusion_2d: Ny=" + std::to_string(Ny) +
+                                 " exceeds MAX_NY=" + std::to_string(MAX_NY));
+    }
     const double dt_inv_dy2 = dt / (dy * dy);
     const int Nv_int = Ny - 1;
 
@@ -23,7 +30,7 @@ void thomas_y_diffusion_2d(double* u_ptr, double* v_ptr, double* nu_ptr,
         // No-slip: u_ghost = -u_interior → diagonal = 1+3*alpha at walls
         #pragma omp target teams distribute parallel for
         for (int i = Ng; i <= Ng + Nx; ++i) {
-            double c_prime[256] = {0.0}, d_prime[256] = {0.0};
+            double c_prime[MAX_NY] = {0.0}, d_prime[MAX_NY] = {0.0};
             // Forward elimination
             for (int jj = 0; jj < Ny; ++jj) {
                 int j = jj + Ng;
@@ -61,7 +68,7 @@ void thomas_y_diffusion_2d(double* u_ptr, double* v_ptr, double* nu_ptr,
         if (Nv_int > 0) {
             #pragma omp target teams distribute parallel for
             for (int i = Ng; i < Ng + Nx; ++i) {
-                double c_prime[256] = {0.0}, d_prime[256] = {0.0};
+                double c_prime[MAX_NY] = {0.0}, d_prime[MAX_NY] = {0.0};
                 for (int jj = 0; jj < Nv_int; ++jj) {
                     int j = jj + Ng + 1;
                     double nu_avg = 0.5 * (nu_ptr[(j - 1) * cell_stride + i] +
@@ -100,6 +107,10 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
                            int u_plane, int v_plane, int w_plane,
                            int cell_stride, int cell_plane,
                            double dt, double dy) {
+    if (Ny > MAX_NY) {
+        throw std::runtime_error("thomas_y_diffusion_3d: Ny=" + std::to_string(Ny) +
+                                 " exceeds MAX_NY=" + std::to_string(MAX_NY));
+    }
     const double dt_inv_dy2 = dt / (dy * dy);
     const int Nv_int = Ny - 1;
 
@@ -109,7 +120,7 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
         #pragma omp target teams distribute parallel for collapse(2)
         for (int k = Ng; k < Ng + Nz; ++k) {
             for (int i = Ng; i <= Ng + Nx; ++i) {
-                double c_prime[256] = {0.0}, d_prime[256] = {0.0};
+                double c_prime[MAX_NY] = {0.0}, d_prime[MAX_NY] = {0.0};
                 for (int jj = 0; jj < Ny; ++jj) {
                     int j = jj + Ng;
                     int idx = k * u_plane + j * u_stride + i;
@@ -147,7 +158,7 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
             #pragma omp target teams distribute parallel for collapse(2)
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
-                    double c_prime[256] = {0.0}, d_prime[256] = {0.0};
+                    double c_prime[MAX_NY] = {0.0}, d_prime[MAX_NY] = {0.0};
                     for (int jj = 0; jj < Nv_int; ++jj) {
                         int j = jj + Ng + 1;
                         int idx = k * v_plane + j * v_stride + i;
@@ -183,7 +194,7 @@ void thomas_y_diffusion_3d(double* u_ptr, double* v_ptr, double* w_ptr,
         #pragma omp target teams distribute parallel for collapse(2)
         for (int k = Ng; k <= Ng + Nz; ++k) {
             for (int i = Ng; i < Ng + Nx; ++i) {
-                double c_prime[256] = {0.0}, d_prime[256] = {0.0};
+                double c_prime[MAX_NY] = {0.0}, d_prime[MAX_NY] = {0.0};
                 for (int jj = 0; jj < Ny; ++jj) {
                     int j = jj + Ng;
                     int idx = k * w_plane + j * w_stride + i;

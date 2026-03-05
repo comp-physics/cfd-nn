@@ -664,6 +664,8 @@ void RANSSolver::implicit_y_diffusion_step(VectorField& vel, double dt) {
         u_ptr = velocity_old_u_ptr_; v_ptr = velocity_old_v_ptr_; w_ptr = velocity_old_w_ptr_;
     } else if (&vel == &velocity_rk_) {
         u_ptr = velocity_rk_u_ptr_; v_ptr = velocity_rk_v_ptr_; w_ptr = velocity_rk_w_ptr_;
+    } else {
+        throw std::runtime_error("implicit_y_diffusion_step: unknown VectorField");
     }
 
     const int Nx = mesh_->Nx;
