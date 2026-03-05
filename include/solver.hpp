@@ -13,6 +13,7 @@
 #include "poisson_solver_fft2d.hpp"
 #endif
 #include "turbulence_model.hpp"
+#include "ibm_forcing.hpp"
 #include "config.hpp"
 #include <memory>
 #include <functional>
@@ -94,7 +95,10 @@ public:
     /// Set IBM forcing (optional, for immersed boundary simulations)
     /// The IBMForcing must outlive the solver. Applies forcing after predictor
     /// and masks solid cells in Poisson RHS.
-    void set_ibm_forcing(class IBMForcing* ibm) { ibm_ = ibm; }
+    void set_ibm_forcing(class IBMForcing* ibm) {
+        ibm_ = ibm;
+        if (ibm_ && gpu_ready_) ibm_->map_to_gpu();
+    }
 
     /// Set turbulence model (takes ownership)
     void set_turbulence_model(std::unique_ptr<TurbulenceModel> model);
@@ -1055,6 +1059,10 @@ private:
     const double* dyv_ptr_ = nullptr;  ///< Cell height at row j: yf[j+1] - yf[j]
     const double* dyc_ptr_ = nullptr;  ///< Center-to-center spacing at face j: yc[j] - yc[j-1]
     size_t y_metrics_size_ = 0;        ///< Size of dyv/dyc arrays (total_Ny())
+    const double* yf_ptr_ = nullptr;   ///< Face y-positions (for LES filter width)
+    const double* yc_ptr_ = nullptr;   ///< Cell center y-positions (for LES gradients)
+    size_t yf_size_ = 0;              ///< Size of yf array
+    size_t yc_size_ = 0;              ///< Size of yc array
 
     size_t field_total_size_ = 0;  // (Nx+2)*(Ny+2) for fields with ghost cells
 

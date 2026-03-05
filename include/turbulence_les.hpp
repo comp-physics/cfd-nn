@@ -27,7 +27,7 @@ public:
                 const TurbulenceDeviceView* device_view) override;
 
     bool uses_transport_equations() const override { return false; }
-    bool is_gpu_ready() const override { return false; }
+    bool is_gpu_ready() const override { return true; }
 
 protected:
     /// Compute local filter width from mesh spacing at cell j
@@ -39,6 +39,9 @@ protected:
     /// @param delta  Filter width
     /// @return nu_sgs for this cell
     virtual double compute_nu_sgs_cell(const double g[9], double delta) const = 0;
+
+    /// Override in subclass: GPU kernel for fused gradient + nu_sgs computation
+    virtual void update_gpu(const TurbulenceDeviceView* dv) = 0;
 
     GradientComputer grad_computer_;
     GradientTensor3D grad_;
@@ -53,6 +56,7 @@ public:
 
 protected:
     double compute_nu_sgs_cell(const double g[9], double delta) const override;
+    void update_gpu(const TurbulenceDeviceView* dv) override;
 
 private:
     double Cs_;
@@ -69,6 +73,7 @@ public:
 
 protected:
     double compute_nu_sgs_cell(const double g[9], double delta) const override;
+    void update_gpu(const TurbulenceDeviceView* dv) override;
 
 private:
     double Cw_;
@@ -84,6 +89,7 @@ public:
 
 protected:
     double compute_nu_sgs_cell(const double g[9], double delta) const override;
+    void update_gpu(const TurbulenceDeviceView* dv) override;
 
 private:
     double Cv_;
@@ -99,6 +105,7 @@ public:
 
 protected:
     double compute_nu_sgs_cell(const double g[9], double delta) const override;
+    void update_gpu(const TurbulenceDeviceView* dv) override;
 
 private:
     double Cs_;
@@ -119,6 +126,7 @@ public:
 
 protected:
     double compute_nu_sgs_cell(const double g[9], double delta) const override;
+    void update_gpu(const TurbulenceDeviceView* dv) override;
 
 private:
     double Cs_dyn_ = 0.17;  // Dynamic coefficient (updated each call)

@@ -20,6 +20,7 @@
 #include "fields.hpp"
 #include <vector>
 #include <memory>
+#include <cstddef>
 
 namespace nncfd {
 
@@ -42,11 +43,25 @@ public:
     void classify_cells();
 
     /// Compute and apply direct forcing to predicted velocity
-    /// @param u  Predicted u-velocity (modified in place)
-    /// @param v  Predicted v-velocity (modified in place)
-    /// @param w  Predicted w-velocity (modified in place, 3D only)
-    /// @param dt Time step size
+    /// GPU-accelerated: uses pre-computed weight arrays on device
+    /// @param vel Velocity field (modified in place)
+    /// @param dt  Time step size
     void apply_forcing(VectorField& vel, double dt);
+
+    /// Apply forcing directly to GPU-resident velocity data (no CPU sync)
+    /// @param u_ptr  Device-resident u-velocity pointer
+    /// @param v_ptr  Device-resident v-velocity pointer
+    /// @param w_ptr  Device-resident w-velocity pointer (nullptr for 2D)
+    void apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr);
+
+    /// Map IBM data to GPU (call after classify_cells)
+    void map_to_gpu();
+
+    /// Unmap IBM data from GPU
+    void unmap_from_gpu();
+
+    /// Whether GPU data is mapped
+    bool is_gpu_ready() const { return gpu_mapped_; }
 
     /// Compute drag and lift forces on the body
     /// @param vel  Current velocity field
@@ -84,11 +99,26 @@ private:
     std::vector<IBMCellType> cell_type_v_;
     std::vector<IBMCellType> cell_type_w_;
 
+    // Pre-computed weight arrays for GPU forcing (0=solid, weight for forcing, 1=fluid)
+    std::vector<double> weight_u_;
+    std::vector<double> weight_v_;
+    std::vector<double> weight_w_;
+
+    // Raw pointers for GPU mapping
+    double* weight_u_ptr_ = nullptr;
+    double* weight_v_ptr_ = nullptr;
+    double* weight_w_ptr_ = nullptr;
+    size_t u_total_ = 0, v_total_ = 0, w_total_ = 0;
+    bool gpu_mapped_ = false;
+
     int n_forcing_ = 0;
     int n_solid_ = 0;
 
     // Classify a single point
     IBMCellType classify_point(double phi) const;
+
+    // Compute weight arrays from cell types and geometry
+    void compute_weights();
 
     // Strides for indexing
     int u_stride_, u_plane_stride_;

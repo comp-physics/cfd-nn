@@ -1637,28 +1637,12 @@ double RANSSolver::step() {
 
     // 3b. Apply IBM forcing to predicted velocity (before Poisson solve)
     // Must apply to velocity_star_ (the predictor), not velocity_ (current step)
-    // IBM forcing is CPU-only: sync from GPU, apply, sync back
     if (ibm_) {
-        if (gpu_ready_) {
-            const size_t u_total = velocity_star_.u_total_size();
-            const size_t v_total = velocity_star_.v_total_size();
-            #pragma omp target update from(velocity_star_u_ptr_[0:u_total])
-            #pragma omp target update from(velocity_star_v_ptr_[0:v_total])
-            if (!mesh_->is2D()) {
-                const size_t w_total = velocity_star_.w_total_size();
-                #pragma omp target update from(velocity_star_w_ptr_[0:w_total])
-            }
-        }
-        ibm_->apply_forcing(velocity_star_, current_dt_);
-        if (gpu_ready_) {
-            const size_t u_total = velocity_star_.u_total_size();
-            const size_t v_total = velocity_star_.v_total_size();
-            #pragma omp target update to(velocity_star_u_ptr_[0:u_total])
-            #pragma omp target update to(velocity_star_v_ptr_[0:v_total])
-            if (!mesh_->is2D()) {
-                const size_t w_total = velocity_star_.w_total_size();
-                #pragma omp target update to(velocity_star_w_ptr_[0:w_total])
-            }
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->apply_forcing_device(velocity_star_u_ptr_, velocity_star_v_ptr_,
+                                       mesh_->is2D() ? nullptr : velocity_star_w_ptr_);
+        } else {
+            ibm_->apply_forcing(velocity_star_, current_dt_);
         }
     }
 
@@ -2126,28 +2110,12 @@ double RANSSolver::step() {
 
     // 5b. Re-apply IBM forcing after velocity correction
     // Pressure correction may introduce non-zero velocity inside the body
-    // IBM forcing is CPU-only: sync from GPU, apply, sync back
     if (ibm_) {
-        if (gpu_ready_) {
-            const size_t u_total = velocity_.u_total_size();
-            const size_t v_total = velocity_.v_total_size();
-            #pragma omp target update from(velocity_u_ptr_[0:u_total])
-            #pragma omp target update from(velocity_v_ptr_[0:v_total])
-            if (!mesh_->is2D()) {
-                const size_t w_total = velocity_.w_total_size();
-                #pragma omp target update from(velocity_w_ptr_[0:w_total])
-            }
-        }
-        ibm_->apply_forcing(velocity_, current_dt_);
-        if (gpu_ready_) {
-            const size_t u_total = velocity_.u_total_size();
-            const size_t v_total = velocity_.v_total_size();
-            #pragma omp target update to(velocity_u_ptr_[0:u_total])
-            #pragma omp target update to(velocity_v_ptr_[0:v_total])
-            if (!mesh_->is2D()) {
-                const size_t w_total = velocity_.w_total_size();
-                #pragma omp target update to(velocity_w_ptr_[0:w_total])
-            }
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->apply_forcing_device(velocity_u_ptr_, velocity_v_ptr_,
+                                       mesh_->is2D() ? nullptr : velocity_w_ptr_);
+        } else {
+            ibm_->apply_forcing(velocity_, current_dt_);
         }
     }
 
@@ -3471,6 +3439,12 @@ void RANSSolver::extract_field_pointers() {
         dyc_ptr_ = nullptr;
         y_metrics_size_ = 0;
     }
+
+    // Y-coordinate arrays (always needed for LES filter width and gradient computation)
+    yf_ptr_ = mesh_->yf.data();
+    yc_ptr_ = mesh_->yc.data();
+    yf_size_ = mesh_->yf.size();
+    yc_size_ = mesh_->yc.size();
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -3591,6 +3565,19 @@ void RANSSolver::initialize_gpu_buffers() {
         #pragma omp target enter data map(to: dyv_ptr_[0:y_metrics_size_], dyc_ptr_[0:y_metrics_size_])
     }
 
+    // Map y-coordinate arrays (for LES filter width and gradient computation)
+    if (yf_ptr_ && yf_size_ > 0) {
+        #pragma omp target enter data map(to: yf_ptr_[0:yf_size_])
+    }
+    if (yc_ptr_ && yc_size_ > 0) {
+        #pragma omp target enter data map(to: yc_ptr_[0:yc_size_])
+    }
+
+    // Map IBM weight arrays to GPU if IBM is active
+    if (ibm_) {
+        ibm_->map_to_gpu();
+    }
+
     // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
     if (!gpu::is_pointer_present(velocity_u_ptr_)) {
         throw std::runtime_error("GPU mapping failed despite device availability");
@@ -3673,6 +3660,19 @@ void RANSSolver::cleanup_gpu_buffers() {
     // Delete y-metric arrays for non-uniform y-spacing
     if (y_metrics_size_ > 0 && dyv_ptr_ && dyc_ptr_) {
         #pragma omp target exit data map(delete: dyv_ptr_[0:y_metrics_size_], dyc_ptr_[0:y_metrics_size_])
+    }
+
+    // Delete y-coordinate arrays
+    if (yf_ptr_ && yf_size_ > 0) {
+        #pragma omp target exit data map(delete: yf_ptr_[0:yf_size_])
+    }
+    if (yc_ptr_ && yc_size_ > 0) {
+        #pragma omp target exit data map(delete: yc_ptr_[0:yc_size_])
+    }
+
+    // Unmap IBM data
+    if (ibm_) {
+        ibm_->unmap_from_gpu();
     }
 
     gpu_ready_ = false;
@@ -3850,37 +3850,49 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     // Velocity field (staggered, solver-owned, persistent on GPU)
     view.u_face = velocity_u_ptr_;
     view.v_face = velocity_v_ptr_;
+    view.w_face = velocity_w_ptr_;
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
-    
+    view.w_stride = velocity_.w_stride();
+    view.u_plane_stride = velocity_.u_plane_stride();
+    view.v_plane_stride = velocity_.v_plane_stride();
+    view.w_plane_stride = velocity_.w_plane_stride();
+
     // Turbulence fields (cell-centered)
     view.k = k_ptr_;
     view.omega = omega_ptr_;
     view.nu_t = nu_t_ptr_;
     view.cell_stride = mesh_->total_Nx();  // Stride for cell-centered fields
-    
+    view.cell_plane_stride = mesh_->total_Nx() * mesh_->total_Ny();
+
     // Reynolds stress tensor
     view.tau_xx = tau_xx_ptr_;
     view.tau_xy = tau_xy_ptr_;
     view.tau_yy = tau_yy_ptr_;
-    
+
     // Gradient scratch buffers
     view.dudx = dudx_ptr_;
     view.dudy = dudy_ptr_;
     view.dvdx = dvdx_ptr_;
     view.dvdy = dvdy_ptr_;
-    
+
     // Wall distance
     view.wall_distance = wall_distance_ptr_;
-    
+
+    // Y-direction mesh coordinates (for stretched-grid LES filter width)
+    view.yf = yf_ptr_;
+    view.yc = yc_ptr_;
+
     // Mesh parameters
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;
+    view.Nz = mesh_->Nz;
     view.Ng = mesh_->Nghost;
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
+    view.dz = mesh_->dz;
     view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
-    
+
     return view;
 }
 
