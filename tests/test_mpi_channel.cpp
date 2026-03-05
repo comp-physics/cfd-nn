@@ -16,6 +16,7 @@
 #include "decomposition.hpp"
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 
 using namespace nncfd;
@@ -61,11 +62,17 @@ void test_solver_with_decomp() {
 
     // Bulk velocity should be positive (driven by body force)
     double ub = solver.bulk_velocity();
-    assert(std::abs(ub) > 0.0 && "Bulk velocity must be nonzero under body force");
+    if (!(std::abs(ub) > 0.0)) {
+        std::cerr << "FAIL: Bulk velocity is zero under body force (ub=" << ub << ")" << std::endl;
+        return;
+    }
 
     // Adaptive dt should give a reasonable value
     double dt = solver.compute_adaptive_dt();
-    assert(dt > 0.0 && dt < 1.0 && "Adaptive dt must be reasonable");
+    if (!(dt > 0.0 && dt < 1.0)) {
+        std::cerr << "FAIL: Adaptive dt unreasonable (dt=" << dt << ")" << std::endl;
+        return;
+    }
 
     std::cout << "PASS: Solver with Decomposition (Ub=" << ub
               << ", dt=" << dt << ")" << std::endl;
@@ -108,12 +115,18 @@ void test_poiseuille_with_decomp() {
 
     // Run to steady state
     double residual = 1.0;
+    int steps = 0;
     for (int i = 0; i < 10000 && residual > 1e-8; ++i) {
         residual = solver.step();
+        steps = i + 1;
     }
 
     // Check converged
-    assert(residual < 1e-6 && "Poiseuille must converge with Decomposition");
+    if (residual >= 1e-6) {
+        std::cerr << "Poiseuille convergence failed: residual=" << residual
+                  << " after " << steps << " steps" << std::endl;
+        std::exit(1);
+    }
 
     // Analytical: U_bulk = fx * H^2 / (3 * nu) for Poiseuille with body force fx
     double u_analytical = fx * H * H / (3.0 * nu);
@@ -123,7 +136,10 @@ void test_poiseuille_with_decomp() {
     std::cout << "Poiseuille: U_analytical=" << u_analytical
               << ", U_numerical=" << u_numerical
               << ", rel_error=" << rel_error << std::endl;
-    assert(rel_error < 0.10 && "Poiseuille error must be < 10% with Decomposition (coarse grid)");
+    if (rel_error >= 0.10) {
+        std::cerr << "Poiseuille error too large: " << rel_error << " (limit 10%)" << std::endl;
+        std::exit(1);
+    }
 
     std::cout << "PASS: Poiseuille convergence with Decomposition" << std::endl;
 }

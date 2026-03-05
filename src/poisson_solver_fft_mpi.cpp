@@ -92,7 +92,7 @@ bool FFTMPIPoissonSolver::using_gpu() const {
 }
 
 int FFTMPIPoissonSolver::solve(const ScalarField& rhs, ScalarField& p,
-                                const PoissonConfig& cfg) {
+                                const PoissonConfig& /*cfg*/) {
     if (!distributed_) {
         // Single-rank: use CPU path of serial solver
         // Note: serial FFT solver only has solve_device; for CPU we'd
@@ -111,6 +111,8 @@ int FFTMPIPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
         residual_ = serial_solver_->residual();
         return result;
     }
+#else
+    (void)rhs_ptr; (void)p_ptr; (void)cfg;
 #endif
 
     // Multi-rank GPU path: would use CUDA-aware MPI + cuFFT

@@ -1082,6 +1082,11 @@ void Config::print() const {
         case TurbulenceModelType::EARSM_WJ: std::cout << "SST + Wallin-Johansson EARSM"; break;
         case TurbulenceModelType::EARSM_GS: std::cout << "SST + Gatski-Speziale EARSM"; break;
         case TurbulenceModelType::EARSM_Pope: std::cout << "SST + Pope Quadratic EARSM"; break;
+        case TurbulenceModelType::Smagorinsky: std::cout << "LES Smagorinsky"; break;
+        case TurbulenceModelType::DynamicSmagorinsky: std::cout << "LES Dynamic Smagorinsky"; break;
+        case TurbulenceModelType::WALE: std::cout << "LES WALE"; break;
+        case TurbulenceModelType::Vreman: std::cout << "LES Vreman"; break;
+        case TurbulenceModelType::Sigma: std::cout << "LES Sigma"; break;
     }
     std::cout << "\n";
     
