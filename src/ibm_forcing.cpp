@@ -4,6 +4,7 @@
 #include "ibm_forcing.hpp"
 #include <cmath>
 #include <algorithm>
+#include <cassert>
 #include <iostream>
 
 namespace nncfd {
@@ -259,16 +260,19 @@ std::tuple<double, double, double> IBMForcing::compute_forces(
 
 IBMCellType IBMForcing::cell_type_u(int i, int j, int k) const {
     int idx = mesh_->is2D() ? (j * u_stride_ + i) : (k * u_plane_stride_ + j * u_stride_ + i);
+    assert(idx >= 0 && idx < static_cast<int>(cell_type_u_.size()));
     return cell_type_u_[idx];
 }
 
 IBMCellType IBMForcing::cell_type_v(int i, int j, int k) const {
     int idx = mesh_->is2D() ? (j * v_stride_ + i) : (k * v_plane_stride_ + j * v_stride_ + i);
+    assert(idx >= 0 && idx < static_cast<int>(cell_type_v_.size()));
     return cell_type_v_[idx];
 }
 
 IBMCellType IBMForcing::cell_type_w(int i, int j, int k) const {
     int idx = k * w_plane_stride_ + j * w_stride_ + i;
+    assert(idx >= 0 && idx < static_cast<int>(cell_type_w_.size()));
     return cell_type_w_[idx];
 }
 

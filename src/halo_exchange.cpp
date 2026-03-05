@@ -141,10 +141,15 @@ void HaloExchange::exchange_batch(double** fields, int num_fields,
 
 #ifdef USE_CUDA_KERNELS
 void HaloExchange::init_gpu_buffers() {
-    cudaMalloc(&d_send_lo_, face_size_ * sizeof(double));
-    cudaMalloc(&d_send_hi_, face_size_ * sizeof(double));
-    cudaMalloc(&d_recv_lo_, face_size_ * sizeof(double));
-    cudaMalloc(&d_recv_hi_, face_size_ * sizeof(double));
+    auto check = [](cudaError_t err, const char* name) {
+        if (err != cudaSuccess)
+            throw std::runtime_error(std::string("[HaloExchange] cudaMalloc failed for ") +
+                                     name + ": " + cudaGetErrorString(err));
+    };
+    check(cudaMalloc(&d_send_lo_, face_size_ * sizeof(double)), "send_lo");
+    check(cudaMalloc(&d_send_hi_, face_size_ * sizeof(double)), "send_hi");
+    check(cudaMalloc(&d_recv_lo_, face_size_ * sizeof(double)), "recv_lo");
+    check(cudaMalloc(&d_recv_hi_, face_size_ * sizeof(double)), "recv_hi");
     gpu_buffers_initialized_ = true;
 }
 #endif

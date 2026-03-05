@@ -43,7 +43,14 @@ bool read_scalar_dataset(hid_t file, const char* name,
     }
     hid_t space = H5Dget_space(dset);
     hsize_t dims;
-    H5Sget_simple_extent_dims(space, &dims, nullptr);
+    int ndims = H5Sget_simple_extent_dims(space, &dims, nullptr);
+    if (ndims != 1) {
+        std::cerr << "[Checkpoint] Expected 1D dataset for '" << name
+                  << "', got " << ndims << " dims\n";
+        H5Sclose(space);
+        H5Dclose(dset);
+        return false;
+    }
     if (dims != expected_size) {
         std::cerr << "[Checkpoint] Size mismatch for '" << name
                   << "': expected " << expected_size << ", got " << dims << "\n";
@@ -71,9 +78,11 @@ void write_int_attr(hid_t file, const char* name, int value) {
         H5Sclose(space);
         throw std::runtime_error("[Checkpoint] H5Acreate2 failed for: " + std::string(name));
     }
-    H5Awrite(attr, H5T_NATIVE_INT, &value);
+    herr_t status = H5Awrite(attr, H5T_NATIVE_INT, &value);
     H5Aclose(attr);
     H5Sclose(space);
+    if (status < 0)
+        throw std::runtime_error("[Checkpoint] H5Awrite failed for: " + std::string(name));
 }
 
 void write_double_attr(hid_t file, const char* name, double value) {
@@ -86,17 +95,21 @@ void write_double_attr(hid_t file, const char* name, double value) {
         H5Sclose(space);
         throw std::runtime_error("[Checkpoint] H5Acreate2 failed for: " + std::string(name));
     }
-    H5Awrite(attr, H5T_NATIVE_DOUBLE, &value);
+    herr_t status = H5Awrite(attr, H5T_NATIVE_DOUBLE, &value);
     H5Aclose(attr);
     H5Sclose(space);
+    if (status < 0)
+        throw std::runtime_error("[Checkpoint] H5Awrite failed for: " + std::string(name));
 }
 
 int read_int_attr(hid_t file, const char* name) {
     int value = 0;
     hid_t attr = H5Aopen(file, name, H5P_DEFAULT);
     if (attr >= 0) {
-        H5Aread(attr, H5T_NATIVE_INT, &value);
+        herr_t status = H5Aread(attr, H5T_NATIVE_INT, &value);
         H5Aclose(attr);
+        if (status < 0)
+            std::cerr << "[Checkpoint] Warning: H5Aread failed for '" << name << "'\n";
     } else {
         std::cerr << "[Checkpoint] Warning: attribute '" << name << "' not found\n";
     }
@@ -107,8 +120,10 @@ double read_double_attr(hid_t file, const char* name) {
     double value = 0.0;
     hid_t attr = H5Aopen(file, name, H5P_DEFAULT);
     if (attr >= 0) {
-        H5Aread(attr, H5T_NATIVE_DOUBLE, &value);
+        herr_t status = H5Aread(attr, H5T_NATIVE_DOUBLE, &value);
         H5Aclose(attr);
+        if (status < 0)
+            std::cerr << "[Checkpoint] Warning: H5Aread failed for '" << name << "'\n";
     } else {
         std::cerr << "[Checkpoint] Warning: attribute '" << name << "' not found\n";
     }

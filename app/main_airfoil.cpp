@@ -159,7 +159,11 @@ int main(int argc, char** argv) {
     std::ofstream force_file;
     if (mpi_rank == 0) {
         force_file.open(config.output_dir + "forces.dat");
-        force_file << "# step  time  Fx  Fy  Cd  Cl\n";
+        if (!force_file.is_open()) {
+            std::cerr << "Warning: Could not open " << config.output_dir << "forces.dat\n";
+        } else {
+            force_file << "# step  time  Fx  Fy  Cd  Cl\n";
+        }
     }
 
     ScopedTimer total_timer("Total simulation", false);
