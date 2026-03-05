@@ -44,7 +44,8 @@ enum class PoissonSolverType {
     FFT2D,      ///< 2D mesh FFT solver (periodic x, walls y, Nz=1)
     FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z) - 3D only
     HYPRE,      ///< HYPRE PFMG solver (requires USE_HYPRE build)
-    MG          ///< Native geometric multigrid
+    MG,         ///< Native geometric multigrid
+    FFT_MPI     ///< Distributed FFT with MPI pencil transpose (requires USE_MPI)
 };
 
 /// Time integration scheme selection

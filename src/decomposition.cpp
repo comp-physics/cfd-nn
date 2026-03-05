@@ -89,4 +89,13 @@ void Decomposition::allreduce_sum(double* data, int count) const {
 #endif
 }
 
+void Decomposition::allreduce_sum(int* data, int count) const {
+    (void)data; (void)count;
+#ifdef USE_MPI
+    if (nprocs_ > 1) {
+        MPI_Allreduce(MPI_IN_PLACE, data, count, MPI_INT, MPI_SUM, comm_);
+    }
+#endif
+}
+
 } // namespace nncfd

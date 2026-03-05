@@ -17,6 +17,8 @@
 /// @note Requires USE_MPI to be defined for actual MPI communication.
 ///       Without USE_MPI, only the single-process constructor is available.
 
+#include <algorithm>
+
 #ifdef USE_MPI
 #include <mpi.h>
 #endif
@@ -71,6 +73,23 @@ public:
 
     /// Allreduce vector (sum, in-place)
     void allreduce_sum(double* data, int count) const;
+
+    /// Allreduce int vector (sum, in-place)
+    void allreduce_sum(int* data, int count) const;
+
+    /// Get nz_local for a specific rank (useful for MPI transpose)
+    int nz_for_rank(int r) const {
+        int base = nz_global_ / nprocs_;
+        int rem = nz_global_ % nprocs_;
+        return base + (r < rem ? 1 : 0);
+    }
+
+    /// Get k_global_start for a specific rank
+    int k_global_start_for_rank(int r) const {
+        int base = nz_global_ / nprocs_;
+        int rem = nz_global_ % nprocs_;
+        return r * base + std::min(r, rem);
+    }
 
 private:
 #ifdef USE_MPI
