@@ -75,11 +75,21 @@ struct VelocityBC {
     std::function<double(double y, double z)> w_inflow_3d = [](double, double) { return 0.0; };
 };
 
+class Decomposition;  // Forward declaration for MPI decomposition
+class HaloExchange;   // Forward declaration for MPI halo exchange
+
 /// Incompressible RANS solver using projection method
 class RANSSolver {
 public:
     explicit RANSSolver(const Mesh& mesh, const Config& config);
     ~RANSSolver();  // Clean up GPU resources
+
+    /// Set MPI domain decomposition (optional, for multi-GPU runs)
+    /// Must be called before step() if using MPI
+    void set_decomposition(Decomposition* decomp);
+
+    /// Get decomposition (nullptr if not set)
+    Decomposition* decomposition() const { return decomp_; }
     
     /// Set turbulence model (takes ownership)
     void set_turbulence_model(std::unique_ptr<TurbulenceModel> model);
@@ -792,6 +802,10 @@ public:
 private:
     const Mesh* mesh_;
     Config config_;
+
+    // MPI domain decomposition (nullptr for single-process)
+    Decomposition* decomp_ = nullptr;
+    std::unique_ptr<HaloExchange> halo_exchange_;
     
     // Solution fields
     VectorField velocity_;

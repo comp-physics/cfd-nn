@@ -17,6 +17,7 @@
 #include "turbulence_baseline.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
+#include "decomposition.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -262,7 +263,17 @@ VectorField create_poiseuille_field(const Mesh& mesh, double dp_dx, double nu,
 }
 
 int main(int argc, char** argv) {
-    std::cout << "=== Channel Flow Solver ===\n\n";
+#ifdef USE_MPI
+    MPI_Init(&argc, &argv);
+    int mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+#else
+    int mpi_rank = 0;
+#endif
+
+    if (mpi_rank == 0) {
+        std::cout << "=== Channel Flow Solver ===\n\n";
+    }
 
     // Parse configuration
     Config config;
@@ -358,8 +369,18 @@ int main(int argc, char** argv) {
         std::cout << "dx = " << mesh.dx << ", dy = " << mesh.dy << "\n\n";
     }
     
+    // Create MPI decomposition (if running with MPI)
+#ifdef USE_MPI
+    int nprocs;
+    MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+    Decomposition decomp(MPI_COMM_WORLD, config.Nz);
+#else
+    Decomposition decomp(config.Nz);
+#endif
+
     // Create solver (Poisson solver selection handled internally via config.poisson_solver)
     RANSSolver solver(mesh, config);
+    solver.set_decomposition(&decomp);
 
     // Set boundary conditions
     VelocityBC bc;
@@ -661,6 +682,10 @@ int main(int argc, char** argv) {
     
     // Print timing summary
     TimingStats::instance().print_summary();
+
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
     
     return 0;
 }

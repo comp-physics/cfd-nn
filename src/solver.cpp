@@ -13,6 +13,8 @@
 /// ensuring numerical consistency between platforms.
 
 #include "solver.hpp"
+#include "decomposition.hpp"
+#include "halo_exchange.hpp"
 #include "timing.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
@@ -529,6 +531,16 @@ void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
         if (mesh_) {
             turb_model_->initialize_gpu_buffers(*mesh_);
         }
+    }
+}
+
+void RANSSolver::set_decomposition(Decomposition* decomp) {
+    decomp_ = decomp;
+    if (decomp_ && decomp_->is_parallel()) {
+        halo_exchange_ = std::make_unique<HaloExchange>(
+            *decomp_,
+            mesh_->Nx, mesh_->Ny, decomp_->nz_local(),
+            mesh_->Nghost);
     }
 }
 
@@ -2586,6 +2598,12 @@ double RANSSolver::bulk_velocity() const {
         }
     }
 
+    // MPI: sum across all ranks for global average
+    if (decomp_) {
+        sum = decomp_->allreduce_sum(sum);
+        count = static_cast<int>(decomp_->allreduce_sum(static_cast<double>(count)));
+    }
+
     return sum / count;
 }
 
@@ -3276,6 +3294,11 @@ double RANSSolver::compute_adaptive_dt() const {
     diag_v_max_ = v_abs_max;
     diag_w_max_ = w_abs_max;
     diag_v_dy_max_ = v_dy_ratio_max;
+
+    // MPI: use global minimum dt across all ranks
+    if (decomp_) {
+        dt_new = decomp_->allreduce_min(dt_new);
+    }
 
     return dt_new;
 }
