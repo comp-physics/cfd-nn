@@ -37,17 +37,16 @@ option(USE_HYPRE "Enable HYPRE PFMG Poisson solver" OFF)
 # MPI support for multi-GPU domain decomposition
 option(USE_MPI "Enable MPI for multi-GPU domain decomposition" OFF)
 
+# HDF5 checkpoint/restart (optional)
+option(USE_HDF5 "Enable HDF5 checkpoint/restart" OFF)
+if(USE_HDF5)
+    find_package(HDF5 REQUIRED COMPONENTS C)
+    message(STATUS "HDF5 ENABLED: ${HDF5_C_LIBRARIES}")
+endif()
+
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
-
-# MPI support (CPU-only builds)
-if(USE_MPI AND NOT USE_GPU_OFFLOAD)
-    find_package(MPI REQUIRED)
-    target_link_libraries(nn_cfd_core MPI::MPI_CXX)
-    target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
-    message(STATUS "  MPI enabled (CPU build)")
-endif()
 
 # Suppress unknown pragma warnings in CPU builds (allows OpenMP pragmas to be ignored silently)
 option(SUPPRESS_UNKNOWN_OMP_PRAGMAS "Silence -Wunknown-pragmas for OpenMP pragmas in CPU build" ON)
@@ -282,6 +281,7 @@ set(LIB_SOURCES
     src/ibm_forcing.cpp
     src/velocity_gradient.cpp
     src/turbulence_les.cpp
+    src/checkpoint.cpp
 )
 
 # Core library
@@ -353,6 +353,14 @@ if(USE_MPI AND NOT USE_GPU_OFFLOAD)
     target_link_libraries(nn_cfd_core MPI::MPI_CXX)
     target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
     message(STATUS "  MPI enabled (CPU build)")
+endif()
+
+# HDF5 checkpoint/restart linking
+if(USE_HDF5)
+    target_include_directories(nn_cfd_core PUBLIC ${HDF5_INCLUDE_DIRS})
+    target_link_libraries(nn_cfd_core ${HDF5_C_LIBRARIES})
+    target_compile_definitions(nn_cfd_core PUBLIC USE_HDF5)
+    message(STATUS "  HDF5 checkpoint/restart enabled")
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -500,6 +508,9 @@ if(BUILD_TESTS)
     add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
     add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)
     add_nncfd_test(test_les_channel TEST_NAME_SUFFIX LESChannelTest LABELS fast)
+    add_nncfd_test(test_checkpoint TEST_NAME_SUFFIX CheckpointTest LABELS fast)
+    add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
+    add_nncfd_test(test_les_tgv TEST_NAME_SUFFIX LESTGVTest LABELS medium)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
