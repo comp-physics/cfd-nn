@@ -20,7 +20,13 @@ enum class TurbulenceModelType {
     // EARSM models
     EARSM_WJ,       ///< SST k-ω + Wallin-Johansson EARSM
     EARSM_GS,       ///< SST k-ω + Gatski-Speziale EARSM
-    EARSM_Pope      ///< SST k-ω + Pope quadratic model
+    EARSM_Pope,     ///< SST k-ω + Pope quadratic model
+    // LES SGS models
+    Smagorinsky,    ///< Static Smagorinsky (Cs = 0.17)
+    DynamicSmagorinsky, ///< Dynamic Smagorinsky (Germano)
+    WALE,           ///< Wall-Adapting Local Eddy-viscosity
+    Vreman,         ///< Vreman model
+    Sigma           ///< Sigma model
 };
 
 /// Convective/advection scheme selection

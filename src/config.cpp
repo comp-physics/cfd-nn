@@ -212,6 +212,16 @@ void Config::load(const std::string& filename) {
         turb_model = TurbulenceModelType::EARSM_GS;
     } else if (model_str == "earsm_pope" || model_str == "pope") {
         turb_model = TurbulenceModelType::EARSM_Pope;
+    } else if (model_str == "smagorinsky" || model_str == "smag") {
+        turb_model = TurbulenceModelType::Smagorinsky;
+    } else if (model_str == "dynamic_smagorinsky" || model_str == "dsmag") {
+        turb_model = TurbulenceModelType::DynamicSmagorinsky;
+    } else if (model_str == "wale") {
+        turb_model = TurbulenceModelType::WALE;
+    } else if (model_str == "vreman") {
+        turb_model = TurbulenceModelType::Vreman;
+    } else if (model_str == "sigma") {
+        turb_model = TurbulenceModelType::Sigma;
     } else {
         turb_model = TurbulenceModelType::None;
     }
@@ -442,6 +452,16 @@ void Config::parse_args(int argc, char** argv) {
                 turb_model = TurbulenceModelType::EARSM_GS;
             } else if (model == "earsm_pope" || model == "pope") {
                 turb_model = TurbulenceModelType::EARSM_Pope;
+            } else if (model == "smagorinsky" || model == "smag") {
+                turb_model = TurbulenceModelType::Smagorinsky;
+            } else if (model == "dynamic_smagorinsky" || model == "dsmag") {
+                turb_model = TurbulenceModelType::DynamicSmagorinsky;
+            } else if (model == "wale") {
+                turb_model = TurbulenceModelType::WALE;
+            } else if (model == "vreman") {
+                turb_model = TurbulenceModelType::Vreman;
+            } else if (model == "sigma") {
+                turb_model = TurbulenceModelType::Sigma;
             }
         } else if ((val = get_value(i, arg, "--weights")) != "") {
             nn_weights_path = val;

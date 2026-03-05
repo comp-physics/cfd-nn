@@ -281,6 +281,7 @@ set(LIB_SOURCES
     src/ibm_geometry.cpp
     src/ibm_forcing.cpp
     src/velocity_gradient.cpp
+    src/turbulence_les.cpp
 )
 
 # Core library
@@ -497,6 +498,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_ibm_sdf TEST_NAME_SUFFIX IBMSDFTest LABELS fast)
     add_nncfd_test(test_ibm_forcing TEST_NAME_SUFFIX IBMForcingTest LABELS fast)
     add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
+    add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)

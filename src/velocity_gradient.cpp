@@ -6,7 +6,7 @@
 
 namespace nncfd {
 
-void VelocityGradientTensor::resize(int nx, int ny, int nz) {
+void GradientTensor3D::resize(int nx, int ny, int nz) {
     Nx = nx;
     Ny = ny;
     Nz = nz;
@@ -16,8 +16,8 @@ void VelocityGradientTensor::resize(int nx, int ny, int nz) {
     g31.assign(n, 0.0); g32.assign(n, 0.0); g33.assign(n, 0.0);
 }
 
-void VelocityGradient::compute(const Mesh& mesh, const VectorField& vel,
-                                VelocityGradientTensor& grad) const {
+void GradientComputer::compute(const Mesh& mesh, const VectorField& vel,
+                                GradientTensor3D& grad) const {
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
     const int Nz = std::max(mesh.Nz, 1);

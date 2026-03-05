@@ -35,8 +35,8 @@ void test_dudx_linear() {
         }
     }
 
-    VelocityGradient grad_comp;
-    VelocityGradientTensor grad;
+    GradientComputer grad_comp;
+    GradientTensor3D grad;
     grad_comp.compute(mesh, vel, grad);
 
     double max_err = 0.0;
@@ -66,8 +66,8 @@ void test_dvdy_linear() {
         }
     }
 
-    VelocityGradient grad_comp;
-    VelocityGradientTensor grad;
+    GradientComputer grad_comp;
+    GradientTensor3D grad;
     grad_comp.compute(mesh, vel, grad);
 
     double max_err = 0.0;
@@ -100,8 +100,8 @@ void test_pure_shear() {
         }
     }
 
-    VelocityGradient grad_comp;
-    VelocityGradientTensor grad;
+    GradientComputer grad_comp;
+    GradientTensor3D grad;
     grad_comp.compute(mesh, vel, grad);
 
     double max_err_dudy = 0.0;
@@ -138,8 +138,8 @@ void test_3d_dwdz() {
         }
     }
 
-    VelocityGradient grad_comp;
-    VelocityGradientTensor grad;
+    GradientComputer grad_comp;
+    GradientTensor3D grad;
     grad_comp.compute(mesh, vel, grad);
 
     double max_err = 0.0;
@@ -182,8 +182,8 @@ void test_divergence_free() {
         }
     }
 
-    VelocityGradient grad_comp;
-    VelocityGradientTensor grad;
+    GradientComputer grad_comp;
+    GradientTensor3D grad;
     grad_comp.compute(mesh, vel, grad);
 
     double max_div = 0.0;

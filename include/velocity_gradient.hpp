@@ -17,9 +17,9 @@
 
 namespace nncfd {
 
-/// Velocity gradient tensor stored at cell centers
+/// 3D velocity gradient tensor stored at cell centers
 /// Components: g[i][j] = du_i/dx_j
-struct VelocityGradientTensor {
+struct GradientTensor3D {
     /// 9 components, each sized Nx*Ny*Nz (interior cells only)
     std::vector<double> g11, g12, g13;  // du/dx, du/dy, du/dz
     std::vector<double> g21, g22, g23;  // dv/dx, dv/dy, dv/dz
@@ -32,14 +32,14 @@ struct VelocityGradientTensor {
 };
 
 /// Compute velocity gradient tensor from staggered velocity field
-class VelocityGradient {
+class GradientComputer {
 public:
     /// Compute all 9 gradient components at cell centers
     /// @param mesh     Computational mesh
     /// @param vel      Staggered velocity field
     /// @param grad     Output gradient tensor (resized internally)
     void compute(const Mesh& mesh, const VectorField& vel,
-                 VelocityGradientTensor& grad) const;
+                 GradientTensor3D& grad) const;
 };
 
 } // namespace nncfd

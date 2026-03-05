@@ -15,6 +15,7 @@
 #include "turbulence_nn_tbnn.hpp"
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
+#include "turbulence_les.hpp"
 #include "gpu_kernels.hpp"
 #include "features.hpp"
 #include "numerics.hpp"
@@ -514,6 +515,22 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             return std::make_unique<SSTWithEARSM>(EARSMType::Pope1975);
         }
             
+        // LES SGS models
+        case TurbulenceModelType::Smagorinsky:
+            return std::make_unique<SmagorinskyModel>();
+
+        case TurbulenceModelType::DynamicSmagorinsky:
+            return std::make_unique<DynamicSmagorinskyModel>();
+
+        case TurbulenceModelType::WALE:
+            return std::make_unique<WALEModel>();
+
+        case TurbulenceModelType::Vreman:
+            return std::make_unique<VremanModel>();
+
+        case TurbulenceModelType::Sigma:
+            return std::make_unique<SigmaModel>();
+
         default:
             return nullptr;
     }
