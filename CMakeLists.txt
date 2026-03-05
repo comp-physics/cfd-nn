@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
 project(nn_cfd VERSION 0.1.0 LANGUAGES CXX)
 
+# Enable CUDA for custom kernels when GPU offload is enabled
+if(USE_GPU_OFFLOAD)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CMAKE_CUDA_STANDARD 17)
+        set(CMAKE_CUDA_ARCHITECTURES ${GPU_CC})
+        message(STATUS "CUDA enabled for custom kernels (arch: ${GPU_CC})")
+    endif()
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(CMAKE_EXPORT_COMPILE_COMMANDS)
   add_custom_target(clangd_compile_commands ALL
@@ -21,6 +33,43 @@ option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
 # Hypre solver option (requires CUDA toolkit)
 option(USE_HYPRE "Enable HYPRE PFMG Poisson solver" OFF)
+
+# MPI support for multi-GPU domain decomposition
+option(USE_MPI "Enable MPI for multi-GPU domain decomposition" OFF)
+
+# HDF5 checkpoint/restart (optional)
+option(USE_HDF5 "Enable HDF5 checkpoint/restart" OFF)
+if(USE_HDF5)
+    # Try system HDF5 first
+    find_package(HDF5 QUIET COMPONENTS C)
+    if(HDF5_FOUND)
+        message(STATUS "HDF5 ENABLED (system): ${HDF5_C_LIBRARIES}")
+        set(HDF5_FROM_FETCHCONTENT OFF)
+    else()
+        message(STATUS "System HDF5 not found — building from source via FetchContent")
+        include(FetchContent)
+        FetchContent_Declare(
+            hdf5
+            URL https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz
+            URL_HASH SHA256=e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b
+        )
+        # Configure HDF5 build options — minimal C-only build
+        set(HDF5_BUILD_CPP_LIB OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_FORTRAN OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_JAVA OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_HL_LIB OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_UTILS OFF CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(HDF5_ENABLE_Z_LIB_SUPPORT OFF CACHE BOOL "" FORCE)
+        set(HDF5_ENABLE_SZIP_SUPPORT OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(hdf5)
+        set(HDF5_FROM_FETCHCONTENT ON)
+        message(STATUS "HDF5 ENABLED (built from source)")
+    endif()
+endif()
 
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
@@ -257,6 +306,14 @@ set(LIB_SOURCES
     src/turbulence_transport.cpp
     src/turbulence_earsm.cpp
     src/gpu_kernels.cpp
+    src/decomposition.cpp
+    src/halo_exchange.cpp
+    src/poisson_solver_fft_mpi.cpp
+    src/ibm_geometry.cpp
+    src/ibm_forcing.cpp
+    src/velocity_gradient.cpp
+    src/turbulence_les.cpp
+    src/checkpoint.cpp
 )
 
 # Core library
@@ -272,6 +329,26 @@ if(USE_GPU_OFFLOAD)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
     target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
+
+    # MPI support
+    if(USE_MPI)
+        find_package(MPI REQUIRED)
+        target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+        message(STATUS "  MPI enabled for multi-GPU domain decomposition")
+    endif()
+
+    # Custom CUDA kernels (shared-memory smoothers, reductions, halo packing)
+    if(CMAKE_CUDA_COMPILER)
+        file(GLOB CUDA_KERNEL_SOURCES "src/cuda_kernels/*.cu")
+        if(CUDA_KERNEL_SOURCES)
+            target_sources(nn_cfd_core PRIVATE ${CUDA_KERNEL_SOURCES})
+            set_source_files_properties(${CUDA_KERNEL_SOURCES} PROPERTIES LANGUAGE CUDA)
+            target_link_libraries(nn_cfd_core CUDA::cublas)
+            target_compile_definitions(nn_cfd_core PUBLIC USE_CUDA_KERNELS)
+            message(STATUS "  Custom CUDA kernels added: ${CUDA_KERNEL_SOURCES}")
+        endif()
+    endif()
 endif()
 
 # Add HYPRE Poisson solver when enabled
@@ -300,6 +377,28 @@ if(USE_GPU_OFFLOAD)
         target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
         message(STATUS "  FFT Poisson solvers added (2D FFT + 1D FFT + cuSPARSE)")
     endif()
+endif()
+
+# MPI support (CPU-only builds)
+if(USE_MPI AND NOT USE_GPU_OFFLOAD)
+    find_package(MPI REQUIRED)
+    target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+    target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+    message(STATUS "  MPI enabled (CPU build)")
+endif()
+
+# HDF5 checkpoint/restart linking
+if(USE_HDF5)
+    if(HDF5_FROM_FETCHCONTENT)
+        # FetchContent build: link the CMake target directly
+        target_link_libraries(nn_cfd_core hdf5-static)
+    else()
+        # System HDF5: use find_package variables
+        target_include_directories(nn_cfd_core PUBLIC ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(nn_cfd_core ${HDF5_C_LIBRARIES})
+    endif()
+    target_compile_definitions(nn_cfd_core PUBLIC USE_HDF5)
+    message(STATUS "  HDF5 checkpoint/restart enabled")
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -377,6 +476,12 @@ target_link_libraries(duct nn_cfd_core)
 add_executable(taylor_green_3d app/main_taylor_green_3d.cpp)
 target_link_libraries(taylor_green_3d nn_cfd_core)
 
+add_executable(cylinder app/main_cylinder.cpp)
+target_link_libraries(cylinder nn_cfd_core)
+
+add_executable(airfoil app/main_airfoil.cpp)
+target_link_libraries(airfoil nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -432,6 +537,18 @@ if(BUILD_TESTS)
     add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest LABELS fast)
     add_nncfd_test(test_config LABELS fast)
     add_nncfd_test(test_mpi_guard LABELS fast)
+    add_nncfd_test(test_decomposition TEST_NAME_SUFFIX DecompositionTest LABELS fast)
+    add_nncfd_test(test_halo_exchange TEST_NAME_SUFFIX HaloExchangeTest LABELS fast)
+    add_nncfd_test(test_mpi_channel TEST_NAME_SUFFIX MPIChannelTest LABELS fast)
+    add_nncfd_test(test_mpi_poisson TEST_NAME_SUFFIX MPIPoissonTest LABELS fast)
+    add_nncfd_test(test_ibm_sdf TEST_NAME_SUFFIX IBMSDFTest LABELS fast)
+    add_nncfd_test(test_ibm_forcing TEST_NAME_SUFFIX IBMForcingTest LABELS fast)
+    add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
+    add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)
+    add_nncfd_test(test_les_channel TEST_NAME_SUFFIX LESChannelTest LABELS fast)
+    add_nncfd_test(test_checkpoint TEST_NAME_SUFFIX CheckpointTest LABELS fast)
+    add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
+    add_nncfd_test(test_les_tgv TEST_NAME_SUFFIX LESTGVTest LABELS medium)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
@@ -547,6 +664,15 @@ if(BUILD_TESTS)
         # GPU turbulence readiness acceptance test - validates all systems before production runs
         add_nncfd_test(test_gpu_turbulence_readiness TEST_NAME_SUFFIX GPUTurbulenceReadinessTest LABELS "gpu;acceptance")
         set_tests_properties(GPUTurbulenceReadinessTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+        # CUDA kernel tests
+        if(CMAKE_CUDA_COMPILER)
+            add_nncfd_test(test_cuda_smoother TEST_NAME_SUFFIX CUDASmootherTest LABELS "gpu;fast")
+            set_tests_properties(CUDASmootherTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+            add_nncfd_test(test_cuda_halo TEST_NAME_SUFFIX CUDAHaloTest LABELS "gpu;fast")
+            set_tests_properties(CUDAHaloTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+        endif()
     endif()
 
     # =========================================================================
@@ -580,6 +706,8 @@ if(BUILD_TESTS)
     if(USE_GPU_OFFLOAD)
         add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
         target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
+        add_executable(bench_les_ibm_gpu tests/bench_les_ibm_gpu.cpp)
+        target_link_libraries(bench_les_ibm_gpu PRIVATE nn_cfd_core)
     endif()
 
     # Verification tool (not a registered test — manual use only)

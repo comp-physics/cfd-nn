@@ -13,6 +13,9 @@
 /// ensuring numerical consistency between platforms.
 
 #include "solver.hpp"
+#include "ibm_forcing.hpp"
+#include "decomposition.hpp"
+#include "halo_exchange.hpp"
 #include "timing.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
@@ -555,6 +558,16 @@ void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
         if (mesh_) {
             turb_model_->initialize_gpu_buffers(*mesh_);
         }
+    }
+}
+
+void RANSSolver::set_decomposition(Decomposition* decomp) {
+    decomp_ = decomp;
+    if (decomp_ && decomp_->is_parallel()) {
+        halo_exchange_ = std::make_unique<HaloExchange>(
+            *decomp_,
+            mesh_->Nx, mesh_->Ny, decomp_->nz_local(),
+            mesh_->Nghost);
     }
 }
 
@@ -1166,7 +1179,7 @@ double RANSSolver::step() {
     if (turb_model_) {
         TIMED_SCOPE("turbulence_update");
         NVTX_PUSH("turbulence_update");
-        
+
         // PHASE 1 GPU OPTIMIZATION: Pass device view if GPU is ready
         const TurbulenceDeviceView* device_view_ptr = nullptr;
 #ifdef USE_GPU_OFFLOAD
@@ -1174,9 +1187,15 @@ double RANSSolver::step() {
         if (device_view.is_valid()) {
             device_view_ptr = &device_view;
         }
-        
-        // GPU simulation: enforce device_view validity (host fallback forbidden)
-        if (gpu_ready_ && (!device_view_ptr || !device_view_ptr->is_valid())) {
+
+        // CPU-only models (e.g., LES) need velocity synced from GPU before update
+        if (gpu_ready_ && !turb_model_->is_gpu_ready()) {
+            sync_solution_from_gpu();
+        }
+
+        // GPU simulation with GPU-ready model: enforce device_view validity
+        if (gpu_ready_ && turb_model_->is_gpu_ready() &&
+            (!device_view_ptr || !device_view_ptr->is_valid())) {
             throw std::runtime_error("GPU simulation requires valid TurbulenceDeviceView - host fallback forbidden");
         }
 #endif
@@ -1731,6 +1750,17 @@ double RANSSolver::step() {
         apply_fringe_blending();        // Optional smoothing near inlet
     }
 
+    // 3b. Apply IBM forcing to predicted velocity (before Poisson solve)
+    // Must apply to velocity_star_ (the predictor), not velocity_ (current step)
+    if (ibm_) {
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->apply_forcing_device(velocity_star_u_ptr_, velocity_star_v_ptr_,
+                                       mesh_->is2D() ? nullptr : velocity_star_w_ptr_);
+        } else {
+            ibm_->apply_forcing(velocity_star_, current_dt_);
+        }
+    }
+
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*
     {
@@ -1892,6 +1922,37 @@ double RANSSolver::step() {
         }
     }
     NVTX_POP();  // End poisson_rhs_build
+
+    // 4a-IBM. Mask solid cells in Poisson RHS (set to zero)
+    // This prevents the Poisson solver from generating pressure gradients
+    // inside the body, which would create spurious velocity corrections.
+    if (ibm_) {
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->mask_rhs_device(rhs_poisson_ptr_);
+        } else {
+            const int Nz_l = std::max(mesh_->Nz, 1);
+            const int Ng_l = mesh_->Nghost;
+            const bool is_2d_l = mesh_->is2D();
+            int Nz_eff = is_2d_l ? 1 : Nz_l;
+
+            for (int k = Ng_l; k < Nz_eff + Ng_l; ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double x = mesh_->x(i);
+                        double y = mesh_->y(j);
+                        double z = is_2d_l ? 0.0 : mesh_->z(k);
+                        if (ibm_->body().phi(x, y, z) < 0.0) {
+                            if (is_2d_l) {
+                                rhs_poisson_(i, j) = 0.0;
+                            } else {
+                                rhs_poisson_(i, j, k) = 0.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 4b. Solve Poisson equation for pressure correction
     {
@@ -2155,6 +2216,17 @@ double RANSSolver::step() {
         NVTX_PUSH("velocity_correction");
         correct_velocity();
         NVTX_POP();
+    }
+
+    // 5b. Re-apply IBM forcing after velocity correction
+    // Pressure correction may introduce non-zero velocity inside the body
+    if (ibm_) {
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->apply_forcing_device(velocity_u_ptr_, velocity_v_ptr_,
+                                       mesh_->is2D() ? nullptr : velocity_w_ptr_);
+        } else {
+            ibm_->apply_forcing(velocity_, current_dt_);
+        }
     }
 
     // 6. Apply boundary conditions
@@ -2443,6 +2515,9 @@ double RANSSolver::step() {
 
     NVTX_POP();  // End residual_computation
 
+    // MPI: global max residual across all ranks
+    if (decomp_) max_change = decomp_->allreduce_max(max_change);
+
     // NaN/Inf GUARD: Check for numerical stability issues
     // Do this after turbulence update but before next iteration starts
     check_for_nan_inf(step_count_);
@@ -2702,6 +2777,12 @@ double RANSSolver::bulk_velocity() const {
                 ++count;
             }
         }
+    }
+
+    // MPI: sum across all ranks for global average
+    if (decomp_) {
+        sum = decomp_->allreduce_sum(sum);
+        count = static_cast<int>(decomp_->allreduce_sum(static_cast<double>(count)));
     }
 
     return sum / count;
@@ -3407,6 +3488,11 @@ double RANSSolver::compute_adaptive_dt() const {
     diag_w_max_ = w_abs_max;
     diag_v_dy_max_ = v_dy_ratio_max;
 
+    // MPI: use global minimum dt across all ranks
+    if (decomp_) {
+        dt_new = decomp_->allreduce_min(dt_new);
+    }
+
     return dt_new;
 }
 
@@ -3478,6 +3564,12 @@ void RANSSolver::extract_field_pointers() {
         dyc_ptr_ = nullptr;
         y_metrics_size_ = 0;
     }
+
+    // Y-coordinate arrays (always needed for LES filter width and gradient computation)
+    yf_ptr_ = mesh_->yf.data();
+    yc_ptr_ = mesh_->yc.data();
+    yf_size_ = mesh_->yf.size();
+    yc_size_ = mesh_->yc.size();
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -3598,6 +3690,19 @@ void RANSSolver::initialize_gpu_buffers() {
         #pragma omp target enter data map(to: dyv_ptr_[0:y_metrics_size_], dyc_ptr_[0:y_metrics_size_])
     }
 
+    // Map y-coordinate arrays (for LES filter width and gradient computation)
+    if (yf_ptr_ && yf_size_ > 0) {
+        #pragma omp target enter data map(to: yf_ptr_[0:yf_size_])
+    }
+    if (yc_ptr_ && yc_size_ > 0) {
+        #pragma omp target enter data map(to: yc_ptr_[0:yc_size_])
+    }
+
+    // Map IBM weight arrays to GPU if IBM is active
+    if (ibm_) {
+        ibm_->map_to_gpu();
+    }
+
     // Verify mappings succeeded (fail fast if GPU unavailable despite num_devices>0)
     if (!gpu::is_pointer_present(velocity_u_ptr_)) {
         throw std::runtime_error("GPU mapping failed despite device availability");
@@ -3680,6 +3785,19 @@ void RANSSolver::cleanup_gpu_buffers() {
     // Delete y-metric arrays for non-uniform y-spacing
     if (y_metrics_size_ > 0 && dyv_ptr_ && dyc_ptr_) {
         #pragma omp target exit data map(delete: dyv_ptr_[0:y_metrics_size_], dyc_ptr_[0:y_metrics_size_])
+    }
+
+    // Delete y-coordinate arrays
+    if (yf_ptr_ && yf_size_ > 0) {
+        #pragma omp target exit data map(delete: yf_ptr_[0:yf_size_])
+    }
+    if (yc_ptr_ && yc_size_ > 0) {
+        #pragma omp target exit data map(delete: yc_ptr_[0:yc_size_])
+    }
+
+    // Unmap IBM data
+    if (ibm_) {
+        ibm_->unmap_from_gpu();
     }
 
     gpu_ready_ = false;
@@ -3857,41 +3975,61 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     // Velocity field (staggered, solver-owned, persistent on GPU)
     view.u_face = velocity_u_ptr_;
     view.v_face = velocity_v_ptr_;
+    view.w_face = velocity_w_ptr_;
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
-    
+    view.w_stride = velocity_.w_stride();
+    view.u_plane_stride = velocity_.u_plane_stride();
+    view.v_plane_stride = velocity_.v_plane_stride();
+    view.w_plane_stride = velocity_.w_plane_stride();
+
     // Turbulence fields (cell-centered)
     view.k = k_ptr_;
     view.omega = omega_ptr_;
     view.nu_t = nu_t_ptr_;
     view.cell_stride = mesh_->total_Nx();  // Stride for cell-centered fields
-    
+    view.cell_plane_stride = mesh_->total_Nx() * mesh_->total_Ny();
+
     // Reynolds stress tensor
     view.tau_xx = tau_xx_ptr_;
     view.tau_xy = tau_xy_ptr_;
     view.tau_yy = tau_yy_ptr_;
-    
+
     // Gradient scratch buffers
     view.dudx = dudx_ptr_;
     view.dudy = dudy_ptr_;
     view.dvdx = dvdx_ptr_;
     view.dvdy = dvdy_ptr_;
-    
+
     // Wall distance
     view.wall_distance = wall_distance_ptr_;
-    
+
     // Y-metric arrays for stretched grids
     view.dyc = dyc_ptr_;
     view.dyc_size = static_cast<int>(y_metrics_size_);
     view.is_y_stretched = mesh_->is_y_stretched();
 
+    // Y-direction mesh coordinates (for stretched-grid LES filter width)
+    view.yf = yf_ptr_;
+    view.yc = yc_ptr_;
+
     // Mesh parameters
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;
+    view.Nz = mesh_->Nz;
     view.Ng = mesh_->Nghost;
     view.dx = mesh_->dx;
     view.dy = mesh_->dy;
+    view.dz = mesh_->dz;
     view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
+
+    // Total array sizes for map(present: ptr[0:size]) clauses
+    view.u_total = static_cast<int>(velocity_.u_total_size());
+    view.v_total = static_cast<int>(velocity_.v_total_size());
+    view.w_total = static_cast<int>(velocity_.w_total_size());
+    view.cell_total = static_cast<int>(field_total_size_);
+    view.yf_total = static_cast<int>(yf_size_);
+    view.yc_total = static_cast<int>(yc_size_);
 
     return view;
 }
@@ -4044,6 +4182,7 @@ double RANSSolver::compute_kinetic_energy_device() const {
         }
     }
 
+    if (decomp_) ke = decomp_->allreduce_sum(ke);
     return ke;
 }
 
@@ -4127,6 +4266,7 @@ double RANSSolver::compute_max_velocity_device() const {
         }
     }
 
+    if (decomp_) max_vel = decomp_->allreduce_max(max_vel);
     return max_vel;
 }
 
@@ -4169,6 +4309,7 @@ double RANSSolver::compute_divergence_linf_device() const {
         }
     }
 
+    if (decomp_) max_div = decomp_->allreduce_max(max_div);
     return max_div;
 }
 
@@ -4230,6 +4371,7 @@ double RANSSolver::compute_max_conv_device() const {
         }
     }
 
+    if (decomp_) max_conv = decomp_->allreduce_max(max_conv);
     return max_conv;
 }
 

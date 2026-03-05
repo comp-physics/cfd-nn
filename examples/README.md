@@ -48,7 +48,7 @@ Demonstrates performance differences between turbulence closures on Re_τ = 180 
 - Baseline vs GEP performance
 - How to use NN models (when trained)
 
-**Note**: NN models require training on McConkey dataset for real results. See `docs/TRAINING_GUIDE.md`.
+**Note**: NN models require training on McConkey dataset for real results. See `docs/TURBULENCE_MODELS_GUIDE.md`.
 
 ---
 
@@ -302,7 +302,7 @@ cd examples/02_turbulent_channel
 ./run_all.sh
 ```
 
-See **`docs/TRAINING_GUIDE.md`** for complete instructions.
+See **`docs/TURBULENCE_MODELS_GUIDE.md`** for complete instructions.
 
 ## Config File Format
 
@@ -438,10 +438,11 @@ And the relevant turbulence model papers (see individual example READMEs).
 ## Additional Resources
 
 ### Documentation
-- **`../README.md`** - Main project documentation
-- **`../docs/TRAINING_GUIDE.md`** - How to train NN models
-- **`../docs/VALIDATION.md`** - Validation results
-- **`../docs/TESTING.md`** - Unit test documentation
+- **`../docs/GETTING_STARTED.md`** - Build, run, and config reference
+- **`../docs/SOLVER_GUIDE.md`** - DNS, LES, IBM, GPU performance
+- **`../docs/TURBULENCE_MODELS_GUIDE.md`** - NN models, training, datasets
+- **`../docs/TESTING_AND_VALIDATION.md`** - Tests, CI, validation results
+- **`../docs/POISSON_SOLVER_GUIDE.md`** - Poisson solver backends
 
 ### Datasets
 - **McConkey et al. (2021)** - Turbulence modeling dataset (Kaggle)

@@ -24,42 +24,64 @@ struct TurbulenceDeviceView {
     // Velocity field (staggered MAC grid, solver-owned, persistent on GPU)
     double* u_face = nullptr;           // u at x-faces: (Ny+2Ng) × (Nx+2Ng+1)
     double* v_face = nullptr;           // v at y-faces: (Ny+2Ng+1) × (Nx+2Ng)
+    double* w_face = nullptr;           // w at z-faces: (Ny+2Ng) × (Nx+2Ng) × (Nz+2Ng+1) [3D]
     int u_stride = 0;                   // u row stride
     int v_stride = 0;                   // v row stride
-    
+    int w_stride = 0;                   // w row stride [3D]
+    int u_plane_stride = 0;             // u plane stride [3D]
+    int v_plane_stride = 0;             // v plane stride [3D]
+    int w_plane_stride = 0;             // w plane stride [3D]
+
     // Turbulence fields (cell-centered, solver-owned, persistent on GPU)
     double* k = nullptr;                // TKE (if transport model)
     double* omega = nullptr;            // Specific dissipation (if transport model)
     double* nu_t = nullptr;             // Eddy viscosity output
     int cell_stride = 0;                // Cell-centered row stride
-    
+    int cell_plane_stride = 0;          // Cell-centered plane stride [3D]
+
     // Reynolds stress tensor components (cell-centered, for EARSM/TBNN)
     double* tau_xx = nullptr;
     double* tau_xy = nullptr;
     double* tau_yy = nullptr;
-    
+
     // Scratch buffers for gradients (solver-owned, persistent on GPU)
     double* dudx = nullptr;             // Cell-centered gradients
     double* dudy = nullptr;
     double* dvdx = nullptr;
     double* dvdy = nullptr;
-    
+
     // Wall distance (cell-centered, precomputed, persistent on GPU)
     double* wall_distance = nullptr;
-    
+
     // Y-metric arrays for stretched grids (persistent on GPU via solver mapping)
     const double* dyc = nullptr;        ///< Center-to-center y-spacing: yc[j]-yc[j-1]
     int dyc_size = 0;                   ///< Size of dyc array
     bool is_y_stretched = false;        ///< Whether grid uses non-uniform y-spacing
 
+    // Y-direction mesh coordinates (for stretched grids)
+    const double* yf = nullptr;         // Face y-positions (Ny+1+2Ng)
+    const double* yc = nullptr;         // Cell center y-positions (Ny+2Ng)
+
     // Mesh parameters (scalars, passed by value to GPU kernels)
     int Nx = 0;                         // Interior cells in x
     int Ny = 0;                         // Interior cells in y
+    int Nz = 1;                         // Interior cells in z (1 for 2D)
     int Ng = 0;                         // Ghost cells
     double dx = 0.0;                    // Grid spacing
     double dy = 0.0;
+    double dz = 1.0;                    // z spacing (1.0 for 2D)
     double delta = 0.0;                 // Reference length scale
-    
+
+    // Total array sizes (for map(present: ptr[0:size]) clauses)
+    int u_total = 0;
+    int v_total = 0;
+    int w_total = 0;
+    int cell_total = 0;
+    int yf_total = 0;
+    int yc_total = 0;
+
+    bool is3D() const { return Nz > 1; }
+
     // Check if view is valid (all essential pointers non-null)
     bool is_valid() const {
         return (u_face != nullptr && v_face != nullptr && nu_t != nullptr &&

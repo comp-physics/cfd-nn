@@ -20,7 +20,13 @@ enum class TurbulenceModelType {
     // EARSM models
     EARSM_WJ,       ///< SST k-ω + Wallin-Johansson EARSM
     EARSM_GS,       ///< SST k-ω + Gatski-Speziale EARSM
-    EARSM_Pope      ///< SST k-ω + Pope quadratic model
+    EARSM_Pope,     ///< SST k-ω + Pope quadratic model
+    // LES SGS models
+    Smagorinsky,    ///< Static Smagorinsky (Cs = 0.17)
+    DynamicSmagorinsky, ///< Dynamic Smagorinsky (Germano)
+    WALE,           ///< Wall-Adapting Local Eddy-viscosity
+    Vreman,         ///< Vreman model
+    Sigma           ///< Sigma model
 };
 
 /// Convective/advection scheme selection
@@ -44,7 +50,8 @@ enum class PoissonSolverType {
     FFT2D,      ///< 2D mesh FFT solver (periodic x, walls y, Nz=1)
     FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z) - 3D only
     HYPRE,      ///< HYPRE PFMG solver (requires USE_HYPRE build)
-    MG          ///< Native geometric multigrid
+    MG,         ///< Native geometric multigrid
+    FFT_MPI     ///< Distributed FFT with MPI pencil transpose (requires USE_MPI)
 };
 
 /// Time integration scheme selection

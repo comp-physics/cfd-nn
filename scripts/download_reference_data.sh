@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download DNS reference data for validation report generation
 # Sources:
-#   MKM: Moser, Kim & Mansour (1999), Re_tau=180
+#   MKM: Moser, Kim & Mansour (1999), Re_tau=180, 395, 590
 #   Brachet TGV: Brachet et al. (1983), Re=1600
 set -euo pipefail
 
@@ -55,3 +55,7 @@ echo ""
 echo "=== Reference data download complete ==="
 echo "  MKM data:    $DATA_DIR/mkm_retau180/chan180/profiles/"
 echo "  Brachet TGV: $DATA_DIR/brachet_tgv/"
+echo ""
+echo "For cylinder flow validation, use:"
+echo "  Re=100: Cd~1.33, St~0.164 (Park et al., JFM 1998)"
+echo "  Re=300: Cd~1.38, St~0.21  (Williamson, JFM 1996)"

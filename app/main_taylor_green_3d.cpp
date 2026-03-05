@@ -17,6 +17,7 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "timing.hpp"
+#include "decomposition.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -112,7 +113,17 @@ void print_usage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
-    std::cout << "=== 3D Taylor-Green Vortex Solver ===\n\n";
+#ifdef USE_MPI
+    MPI_Init(&argc, &argv);
+    int mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+#else
+    int mpi_rank = 0;
+#endif
+
+    if (mpi_rank == 0) {
+        std::cout << "=== 3D Taylor-Green Vortex Solver ===\n\n";
+    }
 
     // Taylor-Green specific parameters
     double Re = 100.0;
@@ -216,7 +227,15 @@ int main(int argc, char** argv) {
     std::cout << "Mesh: " << mesh.Nx << " x " << mesh.Ny << " x " << mesh.Nz << " cells\n";
     std::cout << "dx = dy = dz = " << mesh.dx << "\n\n";
 
+    // Create MPI decomposition
+#ifdef USE_MPI
+    Decomposition decomp(MPI_COMM_WORLD, config.Nz);
+#else
+    Decomposition decomp(config.Nz);
+#endif
+
     RANSSolver solver(mesh, config);
+    solver.set_decomposition(&decomp);
 
     // Periodic BCs in all directions
     VelocityBC bc;
@@ -389,7 +408,13 @@ int main(int argc, char** argv) {
     }
 
     // Print timing summary
-    TimingStats::instance().print_summary();
+    if (mpi_rank == 0) {
+        TimingStats::instance().print_summary();
+    }
+
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
 
     return 0;
 }
