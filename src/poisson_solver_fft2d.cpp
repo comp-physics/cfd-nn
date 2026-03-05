@@ -371,16 +371,15 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     // 2D path only uses the first 2D plane [0, Nx_full*Ny_full-1].
     // FFT2D must match this by using 2D indexing (no k offset).
     //
-    // 1. Pack RHS from ghost layout to contiguous array + compute volume-weighted sum
-    // Solvability on stretched grids requires Σ f*dyv = 0, not Σ f = 0
-    // On uniform grids, dyv is empty — all cells have equal weight (dy), so
-    // volume-weighted mean reduces to arithmetic mean.
+    // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean removal.
+    // Solvability on stretched grids requires Σ f*dyv = 0 (volume-weighted).
+    // On uniform grids, dyv is empty and all weights equal dy, so Σ f*dy = dy*Σf.
+    // Two separate target regions avoid mapping nullptr for the uniform-grid dyv.
     const bool stretched = mesh_->is_y_stretched();
-    const double* dyv_ptr = stretched ? mesh_->dyv.data() : nullptr;
-    const double uniform_dy = mesh_->dy;
     double weighted_sum = 0.0;
 
     if (stretched) {
+        const double* dyv_ptr = mesh_->dyv.data();
         #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
             map(present: rhs_ptr[0:plane_size], dyv_ptr[0:Ny_full]) is_device_ptr(packed)
         for (int j = 0; j < Ny; ++j) {
@@ -393,6 +392,7 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
             }
         }
     } else {
+        const double dy_val = mesh_->dy;
         #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
             map(present: rhs_ptr[0:plane_size]) is_device_ptr(packed)
         for (int j = 0; j < Ny; ++j) {
@@ -401,7 +401,7 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
                 const size_t dst_idx = (size_t)j * Nx + i;
                 double val = rhs_ptr[src_idx];
                 packed[dst_idx] = val;
-                weighted_sum += val * uniform_dy;
+                weighted_sum += val * dy_val;
             }
         }
     }

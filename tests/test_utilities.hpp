@@ -1261,7 +1261,10 @@ inline double l2_norm(const FieldT& f, const MeshT& mesh) {
 template<typename FieldT, typename MeshT>
 inline double linf_norm(const FieldT& f, const MeshT& mesh) {
     double max_val = 0.0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+    // 2D meshes store data at k=0 plane, not k=k_begin()
+    const int k_start = mesh.is2D() ? 0 : mesh.k_begin();
+    const int k_stop  = mesh.is2D() ? 1 : mesh.k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 max_val = std::max(max_val, std::abs(f(i, j, k)));
@@ -1276,7 +1279,9 @@ template<typename FieldT, typename MeshT>
 inline double l2_diff(const FieldT& a, const FieldT& b, const MeshT& mesh) {
     double sum = 0.0;
     int count = 0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+    const int k_start = mesh.is2D() ? 0 : mesh.k_begin();
+    const int k_stop  = mesh.is2D() ? 1 : mesh.k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 double d = a(i, j, k) - b(i, j, k);
@@ -1293,7 +1298,9 @@ template<typename FieldT, typename MeshT>
 inline double mean_value(const FieldT& f, const MeshT& mesh) {
     double sum = 0.0;
     int count = 0;
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+    const int k_start = mesh.is2D() ? 0 : mesh.k_begin();
+    const int k_stop  = mesh.is2D() ? 1 : mesh.k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 sum += f(i, j, k);
@@ -1308,7 +1315,9 @@ inline double mean_value(const FieldT& f, const MeshT& mesh) {
 template<typename FieldT, typename MeshT>
 inline void remove_mean(FieldT& f, const MeshT& mesh) {
     double m = mean_value(f, mesh);
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+    const int k_start = mesh.is2D() ? 0 : mesh.k_begin();
+    const int k_stop  = mesh.is2D() ? 1 : mesh.k_end();
+    for (int k = k_start; k < k_stop; ++k) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
                 f(i, j, k) -= m;
