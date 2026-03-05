@@ -34,9 +34,20 @@ option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 # Hypre solver option (requires CUDA toolkit)
 option(USE_HYPRE "Enable HYPRE PFMG Poisson solver" OFF)
 
+# MPI support for multi-GPU domain decomposition
+option(USE_MPI "Enable MPI for multi-GPU domain decomposition" OFF)
+
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
+
+# MPI support (CPU-only builds)
+if(USE_MPI AND NOT USE_GPU_OFFLOAD)
+    find_package(MPI REQUIRED)
+    target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+    target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+    message(STATUS "  MPI enabled (CPU build)")
+endif()
 
 # Suppress unknown pragma warnings in CPU builds (allows OpenMP pragmas to be ignored silently)
 option(SUPPRESS_UNKNOWN_OMP_PRAGMAS "Silence -Wunknown-pragmas for OpenMP pragmas in CPU build" ON)
@@ -264,6 +275,7 @@ set(LIB_SOURCES
     src/turbulence_transport.cpp
     src/turbulence_earsm.cpp
     src/gpu_kernels.cpp
+    src/decomposition.cpp
 )
 
 # Core library
@@ -279,6 +291,14 @@ if(USE_GPU_OFFLOAD)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
     target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
+
+    # MPI support
+    if(USE_MPI)
+        find_package(MPI REQUIRED)
+        target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+        message(STATUS "  MPI enabled for multi-GPU domain decomposition")
+    endif()
 
     # Custom CUDA kernels (shared-memory smoothers, reductions, halo packing)
     if(CMAKE_CUDA_COMPILER)
@@ -319,6 +339,14 @@ if(USE_GPU_OFFLOAD)
         target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
         message(STATUS "  FFT Poisson solvers added (2D FFT + 1D FFT + cuSPARSE)")
     endif()
+endif()
+
+# MPI support (CPU-only builds)
+if(USE_MPI AND NOT USE_GPU_OFFLOAD)
+    find_package(MPI REQUIRED)
+    target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+    target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+    message(STATUS "  MPI enabled (CPU build)")
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -451,6 +479,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest LABELS fast)
     add_nncfd_test(test_config LABELS fast)
     add_nncfd_test(test_mpi_guard LABELS fast)
+    add_nncfd_test(test_decomposition TEST_NAME_SUFFIX DecompositionTest LABELS fast)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
