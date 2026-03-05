@@ -67,6 +67,14 @@ struct TurbulenceDeviceView {
     double dz = 1.0;                    // z spacing (1.0 for 2D)
     double delta = 0.0;                 // Reference length scale
 
+    // Total array sizes (for map(present: ptr[0:size]) clauses)
+    int u_total = 0;
+    int v_total = 0;
+    int w_total = 0;
+    int cell_total = 0;
+    int yf_total = 0;
+    int yc_total = 0;
+
     bool is3D() const { return Nz > 1; }
 
     // Check if view is valid (all essential pointers non-null)

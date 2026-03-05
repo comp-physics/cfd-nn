@@ -199,6 +199,28 @@ void IBMForcing::compute_weights() {
     weight_u_ptr_ = weight_u_.data();
     weight_v_ptr_ = weight_v_.data();
     weight_w_ptr_ = is2D ? nullptr : weight_w_.data();
+
+    // Compute cell-centered solid mask for Poisson RHS masking
+    const int cell_stride = mesh_->total_Nx();
+    const int cell_plane = cell_stride * mesh_->total_Ny();
+    cell_total_ = is2D ? static_cast<size_t>(cell_stride * mesh_->total_Ny())
+                       : static_cast<size_t>(cell_plane * mesh_->total_Nz());
+    solid_mask_cell_.assign(cell_total_, 1.0);
+
+    for (int k = Ng; k < Nz_eff + Ng; ++k) {
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            for (int i = Ng; i < Nx + Ng; ++i) {
+                double x = mesh_->x(i);
+                double y = mesh_->y(j);
+                double z = is2D ? 0.0 : mesh_->z(k);
+                if (body_->phi(x, y, z) < 0.0) {
+                    int idx = is2D ? (j * cell_stride + i) : (k * cell_plane + j * cell_stride + i);
+                    solid_mask_cell_[idx] = 0.0;
+                }
+            }
+        }
+    }
+    solid_mask_cell_ptr_ = solid_mask_cell_.data();
 }
 
 void IBMForcing::map_to_gpu() {
@@ -208,6 +230,9 @@ void IBMForcing::map_to_gpu() {
     #pragma omp target enter data map(to: weight_v_ptr_[0:v_total_])
     if (weight_w_ptr_ && w_total_ > 0) {
         #pragma omp target enter data map(to: weight_w_ptr_[0:w_total_])
+    }
+    if (solid_mask_cell_ptr_ && cell_total_ > 0) {
+        #pragma omp target enter data map(to: solid_mask_cell_ptr_[0:cell_total_])
     }
 
     gpu_mapped_ = true;
@@ -220,6 +245,9 @@ void IBMForcing::unmap_from_gpu() {
     #pragma omp target exit data map(delete: weight_v_ptr_[0:v_total_])
     if (weight_w_ptr_ && w_total_ > 0) {
         #pragma omp target exit data map(delete: weight_w_ptr_[0:w_total_])
+    }
+    if (solid_mask_cell_ptr_ && cell_total_ > 0) {
+        #pragma omp target exit data map(delete: solid_mask_cell_ptr_[0:cell_total_])
     }
 
     gpu_mapped_ = false;
@@ -296,6 +324,19 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
         for (int i = 0; i < w_n; ++i) {
             w_ptr[i] *= ww[i];
         }
+    }
+}
+
+void IBMForcing::mask_rhs_device(double* rhs_ptr) {
+    if (!gpu_mapped_ || !solid_mask_cell_ptr_) return;
+
+    double* mask = solid_mask_cell_ptr_;
+    const int n = static_cast<int>(cell_total_);
+
+    #pragma omp target teams distribute parallel for \
+        map(present: rhs_ptr[0:n], mask[0:n])
+    for (int i = 0; i < n; ++i) {
+        rhs_ptr[i] *= mask[i];
     }
 }
 

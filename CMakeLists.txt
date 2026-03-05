@@ -653,6 +653,8 @@ if(BUILD_TESTS)
     if(USE_GPU_OFFLOAD)
         add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
         target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
+        add_executable(bench_les_ibm_gpu tests/bench_les_ibm_gpu.cpp)
+        target_link_libraries(bench_les_ibm_gpu PRIVATE nn_cfd_core)
     endif()
 
     # =========================================================================

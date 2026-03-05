@@ -54,6 +54,10 @@ public:
     /// @param w_ptr  Device-resident w-velocity pointer (nullptr for 2D)
     void apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr);
 
+    /// Zero out Poisson RHS at solid cell centers (GPU, no CPU sync)
+    /// @param rhs_ptr  Device-resident RHS pointer (cell-centered)
+    void mask_rhs_device(double* rhs_ptr);
+
     /// Map IBM data to GPU (call after classify_cells)
     void map_to_gpu();
 
@@ -103,6 +107,11 @@ private:
     std::vector<double> weight_u_;
     std::vector<double> weight_v_;
     std::vector<double> weight_w_;
+
+    // Cell-centered solid mask (0=solid/forcing inside body, 1=fluid)
+    std::vector<double> solid_mask_cell_;
+    double* solid_mask_cell_ptr_ = nullptr;
+    size_t cell_total_ = 0;
 
     // Raw pointers for GPU mapping
     double* weight_u_ptr_ = nullptr;

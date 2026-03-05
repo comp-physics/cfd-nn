@@ -344,10 +344,12 @@ void SmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
+    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
-        map(present: u, v, nu_t_ptr, yf, yc) \
+        map(present: u[0:u_sz], v[0:v_sz], w[0:w_sz], nu_t_ptr[0:nut_sz], yf[0:yf_sz], yc[0:yc_sz]) \
         firstprivate(Nx, Ny, Nz_eff, Ng, dx, dz, Cs, is2D, \
                      u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, \
                      cell_stride, cell_plane)
@@ -399,10 +401,12 @@ void WALEModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
+    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
-        map(present: u, v, nu_t_ptr, yf, yc) \
+        map(present: u[0:u_sz], v[0:v_sz], w[0:w_sz], nu_t_ptr[0:nut_sz], yf[0:yf_sz], yc[0:yc_sz]) \
         firstprivate(Nx, Ny, Nz_eff, Ng, dx, dz, Cw, is2D, \
                      u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, \
                      cell_stride, cell_plane)
@@ -454,10 +458,12 @@ void VremanModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
+    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
-        map(present: u, v, nu_t_ptr, yf, yc) \
+        map(present: u[0:u_sz], v[0:v_sz], w[0:w_sz], nu_t_ptr[0:nut_sz], yf[0:yf_sz], yc[0:yc_sz]) \
         firstprivate(Nx, Ny, Nz_eff, Ng, dx, dz, Cv, is2D, \
                      u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, \
                      cell_stride, cell_plane)
@@ -509,10 +515,12 @@ void SigmaModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
+    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
-        map(present: u, v, nu_t_ptr, yf, yc) \
+        map(present: u[0:u_sz], v[0:v_sz], w[0:w_sz], nu_t_ptr[0:nut_sz], yf[0:yf_sz], yc[0:yc_sz]) \
         firstprivate(Nx, Ny, Nz_eff, Ng, dx, dz, Cs, is2D, \
                      u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, \
                      cell_stride, cell_plane)
@@ -584,10 +592,12 @@ void DynamicSmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
+    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
-        map(present: u, v, nu_t_ptr, yf, yc) \
+        map(present: u[0:u_sz], v[0:v_sz], w[0:w_sz], nu_t_ptr[0:nut_sz], yf[0:yf_sz], yc[0:yc_sz]) \
         firstprivate(Nx, Ny, Nz_eff, Ng, dx, dz, Cs, is2D, \
                      u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, \
                      cell_stride, cell_plane)

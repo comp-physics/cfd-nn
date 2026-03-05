@@ -1811,36 +1811,31 @@ double RANSSolver::step() {
     // 4a-IBM. Mask solid cells in Poisson RHS (set to zero)
     // This prevents the Poisson solver from generating pressure gradients
     // inside the body, which would create spurious velocity corrections.
-    // CPU-only: sync RHS from GPU, mask, sync back
     if (ibm_) {
-        if (gpu_ready_) {
-            #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
-        }
-        const int Nx_l = mesh_->Nx;
-        const int Ny_l = mesh_->Ny;
-        const int Nz_l = std::max(mesh_->Nz, 1);
-        const int Ng_l = mesh_->Nghost;
-        const bool is_2d_l = mesh_->is2D();
-        int Nz_eff = is_2d_l ? 1 : Nz_l;
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->mask_rhs_device(rhs_poisson_ptr_);
+        } else {
+            const int Nz_l = std::max(mesh_->Nz, 1);
+            const int Ng_l = mesh_->Nghost;
+            const bool is_2d_l = mesh_->is2D();
+            int Nz_eff = is_2d_l ? 1 : Nz_l;
 
-        for (int k = Ng_l; k < Nz_eff + Ng_l; ++k) {
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    double x = mesh_->x(i);
-                    double y = mesh_->y(j);
-                    double z = is_2d_l ? 0.0 : mesh_->z(k);
-                    if (ibm_->body().phi(x, y, z) < 0.0) {
-                        if (is_2d_l) {
-                            rhs_poisson_(i, j) = 0.0;
-                        } else {
-                            rhs_poisson_(i, j, k) = 0.0;
+            for (int k = Ng_l; k < Nz_eff + Ng_l; ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double x = mesh_->x(i);
+                        double y = mesh_->y(j);
+                        double z = is_2d_l ? 0.0 : mesh_->z(k);
+                        if (ibm_->body().phi(x, y, z) < 0.0) {
+                            if (is_2d_l) {
+                                rhs_poisson_(i, j) = 0.0;
+                            } else {
+                                rhs_poisson_(i, j, k) = 0.0;
+                            }
                         }
                     }
                 }
             }
-        }
-        if (gpu_ready_) {
-            #pragma omp target update to(rhs_poisson_ptr_[0:field_total_size_])
         }
     }
 
@@ -3892,6 +3887,14 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     view.dy = mesh_->dy;
     view.dz = mesh_->dz;
     view.delta = (turb_model_ ? turb_model_->delta() : 1.0);
+
+    // Total array sizes for map(present: ptr[0:size]) clauses
+    view.u_total = static_cast<int>(velocity_.u_total_size());
+    view.v_total = static_cast<int>(velocity_.v_total_size());
+    view.w_total = static_cast<int>(velocity_.w_total_size());
+    view.cell_total = static_cast<int>(field_total_size_);
+    view.yf_total = static_cast<int>(yf_size_);
+    view.yc_total = static_cast<int>(yc_size_);
 
     return view;
 }
