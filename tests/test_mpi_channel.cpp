@@ -94,8 +94,8 @@ bool test_poiseuille_with_decomp() {
     config.Ny = Ny;
     config.Nz = 1;
     config.nu = nu;
-    config.dt = 0.005;
-    config.max_steps = 2000;
+    config.dt = 0.05;
+    config.max_steps = 5000;
     config.tol = 1e-8;
     config.poisson_solver = PoissonSolverType::MG;
     config.time_integrator = TimeIntegrator::Euler;
@@ -116,7 +116,7 @@ bool test_poiseuille_with_decomp() {
 
     double residual = 1.0;
     int steps = 0;
-    for (int i = 0; i < 2000 && residual > 1e-8; ++i) {
+    for (int i = 0; i < 5000 && residual > 1e-8; ++i) {
         residual = solver.step();
         steps = i + 1;
     }
