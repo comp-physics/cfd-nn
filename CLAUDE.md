@@ -58,7 +58,10 @@ Key source files:
 - `solver_recycling.cpp` — Recycling inflow BC
 - `poisson_solver_multigrid.cpp` — Geometric multigrid
 - `poisson_solver_fft*.cpp` — FFT Poisson solvers (cuFFT)
-- `turbulence_*.cpp` — Turbulence closure implementations
+- `turbulence_les.cpp` — LES SGS models with fused GPU kernels (Smagorinsky, WALE, Vreman, Sigma, Dynamic Smagorinsky)
+- `turbulence_*.cpp` — Other turbulence closure implementations (RANS, EARSM, NN)
+- `ibm_forcing.cpp` — Immersed boundary method (direct forcing, GPU weight arrays)
+- `ibm_geometry.cpp` — IBM body definitions (cylinder, sphere, signed distance)
 - `config.cpp` — Config file parser and CLI args
 
 ## Coding Conventions
@@ -133,16 +136,19 @@ Same pattern: header in `include/`, impl in `src/`, enum in `PoissonSolverType`,
 
 The `RANSSolver::step()` method implements a fractional-step projection method in this order:
 
-1. **Turbulence update** — `turb_model_->advance_turbulence()` then `turb_model_->update()` (compute `nu_t`)
+1. **Turbulence update** — `turb_model_->advance_turbulence()` then `turb_model_->update()` (compute `nu_t`). LES models use fused GPU kernels via `update_gpu(TurbulenceDeviceView*)`.
 2. **Effective viscosity** — `nu_eff_ = nu + nu_t`
 3. **Convective + diffusive terms** — computed from current velocity
 4. **Predictor** — `u* = u^n + dt·(-conv + diff + body_force)` (explicit)
-5. **Recycling inlet** (if enabled) — apply recycling BC, correct divergence
-6. **Pressure Poisson** — `∇²p' = (1/dt)·∇·u*`, warm-started from previous `p'`
-7. **Velocity correction** — `u^{n+1} = u* - dt·∇p'`
-8. **Boundary conditions** — periodic halos, no-slip walls
-9. **Recycle plane extraction** (if enabled) — save for next step
-10. **Residual** — `max|u^{n+1} - u^n|` via GPU reduction
+5. **IBM forcing (if enabled)** — `apply_forcing_device()`: multiply u* by pre-computed weight arrays (0=solid, 1=fluid)
+6. **Recycling inlet** (if enabled) — apply recycling BC, correct divergence
+7. **IBM RHS masking (if enabled)** — `mask_rhs_device()`: zero Poisson RHS at solid cells (GPU kernel, no CPU sync)
+8. **Pressure Poisson** — `∇²p' = (1/dt)·∇·u*`, warm-started from previous `p'`
+9. **Velocity correction** — `u^{n+1} = u* - dt·∇p'`
+10. **IBM re-forcing (if enabled)** — re-apply weight multiplication to corrected velocity
+11. **Boundary conditions** — periodic halos, no-slip walls
+12. **Recycle plane extraction** (if enabled) — save for next step
+13. **Residual** — `max|u^{n+1} - u^n|` via GPU reduction
 
 For RK2/RK3, steps 3-7 repeat per stage with SSP weights.
 
@@ -180,7 +186,7 @@ Functions that read field data on CPU (like `accumulate_statistics()`, `validate
 ### Pragma Discipline
 - Do not add `#pragma omp target` or `#pragma omp teams` where not needed
 - Do not add `#ifdef USE_GPU_OFFLOAD` guards around pragmas — they fall away naturally in CPU builds
-- Use `map(present: ...)` for data already on GPU (Model 1 persistent mapping contract)
+- Use `map(present: ptr[0:size])` with **array sections** for data already on GPU — bare pointer names (e.g., `map(present: ptr)`) do not work with nvc++ and cause silent failures or NaN
 - Never use `map(to: ...)` or `map(from: ...)` during compute — data is persistently mapped
 
 ### nvc++ Workarounds
@@ -308,10 +314,12 @@ stats.assert_gpu_dominant(0.7, "solver test");         // throws if < 70%
 
 ## Performance Notes
 
-- Poisson solver dominates: multigrid is 99%+ of GPU time
-- Smoothing kernels (red-black Gauss-Seidel) are the bottleneck (~76%)
+- Poisson solver dominates: ~83% of step time at 8.4M cells with MG
+- LES SGS models add ~4% overhead (fused GPU kernels compute gradient + nu_sgs in one pass)
+- IBM forcing adds <0.3% overhead (element-wise weight multiply, sub-millisecond)
 - Memory transfers are negligible (<3%) — persistent mapping works well
 - 3D scaling: memory grows as O(N^3)
+- Benchmark: `bench_les_ibm_gpu [Nx] [Ny] [Nz] [nsteps]` (see `docs/LES_IBM_GPU_GUIDE.md`)
 
 ## Workflow Rules
 
@@ -373,3 +381,6 @@ If more info is needed after a packet: ask for **ONE** additional item only.
 - RHS of Poisson equation subtracts mean divergence to ensure solvability for periodic/all-Neumann BCs
 - `CFL_y` always uses `CFL_max` (no relaxation) — this is deliberate after blow-up bugs with relaxed y-CFL
 - Bash scripting: `((VAR++))` returns exit status 1 when VAR is 0 (breaks `set -e`) — use `VAR=$((VAR + 1))` instead
+- `map(present: ptr)` with bare pointer names does NOT work with nvc++ — always use array sections: `map(present: ptr[0:size])`
+- IBM `set_ibm_forcing()` must be called either before or after GPU init — it auto-detects `gpu_ready_` and calls `map_to_gpu()` accordingly
+- IBM geometry functions (`phi()`) are virtual and cannot be called on GPU — all geometry evaluation must happen at init time with results stored in pre-computed arrays
