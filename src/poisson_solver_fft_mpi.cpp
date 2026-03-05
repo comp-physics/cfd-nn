@@ -53,6 +53,12 @@ void FFTMPIPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
         serial_solver_->set_bc(x_lo, x_hi, y_lo, y_hi, z_lo, z_hi);
     }
 #endif
+
+    // Recompute tridiagonal coefficients — they depend on bc_y_lo_/bc_y_hi_
+    // (Neumann BCs zero out boundary stencil entries)
+    if (distributed_) {
+        compute_tridiagonal_coeffs();
+    }
 }
 
 void FFTMPIPoissonSolver::set_space_order(int order) {
@@ -210,21 +216,21 @@ void FFTMPIPoissonSolver::compute_alltoallv_params() {
     // Partition kx modes evenly across ranks
     int kx_base = Nx_ / nprocs;
     int kx_rem = Nx_ % nprocs;
+    int my_kx_count = kx_base + (decomp_->rank() < kx_rem ? 1 : 0);
 
     int send_offset = 0;
     int recv_offset = 0;
     for (int r = 0; r < nprocs; ++r) {
-        int kx_count = kx_base + (r < kx_rem ? 1 : 0);
+        int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
 
-        // Send: kx_count modes × Ny × Nz_local (real+imag)
-        send_counts_[r] = kx_count * Ny_ * Nz_local_ * 2;
+        // Send TO rank r: rank r's kx modes × Ny × this rank's Nz_local
+        send_counts_[r] = kx_count_r * Ny_ * Nz_local_ * 2;
         send_displs_[r] = send_offset;
         send_offset += send_counts_[r];
 
-        // Recv: kx_count modes × Ny × nz_for_rank_r (real+imag)
-        // We receive from rank r their Nz_local z-planes
+        // Recv FROM rank r: this rank's kx modes × Ny × rank r's Nz_local
         int nz_from_r = decomp_->nz_for_rank(r);
-        recv_counts_[r] = kx_count * Ny_ * nz_from_r * 2;
+        recv_counts_[r] = my_kx_count * Ny_ * nz_from_r * 2;
         recv_displs_[r] = recv_offset;
         recv_offset += recv_counts_[r];
     }
