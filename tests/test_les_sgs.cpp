@@ -135,6 +135,49 @@ void test_all_models_zero_velocity() {
     }
 }
 
+void test_all_models_nonnegative_nu_sgs() {
+    // All LES models must produce nu_sgs >= 0 for any flow
+    const double S = 10.0;
+    const int Nx = 16, Ny = 16;
+    Mesh mesh;
+    mesh.init_uniform(Nx, Ny, 0.0, 1.0, 0.0, 1.0);
+
+    VectorField vel(mesh);
+    const int Ng = mesh.Nghost;
+
+    // Set u = S*y (shear flow)
+    for (int j = 0; j < Ny + 2 * Ng; ++j) {
+        double y = mesh.y(j);
+        for (int i = 0; i < Nx + 1 + 2 * Ng; ++i) {
+            vel.u(i, j) = S * y;
+        }
+    }
+
+    ScalarField k(mesh), omega(mesh), nu_t(mesh);
+
+    std::vector<std::unique_ptr<LESModel>> models;
+    models.push_back(std::make_unique<SmagorinskyModel>());
+    models.push_back(std::make_unique<WALEModel>());
+    models.push_back(std::make_unique<VremanModel>());
+    models.push_back(std::make_unique<SigmaModel>());
+    models.push_back(std::make_unique<DynamicSmagorinskyModel>());
+
+    for (auto& model : models) {
+        nu_t.fill(-1.0);  // Fill with negative to detect if model updates
+        model->update(mesh, vel, k, omega, nu_t, nullptr, nullptr);
+
+        double min_nu = 1e30;
+        for (int j = 1; j < Ny - 1; ++j) {
+            for (int i = 1; i < Nx - 1; ++i) {
+                min_nu = std::min(min_nu, nu_t(i + Ng, j + Ng));
+            }
+        }
+
+        CHECK(min_nu >= 0.0, (model->name() + " must produce non-negative nu_sgs").c_str());
+        std::cout << "PASS: " << model->name() << " non-negative nu_sgs (min=" << min_nu << ")" << std::endl;
+    }
+}
+
 void test_factory() {
     auto smag = create_turbulence_model(TurbulenceModelType::Smagorinsky);
     CHECK(smag != nullptr, "Smagorinsky factory should return non-null");
@@ -205,6 +248,7 @@ int main() {
     test_smagorinsky_pure_shear();
     test_wale_pure_rotation();
     test_all_models_zero_velocity();
+    test_all_models_nonnegative_nu_sgs();
     test_vreman_3d_shear();
     test_factory();
 

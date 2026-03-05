@@ -3,8 +3,8 @@
 ///
 /// Runs a short channel flow simulation with each LES SGS model to verify:
 ///   1. Stable (no blow-up)
-///   2. nu_sgs > 0 in interior
-///   3. Model integrates correctly with solver pipeline
+///   2. Bulk velocity reasonable (model integrates with solver pipeline)
+///   Note: nu_sgs positivity is tested in test_les_sgs.cpp
 
 #include "mesh.hpp"
 #include "fields.hpp"

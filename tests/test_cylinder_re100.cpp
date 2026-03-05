@@ -101,6 +101,7 @@ void test_cylinder_ibm_integration() {
     // Note: pressure correction can re-introduce some velocity, but it should be small
     double u_center = std::abs(solver.velocity().u(i_center, j_center));
     std::cout << "  u at body center: " << u_center << std::endl;
+    CHECK(u_center < 0.5 * U_inf, "Velocity inside body should be significantly reduced by IBM");
 
     // Flow should have changed from initial uniform state (wake develops)
     double u_downstream = solver.velocity().u(Ng + Nx - 2, j_center);
