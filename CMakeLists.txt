@@ -220,6 +220,10 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Force all executables to the build root (prevents HYPRE FetchContent from
+# creating config subdirectories like Deployment/ that confuse CTest)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
