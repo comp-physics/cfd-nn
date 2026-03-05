@@ -2337,6 +2337,9 @@ double RANSSolver::step() {
 
     NVTX_POP();  // End residual_computation
 
+    // MPI: global max residual across all ranks
+    if (decomp_) max_change = decomp_->allreduce_max(max_change);
+
     // NaN/Inf GUARD: Check for numerical stability issues
     // Do this after turbulence update but before next iteration starts
     check_for_nan_inf(step_count_);
@@ -3932,6 +3935,7 @@ double RANSSolver::compute_kinetic_energy_device() const {
         }
     }
 
+    if (decomp_) ke = decomp_->allreduce_sum(ke);
     return ke;
 }
 
@@ -4015,6 +4019,7 @@ double RANSSolver::compute_max_velocity_device() const {
         }
     }
 
+    if (decomp_) max_vel = decomp_->allreduce_max(max_vel);
     return max_vel;
 }
 
@@ -4057,6 +4062,7 @@ double RANSSolver::compute_divergence_linf_device() const {
         }
     }
 
+    if (decomp_) max_div = decomp_->allreduce_max(max_div);
     return max_div;
 }
 
@@ -4118,6 +4124,7 @@ double RANSSolver::compute_max_conv_device() const {
         }
     }
 
+    if (decomp_) max_conv = decomp_->allreduce_max(max_conv);
     return max_conv;
 }
 
