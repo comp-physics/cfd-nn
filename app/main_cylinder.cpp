@@ -134,9 +134,9 @@ int main(int argc, char** argv) {
     // Create solver
     RANSSolver solver(mesh, config);
     solver.set_decomposition(&decomp);
+    solver.set_ibm_forcing(&ibm);
 
-    // Boundary conditions: periodic in x and z, free-slip in y
-    // (For true inflow/outflow, would need non-periodic x BCs)
+    // Boundary conditions: periodic in x and z, periodic in y (large domain)
     VelocityBC bc;
     bc.x_lo = VelocityBC::Periodic;
     bc.x_hi = VelocityBC::Periodic;
@@ -180,12 +180,7 @@ int main(int argc, char** argv) {
         }
         double residual = solver.step();
 
-        // Apply IBM forcing after velocity prediction
-        // (ideally this should be inside step() before Poisson, but for now
-        //  we apply it after and rely on the next step's projection to clean up)
-        ibm.apply_forcing(solver.velocity(), solver.current_dt());
-
-        // Compute forces on the body
+        // Compute forces on the body (IBM forcing applied inside step())
         auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
 
         double Cd = Fx / (q_inf * A_ref);

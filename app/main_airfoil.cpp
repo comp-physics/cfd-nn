@@ -131,6 +131,7 @@ int main(int argc, char** argv) {
     // Create solver
     RANSSolver solver(mesh, config);
     solver.set_decomposition(&decomp);
+    solver.set_ibm_forcing(&ibm);
 
     // Boundary conditions
     VelocityBC bc;
@@ -172,8 +173,6 @@ int main(int argc, char** argv) {
             solver.set_dt(solver.compute_adaptive_dt());
         }
         double residual = solver.step();
-
-        ibm.apply_forcing(solver.velocity(), solver.current_dt());
 
         auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
 

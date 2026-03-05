@@ -13,6 +13,7 @@
 /// ensuring numerical consistency between platforms.
 
 #include "solver.hpp"
+#include "ibm_forcing.hpp"
 #include "decomposition.hpp"
 #include "halo_exchange.hpp"
 #include "timing.hpp"
@@ -1628,6 +1629,11 @@ double RANSSolver::step() {
         apply_fringe_blending();        // Optional smoothing near inlet
     }
 
+    // 3b. Apply IBM forcing to predicted velocity (before Poisson solve)
+    if (ibm_) {
+        ibm_->apply_forcing(velocity_, current_dt_);
+    }
+
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*
     {
@@ -1789,6 +1795,38 @@ double RANSSolver::step() {
         }
     }
     NVTX_POP();  // End poisson_rhs_build
+
+    // 4a-IBM. Mask solid cells in Poisson RHS (set to zero)
+    // This prevents the Poisson solver from generating pressure gradients
+    // inside the body, which would create spurious velocity corrections.
+    if (ibm_) {
+        const int Nx_l = mesh_->Nx;
+        const int Ny_l = mesh_->Ny;
+        const int Nz_l = std::max(mesh_->Nz, 1);
+        const int Ng_l = mesh_->Nghost;
+        const bool is_2d_l = mesh_->is2D();
+        const int stride_l = Nx_l + 2 * Ng_l;
+        const int plane_stride_l = stride_l * (Ny_l + 2 * Ng_l);
+        int Nz_eff = is_2d_l ? 1 : Nz_l;
+
+        for (int k = Ng_l; k < Nz_eff + Ng_l; ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    // Check if cell center is inside body (phi < 0)
+                    double x = mesh_->x(i);
+                    double y = mesh_->y(j);
+                    double z = is_2d_l ? 0.0 : mesh_->z(k);
+                    if (ibm_->body().phi(x, y, z) < 0.0) {
+                        if (is_2d_l) {
+                            rhs_poisson_(i, j) = 0.0;
+                        } else {
+                            rhs_poisson_(i, j, k) = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 4b. Solve Poisson equation for pressure correction
     {
