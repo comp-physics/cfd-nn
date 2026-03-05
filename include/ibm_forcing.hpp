@@ -12,7 +12,7 @@
 ///   - Solid: phi < -band (deep inside body, set u=0 directly)
 ///   - Forcing: -band <= phi <= 0 (near-surface, apply interpolated forcing)
 ///
-/// Integration: call compute_forcing() after predictor, before Poisson solve.
+/// Integration: call apply_forcing() after predictor, before Poisson solve.
 /// The forcing modifies u*, v*, w* to enforce no-slip on the IBM surface.
 
 #include "ibm_geometry.hpp"
@@ -20,6 +20,7 @@
 #include "fields.hpp"
 #include <vector>
 #include <memory>
+#include <tuple>
 #include <cstddef>
 
 namespace nncfd {

@@ -259,9 +259,11 @@ void Config::load(const std::string& filename) {
         poisson_solver = PoissonSolverType::HYPRE;
     } else if (solver_str == "mg" || solver_str == "multigrid") {
         poisson_solver = PoissonSolverType::MG;
+    } else if (solver_str == "fft_mpi") {
+        poisson_solver = PoissonSolverType::FFT_MPI;
     } else {
         std::cerr << "ERROR: Unknown poisson_solver='" << solver_str << "'.\n"
-                  << "Valid options: auto, fft, fft2d, fft1d, hypre, mg\n";
+                  << "Valid options: auto, fft, fft2d, fft1d, fft_mpi, hypre, mg\n";
         std::exit(1);
     }
 
@@ -396,6 +398,8 @@ void Config::parse_args(int argc, char** argv) {
                 poisson_solver = PoissonSolverType::HYPRE;
             } else if (val == "mg" || val == "multigrid") {
                 poisson_solver = PoissonSolverType::MG;
+            } else if (val == "fft_mpi") {
+                poisson_solver = PoissonSolverType::FFT_MPI;
             } else {
                 std::cerr << "Warning: Unknown --poisson value '" << val << "', using auto\n";
                 poisson_solver = PoissonSolverType::Auto;
@@ -1052,6 +1056,7 @@ void Config::print() const {
         case PoissonSolverType::FFT1D: std::cout << "FFT1D (singly-periodic)"; break;
         case PoissonSolverType::HYPRE: std::cout << "HYPRE PFMG"; break;
         case PoissonSolverType::MG: std::cout << "Multigrid"; break;
+        case PoissonSolverType::FFT_MPI: std::cout << "FFT_MPI (distributed)"; break;
     }
     std::cout << "\n"
               << "Advection scheme: ";
