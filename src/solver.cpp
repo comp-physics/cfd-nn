@@ -1630,8 +1630,9 @@ double RANSSolver::step() {
     }
 
     // 3b. Apply IBM forcing to predicted velocity (before Poisson solve)
+    // Must apply to velocity_star_ (the predictor), not velocity_ (current step)
     if (ibm_) {
-        ibm_->apply_forcing(velocity_, current_dt_);
+        ibm_->apply_forcing(velocity_star_, current_dt_);
     }
 
     // 4. Solve pressure Poisson equation
@@ -2090,6 +2091,12 @@ double RANSSolver::step() {
         NVTX_PUSH("velocity_correction");
         correct_velocity();
         NVTX_POP();
+    }
+
+    // 5b. Re-apply IBM forcing after velocity correction
+    // Pressure correction may introduce non-zero velocity inside the body
+    if (ibm_) {
+        ibm_->apply_forcing(velocity_, current_dt_);
     }
 
     // 6. Apply boundary conditions

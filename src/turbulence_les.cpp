@@ -255,6 +255,14 @@ void DynamicSmagorinskyModel::update(
     ScalarField& nu_t, TensorField* tau_ij,
     const TurbulenceDeviceView* device_view) {
 
+    // Note: Dynamic procedure is simplified — uses static Cs=0.17 fallback
+    // (Germano identity with test-filtering not yet implemented)
+    static bool warned = false;
+    if (!warned) {
+        std::cerr << "[LES] DynamicSmagorinsky: using simplified procedure (Cs=0.17 fallback)\n";
+        warned = true;
+    }
+
     // Compute gradient tensor for dynamic coefficient estimation
     grad_computer_.compute(mesh, velocity, grad_);
 

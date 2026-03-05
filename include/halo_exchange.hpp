@@ -31,6 +31,9 @@ public:
     HaloExchange(const Decomposition& decomp, int Nx, int Ny, int Nz_local, int Ng);
     ~HaloExchange();
 
+    HaloExchange(const HaloExchange&) = delete;
+    HaloExchange& operator=(const HaloExchange&) = delete;
+
     /// Exchange z-halos for a single field (CPU host memory)
     /// Uses MPI_Isend/Irecv with host-side pack/unpack
     void exchange(double* field, int stride, int plane_stride);
