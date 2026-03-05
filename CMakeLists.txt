@@ -279,6 +279,7 @@ set(LIB_SOURCES
     src/halo_exchange.cpp
     src/poisson_solver_fft_mpi.cpp
     src/ibm_geometry.cpp
+    src/ibm_forcing.cpp
 )
 
 # Core library
@@ -427,6 +428,12 @@ target_link_libraries(duct nn_cfd_core)
 add_executable(taylor_green_3d app/main_taylor_green_3d.cpp)
 target_link_libraries(taylor_green_3d nn_cfd_core)
 
+add_executable(cylinder app/main_cylinder.cpp)
+target_link_libraries(cylinder nn_cfd_core)
+
+add_executable(airfoil app/main_airfoil.cpp)
+target_link_libraries(airfoil nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -487,6 +494,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_mpi_channel TEST_NAME_SUFFIX MPIChannelTest LABELS fast)
     add_nncfd_test(test_mpi_poisson TEST_NAME_SUFFIX MPIPoissonTest LABELS fast)
     add_nncfd_test(test_ibm_sdf TEST_NAME_SUFFIX IBMSDFTest LABELS fast)
+    add_nncfd_test(test_ibm_forcing TEST_NAME_SUFFIX IBMForcingTest LABELS fast)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
