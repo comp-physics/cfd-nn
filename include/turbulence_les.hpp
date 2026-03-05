@@ -30,9 +30,9 @@ public:
     bool is_gpu_ready() const override { return false; }
 
 protected:
-    /// Compute filter width from mesh spacing
-    /// Standard: delta = (dx * dy * dz)^(1/3) for 3D, (dx * dy)^(1/2) for 2D
-    double filter_width(const Mesh& mesh) const;
+    /// Compute local filter width from mesh spacing at cell j
+    /// Uses actual cell height for stretched grid support
+    double filter_width(const Mesh& mesh, int jg) const;
 
     /// Override in subclass: compute nu_sgs from gradient tensor at a single cell
     /// @param g  Gradient tensor components (row-major: g[0..8] = g11,g12,g13,g21,...)

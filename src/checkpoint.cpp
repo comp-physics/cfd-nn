@@ -19,19 +19,27 @@ namespace {
 void write_scalar_dataset(hid_t file, const char* name,
                           const double* data, hsize_t size) {
     hid_t space = H5Screate_simple(1, &size, nullptr);
+    if (space < 0)
+        throw std::runtime_error("[Checkpoint] H5Screate_simple failed for: " + std::string(name));
     hid_t dset = H5Dcreate2(file, name, H5T_NATIVE_DOUBLE, space,
                              H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    H5Dwrite(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    if (dset < 0) {
+        H5Sclose(space);
+        throw std::runtime_error("[Checkpoint] H5Dcreate2 failed for: " + std::string(name));
+    }
+    herr_t status = H5Dwrite(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
     H5Dclose(dset);
     H5Sclose(space);
+    if (status < 0)
+        throw std::runtime_error("[Checkpoint] H5Dwrite failed for: " + std::string(name));
 }
 
-void read_scalar_dataset(hid_t file, const char* name,
+bool read_scalar_dataset(hid_t file, const char* name,
                          double* data, hsize_t expected_size) {
     hid_t dset = H5Dopen2(file, name, H5P_DEFAULT);
     if (dset < 0) {
         std::cerr << "[Checkpoint] Dataset '" << name << "' not found\n";
-        return;
+        return false;
     }
     hid_t space = H5Dget_space(dset);
     hsize_t dims;
@@ -39,16 +47,30 @@ void read_scalar_dataset(hid_t file, const char* name,
     if (dims != expected_size) {
         std::cerr << "[Checkpoint] Size mismatch for '" << name
                   << "': expected " << expected_size << ", got " << dims << "\n";
+        H5Sclose(space);
+        H5Dclose(dset);
+        return false;
     }
-    H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+    herr_t status = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
     H5Sclose(space);
     H5Dclose(dset);
+    if (status < 0) {
+        std::cerr << "[Checkpoint] H5Dread failed for '" << name << "'\n";
+        return false;
+    }
+    return true;
 }
 
 void write_int_attr(hid_t file, const char* name, int value) {
     hid_t space = H5Screate(H5S_SCALAR);
+    if (space < 0)
+        throw std::runtime_error("[Checkpoint] H5Screate failed for attr: " + std::string(name));
     hid_t attr = H5Acreate2(file, name, H5T_NATIVE_INT, space,
                              H5P_DEFAULT, H5P_DEFAULT);
+    if (attr < 0) {
+        H5Sclose(space);
+        throw std::runtime_error("[Checkpoint] H5Acreate2 failed for: " + std::string(name));
+    }
     H5Awrite(attr, H5T_NATIVE_INT, &value);
     H5Aclose(attr);
     H5Sclose(space);
@@ -56,8 +78,14 @@ void write_int_attr(hid_t file, const char* name, int value) {
 
 void write_double_attr(hid_t file, const char* name, double value) {
     hid_t space = H5Screate(H5S_SCALAR);
+    if (space < 0)
+        throw std::runtime_error("[Checkpoint] H5Screate failed for attr: " + std::string(name));
     hid_t attr = H5Acreate2(file, name, H5T_NATIVE_DOUBLE, space,
                              H5P_DEFAULT, H5P_DEFAULT);
+    if (attr < 0) {
+        H5Sclose(space);
+        throw std::runtime_error("[Checkpoint] H5Acreate2 failed for: " + std::string(name));
+    }
     H5Awrite(attr, H5T_NATIVE_DOUBLE, &value);
     H5Aclose(attr);
     H5Sclose(space);
@@ -69,6 +97,8 @@ int read_int_attr(hid_t file, const char* name) {
     if (attr >= 0) {
         H5Aread(attr, H5T_NATIVE_INT, &value);
         H5Aclose(attr);
+    } else {
+        std::cerr << "[Checkpoint] Warning: attribute '" << name << "' not found\n";
     }
     return value;
 }
@@ -79,6 +109,8 @@ double read_double_attr(hid_t file, const char* name) {
     if (attr >= 0) {
         H5Aread(attr, H5T_NATIVE_DOUBLE, &value);
         H5Aclose(attr);
+    } else {
+        std::cerr << "[Checkpoint] Warning: attribute '" << name << "' not found\n";
     }
     return value;
 }
@@ -153,20 +185,34 @@ bool read_checkpoint(const std::string& filename,
     time = read_double_attr(file, "time");
     dt = read_double_attr(file, "dt");
 
+    if (dt <= 0.0) {
+        std::cerr << "[Checkpoint] Warning: dt=" << dt << " <= 0, using default\n";
+        dt = 0.001;
+    }
+
     // Read velocity
     auto& u_data = vel.u_data();
     auto& v_data = vel.v_data();
-    read_scalar_dataset(file, "u", u_data.data(), u_data.size());
-    read_scalar_dataset(file, "v", v_data.data(), v_data.size());
+    if (!read_scalar_dataset(file, "u", u_data.data(), u_data.size()) ||
+        !read_scalar_dataset(file, "v", v_data.data(), v_data.size())) {
+        H5Fclose(file);
+        return false;
+    }
 
     if (!mesh.is2D()) {
         auto& w_data = vel.w_data();
-        read_scalar_dataset(file, "w", w_data.data(), w_data.size());
+        if (!read_scalar_dataset(file, "w", w_data.data(), w_data.size())) {
+            H5Fclose(file);
+            return false;
+        }
     }
 
     // Read pressure
     auto& p_data = pressure.data();
-    read_scalar_dataset(file, "pressure", p_data.data(), p_data.size());
+    if (!read_scalar_dataset(file, "pressure", p_data.data(), p_data.size())) {
+        H5Fclose(file);
+        return false;
+    }
 
     H5Fclose(file);
     std::cout << "[Checkpoint] Loaded from " << filename

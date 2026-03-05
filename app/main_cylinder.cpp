@@ -186,7 +186,7 @@ int main(int argc, char** argv) {
         double Cd = Fx / (q_inf * A_ref);
         double Cl = Fy / (q_inf * A_ref);
 
-        double time = step * solver.current_dt();
+        double time = solver.current_time();
 
         if (mpi_rank == 0) {
             if (force_file.is_open()) {

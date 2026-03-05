@@ -251,26 +251,29 @@ int FFTMPIPoissonSolver::solve_distributed_cpu(const ScalarField& rhs, ScalarFie
     const double pi = M_PI;
 
     // Step 1: Pack RHS, compute and subtract volume-weighted mean
+    // On stretched grids, solvability requires sum(f*dyv[j])=0 (volume-weighted)
     std::vector<double> rhs_packed(Nx * Ny * Nz_local, 0.0);
-    double local_sum = 0.0;
-    int local_count = Nx * Ny * Nz_local;
+    double local_weighted_sum = 0.0;
+    double local_volume = 0.0;
 
     for (int k = 0; k < Nz_local; ++k) {
         for (int j = 0; j < Ny; ++j) {
+            double dyv_j = mesh_->yf[j + Ng + 1] - mesh_->yf[j + Ng];
             for (int i = 0; i < Nx; ++i) {
                 double val = rhs(i + Ng, j + Ng, k + Ng);
                 rhs_packed[k * Nx * Ny + j * Nx + i] = val;
-                local_sum += val;
+                local_weighted_sum += val * dyv_j;
+                local_volume += dyv_j;
             }
         }
     }
 
-    // Global mean subtraction for solvability
-    double global_sum = local_sum;
-    int global_count = local_count;
-    decomp_->allreduce_sum(&global_sum, 1);
-    decomp_->allreduce_sum(&global_count, 1);
-    double mean = global_sum / global_count;
+    // Global volume-weighted mean subtraction for solvability
+    double global_weighted_sum = local_weighted_sum;
+    double global_volume = local_volume;
+    decomp_->allreduce_sum(&global_weighted_sum, 1);
+    decomp_->allreduce_sum(&global_volume, 1);
+    double mean = global_weighted_sum / global_volume;
 
     for (auto& v : rhs_packed) v -= mean;
 

@@ -134,19 +134,17 @@ void IBMForcing::apply_forcing(VectorField& vel, double dt) {
                 int idx = is2D ? (j * u_stride_ + i) : (k * u_plane_stride_ + j * u_stride_ + i);
                 IBMCellType ct = cell_type_u_[idx];
                 if (ct == IBMCellType::Solid) {
-                    vel.u(i, j) = 0.0;
+                    if (is2D) vel.u(i, j) = 0.0;
+                    else vel.u(i, j, k) = 0.0;
                 } else if (ct == IBMCellType::Forcing) {
-                    // Linear interpolation: u_target = 0 (no-slip)
-                    // For forcing cells near surface, interpolate between
-                    // fluid value and target (0) based on distance ratio
                     double x = mesh_->xf[i];
                     double y = mesh_->y(j);
                     double z = is2D ? 0.0 : mesh_->z(k);
                     double phi = body_->phi(x, y, z);
-                    // phi in [-band, 0]: weight = |phi|/band (0 at surface, 1 at band edge)
                     double weight = std::abs(phi) / band_width_;
                     weight = std::max(0.0, std::min(1.0, weight));
-                    vel.u(i, j) *= weight;  // Blend toward 0
+                    if (is2D) vel.u(i, j) *= weight;
+                    else vel.u(i, j, k) *= weight;
                 }
             }
         }
@@ -220,8 +218,8 @@ std::tuple<double, double, double> IBMForcing::compute_forces(
                 int idx = is2D ? (j * u_stride_ + i) : (k * u_plane_stride_ + j * u_stride_ + i);
                 if (cell_type_u_[idx] == IBMCellType::Forcing ||
                     cell_type_u_[idx] == IBMCellType::Solid) {
-                    // Force = -(rho * u / dt) * dV (reaction force on fluid)
-                    Fx -= vel.u(i, j) / dt * dV_u;
+                    double u_val = is2D ? vel.u(i, j) : vel.u(i, j, k);
+                    Fx -= u_val / dt * dV_u;
                 }
             }
         }

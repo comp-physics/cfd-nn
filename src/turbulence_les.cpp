@@ -12,11 +12,13 @@ namespace nncfd {
 // LESModel base class
 // ============================================================================
 
-double LESModel::filter_width(const Mesh& mesh) const {
+double LESModel::filter_width(const Mesh& mesh, int jg) const {
+    // Local filter width uses actual cell height for stretched grids
+    double dy_local = mesh.yf[jg + 1] - mesh.yf[jg];
     if (mesh.is2D()) {
-        return std::sqrt(mesh.dx * mesh.dy);
+        return std::sqrt(mesh.dx * dy_local);
     }
-    return std::cbrt(mesh.dx * mesh.dy * mesh.dz);
+    return std::cbrt(mesh.dx * dy_local * mesh.dz);
 }
 
 void LESModel::update(const Mesh& mesh, const VectorField& velocity,
@@ -26,7 +28,6 @@ void LESModel::update(const Mesh& mesh, const VectorField& velocity,
     // Compute velocity gradient tensor
     grad_computer_.compute(mesh, velocity, grad_);
 
-    double delta = filter_width(mesh);
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
     const int Nz_eff = mesh.is2D() ? 1 : mesh.Nz;
@@ -34,6 +35,8 @@ void LESModel::update(const Mesh& mesh, const VectorField& velocity,
 
     for (int k = 0; k < Nz_eff; ++k) {
         for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            double delta = filter_width(mesh, jg);
             for (int i = 0; i < Nx; ++i) {
                 int gidx = grad_.index(i, j, k);
                 double g[9] = {
@@ -46,7 +49,7 @@ void LESModel::update(const Mesh& mesh, const VectorField& velocity,
 
                 // Set nu_t at cell center
                 if (mesh.is2D()) {
-                    nu_t(i + Ng, j + Ng) = nu_sgs;
+                    nu_t(i + Ng, jg) = nu_sgs;
                 } else {
                     nu_t(i + Ng, j + Ng, k + Ng) = nu_sgs;
                 }

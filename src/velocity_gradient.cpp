@@ -38,15 +38,20 @@ void GradientComputer::compute(const Mesh& mesh, const VectorField& vel,
                 // du/dx: u is at x-faces, so du/dx at cell center = (u[i+1] - u[i]) / dx
                 // On staggered grid: u(ig, jg) is at x_{ig-1/2}, u(ig+1, jg) is at x_{ig+1/2}
                 // Cell center is at x_ig, so du/dx = (u(ig+1) - u(ig)) / dx
+                // Local y-spacings for stretched grid support
+                // For du/dy, dw/dy: central difference across cell center
+                double dy_central = mesh.yc[jg + 1] - mesh.yc[jg - 1];
+                // For dv/dy: face-to-face difference at cell center
+                double dy_face = mesh.yf[jg + 1] - mesh.yf[jg];
+
                 if (is2D) {
                     double dudx = (vel.u(ig + 1, jg) - vel.u(ig, jg)) / mesh.dx;
                     grad.g11[idx] = dudx;
 
                     // du/dy: interpolate u to cell center first, then differentiate in y
-                    // u at (ig, jg) center = 0.5*(u(ig, jg) + u(ig+1, jg))
                     double u_jp = 0.5 * (vel.u(ig, jg + 1) + vel.u(ig + 1, jg + 1));
                     double u_jm = 0.5 * (vel.u(ig, jg - 1) + vel.u(ig + 1, jg - 1));
-                    grad.g12[idx] = (u_jp - u_jm) / (2.0 * mesh.dy);
+                    grad.g12[idx] = (u_jp - u_jm) / dy_central;
 
                     // du/dz = 0 in 2D
                     grad.g13[idx] = 0.0;
@@ -56,8 +61,8 @@ void GradientComputer::compute(const Mesh& mesh, const VectorField& vel,
                     double v_im = 0.5 * (vel.v(ig - 1, jg) + vel.v(ig - 1, jg + 1));
                     grad.g21[idx] = (v_ip - v_im) / (2.0 * mesh.dx);
 
-                    // dv/dy: v is at y-faces, so dv/dy = (v(jg+1) - v(jg)) / dy
-                    double dvdy = (vel.v(ig, jg + 1) - vel.v(ig, jg)) / mesh.dy;
+                    // dv/dy: v is at y-faces, so dv/dy = (v(jg+1) - v(jg)) / dy_local
+                    double dvdy = (vel.v(ig, jg + 1) - vel.v(ig, jg)) / dy_face;
                     grad.g22[idx] = dvdy;
 
                     // dv/dz = 0 in 2D
@@ -75,7 +80,7 @@ void GradientComputer::compute(const Mesh& mesh, const VectorField& vel,
                     // du/dy (interpolate u to center, diff in y)
                     double u_jp = 0.5 * (vel.u(ig, jg + 1, kg) + vel.u(ig + 1, jg + 1, kg));
                     double u_jm = 0.5 * (vel.u(ig, jg - 1, kg) + vel.u(ig + 1, jg - 1, kg));
-                    grad.g12[idx] = (u_jp - u_jm) / (2.0 * mesh.dy);
+                    grad.g12[idx] = (u_jp - u_jm) / dy_central;
 
                     // du/dz (interpolate u to center, diff in z)
                     double u_kp = 0.5 * (vel.u(ig, jg, kg + 1) + vel.u(ig + 1, jg, kg + 1));
@@ -87,8 +92,8 @@ void GradientComputer::compute(const Mesh& mesh, const VectorField& vel,
                     double v_im = 0.5 * (vel.v(ig - 1, jg, kg) + vel.v(ig - 1, jg + 1, kg));
                     grad.g21[idx] = (v_ip - v_im) / (2.0 * mesh.dx);
 
-                    // dv/dy
-                    grad.g22[idx] = (vel.v(ig, jg + 1, kg) - vel.v(ig, jg, kg)) / mesh.dy;
+                    // dv/dy (face-to-face, local spacing)
+                    grad.g22[idx] = (vel.v(ig, jg + 1, kg) - vel.v(ig, jg, kg)) / dy_face;
 
                     // dv/dz (interpolate v to center, diff in z)
                     double v_kp = 0.5 * (vel.v(ig, jg, kg + 1) + vel.v(ig, jg + 1, kg + 1));
@@ -103,7 +108,7 @@ void GradientComputer::compute(const Mesh& mesh, const VectorField& vel,
                     // dw/dy (interpolate w to center, diff in y)
                     double w_jp = 0.5 * (vel.w(ig, jg + 1, kg) + vel.w(ig, jg + 1, kg + 1));
                     double w_jm = 0.5 * (vel.w(ig, jg - 1, kg) + vel.w(ig, jg - 1, kg + 1));
-                    grad.g32[idx] = (w_jp - w_jm) / (2.0 * mesh.dy);
+                    grad.g32[idx] = (w_jp - w_jm) / dy_central;
 
                     // dw/dz
                     grad.g33[idx] = (vel.w(ig, jg, kg + 1) - vel.w(ig, jg, kg)) / mesh.dz;
