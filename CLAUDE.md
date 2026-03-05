@@ -11,9 +11,10 @@ Primary binary: `build/channel`. Config files are INI-style `.cfg` passed via `-
 GPU build is the primary development target (NVHPC compiler):
 
 ```bash
-./make.sh gpu              # GPU build (Release)
-./make.sh gpu --debug      # GPU build (Debug)
-./make.sh cpu              # CPU-only build
+./run.sh gpu --build-only              # GPU build (Release)
+./run.sh gpu --debug --build-only      # GPU build (Debug)
+./run.sh cpu --build-only              # CPU-only build
+./run.sh gpu --config file.cfg         # Build + run
 ```
 
 Or manually:

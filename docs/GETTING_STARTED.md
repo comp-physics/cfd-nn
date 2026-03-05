@@ -16,13 +16,13 @@ module load nvhpc cmake
 
 ## Building
 
-Use `make.sh` for the simplest experience:
+Use `run.sh` for the simplest experience:
 
 ```bash
-./make.sh gpu              # GPU build (Release) — primary target
-./make.sh cpu              # CPU-only build
-./make.sh gpu --debug      # GPU build with debug symbols
-./make.sh clean            # Remove build artifacts
+./run.sh gpu --build-only              # GPU build (Release) — primary target
+./run.sh cpu --build-only              # CPU-only build
+./run.sh gpu --debug --build-only      # GPU build with debug symbols
+./run.sh clean                         # Remove build artifacts
 ```
 
 ### Build Options
@@ -43,16 +43,16 @@ Use `make.sh` for the simplest experience:
 
 ```bash
 # Development (fast iteration)
-./make.sh cpu --debug
+./run.sh cpu --debug --build-only
 
 # Production GPU (H200)
-./make.sh gpu --gpu-cc 90
+./run.sh gpu --gpu-cc 90 --build-only
 
 # Full-featured GPU build
-./make.sh gpu --all-features --gpu-cc 90
+./run.sh gpu --all-features --gpu-cc 90 --build-only
 
 # Separate build directory for experiments
-./make.sh gpu --build-dir build_experiment
+./run.sh gpu --build-dir build_experiment --build-only
 ```
 
 ### Manual CMake Build

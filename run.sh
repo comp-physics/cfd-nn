@@ -3,12 +3,13 @@
 # Build and run CFD-NN simulations
 #
 # Usage:
-#   ./run.sh gpu --config file.cfg          # Build GPU + run
-#   ./run.sh cpu --config file.cfg          # Build CPU + run
-#   ./run.sh gpu --build-only               # Build only
-#   ./run.sh --run-only --config file.cfg   # Run only (skip build)
+#   ./run.sh gpu --config file.cfg            # Build GPU + run
+#   ./run.sh cpu --config file.cfg            # Build CPU + run
+#   ./run.sh gpu --build-only                 # Build only (replaces make.sh)
+#   ./run.sh clean                            # Remove build artifacts
+#   ./run.sh --run-only --config file.cfg     # Run only (skip build)
 #   ./run.sh gpu --dry-run --config file.cfg  # Show what would run
-#   ./run.sh gpu --slurm --config file.cfg  # Submit SLURM job
+#   ./run.sh gpu --slurm --config file.cfg    # Submit SLURM job
 #
 # Extra solver args after '--':
 #   ./run.sh gpu --config file.cfg -- --max_steps 5000 --nu 0.001
@@ -16,9 +17,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
 
 # ── Defaults ──────────────────────────────────────────────
 BUILD_MODE=""
+BUILD_TYPE="Release"
+BUILD_DIR=""
+REBUILD=false
+JOBS=$(nproc 2>/dev/null || echo 4)
+USE_HDF5=false
+USE_MPI=false
+USE_HYPRE=false
+GPU_CC=""
+ALL_FEATURES=false
+
 CONFIG_FILE=""
 BUILD_ONLY=false
 RUN_ONLY=false
@@ -27,7 +39,6 @@ USE_SLURM=false
 SLURM_TIME="06:00:00"
 SLURM_PARTITION=""
 EXECUTABLE=""
-MAKE_ARGS=()
 SOLVER_ARGS=()
 PARSING_SOLVER_ARGS=false
 
@@ -46,13 +57,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         cpu|CPU)
             BUILD_MODE="cpu"
-            MAKE_ARGS+=("cpu")
             shift
             ;;
         gpu|GPU)
             BUILD_MODE="gpu"
-            MAKE_ARGS+=("gpu")
             shift
+            ;;
+        clean)
+            echo "Cleaning build directories..."
+            rm -rf "$PROJECT_ROOT"/build/CMake* "$PROJECT_ROOT"/build/Makefile "$PROJECT_ROOT"/build/*.cmake
+            rm -rf "$PROJECT_ROOT"/build/*.a "$PROJECT_ROOT"/build/compile_commands.json
+            rm -rf "$PROJECT_ROOT"/build/channel "$PROJECT_ROOT"/build/duct "$PROJECT_ROOT"/build/taylor_green_3d
+            rm -rf "$PROJECT_ROOT"/build/cylinder "$PROJECT_ROOT"/build/airfoil
+            rm -rf "$PROJECT_ROOT"/build/compare_channel_cpu_gpu
+            rm -rf "$PROJECT_ROOT"/build/profile_* "$PROJECT_ROOT"/build/test_* "$PROJECT_ROOT"/build/bench_*
+            echo "Clean complete."
+            exit 0
             ;;
         --config|-c)
             if [[ $# -lt 2 ]]; then
@@ -74,6 +94,46 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --debug)
+            BUILD_TYPE="Debug"
+            shift
+            ;;
+        --rebuild)
+            REBUILD=true
+            shift
+            ;;
+        --jobs)
+            JOBS="$2"
+            shift 2
+            ;;
+        -j*)
+            JOBS="${1#-j}"
+            shift
+            ;;
+        --hdf5)
+            USE_HDF5=true
+            shift
+            ;;
+        --mpi)
+            USE_MPI=true
+            shift
+            ;;
+        --hypre)
+            USE_HYPRE=true
+            shift
+            ;;
+        --gpu-cc)
+            GPU_CC="$2"
+            shift 2
+            ;;
+        --build-dir)
+            BUILD_DIR="$2"
+            shift 2
+            ;;
+        --all-features)
+            ALL_FEATURES=true
+            shift
+            ;;
         --slurm)
             USE_SLURM=true
             shift
@@ -90,21 +150,9 @@ while [[ $# -gt 0 ]]; do
             EXECUTABLE="$2"
             shift 2
             ;;
-        --debug|--rebuild|--hdf5|--mpi|--hypre|--all-features)
-            MAKE_ARGS+=("$1")
-            shift
-            ;;
-        --gpu-cc|--build-dir|--jobs)
-            MAKE_ARGS+=("$1" "$2")
-            shift 2
-            ;;
-        -j*)
-            MAKE_ARGS+=("$1")
-            shift
-            ;;
         --help|-h)
             cat <<'HELP'
-Usage: ./run.sh [cpu|gpu] [options] --config file.cfg [-- solver_args...]
+Usage: ./run.sh [cpu|gpu|clean] [options] [--config file.cfg] [-- solver_args...]
 
 Build + Run:
   ./run.sh gpu --config examples/01_laminar_channel/poiseuille.cfg
@@ -114,6 +162,7 @@ Build + Run:
 Build only:
   ./run.sh gpu --build-only
   ./run.sh gpu --debug --build-only
+  ./run.sh clean                           # Remove build artifacts
 
 Run only (skip build):
   ./run.sh --run-only --config examples/01_laminar_channel/poiseuille.cfg
@@ -133,19 +182,25 @@ Options:
   --slurm-time HH:MM  SLURM wall time (default: 06:00:00)
   --slurm-partition P  SLURM partition (default: auto)
 
-Build options (passed to make.sh):
-  --debug             Debug build
+Build options:
+  --debug             Debug build (default: Release)
   --rebuild           Force clean rebuild
-  --hdf5              Enable HDF5
-  --mpi               Enable MPI
-  --hypre             Enable HYPRE
-  --gpu-cc N          GPU compute capability
-  --build-dir DIR     Custom build directory
+  --jobs N / -jN      Parallel compile jobs (default: auto)
+  --hdf5              Enable HDF5 checkpoint/restart
+  --mpi               Enable MPI domain decomposition
+  --hypre             Enable HYPRE Poisson solver (GPU only)
+  --gpu-cc N          GPU compute capability (e.g., 80=A100, 90=H200)
+  --build-dir DIR     Custom build directory (default: build/)
   --all-features      Enable all optional features
-  --jobs N / -jN      Parallel compile jobs
 
 Extra solver arguments after '--':
   ./run.sh gpu --config case.cfg -- --nu 0.005 --Nx 128
+
+Test commands (run from build directory):
+  ctest --output-on-failure        All tests
+  ctest -L fast                    Fast tests (<30s)
+  ctest -L gpu                     GPU-only tests
+  ctest -LE slow                   Skip slow tests
 HELP
             exit 0
             ;;
@@ -158,6 +213,11 @@ HELP
 done
 
 # ── Validate arguments ────────────────────────────────────
+if [[ "$BUILD_ONLY" == false && "$RUN_ONLY" == false && -z "$CONFIG_FILE" && -z "$BUILD_MODE" ]]; then
+    echo "ERROR: Specify a build mode (cpu/gpu) and --config, or use --help"
+    exit 1
+fi
+
 if [[ "$BUILD_ONLY" == false && -z "$CONFIG_FILE" ]]; then
     echo "ERROR: --config is required (unless using --build-only)"
     echo "Usage: ./run.sh [cpu|gpu] --config file.cfg"
@@ -179,18 +239,22 @@ if [[ -n "$CONFIG_FILE" ]]; then
     CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
 fi
 
-# ── Determine build directory ─────────────────────────────
-BUILD_DIR="$SCRIPT_DIR/build"
-for i in "${!MAKE_ARGS[@]}"; do
-    if [[ "${MAKE_ARGS[$i]}" == "--build-dir" ]]; then
-        next=$((i + 1))
-        BUILD_DIR="${MAKE_ARGS[$next]}"
-        # Make absolute
-        if [[ "$BUILD_DIR" != /* ]]; then
-            BUILD_DIR="$SCRIPT_DIR/$BUILD_DIR"
-        fi
+# ── Apply --all-features ─────────────────────────────────
+if [[ "$ALL_FEATURES" == true ]]; then
+    USE_HDF5=true
+    USE_MPI=true
+    if [[ "$BUILD_MODE" == "gpu" ]]; then
+        USE_HYPRE=true
     fi
-done
+fi
+
+# ── Set build directory ──────────────────────────────────
+if [[ -z "$BUILD_DIR" ]]; then
+    BUILD_DIR="$PROJECT_ROOT/build"
+fi
+if [[ "$BUILD_DIR" != /* ]]; then
+    BUILD_DIR="$PROJECT_ROOT/$BUILD_DIR"
+fi
 
 # ── Auto-detect executable ────────────────────────────────
 detect_executable() {
@@ -200,11 +264,10 @@ detect_executable() {
     fi
 
     local cfg="$1"
-    local basename
-    basename="$(basename "$(dirname "$cfg")")"
+    local dir_name
+    dir_name="$(basename "$(dirname "$cfg")")"
 
-    # Match by example directory naming or config content
-    case "$basename" in
+    case "$dir_name" in
         *duct*)         echo "duct" ;;
         *taylor_green*) echo "taylor_green_3d" ;;
         *cylinder*)     echo "cylinder" ;;
@@ -221,30 +284,130 @@ fi
 
 EXE_PATH="$BUILD_DIR/$EXE_NAME"
 
-# ── Build ─────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════
+# BUILD
+# ══════════════════════════════════════════════════════════
 if [[ "$RUN_ONLY" == false ]]; then
-    if [[ ${#MAKE_ARGS[@]} -eq 0 ]]; then
-        # Default to cpu if no mode specified
-        MAKE_ARGS=("cpu")
+    if [[ -z "$BUILD_MODE" ]]; then
         BUILD_MODE="cpu"
     fi
 
-    echo "=== Building ($BUILD_MODE) ==="
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "  [dry-run] $SCRIPT_DIR/make.sh ${MAKE_ARGS[*]}"
-    else
-        "$SCRIPT_DIR/make.sh" "${MAKE_ARGS[@]}"
+    # Load NVHPC module if needed
+    if ! command -v nvc++ &>/dev/null; then
+        if [[ -f /etc/profile.d/lmod.sh ]]; then
+            source /etc/profile.d/lmod.sh
+        fi
+        if command -v module &>/dev/null; then
+            if [[ "$DRY_RUN" == false ]]; then
+                echo "Loading nvhpc module..."
+            fi
+            module load nvhpc 2>/dev/null || true
+        fi
     fi
+
+    # Verify compiler
+    if ! command -v nvc++ &>/dev/null; then
+        echo "ERROR: nvc++ not found."
+        echo ""
+        echo "Please load the NVIDIA HPC SDK:"
+        echo "  module load nvhpc"
+        exit 1
+    fi
+
+    CXX_COMPILER=$(command -v nvc++)
+
+    # Clean if rebuild requested
+    if [[ "$REBUILD" == true && "$DRY_RUN" == false ]]; then
+        echo "Cleaning for rebuild..."
+        rm -rf "$BUILD_DIR"/CMake* "$BUILD_DIR"/Makefile "$BUILD_DIR"/*.cmake
+        rm -rf "$BUILD_DIR"/*.a "$BUILD_DIR"/compile_commands.json
+    fi
+
+    mkdir -p "$BUILD_DIR"
+
+    # Build cmake options
+    CMAKE_OPTS=(
+        -DCMAKE_CXX_COMPILER="$CXX_COMPILER"
+        -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    )
+
+    if [[ "$BUILD_MODE" == "gpu" ]]; then
+        CMAKE_OPTS+=(-DUSE_GPU_OFFLOAD=ON)
+        if [[ -n "$GPU_CC" ]]; then
+            CMAKE_OPTS+=(-DGPU_CC="$GPU_CC")
+        fi
+    else
+        CMAKE_OPTS+=(-DUSE_GPU_OFFLOAD=OFF)
+    fi
+
+    [[ "$USE_HDF5" == true ]] && CMAKE_OPTS+=(-DUSE_HDF5=ON)
+    [[ "$USE_MPI" == true ]] && CMAKE_OPTS+=(-DUSE_MPI=ON)
+    [[ "$USE_HYPRE" == true ]] && CMAKE_OPTS+=(-DUSE_HYPRE=ON)
+
+    # Print configuration
+    echo "=============================================="
+    if [[ "$BUILD_MODE" == "gpu" ]]; then
+        echo "  GPU Build (OpenMP Target Offloading)"
+    else
+        echo "  CPU Build"
+    fi
+    echo "=============================================="
+    echo "Compiler:    $CXX_COMPILER"
+    echo "Build type:  $BUILD_TYPE"
+    echo "Build dir:   $BUILD_DIR"
+    echo "GPU offload: $(if [[ $BUILD_MODE == gpu ]]; then echo ON; else echo OFF; fi)"
+    [[ -n "$GPU_CC" ]] && echo "GPU CC:      $GPU_CC"
+    echo "HDF5:        $(if $USE_HDF5; then echo ON; else echo OFF; fi)"
+    echo "MPI:         $(if $USE_MPI; then echo ON; else echo OFF; fi)"
+    echo "HYPRE:       $(if $USE_HYPRE; then echo ON; else echo OFF; fi)"
+    echo "Jobs:        $JOBS"
+    echo ""
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "[dry-run] cmake $PROJECT_ROOT ${CMAKE_OPTS[*]}"
+        echo "[dry-run] make -j$JOBS"
+    else
+        # Run cmake if needed
+        if [[ ! -f "$BUILD_DIR/Makefile" ]]; then
+            echo "Running cmake..."
+            cd "$BUILD_DIR"
+            cmake "$PROJECT_ROOT" "${CMAKE_OPTS[@]}"
+            echo ""
+        fi
+
+        # Build
+        echo "Building with $JOBS parallel jobs..."
+        cd "$BUILD_DIR"
+        make -j"$JOBS"
+    fi
+
+    echo ""
+    echo "=============================================="
+    echo "  Build complete!"
+    echo "=============================================="
     echo ""
 fi
 
 if [[ "$BUILD_ONLY" == true ]]; then
-    echo "Build complete. Run with:"
-    echo "  $EXE_PATH --config <file.cfg>"
+    echo "Executables:"
+    for exe in channel duct taylor_green_3d cylinder airfoil; do
+        if [[ -x "$BUILD_DIR/$exe" ]]; then
+            echo "  ./run.sh --run-only --config <file.cfg>"
+            break
+        fi
+    done
+    echo ""
+    echo "Run tests:   cd $BUILD_DIR && ctest --output-on-failure"
+    echo "Fast tests:  cd $BUILD_DIR && ctest -L fast --output-on-failure"
+    echo ""
     exit 0
 fi
 
-# ── Verify executable exists ──────────────────────────────
+# ══════════════════════════════════════════════════════════
+# RUN
+# ══════════════════════════════════════════════════════════
+
+# Verify executable exists
 if [[ "$DRY_RUN" == false && ! -x "$EXE_PATH" ]]; then
     echo "ERROR: Executable not found: $EXE_PATH"
     echo ""
@@ -257,13 +420,13 @@ if [[ "$DRY_RUN" == false && ! -x "$EXE_PATH" ]]; then
     exit 1
 fi
 
-# ── Build run command ─────────────────────────────────────
+# Build run command
 RUN_CMD=("$EXE_PATH" "--config" "$CONFIG_FILE")
 if [[ ${#SOLVER_ARGS[@]} -gt 0 ]]; then
     RUN_CMD+=("${SOLVER_ARGS[@]}")
 fi
 
-# ── GPU environment ───────────────────────────────────────
+# GPU environment
 GPU_ENV=""
 if [[ "$BUILD_MODE" == "gpu" ]]; then
     GPU_ENV="OMP_TARGET_OFFLOAD=MANDATORY"
@@ -337,7 +500,6 @@ SLURM
         sbatch "$SLURM_SCRIPT"
         echo ""
         echo "Monitor with: squeue -u $USER"
-        # Clean up script after submission
         rm -f "$SLURM_SCRIPT"
     fi
     exit 0
