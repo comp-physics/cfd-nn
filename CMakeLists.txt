@@ -40,8 +40,35 @@ option(USE_MPI "Enable MPI for multi-GPU domain decomposition" OFF)
 # HDF5 checkpoint/restart (optional)
 option(USE_HDF5 "Enable HDF5 checkpoint/restart" OFF)
 if(USE_HDF5)
-    find_package(HDF5 REQUIRED COMPONENTS C)
-    message(STATUS "HDF5 ENABLED: ${HDF5_C_LIBRARIES}")
+    # Try system HDF5 first
+    find_package(HDF5 QUIET COMPONENTS C)
+    if(HDF5_FOUND)
+        message(STATUS "HDF5 ENABLED (system): ${HDF5_C_LIBRARIES}")
+        set(HDF5_FROM_FETCHCONTENT OFF)
+    else()
+        message(STATUS "System HDF5 not found — building from source via FetchContent")
+        include(FetchContent)
+        FetchContent_Declare(
+            hdf5
+            URL https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz
+            URL_HASH SHA256=e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b
+        )
+        # Configure HDF5 build options — minimal C-only build
+        set(HDF5_BUILD_CPP_LIB OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_FORTRAN OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_JAVA OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_HL_LIB OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_UTILS OFF CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(HDF5_ENABLE_Z_LIB_SUPPORT OFF CACHE BOOL "" FORCE)
+        set(HDF5_ENABLE_SZIP_SUPPORT OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(hdf5)
+        set(HDF5_FROM_FETCHCONTENT ON)
+        message(STATUS "HDF5 ENABLED (built from source)")
+    endif()
 endif()
 
 # GPU profiling options
@@ -357,8 +384,14 @@ endif()
 
 # HDF5 checkpoint/restart linking
 if(USE_HDF5)
-    target_include_directories(nn_cfd_core PUBLIC ${HDF5_INCLUDE_DIRS})
-    target_link_libraries(nn_cfd_core ${HDF5_C_LIBRARIES})
+    if(HDF5_FROM_FETCHCONTENT)
+        # FetchContent build: link the CMake target directly
+        target_link_libraries(nn_cfd_core hdf5-static)
+    else()
+        # System HDF5: use find_package variables
+        target_include_directories(nn_cfd_core PUBLIC ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(nn_cfd_core ${HDF5_C_LIBRARIES})
+    endif()
     target_compile_definitions(nn_cfd_core PUBLIC USE_HDF5)
     message(STATUS "  HDF5 checkpoint/restart enabled")
 endif()
