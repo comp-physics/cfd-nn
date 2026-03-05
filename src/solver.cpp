@@ -1631,8 +1631,29 @@ double RANSSolver::step() {
 
     // 3b. Apply IBM forcing to predicted velocity (before Poisson solve)
     // Must apply to velocity_star_ (the predictor), not velocity_ (current step)
+    // IBM forcing is CPU-only: sync from GPU, apply, sync back
     if (ibm_) {
+        if (gpu_ready_) {
+            const size_t u_total = velocity_star_.u_total_size();
+            const size_t v_total = velocity_star_.v_total_size();
+            #pragma omp target update from(velocity_star_u_ptr_[0:u_total])
+            #pragma omp target update from(velocity_star_v_ptr_[0:v_total])
+            if (!mesh_->is2D()) {
+                const size_t w_total = velocity_star_.w_total_size();
+                #pragma omp target update from(velocity_star_w_ptr_[0:w_total])
+            }
+        }
         ibm_->apply_forcing(velocity_star_, current_dt_);
+        if (gpu_ready_) {
+            const size_t u_total = velocity_star_.u_total_size();
+            const size_t v_total = velocity_star_.v_total_size();
+            #pragma omp target update to(velocity_star_u_ptr_[0:u_total])
+            #pragma omp target update to(velocity_star_v_ptr_[0:v_total])
+            if (!mesh_->is2D()) {
+                const size_t w_total = velocity_star_.w_total_size();
+                #pragma omp target update to(velocity_star_w_ptr_[0:w_total])
+            }
+        }
     }
 
     // 4. Solve pressure Poisson equation
@@ -1800,20 +1821,21 @@ double RANSSolver::step() {
     // 4a-IBM. Mask solid cells in Poisson RHS (set to zero)
     // This prevents the Poisson solver from generating pressure gradients
     // inside the body, which would create spurious velocity corrections.
+    // CPU-only: sync RHS from GPU, mask, sync back
     if (ibm_) {
+        if (gpu_ready_) {
+            #pragma omp target update from(rhs_poisson_ptr_[0:field_total_size_])
+        }
         const int Nx_l = mesh_->Nx;
         const int Ny_l = mesh_->Ny;
         const int Nz_l = std::max(mesh_->Nz, 1);
         const int Ng_l = mesh_->Nghost;
         const bool is_2d_l = mesh_->is2D();
-        const int stride_l = Nx_l + 2 * Ng_l;
-        const int plane_stride_l = stride_l * (Ny_l + 2 * Ng_l);
         int Nz_eff = is_2d_l ? 1 : Nz_l;
 
         for (int k = Ng_l; k < Nz_eff + Ng_l; ++k) {
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                 for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    // Check if cell center is inside body (phi < 0)
                     double x = mesh_->x(i);
                     double y = mesh_->y(j);
                     double z = is_2d_l ? 0.0 : mesh_->z(k);
@@ -1826,6 +1848,9 @@ double RANSSolver::step() {
                     }
                 }
             }
+        }
+        if (gpu_ready_) {
+            #pragma omp target update to(rhs_poisson_ptr_[0:field_total_size_])
         }
     }
 
@@ -2095,8 +2120,29 @@ double RANSSolver::step() {
 
     // 5b. Re-apply IBM forcing after velocity correction
     // Pressure correction may introduce non-zero velocity inside the body
+    // IBM forcing is CPU-only: sync from GPU, apply, sync back
     if (ibm_) {
+        if (gpu_ready_) {
+            const size_t u_total = velocity_.u_total_size();
+            const size_t v_total = velocity_.v_total_size();
+            #pragma omp target update from(velocity_u_ptr_[0:u_total])
+            #pragma omp target update from(velocity_v_ptr_[0:v_total])
+            if (!mesh_->is2D()) {
+                const size_t w_total = velocity_.w_total_size();
+                #pragma omp target update from(velocity_w_ptr_[0:w_total])
+            }
+        }
         ibm_->apply_forcing(velocity_, current_dt_);
+        if (gpu_ready_) {
+            const size_t u_total = velocity_.u_total_size();
+            const size_t v_total = velocity_.v_total_size();
+            #pragma omp target update to(velocity_u_ptr_[0:u_total])
+            #pragma omp target update to(velocity_v_ptr_[0:v_total])
+            if (!mesh_->is2D()) {
+                const size_t w_total = velocity_.w_total_size();
+                #pragma omp target update to(velocity_w_ptr_[0:w_total])
+            }
+        }
     }
 
     // 6. Apply boundary conditions

@@ -209,18 +209,20 @@ std::tuple<double, double, double> IBMForcing::compute_forces(
     int Nz_eff = is2D ? 1 : Nz;
 
     double Fx = 0.0, Fy = 0.0, Fz = 0.0;
-    double dV_u = mesh_->dx * mesh_->dy * (is2D ? 1.0 : mesh_->dz);
-    double dV_v = dV_u;  // Same volume for all components on MAC grid
+    const double dx = mesh_->dx;
+    const double dz = is2D ? 1.0 : mesh_->dz;
 
     // Sum forcing contributions from u-faces
     for (int k = Ng; k < Nz_eff + Ng; ++k) {
         for (int j = Ng; j < Ny + Ng; ++j) {
+            double dy_local = mesh_->yf[j + 1] - mesh_->yf[j];
+            double dV = dx * dy_local * dz;
             for (int i = Ng; i <= Nx + Ng; ++i) {
                 int idx = is2D ? (j * u_stride_ + i) : (k * u_plane_stride_ + j * u_stride_ + i);
                 if (cell_type_u_[idx] == IBMCellType::Forcing ||
                     cell_type_u_[idx] == IBMCellType::Solid) {
                     double u_val = is2D ? vel.u(i, j) : vel.u(i, j, k);
-                    Fx -= u_val / dt * dV_u;
+                    Fx -= u_val / dt * dV;
                 }
             }
         }
@@ -229,12 +231,14 @@ std::tuple<double, double, double> IBMForcing::compute_forces(
     // Sum forcing contributions from v-faces
     for (int k = Ng; k < Nz_eff + Ng; ++k) {
         for (int j = Ng; j <= Ny + Ng; ++j) {
+            double dy_local = mesh_->yc[j] - mesh_->yc[j - 1];
+            double dV = dx * dy_local * dz;
             for (int i = Ng; i < Nx + Ng; ++i) {
                 int idx = is2D ? (j * v_stride_ + i) : (k * v_plane_stride_ + j * v_stride_ + i);
                 if (cell_type_v_[idx] == IBMCellType::Forcing ||
                     cell_type_v_[idx] == IBMCellType::Solid) {
                     double v_val = is2D ? vel.v(i, j) : vel.v(i, j, k);
-                    Fy -= v_val / dt * dV_v;
+                    Fy -= v_val / dt * dV;
                 }
             }
         }
@@ -244,11 +248,13 @@ std::tuple<double, double, double> IBMForcing::compute_forces(
     if (!is2D) {
         for (int k = Ng; k <= Nz + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
+                double dy_local = mesh_->yf[j + 1] - mesh_->yf[j];
+                double dV = dx * dy_local * dz;
                 for (int i = Ng; i < Nx + Ng; ++i) {
                     int idx = k * w_plane_stride_ + j * w_stride_ + i;
                     if (cell_type_w_[idx] == IBMCellType::Forcing ||
                         cell_type_w_[idx] == IBMCellType::Solid) {
-                        Fz -= vel.w(i, j, k) / dt * dV_v;
+                        Fz -= vel.w(i, j, k) / dt * dV;
                     }
                 }
             }

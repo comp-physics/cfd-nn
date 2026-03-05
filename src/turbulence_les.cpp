@@ -313,8 +313,28 @@ void DynamicSmagorinskyModel::update(
     // Clip dynamic coefficient
     Cs_dyn_ = std::max(0.0, std::min(0.23, Cs_dyn_));
 
-    // Now compute nu_sgs using the dynamic Cs (via base class pattern)
-    LESModel::update(mesh, velocity, k, omega, nu_t, tau_ij, device_view);
+    // Compute nu_sgs using the dynamic Cs (gradient already computed above)
+    const int Ng = mesh.Nghost;
+    for (int kk = 0; kk < Nz_eff; ++kk) {
+        for (int j = 0; j < Ny; ++j) {
+            int jg = j + Ng;
+            double delta = filter_width(mesh, jg);
+            for (int i = 0; i < Nx; ++i) {
+                int gidx = grad_.index(i, j, kk);
+                double g[9] = {
+                    grad_.g11[gidx], grad_.g12[gidx], grad_.g13[gidx],
+                    grad_.g21[gidx], grad_.g22[gidx], grad_.g23[gidx],
+                    grad_.g31[gidx], grad_.g32[gidx], grad_.g33[gidx]
+                };
+                double nu_sgs = compute_nu_sgs_cell(g, delta);
+                if (mesh.is2D()) {
+                    nu_t(i + Ng, jg) = nu_sgs;
+                } else {
+                    nu_t(i + Ng, jg, kk + Ng) = nu_sgs;
+                }
+            }
+        }
+    }
 }
 
 } // namespace nncfd
