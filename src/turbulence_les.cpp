@@ -42,8 +42,6 @@ inline void compute_grad_2d(
     double g[9])
 {
     double dy_central = yc[jg + 1] - yc[jg - 1];
-    double dy_face = yc[jg] - yc[jg - 1];  // approximate face spacing
-    // For staggered grid: dy_face for dv/dy is yf[jg+1]-yf[jg], but we use yc spacing
 
     // du/dx
     g[0] = (u[jg * u_stride + ig + 1] - u[jg * u_stride + ig]) / dx;
@@ -56,11 +54,9 @@ inline void compute_grad_2d(
     double v_ip = 0.5 * (v[jg * v_stride + ig + 1] + v[(jg + 1) * v_stride + ig + 1]);
     double v_im = 0.5 * (v[jg * v_stride + ig - 1] + v[(jg + 1) * v_stride + ig - 1]);
     g[3] = (v_ip - v_im) / (2.0 * dx);
-    // dv/dy
-    double dy_face_actual = yc[jg + 1] - yc[jg]; // approximation; exact would use yf
-    (void)dy_face;
-    // Better: use actual face-to-face
-    g[4] = (v[(jg + 1) * v_stride + ig] - v[jg * v_stride + ig]) / dy_face_actual;
+    // dv/dy (cell-center spacing approximation for staggered v)
+    double dy_face = yc[jg + 1] - yc[jg];
+    g[4] = (v[(jg + 1) * v_stride + ig] - v[jg * v_stride + ig]) / dy_face;
     g[5] = 0.0; // dv/dz
     g[6] = 0.0; // dw/dx
     g[7] = 0.0; // dw/dy

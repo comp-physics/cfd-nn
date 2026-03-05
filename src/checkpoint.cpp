@@ -9,6 +9,7 @@
 
 #include <iostream>
 #include <algorithm>
+#include <stdexcept>
 
 namespace nncfd {
 
@@ -242,7 +243,7 @@ void write_checkpoint(const std::string& /*filename*/,
                       const VectorField& /*vel*/,
                       const ScalarField& /*pressure*/,
                       int /*step*/, double /*time*/, double /*dt*/) {
-    std::cerr << "[Checkpoint] HDF5 not available, checkpoint disabled\n";
+    throw std::runtime_error("[Checkpoint] HDF5 not available — rebuild with -DUSE_HDF5=ON to enable checkpointing");
 }
 
 bool read_checkpoint(const std::string& /*filename*/,

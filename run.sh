@@ -103,6 +103,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --jobs)
+            if [[ $# -lt 2 ]]; then echo "ERROR: --jobs requires an argument"; exit 1; fi
             JOBS="$2"
             shift 2
             ;;
@@ -123,10 +124,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --gpu-cc)
+            if [[ $# -lt 2 ]]; then echo "ERROR: --gpu-cc requires an argument"; exit 1; fi
             GPU_CC="$2"
             shift 2
             ;;
         --build-dir)
+            if [[ $# -lt 2 ]]; then echo "ERROR: --build-dir requires an argument"; exit 1; fi
             BUILD_DIR="$2"
             shift 2
             ;;
@@ -139,14 +142,17 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --slurm-time)
+            if [[ $# -lt 2 ]]; then echo "ERROR: --slurm-time requires an argument"; exit 1; fi
             SLURM_TIME="$2"
             shift 2
             ;;
         --slurm-partition)
+            if [[ $# -lt 2 ]]; then echo "ERROR: --slurm-partition requires an argument"; exit 1; fi
             SLURM_PARTITION="$2"
             shift 2
             ;;
         --exe)
+            if [[ $# -lt 2 ]]; then echo "ERROR: --exe requires an argument"; exit 1; fi
             EXECUTABLE="$2"
             shift 2
             ;;
@@ -381,11 +387,13 @@ if [[ "$RUN_ONLY" == false ]]; then
         make -j"$JOBS"
     fi
 
-    echo ""
-    echo "=============================================="
-    echo "  Build complete!"
-    echo "=============================================="
-    echo ""
+    if [[ "$DRY_RUN" == false ]]; then
+        echo ""
+        echo "=============================================="
+        echo "  Build complete!"
+        echo "=============================================="
+        echo ""
+    fi
 fi
 
 if [[ "$BUILD_ONLY" == true ]]; then
@@ -430,6 +438,8 @@ fi
 GPU_ENV=""
 if [[ "$BUILD_MODE" == "gpu" ]]; then
     GPU_ENV="OMP_TARGET_OFFLOAD=MANDATORY"
+elif [[ "$RUN_ONLY" == true && -z "$BUILD_MODE" ]]; then
+    echo "NOTE: No build mode specified with --run-only. Use 'gpu --run-only' to set OMP_TARGET_OFFLOAD=MANDATORY."
 fi
 
 # ── SLURM submission ──────────────────────────────────────
@@ -449,8 +459,11 @@ if [[ "$USE_SLURM" == true ]]; then
     # Detect account
     SLURM_ACCOUNT=""
     if command -v sacctmgr &>/dev/null; then
-        SLURM_ACCOUNT=$(sacctmgr -n -P show assoc user="$USER" format=account 2>/dev/null | head -1 || true)
+        SLURM_ACCOUNT=$(sacctmgr -n -P show assoc user="$USER" format=account 2>/dev/null | awk 'NR==1' || true)
     fi
+
+    # Build properly quoted command string for SLURM script
+    RUN_CMD_STR=$(printf '%q ' "${RUN_CMD[@]}")
 
     cat > "$SLURM_SCRIPT" <<SLURM
 #!/bin/bash
@@ -481,7 +494,7 @@ echo "Node:   \$(hostname)"
 echo "GPU:    \$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
 echo ""
 
-${RUN_CMD[*]}
+$RUN_CMD_STR
 SLURM
 
     if [[ "$DRY_RUN" == true ]]; then
@@ -500,7 +513,7 @@ SLURM
         sbatch "$SLURM_SCRIPT"
         echo ""
         echo "Monitor with: squeue -u $USER"
-        rm -f "$SLURM_SCRIPT"
+        echo "SLURM script: $SLURM_SCRIPT"
     fi
     exit 0
 fi
