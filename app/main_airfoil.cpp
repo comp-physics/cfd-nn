@@ -178,6 +178,10 @@ int main(int argc, char** argv) {
         }
         double residual = solver.step();
 
+        // Must sync velocity from GPU since compute_forces reads host memory
+#ifdef USE_GPU_OFFLOAD
+        solver.sync_solution_from_gpu();
+#endif
         auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
 
         // Rotate forces to lift/drag coordinates if AoA != 0

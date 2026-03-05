@@ -1150,7 +1150,7 @@ double RANSSolver::step() {
     if (turb_model_) {
         TIMED_SCOPE("turbulence_update");
         NVTX_PUSH("turbulence_update");
-        
+
         // PHASE 1 GPU OPTIMIZATION: Pass device view if GPU is ready
         const TurbulenceDeviceView* device_view_ptr = nullptr;
 #ifdef USE_GPU_OFFLOAD
@@ -1158,9 +1158,15 @@ double RANSSolver::step() {
         if (device_view.is_valid()) {
             device_view_ptr = &device_view;
         }
-        
-        // GPU simulation: enforce device_view validity (host fallback forbidden)
-        if (gpu_ready_ && (!device_view_ptr || !device_view_ptr->is_valid())) {
+
+        // CPU-only models (e.g., LES) need velocity synced from GPU before update
+        if (gpu_ready_ && !turb_model_->is_gpu_ready()) {
+            sync_solution_from_gpu();
+        }
+
+        // GPU simulation with GPU-ready model: enforce device_view validity
+        if (gpu_ready_ && turb_model_->is_gpu_ready() &&
+            (!device_view_ptr || !device_view_ptr->is_valid())) {
             throw std::runtime_error("GPU simulation requires valid TurbulenceDeviceView - host fallback forbidden");
         }
 #endif
