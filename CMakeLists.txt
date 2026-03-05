@@ -278,6 +278,7 @@ set(LIB_SOURCES
     src/decomposition.cpp
     src/halo_exchange.cpp
     src/poisson_solver_fft_mpi.cpp
+    src/ibm_geometry.cpp
 )
 
 # Core library
@@ -485,6 +486,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_halo_exchange TEST_NAME_SUFFIX HaloExchangeTest LABELS fast)
     add_nncfd_test(test_mpi_channel TEST_NAME_SUFFIX MPIChannelTest LABELS fast)
     add_nncfd_test(test_mpi_poisson TEST_NAME_SUFFIX MPIPoissonTest LABELS fast)
+    add_nncfd_test(test_ibm_sdf TEST_NAME_SUFFIX IBMSDFTest LABELS fast)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
