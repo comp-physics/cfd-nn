@@ -675,11 +675,22 @@ void RANSSolver::implicit_y_diffusion_step(VectorField& vel, double dt) {
     const int v_stride = Nx + 2 * Ng;
     const int cell_stride = Nx + 2 * Ng;
 
+    const bool stretched = mesh_->is_y_stretched();
+    const double* dyv = stretched ? dyv_ptr_ : nullptr;
+    const double* dyc = stretched ? dyc_ptr_ : nullptr;
+
     if (mesh_->is2D()) {
-        time_kernels::thomas_y_diffusion_2d(
-            u_ptr, v_ptr, nu_eff_ptr_,
-            Nx, Ny, Ng, u_stride, v_stride, cell_stride,
-            dt, mesh_->dy);
+        if (stretched) {
+            time_kernels::thomas_y_diffusion_2d_stretched(
+                u_ptr, v_ptr, nu_eff_ptr_,
+                Nx, Ny, Ng, u_stride, v_stride, cell_stride,
+                dt, dyv, dyc);
+        } else {
+            time_kernels::thomas_y_diffusion_2d(
+                u_ptr, v_ptr, nu_eff_ptr_,
+                Nx, Ny, Ng, u_stride, v_stride, cell_stride,
+                dt, mesh_->dy);
+        }
     } else {
         const int w_stride_local = Nx + 2 * Ng;
         const int u_plane = u_stride * (Ny + 2 * Ng);
@@ -687,13 +698,23 @@ void RANSSolver::implicit_y_diffusion_step(VectorField& vel, double dt) {
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
         const int cell_plane = cell_stride * (Ny + 2 * Ng);
 
-        time_kernels::thomas_y_diffusion_3d(
-            u_ptr, v_ptr, w_ptr, nu_eff_ptr_,
-            Nx, Ny, mesh_->Nz, Ng,
-            u_stride, v_stride, w_stride_local,
-            u_plane, v_plane, w_plane,
-            cell_stride, cell_plane,
-            dt, mesh_->dy);
+        if (stretched) {
+            time_kernels::thomas_y_diffusion_3d_stretched(
+                u_ptr, v_ptr, w_ptr, nu_eff_ptr_,
+                Nx, Ny, mesh_->Nz, Ng,
+                u_stride, v_stride, w_stride_local,
+                u_plane, v_plane, w_plane,
+                cell_stride, cell_plane,
+                dt, dyv, dyc);
+        } else {
+            time_kernels::thomas_y_diffusion_3d(
+                u_ptr, v_ptr, w_ptr, nu_eff_ptr_,
+                Nx, Ny, mesh_->Nz, Ng,
+                u_stride, v_stride, w_stride_local,
+                u_plane, v_plane, w_plane,
+                cell_stride, cell_plane,
+                dt, mesh_->dy);
+        }
     }
 }
 
