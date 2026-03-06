@@ -8,11 +8,21 @@
 namespace nncfd {
 
 #ifdef USE_MPI
+namespace {
+void mpi_check(int rc, const char* call) {
+    if (rc != MPI_SUCCESS) {
+        char msg[MPI_MAX_ERROR_STRING]; int len;
+        MPI_Error_string(rc, msg, &len);
+        throw std::runtime_error(std::string("[MPI] ") + call + " failed: " + msg);
+    }
+}
+} // anonymous namespace
+
 Decomposition::Decomposition(MPI_Comm comm, int Nz_global)
     : comm_(comm), nz_global_(Nz_global)
 {
-    MPI_Comm_rank(comm_, &rank_);
-    MPI_Comm_size(comm_, &nprocs_);
+    mpi_check(MPI_Comm_rank(comm_, &rank_), "MPI_Comm_rank");
+    mpi_check(MPI_Comm_size(comm_, &nprocs_), "MPI_Comm_size");
 
     if (Nz_global < nprocs_) {
         throw std::runtime_error("Nz_global (" + std::to_string(Nz_global)
@@ -51,7 +61,8 @@ double Decomposition::allreduce_sum(double local_val) const {
 #ifdef USE_MPI
     if (nprocs_ > 1) {
         double global_val = 0.0;
-        MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_SUM, comm_);
+        mpi_check(MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_SUM, comm_),
+                  "MPI_Allreduce(sum)");
         return global_val;
     }
 #endif
@@ -62,7 +73,8 @@ double Decomposition::allreduce_min(double local_val) const {
 #ifdef USE_MPI
     if (nprocs_ > 1) {
         double global_val = 0.0;
-        MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_MIN, comm_);
+        mpi_check(MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_MIN, comm_),
+                  "MPI_Allreduce(min)");
         return global_val;
     }
 #endif
@@ -73,7 +85,8 @@ double Decomposition::allreduce_max(double local_val) const {
 #ifdef USE_MPI
     if (nprocs_ > 1) {
         double global_val = 0.0;
-        MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_MAX, comm_);
+        mpi_check(MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_MAX, comm_),
+                  "MPI_Allreduce(max)");
         return global_val;
     }
 #endif
@@ -84,7 +97,8 @@ void Decomposition::allreduce_sum(double* data, int count) const {
     (void)data; (void)count;
 #ifdef USE_MPI
     if (nprocs_ > 1) {
-        MPI_Allreduce(MPI_IN_PLACE, data, count, MPI_DOUBLE, MPI_SUM, comm_);
+        mpi_check(MPI_Allreduce(MPI_IN_PLACE, data, count, MPI_DOUBLE, MPI_SUM, comm_),
+                  "MPI_Allreduce(sum double[])");
     }
 #endif
 }
@@ -93,7 +107,8 @@ void Decomposition::allreduce_sum(int* data, int count) const {
     (void)data; (void)count;
 #ifdef USE_MPI
     if (nprocs_ > 1) {
-        MPI_Allreduce(MPI_IN_PLACE, data, count, MPI_INT, MPI_SUM, comm_);
+        mpi_check(MPI_Allreduce(MPI_IN_PLACE, data, count, MPI_INT, MPI_SUM, comm_),
+                  "MPI_Allreduce(sum int[])");
     }
 #endif
 }

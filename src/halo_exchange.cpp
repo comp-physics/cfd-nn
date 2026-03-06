@@ -13,6 +13,18 @@
 #include <cstring>
 #include <stdexcept>
 
+#ifdef USE_MPI
+namespace {
+void mpi_check(int rc, const char* call) {
+    if (rc != MPI_SUCCESS) {
+        char msg[MPI_MAX_ERROR_STRING]; int len;
+        MPI_Error_string(rc, msg, &len);
+        throw std::runtime_error(std::string("[MPI] ") + call + " failed: " + msg);
+    }
+}
+} // anonymous namespace
+#endif
+
 #ifdef USE_CUDA_KERNELS
 #include "cuda_halo.hpp"
 #include <cuda_runtime.h>
@@ -82,16 +94,16 @@ void HaloExchange::exchange(double* field, int stride, int plane_stride) {
     MPI_Request reqs[4];
 
     // Send lo interior → neighbor's hi ghost; send hi interior → neighbor's lo ghost
-    MPI_Isend(send_lo_.data(), face_size_, MPI_DOUBLE,
-              decomp_.rank_lo(), 0, decomp_.comm(), &reqs[0]);
-    MPI_Isend(send_hi_.data(), face_size_, MPI_DOUBLE,
-              decomp_.rank_hi(), 1, decomp_.comm(), &reqs[1]);
-    MPI_Irecv(recv_lo_.data(), face_size_, MPI_DOUBLE,
-              decomp_.rank_lo(), 1, decomp_.comm(), &reqs[2]);
-    MPI_Irecv(recv_hi_.data(), face_size_, MPI_DOUBLE,
-              decomp_.rank_hi(), 0, decomp_.comm(), &reqs[3]);
+    mpi_check(MPI_Isend(send_lo_.data(), face_size_, MPI_DOUBLE,
+                        decomp_.rank_lo(), 0, decomp_.comm(), &reqs[0]), "MPI_Isend(lo)");
+    mpi_check(MPI_Isend(send_hi_.data(), face_size_, MPI_DOUBLE,
+                        decomp_.rank_hi(), 1, decomp_.comm(), &reqs[1]), "MPI_Isend(hi)");
+    mpi_check(MPI_Irecv(recv_lo_.data(), face_size_, MPI_DOUBLE,
+                        decomp_.rank_lo(), 1, decomp_.comm(), &reqs[2]), "MPI_Irecv(lo)");
+    mpi_check(MPI_Irecv(recv_hi_.data(), face_size_, MPI_DOUBLE,
+                        decomp_.rank_hi(), 0, decomp_.comm(), &reqs[3]), "MPI_Irecv(hi)");
 
-    MPI_Waitall(4, reqs, MPI_STATUSES_IGNORE);
+    mpi_check(MPI_Waitall(4, reqs, MPI_STATUSES_IGNORE), "MPI_Waitall");
 
     // Unpack: lo ghost = planes [0, Ng), hi ghost = planes [Nz_local+Ng, Nz_local+2Ng)
     unpack_face_cpu(field, recv_lo_.data(), stride, plane_stride, 0);
@@ -112,15 +124,15 @@ void HaloExchange::exchange_device(double* d_field, int stride, int plane_stride
     cudaDeviceSynchronize();
 
     MPI_Request reqs[4];
-    MPI_Isend(d_send_lo_, face_size_, MPI_DOUBLE,
-              decomp_.rank_lo(), 0, decomp_.comm(), &reqs[0]);
-    MPI_Isend(d_send_hi_, face_size_, MPI_DOUBLE,
-              decomp_.rank_hi(), 1, decomp_.comm(), &reqs[1]);
-    MPI_Irecv(d_recv_lo_, face_size_, MPI_DOUBLE,
-              decomp_.rank_lo(), 1, decomp_.comm(), &reqs[2]);
-    MPI_Irecv(d_recv_hi_, face_size_, MPI_DOUBLE,
-              decomp_.rank_hi(), 0, decomp_.comm(), &reqs[3]);
-    MPI_Waitall(4, reqs, MPI_STATUSES_IGNORE);
+    mpi_check(MPI_Isend(d_send_lo_, face_size_, MPI_DOUBLE,
+                        decomp_.rank_lo(), 0, decomp_.comm(), &reqs[0]), "MPI_Isend(lo)");
+    mpi_check(MPI_Isend(d_send_hi_, face_size_, MPI_DOUBLE,
+                        decomp_.rank_hi(), 1, decomp_.comm(), &reqs[1]), "MPI_Isend(hi)");
+    mpi_check(MPI_Irecv(d_recv_lo_, face_size_, MPI_DOUBLE,
+                        decomp_.rank_lo(), 1, decomp_.comm(), &reqs[2]), "MPI_Irecv(lo)");
+    mpi_check(MPI_Irecv(d_recv_hi_, face_size_, MPI_DOUBLE,
+                        decomp_.rank_hi(), 0, decomp_.comm(), &reqs[3]), "MPI_Irecv(hi)");
+    mpi_check(MPI_Waitall(4, reqs, MPI_STATUSES_IGNORE), "MPI_Waitall");
 
     // Unpack on GPU
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_lo_, Nx_, Ny_, Nz_local_, Ng_, true);
