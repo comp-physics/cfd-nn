@@ -4555,6 +4555,12 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     view.dyc_size = static_cast<int>(y_metrics_size_);
     view.is_y_stretched = mesh_->is_y_stretched();
 
+    // Y-direction mesh coordinates (for LES filter width and gradient computation)
+    view.yf = yf_ptr_;
+    view.yc = yc_ptr_;
+    view.yf_total = static_cast<int>(yf_size_);
+    view.yc_total = static_cast<int>(yc_size_);
+
     // Mesh parameters
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;

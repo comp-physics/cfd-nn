@@ -9,7 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cassert>
-#include <iostream>
+#include <stdexcept>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -297,10 +297,8 @@ void IBMForcing::apply_forcing(VectorField& vel, double dt) {
 }
 
 void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr) {
-    if (!gpu_mapped_) {
-        std::cerr << "[IBM] WARNING: apply_forcing_device called but GPU data not mapped\n";
-        return;
-    }
+    if (!gpu_mapped_)
+        throw std::runtime_error("[IBM] apply_forcing_device called before map_to_gpu()");
 
     double* wu = weight_u_ptr_;
     double* wv = weight_v_ptr_;
@@ -331,12 +329,10 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
 }
 
 void IBMForcing::mask_rhs_device(double* rhs_ptr) {
-    if (!gpu_mapped_ || !solid_mask_cell_ptr_) {
-        if (!gpu_mapped_) {
-            std::cerr << "[IBM] WARNING: mask_rhs_device called but GPU data not mapped\n";
-        }
-        return;
-    }
+    if (!gpu_mapped_)
+        throw std::runtime_error("[IBM] mask_rhs_device called before map_to_gpu()");
+    if (!solid_mask_cell_ptr_)
+        throw std::runtime_error("[IBM] mask_rhs_device called but solid_mask_cell_ptr_ is null");
 
     double* mask = solid_mask_cell_ptr_;
     const int n = static_cast<int>(cell_total_);

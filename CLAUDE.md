@@ -385,3 +385,4 @@ If more info is needed after a packet: ask for **ONE** additional item only.
 - `map(present: ptr)` with bare pointer names does NOT work with nvc++ — always use array sections: `map(present: ptr[0:size])`
 - IBM `set_ibm_forcing()` must be called either before or after GPU init — it auto-detects `gpu_ready_` and calls `map_to_gpu()` accordingly
 - IBM geometry functions (`phi()`) are virtual and cannot be called on GPU — all geometry evaluation must happen at init time with results stored in pre-computed arrays
+- Thomas implicit y-diffusion (`solver_time_kernels_implicit.cpp`) uses uniform `mesh_->dy` instead of local `dyv[j]` — accuracy bug on stretched grids, not yet fixed
