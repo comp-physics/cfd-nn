@@ -76,3 +76,47 @@ jobs:
           exit 1
         fi
         echo "No warnings detected (unused-variable warnings excluded)"
+
+  mpi-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential libopenmpi-dev openmpi-bin
+
+    - name: Build with MPI
+      run: |
+        mkdir -p build_mpi && cd build_mpi
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=OFF \
+                 -DUSE_MPI=ON -DBUILD_TESTS=ON
+        make -j$(nproc) test_decomposition test_halo_exchange test_mpi_channel
+
+    - name: Run MPI tests (single-rank)
+      run: |
+        cd build_mpi
+        echo "--- DecompositionTest (1 rank) ---"
+        ./test_decomposition
+        echo "--- HaloExchangeTest (1 rank) ---"
+        ./test_halo_exchange
+        echo "--- MPIChannelTest (1 rank) ---"
+        ./test_mpi_channel
+
+    - name: Run MPI tests (2 ranks)
+      run: |
+        cd build_mpi
+        echo "--- DecompositionTest (2 ranks) ---"
+        mpirun --oversubscribe -n 2 ./test_decomposition
+        echo "--- HaloExchangeTest (2 ranks) ---"
+        mpirun --oversubscribe -n 2 ./test_halo_exchange
+
+    - name: Run MPI tests (4 ranks)
+      run: |
+        cd build_mpi
+        echo "--- DecompositionTest (4 ranks) ---"
+        mpirun --oversubscribe -n 4 ./test_decomposition
+        echo "--- HaloExchangeTest (4 ranks) ---"
+        mpirun --oversubscribe -n 4 ./test_halo_exchange

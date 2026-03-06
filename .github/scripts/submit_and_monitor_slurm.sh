@@ -22,6 +22,14 @@ echo "Submitting Slurm job from ${TEMPLATE}..."
 JOB_ID=$(sbatch --parsable "${SBATCH_SCRIPT}")
 echo "Submitted job ID: ${JOB_ID}"
 
+# Cancel SLURM job if this script is killed (e.g., by CI timeout)
+cleanup() {
+  echo "Monitoring script interrupted — cancelling SLURM job ${JOB_ID}..."
+  scancel "${JOB_ID}" 2>/dev/null || true
+  exit 1
+}
+trap cleanup SIGTERM SIGINT SIGHUP
+
 # Monitor job with periodic output
 LAST_OUT_SIZE=0
 while true; do
@@ -45,8 +53,21 @@ while true; do
   sleep 30
 done
 
-# Wait for job to fully complete
-scontrol show job ${JOB_ID} >/dev/null 2>&1 || true
+# Wait for sacct to report a terminal state (COMPLETED, FAILED, TIMEOUT, etc.)
+# sacct can lag behind squeue on some SLURM clusters, so poll until terminal
+echo "Waiting for sacct to report terminal state..."
+for i in $(seq 1 30); do
+  JOB_STATE=$(sacct -j ${JOB_ID} --format=State --noheader | head -n1 | tr -d ' ')
+  case "$JOB_STATE" in
+    COMPLETED|FAILED|CANCELLED*|TIMEOUT|NODE_FAIL|PREEMPTED|OUT_OF_MEMORY)
+      break
+      ;;
+    *)
+      echo "  sacct state: ${JOB_STATE} (attempt $i/30, waiting 10s...)"
+      sleep 10
+      ;;
+  esac
+done
 
 echo ""
 echo "=== Final Slurm STDOUT ==="
@@ -56,7 +77,6 @@ echo "=== Final Slurm STDERR ==="
 cat "${SLURM_ERR}" || true
 
 # Check job state and exit code
-JOB_STATE=$(sacct -j ${JOB_ID} --format=State --noheader | head -n1 | tr -d ' ')
 EXIT_CODE_FULL=$(sacct -j ${JOB_ID} --format=ExitCode --noheader | head -n1 | tr -d ' ')
 EXIT_CODE=$(echo "$EXIT_CODE_FULL" | cut -d: -f1)
 SIGNAL=$(echo "$EXIT_CODE_FULL" | cut -d: -f2)

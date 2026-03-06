@@ -1,6 +1,7 @@
 # NN-CFD: Neural Network Turbulence Closures for Incompressible Flow
 
 ![CI](https://github.com/comp-physics/cfd-nn/workflows/CI/badge.svg)
+![GPU CI](https://github.com/comp-physics/cfd-nn/workflows/GPU%20CI/badge.svg)
 
 A **high-performance C++ solver** for **incompressible turbulent flow** with **pluggable turbulence closures** ranging from classical algebraic models to advanced transport equations and data-driven neural networks. Features a fractional-step projection method with multiple Poisson solvers, pure C++ NN inference, and comprehensive GPU acceleration via OpenMP target offload.
 
@@ -772,12 +773,27 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 
 ## Validation
 
+~79 tests across 6 labels, organized into Tier 1 (CI, every push) and Tier 2 (SLURM, manual). See [`docs/VALIDATION.md`](docs/VALIDATION.md) for full results and [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) for how to run and extend the suite.
+
 ### Analytical Benchmarks
 
-| Test Case | Metric | Expected |
-|-----------|--------|----------|
-| Poiseuille flow | L2 error vs analytical | < 5% on 64×128 grid |
-| Taylor-Green energy decay | Energy decay error | < 5% |
+| Test Case | Metric | Result |
+|-----------|--------|--------|
+| Poiseuille flow | L2 error vs analytical | < 0.2% (2nd-order convergence confirmed) |
+| Taylor-Green vortex (Re=100) | Energy decay vs analytical | Matches $E_0 e^{-2\nu t}$ |
+| Taylor-Green vortex (Re=1600) | Stability through breakdown | Stable on 64^3 |
+| MMS convergence | Spatial order | >= 1.8 (2nd-order scheme) |
+
+### RANS Models (10 closures)
+
+All 10 turbulence models validated for stability, profile shape, and eddy viscosity on stretched grids:
+
+| Category | Models | Status |
+|----------|--------|--------|
+| Algebraic | Baseline, GEP | Stable, u+ within 30% of MKM DNS |
+| Transport | SST k-omega, k-omega | Stable (point-implicit destruction fix, March 2026) |
+| EARSM | WJ, GS, Pope | Stable, frame-invariant |
+| Neural Net | MLP, TBNN | Infrastructure validated |
 
 ### Physics Conservation
 
@@ -786,6 +802,8 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 | Divergence-free | $\|\nabla \cdot \mathbf{u}\|_\infty < 10^{-10}$ |
 | Momentum balance | Body force = wall shear (< 10% imbalance) |
 | Channel symmetry | $u(y) = u(-y)$ (machine precision) |
+| D·G = L (stretched grid) | $< 10^{-10}$ relative error |
+| Galilean invariance | Fluctuating KE matches to $10^{-6}$ across frames |
 
 ### DNS Channel Flow
 
@@ -793,7 +811,13 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 |-----------|--------|-----------------|-----------|
 | Channel Re_tau = 180 | Stable (filter-limited) | ~255-278 | Moser, Kim & Mansour (1999) |
 
-See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) and [`docs/VALIDATION.md`](docs/VALIDATION.md) for run history and tuning details.
+### GPU Parity
+
+| Check | Status |
+|-------|--------|
+| CPU/GPU kernel parity | All kernels match |
+| GPU utilization gate | >= 70% GPU compute time |
+| Cross-backend consistency | CPU and GPU outputs within tolerance |
 
 ### Recycling Inflow
 
@@ -801,8 +825,6 @@ See [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) and [`docs/VALIDATI
 |------|--------|-----------|
 | PeriodicVsRecycling | Pass | < 5% shear stress, < 5% streamwise stress |
 | RecyclingInflow (12 checks) | Pass | All passing on CPU and GPU |
-
-See [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md).
 
 ### Dataset
 
@@ -844,7 +866,8 @@ python scripts/train_tbnn_mcconkey.py \
 | [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) | DNS channel flow: grid requirements, trip forcing, directional CFL, velocity filter, diagnostics, troubleshooting |
 | [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md) | Recycling inflow BC: theory, configuration, GPU implementation, testing |
 | [`docs/POISSON_SOLVER_GUIDE.md`](docs/POISSON_SOLVER_GUIDE.md) | All Poisson solvers: FFT, MG (semi-coarsening, CUDA Graph), HYPRE, selection guide |
-| [`docs/VALIDATION.md`](docs/VALIDATION.md) | Validation results: Poiseuille, DNS, recycling inflow, test suite |
+| [`docs/VALIDATION.md`](docs/VALIDATION.md) | Validation results: all 79 tests, RANS models, DNS, operator correctness, GPU parity |
+| [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) | Testing: how to run, test harness API, adding tests, GPU testing, CI architecture |
 | [`docs/HYPRE_POISSON_SOLVER.md`](docs/HYPRE_POISSON_SOLVER.md) | HYPRE PFMG GPU solver details |
 | [`docs/TRAINING_GUIDE.md`](docs/TRAINING_GUIDE.md) | Training neural network turbulence models |
 

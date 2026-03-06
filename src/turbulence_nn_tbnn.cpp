@@ -729,7 +729,9 @@ void TurbulenceNNTBNN::update(
                 Nx, Ny, Ng,
                 mesh.dx, mesh.dy,
                 u_stride, v_stride, cell_stride,
-                u_total, v_total, total_cells
+                u_total, v_total, total_cells,
+                device_view->dyc,
+                device_view->dyc_size
             );
         }
         

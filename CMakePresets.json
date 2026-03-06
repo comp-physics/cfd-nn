@@ -1,0 +1,157 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "cpu-release",
+            "displayName": "CPU Release",
+            "description": "CPU-only build, Release mode (default for CI)",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "USE_GPU_OFFLOAD": "OFF",
+                "USE_HDF5": "OFF",
+                "USE_MPI": "OFF"
+            }
+        },
+        {
+            "name": "cpu-debug",
+            "displayName": "CPU Debug",
+            "description": "CPU-only build, Debug mode",
+            "binaryDir": "${sourceDir}/build_debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "USE_GPU_OFFLOAD": "OFF",
+                "USE_HDF5": "OFF",
+                "USE_MPI": "OFF"
+            }
+        },
+        {
+            "name": "cpu-hdf5",
+            "displayName": "CPU + HDF5",
+            "description": "CPU build with HDF5 checkpoint/restart",
+            "binaryDir": "${sourceDir}/build_hdf5",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "USE_GPU_OFFLOAD": "OFF",
+                "USE_HDF5": "ON"
+            }
+        },
+        {
+            "name": "gpu",
+            "displayName": "GPU Release",
+            "description": "GPU build with OpenMP target offloading",
+            "binaryDir": "${sourceDir}/build_gpu",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "USE_GPU_OFFLOAD": "ON",
+                "CMAKE_CXX_COMPILER": "nvc++"
+            }
+        },
+        {
+            "name": "gpu-debug",
+            "displayName": "GPU Debug",
+            "description": "GPU build, Debug mode",
+            "binaryDir": "${sourceDir}/build_gpu_debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "USE_GPU_OFFLOAD": "ON",
+                "CMAKE_CXX_COMPILER": "nvc++"
+            }
+        },
+        {
+            "name": "gpu-full",
+            "displayName": "GPU Full (all features)",
+            "description": "GPU build with HDF5, MPI, HYPRE, FFT",
+            "binaryDir": "${sourceDir}/build_gpu_full",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "USE_GPU_OFFLOAD": "ON",
+                "USE_HDF5": "ON",
+                "USE_MPI": "ON",
+                "USE_HYPRE": "ON",
+                "CMAKE_CXX_COMPILER": "nvc++"
+            }
+        },
+        {
+            "name": "gpu-h200",
+            "displayName": "GPU H200 (cc90, all features)",
+            "description": "Production GPU build for H200 nodes",
+            "binaryDir": "${sourceDir}/build_h200",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "USE_GPU_OFFLOAD": "ON",
+                "USE_HDF5": "ON",
+                "USE_MPI": "ON",
+                "USE_HYPRE": "ON",
+                "GPU_CC": "90",
+                "CMAKE_CXX_COMPILER": "nvc++"
+            }
+        },
+        {
+            "name": "gpu-a100",
+            "displayName": "GPU A100 (cc80, all features)",
+            "description": "Production GPU build for A100 nodes",
+            "binaryDir": "${sourceDir}/build_a100",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "USE_GPU_OFFLOAD": "ON",
+                "USE_HDF5": "ON",
+                "USE_MPI": "ON",
+                "USE_HYPRE": "ON",
+                "GPU_CC": "80",
+                "CMAKE_CXX_COMPILER": "nvc++"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "cpu-release",
+            "configurePreset": "cpu-release"
+        },
+        {
+            "name": "cpu-debug",
+            "configurePreset": "cpu-debug"
+        },
+        {
+            "name": "gpu",
+            "configurePreset": "gpu"
+        },
+        {
+            "name": "gpu-full",
+            "configurePreset": "gpu-full"
+        },
+        {
+            "name": "gpu-h200",
+            "configurePreset": "gpu-h200"
+        },
+        {
+            "name": "gpu-a100",
+            "configurePreset": "gpu-a100"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "fast",
+            "configurePreset": "cpu-release",
+            "output": {"outputOnFailure": true},
+            "filter": {"include": {"label": "fast"}}
+        },
+        {
+            "name": "all",
+            "configurePreset": "cpu-release",
+            "output": {"outputOnFailure": true}
+        },
+        {
+            "name": "gpu",
+            "configurePreset": "gpu",
+            "output": {"outputOnFailure": true},
+            "filter": {"include": {"label": "gpu"}},
+            "environment": {"OMP_TARGET_OFFLOAD": "MANDATORY"}
+        }
+    ]
+}

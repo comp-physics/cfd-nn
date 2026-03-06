@@ -504,6 +504,60 @@ inline void diffusive_v_face_kernel_staggered(
     diff_v_ptr[diff_idx] = d2v_dx2 + d2v_dy2;
 }
 
+// xz-only diffusion kernels (skip d2/dy2 for implicit y-diffusion)
+// Used when y-diffusion is treated implicitly via Thomas algorithm
+
+// xz-only diffusion for u-momentum at x-face (2D) — x-diffusion only
+inline void diffusive_u_face_kernel_staggered_xz(
+    int i, int j,
+    int u_stride, int nu_stride, int diff_stride,
+    double dx, double dy,
+    const double* u_ptr, const double* nu_ptr,
+    double* diff_u_ptr)
+{
+    (void)dy;  // Not used — y-diffusion handled implicitly
+    const int u_idx = j * u_stride + i;
+    const double dx2 = dx * dx;
+
+    const double nu_left = nu_ptr[j * nu_stride + (i-1)];
+    const double nu_right = nu_ptr[j * nu_stride + i];
+
+    const double nu_e = 0.5 * (nu_right + (i+1 < nu_stride ? nu_ptr[j * nu_stride + (i+1)] : nu_right));
+    const double nu_w = 0.5 * (nu_left + (i-2 >= 0 ? nu_ptr[j * nu_stride + (i-2)] : nu_left));
+
+    const double d2u_dx2 = (nu_e * (u_ptr[j * u_stride + (i+1)] - u_ptr[u_idx])
+                           - nu_w * (u_ptr[u_idx] - u_ptr[j * u_stride + (i-1)])) / dx2;
+
+    const int diff_idx = j * diff_stride + i;
+    diff_u_ptr[diff_idx] = d2u_dx2;
+}
+
+// xz-only diffusion for v-momentum at y-face (2D) — x-diffusion only
+inline void diffusive_v_face_kernel_staggered_xz(
+    int i, int j,
+    int v_stride, int nu_stride, int diff_stride,
+    double dx, double dy,
+    const double* v_ptr, const double* nu_ptr,
+    double* diff_v_ptr)
+{
+    (void)dy;
+    const int v_idx = j * v_stride + i;
+    const double dx2 = dx * dx;
+
+    const double nu_bottom = nu_ptr[(j-1) * nu_stride + i];
+    const double nu_top = nu_ptr[j * nu_stride + i];
+
+    const double nu_e = 0.5 * (nu_bottom + nu_top);
+    const double nu_w = 0.5 * (nu_bottom + nu_top);
+
+    const double d2v_dx2 = (nu_e * (v_ptr[j * v_stride + (i+1)] - v_ptr[v_idx])
+                           - nu_w * (v_ptr[v_idx] - v_ptr[j * v_stride + (i-1)])) / dx2;
+
+    const int diff_idx = j * diff_stride + i;
+    diff_v_ptr[diff_idx] = d2v_dx2;
+}
+
+
 // ============================================================================
 // 3D OPERATOR KERNELS
 // ============================================================================
@@ -2255,6 +2309,101 @@ inline void diffusive_w_face_kernel_staggered_3d(
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_w_ptr[diff_idx] = d2w_dx2 + d2w_dy2 + d2w_dz2;
+}
+
+// xz-only 3D diffusion kernels (skip d2/dy2 for implicit y-diffusion)
+
+// xz-only diffusion for u-momentum at x-face (3D)
+inline void diffusive_u_face_kernel_staggered_3d_xz(
+    int i, int j, int k,
+    int u_stride, int u_plane_stride,
+    int nu_stride, int nu_plane_stride,
+    int diff_stride, int diff_plane_stride,
+    double dx, double dy, double dz,
+    const double* u_ptr, const double* nu_ptr,
+    double* diff_u_ptr)
+{
+    (void)dy;
+    const int u_idx = k * u_plane_stride + j * u_stride + i;
+    const double dx2 = dx * dx;
+    const double dz2 = dz * dz;
+
+    const double nu_left  = nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)];
+    const double nu_right = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
+    const double nu_avg = 0.5 * (nu_left + nu_right);
+
+    const double d2u_dx2 = nu_avg * (u_ptr[k * u_plane_stride + j * u_stride + (i+1)]
+                                   - 2.0 * u_ptr[u_idx]
+                                   + u_ptr[k * u_plane_stride + j * u_stride + (i-1)]) / dx2;
+
+    const double d2u_dz2 = nu_avg * (u_ptr[(k+1) * u_plane_stride + j * u_stride + i]
+                                   - 2.0 * u_ptr[u_idx]
+                                   + u_ptr[(k-1) * u_plane_stride + j * u_stride + i]) / dz2;
+
+    const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
+    diff_u_ptr[diff_idx] = d2u_dx2 + d2u_dz2;
+}
+
+// xz-only diffusion for v-momentum at y-face (3D)
+inline void diffusive_v_face_kernel_staggered_3d_xz(
+    int i, int j, int k,
+    int v_stride, int v_plane_stride,
+    int nu_stride, int nu_plane_stride,
+    int diff_stride, int diff_plane_stride,
+    double dx, double dy, double dz,
+    const double* v_ptr, const double* nu_ptr,
+    double* diff_v_ptr)
+{
+    (void)dy;
+    const int v_idx = k * v_plane_stride + j * v_stride + i;
+    const double dx2 = dx * dx;
+    const double dz2 = dz * dz;
+
+    const double nu_bottom = nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + i];
+    const double nu_top    = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
+    const double nu_avg = 0.5 * (nu_bottom + nu_top);
+
+    const double d2v_dx2 = nu_avg * (v_ptr[k * v_plane_stride + j * v_stride + (i+1)]
+                                   - 2.0 * v_ptr[v_idx]
+                                   + v_ptr[k * v_plane_stride + j * v_stride + (i-1)]) / dx2;
+
+    const double d2v_dz2 = nu_avg * (v_ptr[(k+1) * v_plane_stride + j * v_stride + i]
+                                   - 2.0 * v_ptr[v_idx]
+                                   + v_ptr[(k-1) * v_plane_stride + j * v_stride + i]) / dz2;
+
+    const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
+    diff_v_ptr[diff_idx] = d2v_dx2 + d2v_dz2;
+}
+
+// xz-only diffusion for w-momentum at z-face (3D)
+inline void diffusive_w_face_kernel_staggered_3d_xz(
+    int i, int j, int k,
+    int w_stride, int w_plane_stride,
+    int nu_stride, int nu_plane_stride,
+    int diff_stride, int diff_plane_stride,
+    double dx, double dy, double dz,
+    const double* w_ptr, const double* nu_ptr,
+    double* diff_w_ptr)
+{
+    (void)dy;
+    const int w_idx = k * w_plane_stride + j * w_stride + i;
+    const double dx2 = dx * dx;
+    const double dz2 = dz * dz;
+
+    const double nu_back  = nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i];
+    const double nu_front = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
+    const double nu_avg = 0.5 * (nu_back + nu_front);
+
+    const double d2w_dx2 = nu_avg * (w_ptr[k * w_plane_stride + j * w_stride + (i+1)]
+                                   - 2.0 * w_ptr[w_idx]
+                                   + w_ptr[k * w_plane_stride + j * w_stride + (i-1)]) / dx2;
+
+    const double d2w_dz2 = nu_avg * (w_ptr[(k+1) * w_plane_stride + j * w_stride + i]
+                                   - 2.0 * w_ptr[w_idx]
+                                   + w_ptr[(k-1) * w_plane_stride + j * w_stride + i]) / dz2;
+
+    const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
+    diff_w_ptr[diff_idx] = d2w_dx2 + d2w_dz2;
 }
 
 #pragma omp end declare target

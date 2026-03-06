@@ -1,7 +1,6 @@
 #include "fields.hpp"
 #include <cmath>
 #include <fstream>
-#include <limits>
 
 namespace nncfd {
 
@@ -14,65 +13,6 @@ ScalarField::ScalarField(const Mesh& mesh, double init_val)
 
 void ScalarField::fill(double val) {
     std::fill(data_.begin(), data_.end(), val);
-}
-
-double ScalarField::max_interior() const {
-    double max_val = -std::numeric_limits<double>::max();
-    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
-    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                max_val = std::max(max_val, (*this)(i, j, k));
-            }
-        }
-    }
-    return max_val;
-}
-
-double ScalarField::min_interior() const {
-    double min_val = std::numeric_limits<double>::max();
-    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
-    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                min_val = std::min(min_val, (*this)(i, j, k));
-            }
-        }
-    }
-    return min_val;
-}
-
-double ScalarField::norm_L2() const {
-    double sum = 0.0;
-    int count = 0;
-    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
-    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                double val = (*this)(i, j, k);
-                sum += val * val;
-                ++count;
-            }
-        }
-    }
-    return (count > 0) ? std::sqrt(sum / count) : 0.0;
-}
-
-double ScalarField::norm_Linf() const {
-    double max_abs = 0.0;
-    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
-    const int k_stop  = mesh_->is2D() ? 1 : mesh_->k_end();
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                max_abs = std::max(max_abs, std::abs((*this)(i, j, k)));
-            }
-        }
-    }
-    return max_abs;
 }
 
 void ScalarField::write(const std::string& filename) const {
@@ -188,27 +128,6 @@ double VectorField::max_magnitude() const {
         }
     }
     return max_mag;
-}
-
-double VectorField::norm_L2() const {
-    double sum = 0.0;
-    int count = 0;
-    // For 2D, data lives at k=0 plane for backward compatibility
-    const int k_start = mesh_->is2D() ? 0 : mesh_->k_begin();
-    const int k_stop = mesh_->is2D() ? 1 : mesh_->k_end();
-    // Compute at cell centers for consistency
-    for (int k = k_start; k < k_stop; ++k) {
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                double uu = u_center(i, j, k);
-                double vv = v_center(i, j, k);
-                double ww = w_center(i, j, k);
-                sum += uu * uu + vv * vv + ww * ww;
-                ++count;
-            }
-        }
-    }
-    return (count > 0) ? std::sqrt(sum / count) : 0.0;
 }
 
 void VectorField::write(const std::string& filename) const {

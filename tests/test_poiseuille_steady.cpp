@@ -46,72 +46,12 @@ using namespace nncfd::test;
 using nncfd::test::harness::record;
 
 // ============================================================================
-// Exact Poiseuille solution
+// Poiseuille helpers from test_utilities.hpp
 // ============================================================================
-struct PoiseuilleExact {
-    double dp_dx;   // pressure gradient (negative for flow in +x)
-    double nu;      // kinematic viscosity
-    double H;       // channel height
-    double y_min;   // lower wall y-coordinate
-
-    // Exact velocity profile: u(y) = -(dp/dx)/(2*nu) * (y-y_min) * (H - (y-y_min))
-    double u(double y) const {
-        double y_rel = y - y_min;
-        return (-dp_dx / (2.0 * nu)) * y_rel * (H - y_rel);
-    }
-
-    // Exact bulk velocity: U_bulk = -(dp/dx) * H^2 / (12*nu)
-    double U_bulk() const {
-        return (-dp_dx) * H * H / (12.0 * nu);
-    }
-
-    // Exact wall shear stress: tau_w = nu * du/dy|_wall = -(dp/dx) * H / 2
-    // (magnitude, positive for flow in +x direction)
-    double tau_w() const {
-        return (-dp_dx) * H / 2.0;
-    }
-
-    // Exact du/dy at lower wall (y = y_min)
-    double dudy_lower() const {
-        return (-dp_dx / (2.0 * nu)) * H;
-    }
-
-    // Exact du/dy at upper wall (y = y_min + H)
-    double dudy_upper() const {
-        return -(-dp_dx / (2.0 * nu)) * H;
-    }
-};
-
-// ============================================================================
-// Compute relative L2 error of u-velocity profile against exact
-// ============================================================================
-static double compute_profile_relL2(const VectorField& vel, const Mesh& mesh,
-                                     const PoiseuilleExact& exact) {
-    double error_sq = 0.0;
-    double norm_sq = 0.0;
-
-    // Sample at cell centers, average u from faces
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        double y = mesh.yc[j];
-        double u_exact = exact.u(y);
-
-        // Average over x (should be uniform for steady Poiseuille)
-        double u_avg = 0.0;
-        int count = 0;
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // Interpolate u to cell center
-            u_avg += 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-            count++;
-        }
-        u_avg /= count;
-
-        double diff = u_avg - u_exact;
-        error_sq += diff * diff * mesh.dy;
-        norm_sq += u_exact * u_exact * mesh.dy;
-    }
-
-    return (norm_sq > 1e-30) ? std::sqrt(error_sq / norm_sq) : std::sqrt(error_sq);
-}
+using nncfd::test::PoiseuilleExact;
+using nncfd::test::compute_poiseuille_profile_relL2;
+using nncfd::test::compute_velocity_change_relL2;
+using nncfd::test::copy_velocity_2d;
 
 // ============================================================================
 // Compute bulk velocity (volume-averaged u)
@@ -173,38 +113,6 @@ static double compute_wall_shear_upper(const VectorField& vel, const Mesh& mesh,
     }
 
     return tau_sum / count;
-}
-
-// ============================================================================
-// Compute relative L2 norm of velocity change between steps
-// ============================================================================
-static double compute_velocity_change_relL2(const VectorField& v_new,
-                                             const VectorField& v_old,
-                                             const Mesh& mesh) {
-    double diff_sq = 0.0;
-    double norm_sq = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double du = v_new.u(i, j) - v_old.u(i, j);
-            diff_sq += du * du;
-            norm_sq += v_new.u(i, j) * v_new.u(i, j);
-        }
-    }
-
-    return (norm_sq > 1e-30) ? std::sqrt(diff_sq / norm_sq) : std::sqrt(diff_sq);
-}
-
-// ============================================================================
-// Copy velocity field
-// ============================================================================
-static void copy_velocity(VectorField& dst, const VectorField& src, const Mesh& mesh) {
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            dst.u(i, j) = src.u(i, j);
-            dst.v(i, j) = src.v(i, j);
-        }
-    }
 }
 
 // ============================================================================
@@ -301,7 +209,7 @@ PoiseuilleResult run_poiseuille_steady() {
     for (iter = 0; iter < max_iters; ++iter) {
         // Save current velocity
         solver.sync_from_gpu();
-        copy_velocity(v_old, solver.velocity(), mesh);
+        copy_velocity_2d(v_old, solver.velocity(), mesh);
 
         // Take one step
         solver.step();
@@ -332,7 +240,7 @@ PoiseuilleResult run_poiseuille_steady() {
     // Compute metrics
     solver.sync_from_gpu();
 
-    result.relL2_profile = compute_profile_relL2(solver.velocity(), mesh, exact);
+    result.relL2_profile = compute_poiseuille_profile_relL2(solver.velocity(), mesh, exact);
     result.U_bulk_num = compute_bulk_velocity(solver.velocity(), mesh);
     result.U_bulk_exact = exact.U_bulk();
     result.U_bulk_err = std::abs(result.U_bulk_num - result.U_bulk_exact) / result.U_bulk_exact;

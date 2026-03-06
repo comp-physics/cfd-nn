@@ -39,79 +39,12 @@ using nncfd::test::BCPattern;
 using nncfd::test::create_velocity_bc;
 
 // ============================================================================
-// Exact Poiseuille solution (copied from test_poiseuille_steady.cpp)
+// Poiseuille helpers from test_utilities.hpp
 // ============================================================================
-struct PoiseuilleExact {
-    double dp_dx;
-    double nu;
-    double H;
-    double y_min;
-
-    double u(double y) const {
-        double y_rel = y - y_min;
-        return (-dp_dx / (2.0 * nu)) * y_rel * (H - y_rel);
-    }
-};
-
-// ============================================================================
-// Compute relative L2 error of u-velocity profile against exact
-// ============================================================================
-static double compute_profile_relL2(const VectorField& vel, const Mesh& mesh,
-                                     const PoiseuilleExact& exact) {
-    double error_sq = 0.0;
-    double norm_sq = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        double y = mesh.yc[j];
-        double u_exact = exact.u(y);
-
-        double u_avg = 0.0;
-        int count = 0;
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            u_avg += 0.5 * (vel.u(i, j) + vel.u(i+1, j));
-            count++;
-        }
-        u_avg /= count;
-
-        double diff = u_avg - u_exact;
-        error_sq += diff * diff * mesh.dy;
-        norm_sq += u_exact * u_exact * mesh.dy;
-    }
-
-    return (norm_sq > 1e-30) ? std::sqrt(error_sq / norm_sq) : std::sqrt(error_sq);
-}
-
-// ============================================================================
-// Compute relative L2 norm of velocity change
-// ============================================================================
-static double compute_velocity_change_relL2(const VectorField& v_new,
-                                             const VectorField& v_old,
-                                             const Mesh& mesh) {
-    double diff_sq = 0.0;
-    double norm_sq = 0.0;
-
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            double du = v_new.u(i, j) - v_old.u(i, j);
-            diff_sq += du * du;
-            norm_sq += v_new.u(i, j) * v_new.u(i, j);
-        }
-    }
-
-    return (norm_sq > 1e-30) ? std::sqrt(diff_sq / norm_sq) : std::sqrt(diff_sq);
-}
-
-// ============================================================================
-// Copy velocity field
-// ============================================================================
-static void copy_velocity(VectorField& dst, const VectorField& src, const Mesh& mesh) {
-    for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-            dst.u(i, j) = src.u(i, j);
-            dst.v(i, j) = src.v(i, j);
-        }
-    }
-}
+using nncfd::test::PoiseuilleExact;
+using nncfd::test::compute_poiseuille_profile_relL2;
+using nncfd::test::compute_velocity_change_relL2;
+using nncfd::test::copy_velocity_2d;
 
 // ============================================================================
 // Run Poiseuille flow at a specific resolution and return profile error
@@ -168,7 +101,7 @@ static double run_poiseuille_at_resolution(int NY, const PoiseuilleExact& exact,
 
     for (iter = 0; iter < max_iters; ++iter) {
         solver.sync_from_gpu();
-        copy_velocity(v_old, solver.velocity(), mesh);
+        copy_velocity_2d(v_old, solver.velocity(), mesh);
         solver.step();
         solver.sync_from_gpu();
 
@@ -188,7 +121,7 @@ static double run_poiseuille_at_resolution(int NY, const PoiseuilleExact& exact,
     iters_out = iter;
 
     solver.sync_from_gpu();
-    return compute_profile_relL2(solver.velocity(), mesh, exact);
+    return compute_poiseuille_profile_relL2(solver.velocity(), mesh, exact);
 }
 
 // ============================================================================

@@ -29,57 +29,107 @@ void compute_gradients_from_mac_gpu(
     int cell_stride,
     int u_total_size,
     int v_total_size,
-    int cell_total_size)
+    int cell_total_size,
+    const double* dyc,
+    int dyc_size)
 {
     NVTX_SCOPE_GRADIENT("kernel:gradients_from_mac");
 
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
+    const bool use_stretched = (dyc != nullptr && dyc_size > 0);
 
 #ifdef USE_GPU_OFFLOAD
-    // GPU path: parallelize over interior cells
-    // CRITICAL: map(present:...) indicates these arrays are already mapped by caller
-    // NVHPC requires map(present:) not map(present, alloc:) for pre-mapped data
-    #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
-                     dudx_cell[0:cell_total_size], dudy_cell[0:cell_total_size], \
-                     dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size])
-    for (int jj = 0; jj < Ny; ++jj) {
-        for (int ii = 0; ii < Nx; ++ii) {
+    if (use_stretched) {
+        // GPU path with non-uniform y-spacing: dyc already on GPU via solver mapping
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
+                         dudx_cell[0:cell_total_size], dudy_cell[0:cell_total_size], \
+                         dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size], \
+                         dyc[0:dyc_size])
+        for (int jj = 0; jj < Ny; ++jj) {
+            for (int ii = 0; ii < Nx; ++ii) {
+                const int i = ii + Ng;
+                const int j = jj + Ng;
+                const int idx_cell = j * cell_stride + i;
+
+                const int u_idx_ip = j * u_stride + (i + 1);
+                const int u_idx_im = j * u_stride + (i - 1);
+                const int u_idx_jp = (j + 1) * u_stride + i;
+                const int u_idx_jm = (j - 1) * u_stride + i;
+                const int v_idx_ip = j * v_stride + (i + 1);
+                const int v_idx_im = j * v_stride + (i - 1);
+                const int v_idx_jp = (j + 1) * v_stride + i;
+                const int v_idx_jm = (j - 1) * v_stride + i;
+
+                // Non-uniform y: span from center j-1 to center j+1 = dyc[j] + dyc[j+1]
+                double inv_dy_span = 1.0 / (dyc[j] + dyc[j + 1]);
+
+                dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
+                dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_dy_span;
+                dvdx_cell[idx_cell] = (v_face[v_idx_ip] - v_face[v_idx_im]) * inv_2dx;
+                dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_dy_span;
+            }
+        }
+    } else {
+        // GPU path with uniform y-spacing
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
+                         dudx_cell[0:cell_total_size], dudy_cell[0:cell_total_size], \
+                         dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size])
+        for (int jj = 0; jj < Ny; ++jj) {
+            for (int ii = 0; ii < Nx; ++ii) {
+                const int i = ii + Ng;
+                const int j = jj + Ng;
+                const int idx_cell = j * cell_stride + i;
+
+                const int u_idx_ip = j * u_stride + (i + 1);
+                const int u_idx_im = j * u_stride + (i - 1);
+                const int u_idx_jp = (j + 1) * u_stride + i;
+                const int u_idx_jm = (j - 1) * u_stride + i;
+                const int v_idx_ip = j * v_stride + (i + 1);
+                const int v_idx_im = j * v_stride + (i - 1);
+                const int v_idx_jp = (j + 1) * v_stride + i;
+                const int v_idx_jm = (j - 1) * v_stride + i;
+
+                dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
+                dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_2dy;
+                dvdx_cell[idx_cell] = (v_face[v_idx_ip] - v_face[v_idx_im]) * inv_2dx;
+                dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_2dy;
+            }
+        }
+    }
 #else
     // CPU path: same logic without GPU offloading
     (void)u_total_size; (void)v_total_size; (void)cell_total_size;
     for (int jj = 0; jj < Ny; ++jj) {
         for (int ii = 0; ii < Nx; ++ii) {
-#endif
-            // Interior cell indices (i,j) in [Ng, Ng+N-1]
             const int i = ii + Ng;
             const int j = jj + Ng;
-
-            // Cell-centered output index
             const int idx_cell = j * cell_stride + i;
 
-            // For gradients at cell (i,j), need neighboring face values
-            // dudx: central difference of u at x-faces
-            //   u(i+1,j) - u(i-1,j) gives u_face at i+1 and i-1
             const int u_idx_ip = j * u_stride + (i + 1);
             const int u_idx_im = j * u_stride + (i - 1);
             const int u_idx_jp = (j + 1) * u_stride + i;
             const int u_idx_jm = (j - 1) * u_stride + i;
-
-            // v at y-faces
             const int v_idx_ip = j * v_stride + (i + 1);
             const int v_idx_im = j * v_stride + (i - 1);
             const int v_idx_jp = (j + 1) * v_stride + i;
             const int v_idx_jm = (j - 1) * v_stride + i;
 
-            // Central differences
+            // y-derivative: use local spacing if stretched, else uniform
+            double inv_dy_local = inv_2dy;
+            if (use_stretched) {
+                inv_dy_local = 1.0 / (dyc[j] + dyc[j + 1]);
+            }
+
             dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
-            dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_2dy;
+            dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_dy_local;
             dvdx_cell[idx_cell] = (v_face[v_idx_ip] - v_face[v_idx_im]) * inv_2dx;
-            dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_2dy;
+            dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_dy_local;
         }
     }
+#endif
 }
 
 // ============================================================================
@@ -1039,16 +1089,14 @@ void komega_transport_step_gpu(
         double diff_omega = nu_omega_eff * ((omega[k_idx_ip] - 2.0*omega_val + omega[k_idx_im]) * inv_dx2 +
                                             (omega[k_idx_jp] - 2.0*omega_val + omega[k_idx_jm]) * inv_dy2);
         
-        // Source/sink terms
-        // k equation: ∂k/∂t = P_k - β*kω + diff - adv
-        double rhs_k = P_k - beta_star * k_val * omega_val + diff_k - adv_k;
-        
-        // ω equation: ∂ω/∂t = α(ω/k)P_k - βω² + diff - adv
-        double rhs_omega = alpha * (omega_val / k_val) * P_k - beta * omega_val * omega_val + diff_omega - adv_omega;
-        
-        // Explicit Euler time integration
-        double k_new = k_val + dt * rhs_k;
-        double omega_new = omega_val + dt * rhs_omega;
+        // Point-implicit: treat destruction terms implicitly for stability
+        double source_k = P_k + diff_k - adv_k;
+        double sink_k = beta_star * omega_val;
+        double source_omega = alpha * (omega_val / k_val) * P_k + diff_omega - adv_omega;
+        double sink_omega = beta * omega_val;
+
+        double k_new = (k_val + dt * source_k) / (1.0 + dt * sink_k);
+        double omega_new = (omega_val + dt * source_omega) / (1.0 + dt * sink_omega);
         
         // Clip to valid range
         k_new = (k_new > k_min) ? k_new : k_min;

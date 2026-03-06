@@ -15,6 +15,7 @@
 #include "turbulence_nn_tbnn.hpp"
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
+#include "turbulence_les.hpp"
 #include "gpu_kernels.hpp"
 #include "features.hpp"
 #include "numerics.hpp"
@@ -61,8 +62,18 @@ inline void mixing_length_cell_kernel(
         l_mix = 0.5 * delta;
     }
 
-    // Eddy viscosity
-    nu_t_ptr[cell_idx] = l_mix * l_mix * S_mag;
+    // Eddy viscosity with cap and under-relaxation
+    double nut_new = l_mix * l_mix * S_mag;
+
+    // Cap at 1000*nu to prevent explosive growth from coupling instability
+    // (matches GEP, SST, and Boussinesq closure conventions)
+    double nut_max = 1000.0 * nu;
+    if (nut_new > nut_max) nut_new = nut_max;
+
+    // Under-relax to damp turbulence-velocity feedback loop
+    // alpha=0.5 prevents >2x change per step in explicit RANS coupling
+    double nut_old = nu_t_ptr[cell_idx];
+    nu_t_ptr[cell_idx] = 0.5 * nut_new + 0.5 * nut_old;
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -199,26 +210,6 @@ void MixingLengthModel::update(
         // GPU PATH: Use solver-owned device buffers and MAC gradient kernel
         // ==================================================================
         
-        // First, estimate u_tau from wall gradient (CPU side, once per step)
-        double u_tau = 0.0;
-        {
-            int j = mesh.j_begin();
-            // Compute wall shear from velocity at first interior point
-            // For staggered grid: u is at x-faces, so u(i,j) is at y=0 boundary
-            double dudy_wall = 0.0;
-            int count = 0;
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double u_wall = velocity.u(i, j);
-                double u_next = velocity.u(i, j+1);
-                dudy_wall += std::abs((u_next - u_wall) / mesh.dy);
-                ++count;
-            }
-            dudy_wall /= count;
-            double tau_w = nu_ * dudy_wall;
-            u_tau = std::sqrt(tau_w);
-        }
-        u_tau = std::max(u_tau, 1e-10);
-        
         // Compute mixing length eddy viscosity on GPU
         const int Nx = device_view->Nx;
         const int Ny = device_view->Ny;
@@ -245,11 +236,40 @@ void MixingLengthModel::update(
             device_view->cell_stride,
             u_total_size,
             v_total_size,
-            cell_total_size
+            cell_total_size,
+            device_view->dyc,
+            device_view->dyc_size
         );
+
+        // Compute u_tau from GPU-resident dudy field via reduction
+        // (avoids reading stale HOST velocity arrays)
+        double u_tau = 0.0;
+        {
+            const double* dudy_d = device_view->dudy;
+            const int Ng_ut = Ng;
+            const int Nx_ut = Nx;
+            const int stride_ut = device_view->cell_stride;
+            const int j_wall = Ng_ut;  // First interior row
+            const double nu_ut = nu_;
+            double dudy_sum = 0.0;
+
+            #pragma omp target teams distribute parallel for \
+                map(present: dudy_d[0:cell_total_size]) reduction(+:dudy_sum)
+            for (int i = 0; i < Nx_ut; ++i) {
+                int idx = j_wall * stride_ut + (i + Ng_ut);
+                double val = dudy_d[idx];
+                if (val < 0.0) val = -val;
+                dudy_sum += val;
+            }
+            dudy_sum /= Nx_ut;
+            double tau_w = nu_ut * dudy_sum;
+            u_tau = std::sqrt(tau_w);
+        }
+        u_tau = std::max(u_tau, 1e-10);
+
         const int stride = device_view->cell_stride;
         const int n_cells = Nx * Ny;
-        
+
         // Copy member variables to local scope (NVHPC workaround)
         const double nu_local = nu_;
         const double kappa_local = kappa_;
@@ -316,12 +336,17 @@ void MixingLengthModel::update(
     double u_tau = 0.0;
     {
         int j = mesh.j_begin();
+        // Use local cell spacing for stretched grids (center-to-center)
+        double dy_local = mesh.dy;
+        if (!mesh.dyv.empty()) {
+            dy_local = 0.5 * (mesh.dyv[j] + mesh.dyv[j + 1]);
+        }
         double dudy_wall = 0.0;
         int count = 0;
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
             double u_wall = velocity.u(i, j);
             double u_next = velocity.u(i, j+1);
-            dudy_wall += std::abs((u_next - u_wall) / mesh.dy);
+            dudy_wall += std::abs((u_next - u_wall) / dy_local);
             ++count;
         }
         dudy_wall /= count;
@@ -514,6 +539,22 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             return std::make_unique<SSTWithEARSM>(EARSMType::Pope1975);
         }
             
+        // LES SGS models
+        case TurbulenceModelType::Smagorinsky:
+            return std::make_unique<SmagorinskyModel>();
+
+        case TurbulenceModelType::DynamicSmagorinsky:
+            return std::make_unique<DynamicSmagorinskyModel>();
+
+        case TurbulenceModelType::WALE:
+            return std::make_unique<WALEModel>();
+
+        case TurbulenceModelType::Vreman:
+            return std::make_unique<VremanModel>();
+
+        case TurbulenceModelType::Sigma:
+            return std::make_unique<SigmaModel>();
+
         default:
             return nullptr;
     }

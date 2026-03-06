@@ -168,6 +168,7 @@ void Config::load(const std::string& filename) {
     filter_strength = get_double("filter_strength", filter_strength);
     filter_interval = get_int("filter_interval", filter_interval);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
+    implicit_y_diffusion = get_bool("implicit_y_diffusion", implicit_y_diffusion);
     max_steps = get_int("max_steps", max_steps);
     T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);
@@ -212,6 +213,16 @@ void Config::load(const std::string& filename) {
         turb_model = TurbulenceModelType::EARSM_GS;
     } else if (model_str == "earsm_pope" || model_str == "pope") {
         turb_model = TurbulenceModelType::EARSM_Pope;
+    } else if (model_str == "smagorinsky" || model_str == "smag") {
+        turb_model = TurbulenceModelType::Smagorinsky;
+    } else if (model_str == "dynamic_smagorinsky" || model_str == "dsmag") {
+        turb_model = TurbulenceModelType::DynamicSmagorinsky;
+    } else if (model_str == "wale") {
+        turb_model = TurbulenceModelType::WALE;
+    } else if (model_str == "vreman") {
+        turb_model = TurbulenceModelType::Vreman;
+    } else if (model_str == "sigma") {
+        turb_model = TurbulenceModelType::Sigma;
     } else {
         turb_model = TurbulenceModelType::None;
     }
@@ -249,9 +260,11 @@ void Config::load(const std::string& filename) {
         poisson_solver = PoissonSolverType::HYPRE;
     } else if (solver_str == "mg" || solver_str == "multigrid") {
         poisson_solver = PoissonSolverType::MG;
+    } else if (solver_str == "fft_mpi") {
+        poisson_solver = PoissonSolverType::FFT_MPI;
     } else {
         std::cerr << "ERROR: Unknown poisson_solver='" << solver_str << "'.\n"
-                  << "Valid options: auto, fft, fft2d, fft1d, hypre, mg\n";
+                  << "Valid options: auto, fft, fft2d, fft1d, fft_mpi, hypre, mg\n";
         std::exit(1);
     }
 
@@ -386,6 +399,8 @@ void Config::parse_args(int argc, char** argv) {
                 poisson_solver = PoissonSolverType::HYPRE;
             } else if (val == "mg" || val == "multigrid") {
                 poisson_solver = PoissonSolverType::MG;
+            } else if (val == "fft_mpi") {
+                poisson_solver = PoissonSolverType::FFT_MPI;
             } else {
                 std::cerr << "Warning: Unknown --poisson value '" << val << "', using auto\n";
                 poisson_solver = PoissonSolverType::Auto;
@@ -442,6 +457,16 @@ void Config::parse_args(int argc, char** argv) {
                 turb_model = TurbulenceModelType::EARSM_GS;
             } else if (model == "earsm_pope" || model == "pope") {
                 turb_model = TurbulenceModelType::EARSM_Pope;
+            } else if (model == "smagorinsky" || model == "smag") {
+                turb_model = TurbulenceModelType::Smagorinsky;
+            } else if (model == "dynamic_smagorinsky" || model == "dsmag") {
+                turb_model = TurbulenceModelType::DynamicSmagorinsky;
+            } else if (model == "wale") {
+                turb_model = TurbulenceModelType::WALE;
+            } else if (model == "vreman") {
+                turb_model = TurbulenceModelType::Vreman;
+            } else if (model == "sigma") {
+                turb_model = TurbulenceModelType::Sigma;
             }
         } else if ((val = get_value(i, arg, "--weights")) != "") {
             nn_weights_path = val;
@@ -1032,6 +1057,7 @@ void Config::print() const {
         case PoissonSolverType::FFT1D: std::cout << "FFT1D (singly-periodic)"; break;
         case PoissonSolverType::HYPRE: std::cout << "HYPRE PFMG"; break;
         case PoissonSolverType::MG: std::cout << "Multigrid"; break;
+        case PoissonSolverType::FFT_MPI: std::cout << "FFT_MPI (distributed)"; break;
     }
     std::cout << "\n"
               << "Advection scheme: ";
@@ -1057,6 +1083,11 @@ void Config::print() const {
         case TurbulenceModelType::EARSM_WJ: std::cout << "SST + Wallin-Johansson EARSM"; break;
         case TurbulenceModelType::EARSM_GS: std::cout << "SST + Gatski-Speziale EARSM"; break;
         case TurbulenceModelType::EARSM_Pope: std::cout << "SST + Pope Quadratic EARSM"; break;
+        case TurbulenceModelType::Smagorinsky: std::cout << "LES Smagorinsky"; break;
+        case TurbulenceModelType::DynamicSmagorinsky: std::cout << "LES Dynamic Smagorinsky"; break;
+        case TurbulenceModelType::WALE: std::cout << "LES WALE"; break;
+        case TurbulenceModelType::Vreman: std::cout << "LES Vreman"; break;
+        case TurbulenceModelType::Sigma: std::cout << "LES Sigma"; break;
     }
     std::cout << "\n";
     

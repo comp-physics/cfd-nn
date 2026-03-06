@@ -12,12 +12,14 @@ double Mesh::wall_distance(int i, int j) const {
 }
 
 double Mesh::wall_distance(int i, int j, int k) const {
-    (void)i;  // Unused for channel flow
-    (void)k;  // Unused for channel flow (walls in y direction)
+    (void)i;
     double y = yc[j];
-    double dist_lo = std::abs(y - y_min);
-    double dist_hi = std::abs(y - y_max);
-    return std::min(dist_lo, dist_hi);
+    double dist = std::min(std::abs(y - y_min), std::abs(y - y_max));
+    if (z_has_walls_) {
+        double z = zc[k];
+        dist = std::min(dist, std::min(std::abs(z - z_min), std::abs(z - z_max)));
+    }
+    return dist;
 }
 
 double Mesh::y_plus(int i, int j, double u_tau, double nu) const {
