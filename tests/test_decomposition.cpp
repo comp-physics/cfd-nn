@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <vector>
 
 using namespace nncfd;
 
@@ -140,13 +141,22 @@ void test_mpi_decomposition() {
     double my_val = static_cast<double>(rank);
     double sum = decomp.allreduce_sum(my_val);
     double expected_sum = nprocs * (nprocs - 1) / 2.0;
-    assert(std::abs(sum - expected_sum) < 1e-12);
+    if (std::abs(sum - expected_sum) >= 1e-12) {
+        std::cerr << "FAIL: allreduce_sum expected " << expected_sum << " got " << sum << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
     // Allreduce min/max
     double min_val = decomp.allreduce_min(static_cast<double>(rank));
-    assert(std::abs(min_val - 0.0) < 1e-12);
+    if (std::abs(min_val - 0.0) >= 1e-12) {
+        std::cerr << "FAIL: allreduce_min expected 0 got " << min_val << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
     double max_val = decomp.allreduce_max(static_cast<double>(rank));
-    assert(std::abs(max_val - (nprocs - 1)) < 1e-12);
+    if (std::abs(max_val - (nprocs - 1)) >= 1e-12) {
+        std::cerr << "FAIL: allreduce_max expected " << (nprocs-1) << " got " << max_val << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
     if (rank == 0) {
         std::cout << "PASS: MPI decomposition with " << nprocs << " ranks"
