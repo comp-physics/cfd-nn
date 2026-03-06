@@ -39,7 +39,7 @@ export CXX=nvc++
 # Clean stale builds but preserve _deps (HYPRE cache from GitHub Actions)
 # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
 rm -rf build_ci_cpu_sanity
-for dir in build_cpu build_gpu build_cpu_hypre build_gpu_hypre; do
+for dir in build_cpu build_gpu build_gpu_mpi build_cpu_hypre build_gpu_hypre; do
     if [ -d "$dir" ]; then
         find "$dir" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
         # Clean hypre-subbuild - contains CMakeCache.txt with absolute paths
@@ -205,5 +205,118 @@ else
     echo ""
     echo "=== Last 50 lines of test log ==="
     tail -50 "$TEST_LOG" || true
+    exit 1
+fi
+
+# ===================================================================
+# Phase 4: GPU+MPI Build and Test
+# ===================================================================
+echo ""
+echo "==================================================================="
+echo "  Phase 4: GPU+MPI Build and Test"
+echo "==================================================================="
+echo ""
+
+# nvhpc ships OpenMPI in $NVHPC_ROOT/comm_libs/mpi — CMake find_package(MPI)
+# locates it automatically when nvhpc module is loaded.
+echo "MPI compiler: $(which mpicc 2>/dev/null || echo 'not in PATH — checking NVHPC comm_libs')"
+if ! which mpicc &>/dev/null; then
+    # Try nvhpc bundled MPI
+    NVHPC_MPI=$(find /opt/nvidia -name mpicc -path '*/comm_libs/*' 2>/dev/null | head -1 || true)
+    if [ -n "$NVHPC_MPI" ]; then
+        export PATH="$(dirname "$NVHPC_MPI"):$PATH"
+        echo "Added nvhpc MPI to PATH: $(dirname "$NVHPC_MPI")"
+    else
+        echo "[SKIP] No MPI found — skipping GPU+MPI phase"
+        exit 0
+    fi
+fi
+echo "MPI: $(mpicc --version 2>&1 | head -1)"
+echo ""
+
+GPU_MPI_LOG="__WORKDIR__/gpu_ci_mpi.log"
+echo "Build+test output saved to: $GPU_MPI_LOG"
+echo ""
+
+{
+    echo "==================================================================="
+    echo "  GPU+MPI Build Log"
+    echo "==================================================================="
+    echo "Host: $(hostname)"
+    echo "Date: $(date)"
+    echo "Compiler: $CXX"
+    echo "MPI: $(mpicc --version 2>&1 | head -1)"
+    echo ""
+
+    mkdir -p build_gpu_mpi
+    cd build_gpu_mpi
+    rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DUSE_GPU_OFFLOAD=ON \
+             -DUSE_MPI=ON \
+             -DBUILD_TESTS=ON \
+             -DGPU_CC=90
+    make -j8 test_decomposition test_halo_exchange
+    cd ..
+    echo ""
+    echo "GPU+MPI build: $(ls -lh build_gpu_mpi/test_decomposition 2>/dev/null || echo 'FAILED')"
+} > "$GPU_MPI_LOG" 2>&1
+
+if [ ! -f build_gpu_mpi/test_decomposition ] || [ ! -f build_gpu_mpi/test_halo_exchange ]; then
+    echo "[FAIL] GPU+MPI build failed — see $GPU_MPI_LOG"
+    echo ""
+    echo "=== Last 40 lines of GPU+MPI build log ==="
+    tail -40 "$GPU_MPI_LOG" || true
+    exit 1
+fi
+echo "[PASS] GPU+MPI build succeeded"
+echo ""
+
+# Run MPI tests — single GPU is shared across ranks; tests exercise MPI
+# infrastructure (decomposition, halo exchange) which doesn't require GPU compute
+set +e
+{
+    echo ""
+    echo "==================================================================="
+    echo "  GPU+MPI Test Run"
+    echo "==================================================================="
+    echo "Host: $(hostname)"
+    echo "Date: $(date)"
+    echo ""
+
+    echo "--- DecompositionTest (1 rank) ---"
+    ./build_gpu_mpi/test_decomposition
+    echo ""
+
+    echo "--- HaloExchangeTest (1 rank) ---"
+    ./build_gpu_mpi/test_halo_exchange
+    echo ""
+
+    echo "--- DecompositionTest (2 ranks) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu_mpi/test_decomposition
+    echo ""
+
+    echo "--- HaloExchangeTest (2 ranks) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu_mpi/test_halo_exchange
+    echo ""
+
+    echo "--- DecompositionTest (4 ranks) ---"
+    mpirun --oversubscribe -n 4 ./build_gpu_mpi/test_decomposition
+    echo ""
+
+    echo "--- HaloExchangeTest (4 ranks) ---"
+    mpirun --oversubscribe -n 4 ./build_gpu_mpi/test_halo_exchange
+    echo ""
+} >> "$GPU_MPI_LOG" 2>&1
+MPI_EXIT_CODE=$?
+set -e
+
+if [ $MPI_EXIT_CODE -eq 0 ]; then
+    echo "[PASS] GPU+MPI tests passed (1/2/4 ranks)"
+else
+    echo "[FAIL] GPU+MPI tests failed (exit code: $MPI_EXIT_CODE)"
+    echo ""
+    echo "=== Last 60 lines of GPU+MPI log ==="
+    tail -60 "$GPU_MPI_LOG" || true
     exit 1
 fi
