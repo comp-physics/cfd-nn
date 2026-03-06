@@ -134,7 +134,7 @@ void FFTMPIPoissonSolver::initialize_distributed() {
     // After x-FFT + z-transpose, each rank has:
     //   - Full z (Nz_global) for a subset of kx modes
     //   - Full y (Ny)
-    int n_kx_local = Nx_ / decomp_->nprocs();  // approximate
+    [[maybe_unused]] int n_kx_local = Nx_ / decomp_->nprocs();  // approximate
     int work_size = Nx_ * Ny_ * Nz_global_;  // conservative upper bound
     work_real_.resize(work_size, 0.0);
     work_imag_.resize(work_size, 0.0);
@@ -254,7 +254,7 @@ int FFTMPIPoissonSolver::solve_distributed_cpu(const ScalarField& rhs, ScalarFie
     const int Nx = Nx_;
     const int Ny = Ny_;
     const int Nz_local = Nz_local_;
-    const int Nz_global = Nz_global_;
+    [[maybe_unused]] const int Nz_global = Nz_global_;
     const int Ng = Ng_;
     const double pi = M_PI;
 
