@@ -24,7 +24,7 @@ using namespace nncfd;
     } \
 } while(0)
 
-void test_smem_matches_global() {
+int test_smem_matches_global() {
     // Small grid for fast test
     const int Nx = 32, Ny = 32, Nz = 32, Ng = 1;
     const double dx = 2.0 * M_PI / Nx;
@@ -122,9 +122,10 @@ void test_smem_matches_global() {
     cudaFree(d_u_smem);
     cudaFree(d_f);
     cudaFree(d_tmp);
+    return 0;
 }
 
-void test_smem_reduces_residual() {
+int test_smem_reduces_residual() {
     // Verify smoother actually reduces residual (not just stability)
     const int Nx = 16, Ny = 16, Nz = 16, Ng = 1;
     const double dx = 1.0 / Nx, dy = 1.0 / Ny, dz = 1.0 / Nz;
@@ -186,6 +187,7 @@ void test_smem_reduces_residual() {
     cudaFree(d_u);
     cudaFree(d_f);
     cudaFree(d_tmp);
+    return 0;
 }
 
 int main() {
@@ -194,8 +196,8 @@ int main() {
         return 0;
     }
 
-    test_smem_matches_global();
-    test_smem_reduces_residual();
+    if (int r = test_smem_matches_global()) return r;
+    if (int r = test_smem_reduces_residual()) return r;
 
     // cuBLAS reduction tests
     {
