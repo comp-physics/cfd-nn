@@ -38,7 +38,16 @@ ctest -L gpu                              # GPU-specific tests
 
 **Before pushing**: Run `./test_before_ci.sh` (CPU CI) and `./test_before_ci_gpu.sh` (GPU CI).
 
-CI runs 4 CPU configurations (Ubuntu + macOS) x (Debug + Release) plus GPU validation.
+CI runs: 2 CPU configurations (Ubuntu Debug + Release), a dedicated `mpi-test` job (builds with `USE_MPI=ON`, runs tests at 1/2/4 ranks), plus GPU validation on H200 (Phase 3: full test suite; Phase 4: GPU+MPI build and test).
+
+MPI build:
+```bash
+cmake .. -DUSE_MPI=ON -DUSE_GPU_OFFLOAD=OFF -DBUILD_TESTS=ON
+make test_decomposition test_halo_exchange test_mpi_channel
+mpirun --oversubscribe -n 4 ./test_decomposition
+```
+
+8 CMakePresets available (`CMakePresets.json`): `cpu-release`, `cpu-debug`, `cpu-hdf5`, `gpu`, `gpu-debug`, `gpu-full`, `gpu-h200`, `gpu-a100`.
 
 ## Project Layout
 
@@ -56,6 +65,7 @@ Key source files:
 - `solver.cpp` — Core solver (projection method, stepping, diagnostics)
 - `solver_time.cpp` — Time integration (Euler, RK2, RK3)
 - `solver_time_kernels_*.cpp` — GPU compute kernels (convection, diffusion, projection)
+- `solver_time_kernels_implicit.cpp` — Thomas algorithm for implicit y-diffusion (uniform and stretched variants)
 - `solver_recycling.cpp` — Recycling inflow BC
 - `poisson_solver_multigrid.cpp` — Geometric multigrid
 - `poisson_solver_fft*.cpp` — FFT Poisson solvers (cuFFT)
@@ -63,6 +73,8 @@ Key source files:
 - `turbulence_*.cpp` — Other turbulence closure implementations (RANS, EARSM, NN)
 - `ibm_forcing.cpp` — Immersed boundary method (direct forcing, GPU weight arrays)
 - `ibm_geometry.cpp` — IBM body definitions (cylinder, sphere, signed distance)
+- `decomposition.cpp` — MPI z-slab domain decomposition (`Decomposition` class)
+- `halo_exchange.cpp` — MPI halo exchange for z-direction (CPU + GPU-direct)
 - `config.cpp` — Config file parser and CLI args
 
 ## Coding Conventions
@@ -189,6 +201,10 @@ Functions that read field data on CPU (like `accumulate_statistics()`, `validate
 - Do not add `#ifdef USE_GPU_OFFLOAD` guards around pragmas — they fall away naturally in CPU builds
 - Use `map(present: ptr[0:size])` with **array sections** for data already on GPU — bare pointer names (e.g., `map(present: ptr)`) do not work with nvc++ and cause silent failures or NaN
 - Never use `map(to: ...)` or `map(from: ...)` during compute — data is persistently mapped
+- Variables only used in `map(present:)` clause (e.g., array size ints) are unused in CPU builds — mark them `[[maybe_unused]]`:
+```cpp
+[[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total;
+```
 
 ### nvc++ Workarounds
 The NVHPC compiler transfers `this` for every GPU kernel on a member function. Avoid this by:
@@ -231,6 +247,7 @@ The velocity filter applies a 3D Laplacian smoothing and MUST be applied BEFORE 
 - Always initialize: `set_body_force()`, `initialize_uniform()`, set turbulence model before stepping
 - Tests are labeled: `fast` (<30s), `medium` (30-120s), `slow` (>120s), `gpu`, `hypre`, `fft`
 - Each test must be independent — no reliance on execution order
+- Do NOT use `assert()` for test correctness checks — `assert()` compiles out in Release (`NDEBUG`), leaving variables unused and checks silently skipped. Use explicit `if`/`throw` or `if`/`MPI_Abort` instead.
 
 ## Staggered Grid (MAC)
 
@@ -259,6 +276,30 @@ Key gotchas:
 - Recycling buffers are GPU-resident; plane extraction uses GPU kernels
 - CUDA Graphs must be disabled when recycling is active
 - Mass correction preserves fluctuations while scaling the mean
+
+## MPI Decomposition
+
+Z-slab decomposition for multi-GPU DNS/LES. Each MPI rank owns a contiguous range of z-slabs; all x-y planes are replicated on every rank.
+
+Key classes:
+- `Decomposition` — owns rank, nprocs, local Nz, global offset; provides `allreduce_sum/min/max` and `k_local_to_global()`
+- `HaloExchange` — exchanges 1-cell halos in ±z via `MPI_Isend`/`MPI_Irecv`/`MPI_Waitall`
+
+**mpi_check pattern** — wrap every MPI call in both `decomposition.cpp` and `halo_exchange.cpp`:
+```cpp
+namespace {
+void mpi_check(int rc, const char* call) {
+    if (rc != MPI_SUCCESS) {
+        char msg[MPI_MAX_ERROR_STRING]; int len;
+        MPI_Error_string(rc, msg, &len);
+        throw std::runtime_error(std::string("[MPI] ") + call + " failed: " + msg);
+    }
+}
+}
+// Usage: mpi_check(MPI_Allreduce(...), "MPI_Allreduce");
+```
+
+The `#ifdef USE_MPI` guard wraps all MPI code paths. Without MPI, `Decomposition` returns `rank=0`, `nprocs=1`, and allreduces are identity operations.
 
 ## Config Files
 
@@ -386,3 +427,6 @@ If more info is needed after a packet: ask for **ONE** additional item only.
 - IBM `set_ibm_forcing()` must be called either before or after GPU init — it auto-detects `gpu_ready_` and calls `map_to_gpu()` accordingly
 - IBM geometry functions (`phi()`) are virtual and cannot be called on GPU — all geometry evaluation must happen at init time with results stored in pre-computed arrays
 - Thomas implicit y-diffusion uses `_stretched` variants when `mesh_->is_y_stretched()`: `alpha_lo = dt*nu/(dyv[j]*dyc[j])`, `alpha_hi = dt*nu/(dyv[j]*dyc[j+1])` for u/w; `alpha_lo = dt*nu/(dyc[j]*dyv[j-1])`, `alpha_hi = dt*nu/(dyc[j]*dyv[j])` for v
+- IBM `apply_forcing_device()` and `mask_rhs_device()` throw `std::runtime_error` if called before `map_to_gpu()` — do not call them on an uninitialized `IBMForcing`
+- `[[maybe_unused]]` is required on size variables used only in `map(present: ptr[0:size])` clauses in LES kernels — they are genuinely unused in CPU builds
+- `assert()` compiles out under `-DNDEBUG` (Release) — never use it as the sole correctness check in tests; use explicit `if`/`throw` instead
