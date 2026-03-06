@@ -340,8 +340,8 @@ void SmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
-    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
-    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
+    [[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    [[maybe_unused]] const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
@@ -397,8 +397,8 @@ void WALEModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
-    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
-    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
+    [[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    [[maybe_unused]] const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
@@ -454,8 +454,8 @@ void VremanModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
-    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
-    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
+    [[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    [[maybe_unused]] const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
@@ -511,8 +511,8 @@ void SigmaModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
-    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
-    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
+    [[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    [[maybe_unused]] const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
@@ -588,8 +588,8 @@ void DynamicSmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
     const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
     const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
     const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
-    const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
-    const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
+    [[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
+    [[maybe_unused]] const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
     const int total = Nx * Ny * Nz_eff;
 
     #pragma omp target teams distribute parallel for \
