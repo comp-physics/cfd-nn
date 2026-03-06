@@ -191,8 +191,8 @@ void test_poiseuille_64x128() {
     std::cout << "  L2 relative error: " << std::scientific << err.l2_rel << "\n";
     std::cout << "  max|div(u)|: " << err.max_div << "\n\n";
 
-    // Finer grid should give smaller error
-    record("Fine-grid L2 error < 2%", err.l2_rel < 0.02);
+    // Finer grid (64x128) should give smaller error than coarse (32x64, threshold 1%)
+    record("Fine-grid L2 error < 0.5%", err.l2_rel < 0.005);
     record("Fine-grid incompressibility", err.max_div < 1e-6);
 }
 
