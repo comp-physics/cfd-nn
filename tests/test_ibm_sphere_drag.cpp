@@ -23,11 +23,14 @@ using nncfd::test::create_velocity_bc;
 
 void test_sphere_drag_re100() {
     // Physical parameters
-    const double D       = 1.0;
-    const double radius  = 0.5;          // D/2
+    // radius=0.75: with 64x32x32 grid, dy=dz=0.3125, band=0.469, nearest face
+    // centers to sphere axis at dist≈0.221 → phi=0.221-0.75=-0.529 < -0.469 → solid.
+    // radius=0.5 gives min dist 0.221 → phi=-0.279 > -0.469 → no solid cells.
+    const double radius  = 0.75;
+    const double D       = 2.0 * radius;    // 1.5
     const double U_inf   = 1.0;
     const double Re      = 100.0;
-    const double nu      = U_inf * D / Re;  // 0.01
+    const double nu      = U_inf * D / Re;  // 0.015
 
     // Schiller-Naumann: Cd = 24/Re * (1 + 0.15 * Re^0.687)
     const double Cd_ref  = (24.0 / Re) * (1.0 + 0.15 * std::pow(Re, 0.687));
