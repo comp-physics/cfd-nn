@@ -39,18 +39,18 @@ int main(int argc, char** argv) {
     int rank = 0, nprocs = 1;
 #endif
 
-    const double D      = 1.0;
+    // radius=0.6 (D=1.2): with Ny=48 dy=0.25, band=0.375, nearest cell center
+    // at dist=0.2 from axis → phi=0.2-0.6=-0.4 < -0.375 → solid cells exist.
+    // radius=0.5 (D=1.0) gives nearest cell at dist=0.2, phi=-0.3 > -0.375 → no solid.
+    const double radius = 0.6;
+    const double D      = 2.0 * radius;     // 1.2
     const double U_inf  = 1.0;
     const double Re     = 100.0;
-    const double nu     = U_inf * D / Re;   // 0.01
-    const double radius = D / 2.0;
+    const double nu     = U_inf * D / Re;   // 0.012
 
     // Domain: [0,20] x [-6,6] x [0,pi]
     const double Lx = 20.0, Lz = M_PI;
-    // Ny=64: dy=0.1875, band=1.5*0.1875=0.28125. Cell at (4,0.09375) has
-    // phi=-0.40625 < -0.28125 → solid. Ny=48 gives dy=0.25, band=0.375,
-    // nearest cell at y=±0.125 exactly on the boundary (no solid cells).
-    const int    Nx = 64, Ny = 64, Nz = 8;
+    const int    Nx = 64, Ny = 48, Nz = 8;
 
     // Cylinder center at (4,0), extruded through all z-slabs
     const double cx = 4.0, cy = 0.0;
