@@ -710,10 +710,8 @@ if(BUILD_TESTS)
         target_link_libraries(bench_les_ibm_gpu PRIVATE nn_cfd_core)
     endif()
 
-    add_executable(verify_implicit_ydiff tests/verify_implicit_ydiff.cpp)
-    target_link_libraries(verify_implicit_ydiff PRIVATE nn_cfd_core)
-    target_include_directories(verify_implicit_ydiff PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     add_nncfd_test(verify_implicit_ydiff TEST_NAME_SUFFIX ImplicitYDiffTest LABELS "medium")
+    target_include_directories(verify_implicit_ydiff PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 
     # =========================================================================
     # Physics validation tests (IBM, LES, MPI)
