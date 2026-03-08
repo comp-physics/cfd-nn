@@ -126,8 +126,9 @@ void test_cylinder_strouhal() {
             solver.sync_from_gpu();
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
 
-            double Cl = Fy / (0.5 * U_inf * U_inf * A_ref);
-            double Cd = Fx / (0.5 * U_inf * U_inf * A_ref);
+            // compute_forces returns force on fluid (negative of force on body)
+            double Cl = -Fy / (0.5 * U_inf * U_inf * A_ref);
+            double Cd = -Fx / (0.5 * U_inf * U_inf * A_ref);
 
             Cl_signal.push_back(Cl);
             Cd_sum   += Cd;

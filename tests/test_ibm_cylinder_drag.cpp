@@ -92,8 +92,9 @@ void test_cylinder_drag_re20() {
         if (step > avg_start) {
             solver.sync_from_gpu();
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
-            double Cd = Fx / (q_inf * A_ref);
-            double Cl = Fy / (q_inf * A_ref);
+            // compute_forces returns force on fluid (negative of force on body)
+            double Cd = -Fx / (q_inf * A_ref);
+            double Cl = -Fy / (q_inf * A_ref);
             sum_Cd += Cd;
             sum_Cl += Cl;
             ++n_avg;

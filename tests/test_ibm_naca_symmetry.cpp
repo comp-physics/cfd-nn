@@ -23,9 +23,9 @@ using nncfd::test::create_velocity_bc;
 void test_naca_symmetry() {
     // Physical parameters
     const double U_inf = 1.0;
-    const double chord = 1.0;
+    const double chord = 2.0;  // chord=1 too thin for dy=0.2 grid (NACA max yt<dy/2)
     const double aoa_rad = 0.0;
-    const double nu = 0.01;   // Re = U*c/nu = 100
+    const double nu = 0.01;   // Re = U*c/nu = 200
 
     // Domain: [0,16] x [-6,6], airfoil leading edge at (3,0)
     const double x_min = 0.0,  x_max = 16.0;
@@ -69,7 +69,8 @@ void test_naca_symmetry() {
     solver.set_ibm_forcing(&ibm);
 
     CHECK(ibm.num_forcing_cells() > 0, "Must have IBM forcing cells for NACA 0012");
-    CHECK(ibm.num_solid_cells() > 0, "Must have IBM solid cells for NACA 0012");
+    // Note: with coarse grid (dy=0.2) and chord=2 (max yt=0.118), solid cells may be
+    // absent (need phi < -band=-0.3, but max depth is 0.118). Only forcing cells matter.
 
     std::cout << "  IBM: " << ibm.num_forcing_cells() << " forcing, "
               << ibm.num_solid_cells() << " solid cells" << std::endl;
@@ -90,8 +91,9 @@ void test_naca_symmetry() {
         if (step > avg_start) {
             solver.sync_from_gpu();
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
-            double Cd = Fx / (q_inf * A_ref);
-            double Cl = Fy / (q_inf * A_ref);
+            // compute_forces returns force on fluid (negative of force on body)
+            double Cd = -Fx / (q_inf * A_ref);
+            double Cl = -Fy / (q_inf * A_ref);
             sum_Cd += Cd;
             sum_Cl += Cl;
             ++n_avg;
@@ -138,7 +140,7 @@ void test_naca_symmetry() {
     }
 
     // Sanity check: some drag must be present (IBM should impede flow)
-    if (std::abs(Cd_mean) <= 0.0) {
+    if (Cd_mean <= 0.0) {
         std::cout << "FAIL: Cd_mean=" << Cd_mean
                   << " — zero drag is unphysical for flow past an airfoil" << std::endl;
         throw std::runtime_error("Cd=0 is unphysical");
