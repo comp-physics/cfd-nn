@@ -3,7 +3,7 @@
 ///
 /// Infinite cylinder (periodic in z) at Re=100. MPI splits the z-direction.
 /// IBM forcing must produce nonzero drag at any rank count.
-/// Cd in [0.15, 4.0] — wide tolerance for coarse-grid IBM (0 solid cells).
+/// Cd in [0.3, 4.0] — wide tolerance for coarse-grid IBM.
 ///
 /// Non-MPI build: single-process, Nz=8 periodic in z.
 /// MPI build: Nz slabs split across nprocs, tested at 1/2/4 ranks by CI.
@@ -47,7 +47,10 @@ int main(int argc, char** argv) {
 
     // Domain: [0,20] x [-6,6] x [0,pi]
     const double Lx = 20.0, Lz = M_PI;
-    const int    Nx = 64, Ny = 48, Nz = 8;
+    // Ny=64: dy=0.1875, band=1.5*0.1875=0.28125. Cell at (4,0.09375) has
+    // phi=-0.40625 < -0.28125 → solid. Ny=48 gives dy=0.25, band=0.375,
+    // nearest cell at y=±0.125 exactly on the boundary (no solid cells).
+    const int    Nx = 64, Ny = 64, Nz = 8;
 
     // Cylinder center at (4,0), extruded through all z-slabs
     const double cx = 4.0, cy = 0.0;
@@ -95,8 +98,8 @@ int main(int argc, char** argv) {
 
         if (ibm.num_forcing_cells() == 0)
             throw std::runtime_error("IBM has no forcing cells");
-        // Note: coarse 3D grid may have no solid cells (cell centers don't fall
-        // strictly inside cylinder beyond band width); forcing cells suffice.
+        if (ibm.num_solid_cells() == 0)
+            throw std::runtime_error("IBM has no solid cells (increase Ny for finer dy)");
 
         const double q_inf = 0.5 * U_inf * U_inf;
         double sum_Cd = 0.0, sum_Cl = 0.0;
@@ -135,12 +138,8 @@ int main(int argc, char** argv) {
             std::cout << "  Cl_mean = " << Cl_mean << "  (expected ~0 on average)\n";
         }
 
-        // Lower bound 0.15: coarse 3D grid (Ny=48, dx=0.3125, dy=0.25) has 0 solid
-        // cells and only 80 forcing cells, so IBM is effectively porous and drag is
-        // reduced vs. the fine-grid ~1.35 reference. Any Cd in [0.15, 4.0] is
-        // physically plausible for this resolution.
-        if (Cd_mean < 0.15 || Cd_mean > 4.0)
-            throw std::runtime_error("Cd=" + std::to_string(Cd_mean) + " out of [0.15, 4.0]");
+        if (Cd_mean < 0.3 || Cd_mean > 4.0)
+            throw std::runtime_error("Cd=" + std::to_string(Cd_mean) + " out of [0.3, 4.0]");
         if (std::abs(Cl_mean) > 1.0)
             throw std::runtime_error("|Cl|=" + std::to_string(std::abs(Cl_mean)) + " > 1.0");
 
