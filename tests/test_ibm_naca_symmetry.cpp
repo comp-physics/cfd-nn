@@ -89,11 +89,10 @@ void test_naca_symmetry() {
 
         // Force measurement during averaging window
         if (step > avg_start) {
-            solver.sync_from_gpu();
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
-            // compute_forces returns force on fluid (negative of force on body)
-            double Cd = -Fx / (q_inf * A_ref);
-            double Cl = -Fy / (q_inf * A_ref);
+            // compute_forces returns force on body (positive drag in +x direction)
+            double Cd = Fx / (q_inf * A_ref);
+            double Cl = Fy / (q_inf * A_ref);
             sum_Cd += Cd;
             sum_Cl += Cl;
             ++n_avg;

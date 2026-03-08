@@ -90,11 +90,10 @@ void test_cylinder_drag_re20() {
 
         // Force measurement at every step during averaging window
         if (step > avg_start) {
-            solver.sync_from_gpu();
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
-            // compute_forces returns force on fluid (negative of force on body)
-            double Cd = -Fx / (q_inf * A_ref);
-            double Cl = -Fy / (q_inf * A_ref);
+            // compute_forces returns force on body (positive drag in +x direction)
+            double Cd = Fx / (q_inf * A_ref);
+            double Cl = Fy / (q_inf * A_ref);
             sum_Cd += Cd;
             sum_Cl += Cl;
             ++n_avg;
@@ -134,10 +133,10 @@ void test_cylinder_drag_re20() {
     std::cout << "    Cl_mean = " << Cl_mean << " (expected ~0 at Re=20)" << std::endl;
 
     // Physics checks
-    // Cd in [0.3, 4.0]: coarse IBM on periodic domain under-predicts vs Tritton 2.05
-    if (Cd_mean < 0.3 || Cd_mean > 4.0) {
+    // Cd in [1.0, 3.5]: predictor-based force correctly captures IBM drag near Tritton 2.05
+    if (Cd_mean < 1.0 || Cd_mean > 3.5) {
         std::cout << "FAIL: Cd_mean=" << Cd_mean
-                  << " outside expected range [0.3, 4.0] for Re=20" << std::endl;
+                  << " outside expected range [1.0, 3.5] for Re=20" << std::endl;
         throw std::runtime_error("Cd out of range");
     }
 

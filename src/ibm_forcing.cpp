@@ -255,9 +255,6 @@ void IBMForcing::unmap_from_gpu() {
 }
 
 void IBMForcing::apply_forcing(VectorField& vel, double dt) {
-    (void)dt;
-
-    // CPU path: element-wise multiply by weight
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Nz = std::max(mesh_->Nz, 1);
@@ -265,6 +262,63 @@ void IBMForcing::apply_forcing(VectorField& vel, double dt) {
     const bool is2D = mesh_->is2D();
     int Nz_eff = is2D ? 1 : Nz;
 
+    // Accumulate force on body from predictor velocity (before weight multiply)
+    // Only accumulate when dt > 0 (first call on velocity_star_); skip second call (dt=0).
+    if (dt > 0.0) {
+        const double dx = mesh_->dx;
+        const double dz_val = is2D ? 1.0 : mesh_->dz;
+        last_Fx_ = 0.0;
+        last_Fy_ = 0.0;
+        last_Fz_ = 0.0;
+
+        for (int k = Ng; k < Nz_eff + Ng; ++k) {
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                double dy_local = mesh_->yf[j + 1] - mesh_->yf[j];
+                double dV = dx * dy_local * dz_val;
+                for (int i = Ng; i <= Nx + Ng; ++i) {
+                    int idx = is2D ? (j * u_stride_ + i) : (k * u_plane_stride_ + j * u_stride_ + i);
+                    double w = weight_u_[idx];
+                    if (w < 1.0) {
+                        double u_val = is2D ? vel.u(i, j) : vel.u(i, j, k);
+                        last_Fx_ += (1.0 - w) * u_val / dt * dV;
+                    }
+                }
+            }
+        }
+
+        for (int k = Ng; k < Nz_eff + Ng; ++k) {
+            for (int j = Ng; j <= Ny + Ng; ++j) {
+                double dy_local = mesh_->yc[j] - mesh_->yc[j - 1];
+                double dV = dx * dy_local * dz_val;
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = is2D ? (j * v_stride_ + i) : (k * v_plane_stride_ + j * v_stride_ + i);
+                    double w = weight_v_[idx];
+                    if (w < 1.0) {
+                        double v_val = is2D ? vel.v(i, j) : vel.v(i, j, k);
+                        last_Fy_ += (1.0 - w) * v_val / dt * dV;
+                    }
+                }
+            }
+        }
+
+        if (!is2D) {
+            for (int k = Ng; k <= Nz + Ng; ++k) {
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    double dy_local = mesh_->yf[j + 1] - mesh_->yf[j];
+                    double dV = dx * dy_local * dz_val;
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = k * w_plane_stride_ + j * w_stride_ + i;
+                        double w = weight_w_[idx];
+                        if (w < 1.0) {
+                            last_Fz_ += (1.0 - w) * vel.w(i, j, k) / dt * dV;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // CPU path: element-wise multiply by weight
     for (int k = Ng; k < Nz_eff + Ng; ++k) {
         for (int j = Ng; j < Ny + Ng; ++j) {
             for (int i = Ng; i <= Nx + Ng; ++i) {
@@ -297,7 +351,7 @@ void IBMForcing::apply_forcing(VectorField& vel, double dt) {
     }
 }
 
-void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr) {
+void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr, double dt) {
     if (!gpu_mapped_)
         throw std::runtime_error("[IBM] apply_forcing_device called before map_to_gpu()");
 
@@ -307,6 +361,39 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
     const int u_n = static_cast<int>(u_total_);
     const int v_n = static_cast<int>(v_total_);
     const int w_n = static_cast<int>(w_total_);
+
+    // Accumulate force on body from predictor velocity (before weight multiply)
+    // Only accumulate when dt > 0 (first call on velocity_star_); skip second call (dt=0).
+    if (dt > 0.0) {
+        [[maybe_unused]] const double dV = mesh_->dx * mesh_->dy * (mesh_->is2D() ? 1.0 : mesh_->dz);
+        double Fx_acc = 0.0;
+        double Fy_acc = 0.0;
+        double Fz_acc = 0.0;
+
+        #pragma omp target teams distribute parallel for reduction(+:Fx_acc) \
+            map(present: u_ptr[0:u_n], wu[0:u_n])
+        for (int i = 0; i < u_n; ++i) {
+            Fx_acc += (1.0 - wu[i]) * u_ptr[i];
+        }
+
+        #pragma omp target teams distribute parallel for reduction(+:Fy_acc) \
+            map(present: v_ptr[0:v_n], wv[0:v_n])
+        for (int i = 0; i < v_n; ++i) {
+            Fy_acc += (1.0 - wv[i]) * v_ptr[i];
+        }
+
+        if (w_ptr && ww && w_n > 0) {
+            #pragma omp target teams distribute parallel for reduction(+:Fz_acc) \
+                map(present: w_ptr[0:w_n], ww[0:w_n])
+            for (int i = 0; i < w_n; ++i) {
+                Fz_acc += (1.0 - ww[i]) * w_ptr[i];
+            }
+        }
+
+        last_Fx_ = Fx_acc / dt * dV;
+        last_Fy_ = Fy_acc / dt * dV;
+        last_Fz_ = Fz_acc / dt * dV;
+    }
 
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_n], wu[0:u_n])
@@ -348,64 +435,8 @@ void IBMForcing::mask_rhs_device(double* rhs_ptr) {
 std::tuple<double, double, double> IBMForcing::compute_forces(
     const VectorField& vel, double dt) const
 {
-    const int Nx = mesh_->Nx;
-    const int Ny = mesh_->Ny;
-    const int Nz = std::max(mesh_->Nz, 1);
-    const int Ng = mesh_->Nghost;
-    const bool is2D = mesh_->is2D();
-    int Nz_eff = is2D ? 1 : Nz;
-
-    double Fx = 0.0, Fy = 0.0, Fz = 0.0;
-    const double dx = mesh_->dx;
-    const double dz = is2D ? 1.0 : mesh_->dz;
-
-    for (int k = Ng; k < Nz_eff + Ng; ++k) {
-        for (int j = Ng; j < Ny + Ng; ++j) {
-            double dy_local = mesh_->yf[j + 1] - mesh_->yf[j];
-            double dV = dx * dy_local * dz;
-            for (int i = Ng; i <= Nx + Ng; ++i) {
-                int idx = is2D ? (j * u_stride_ + i) : (k * u_plane_stride_ + j * u_stride_ + i);
-                if (cell_type_u_[idx] == IBMCellType::Forcing ||
-                    cell_type_u_[idx] == IBMCellType::Solid) {
-                    double u_val = is2D ? vel.u(i, j) : vel.u(i, j, k);
-                    Fx -= u_val / dt * dV;
-                }
-            }
-        }
-    }
-
-    for (int k = Ng; k < Nz_eff + Ng; ++k) {
-        for (int j = Ng; j <= Ny + Ng; ++j) {
-            double dy_local = mesh_->yc[j] - mesh_->yc[j - 1];
-            double dV = dx * dy_local * dz;
-            for (int i = Ng; i < Nx + Ng; ++i) {
-                int idx = is2D ? (j * v_stride_ + i) : (k * v_plane_stride_ + j * v_stride_ + i);
-                if (cell_type_v_[idx] == IBMCellType::Forcing ||
-                    cell_type_v_[idx] == IBMCellType::Solid) {
-                    double v_val = is2D ? vel.v(i, j) : vel.v(i, j, k);
-                    Fy -= v_val / dt * dV;
-                }
-            }
-        }
-    }
-
-    if (!is2D) {
-        for (int k = Ng; k <= Nz + Ng; ++k) {
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                double dy_local = mesh_->yf[j + 1] - mesh_->yf[j];
-                double dV = dx * dy_local * dz;
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    int idx = k * w_plane_stride_ + j * w_stride_ + i;
-                    if (cell_type_w_[idx] == IBMCellType::Forcing ||
-                        cell_type_w_[idx] == IBMCellType::Solid) {
-                        Fz -= vel.w(i, j, k) / dt * dV;
-                    }
-                }
-            }
-        }
-    }
-
-    return {Fx, Fy, Fz};
+    (void)vel; (void)dt;
+    return {last_Fx_, last_Fy_, last_Fz_};
 }
 
 IBMCellType IBMForcing::cell_type_u(int i, int j, int k) const {

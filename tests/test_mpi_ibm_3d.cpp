@@ -108,13 +108,12 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Solver diverged at step " + std::to_string(step));
 
             if (step > avg_start) {
-                solver.sync_from_gpu();
                 auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
                 // Each rank runs the full domain (no z-slab decomp in solver yet),
                 // so each rank has the full-domain force. Use local value directly.
-                // compute_forces returns force on fluid (negative of force on body).
-                double Cd = -(Fx / Lz) / (q_inf * D);
-                double Cl = -(Fy / Lz) / (q_inf * D);
+                // compute_forces returns force on body (positive drag in +x direction).
+                double Cd = (Fx / Lz) / (q_inf * D);
+                double Cl = (Fy / Lz) / (q_inf * D);
                 sum_Cd += Cd;
                 sum_Cl += Cl;
                 ++n_avg;

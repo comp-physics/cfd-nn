@@ -53,7 +53,8 @@ public:
     /// @param u_ptr  Device-resident u-velocity pointer
     /// @param v_ptr  Device-resident v-velocity pointer
     /// @param w_ptr  Device-resident w-velocity pointer (nullptr for 2D)
-    void apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr);
+    /// @param dt     Time step size; when >0 accumulates predictor forces into last_Fx_/Fy_/Fz_
+    void apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr, double dt = 0.0);
 
     /// Zero out Poisson RHS at solid cell centers (GPU, no CPU sync)
     /// @param rhs_ptr  Device-resident RHS pointer (cell-centered)
@@ -123,6 +124,11 @@ private:
 
     int n_forcing_ = 0;
     int n_solid_ = 0;
+
+    // Cached force on body from last apply_forcing / apply_forcing_device call with dt > 0
+    double last_Fx_ = 0.0;
+    double last_Fy_ = 0.0;
+    double last_Fz_ = 0.0;
 
     // Classify a single point
     IBMCellType classify_point(double phi) const;

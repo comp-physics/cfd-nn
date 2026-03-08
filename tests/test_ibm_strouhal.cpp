@@ -123,12 +123,11 @@ void test_cylinder_strouhal() {
 
         if (step % sync_interval == 0) {
             // Sync GPU→CPU for force measurement (compute_forces reads CPU-side velocity)
-            solver.sync_from_gpu();
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
 
-            // compute_forces returns force on fluid (negative of force on body)
-            double Cl = -Fy / (0.5 * U_inf * U_inf * A_ref);
-            double Cd = -Fx / (0.5 * U_inf * U_inf * A_ref);
+            // compute_forces returns force on body (positive drag in +x direction)
+            double Cl = Fy / (0.5 * U_inf * U_inf * A_ref);
+            double Cd = Fx / (0.5 * U_inf * U_inf * A_ref);
 
             Cl_signal.push_back(Cl);
             Cd_sum   += Cd;

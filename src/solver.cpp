@@ -1755,7 +1755,8 @@ double RANSSolver::step() {
     if (ibm_) {
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->apply_forcing_device(velocity_star_u_ptr_, velocity_star_v_ptr_,
-                                       mesh_->is2D() ? nullptr : velocity_star_w_ptr_);
+                                       mesh_->is2D() ? nullptr : velocity_star_w_ptr_,
+                                       current_dt_);
         } else {
             ibm_->apply_forcing(velocity_star_, current_dt_);
         }
@@ -2220,12 +2221,13 @@ double RANSSolver::step() {
 
     // 5b. Re-apply IBM forcing after velocity correction
     // Pressure correction may introduce non-zero velocity inside the body
+    // dt=0.0 (default): do not overwrite last_Fx_/Fy_/Fz_ accumulated from predictor
     if (ibm_) {
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->apply_forcing_device(velocity_u_ptr_, velocity_v_ptr_,
                                        mesh_->is2D() ? nullptr : velocity_w_ptr_);
         } else {
-            ibm_->apply_forcing(velocity_, current_dt_);
+            ibm_->apply_forcing(velocity_, 0.0);
         }
     }
 
