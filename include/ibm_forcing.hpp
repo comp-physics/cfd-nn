@@ -69,6 +69,11 @@ public:
     /// Whether GPU data is mapped
     bool is_gpu_ready() const { return gpu_mapped_; }
 
+    /// Reset force accumulator to zero; call once at the start of each time step,
+    /// before the first apply_forcing call. Both IBM calls (predictor + corrected
+    /// velocity) then ADD their contributions so the total captures pressure drag too.
+    void reset_force_accumulator();
+
     /// Compute drag and lift forces on the body
     /// @param vel  Current velocity field
     /// @param dt   Time step size

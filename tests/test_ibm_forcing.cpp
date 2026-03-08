@@ -140,9 +140,10 @@ void test_force_computation() {
         }
     }
 
-    // apply_forcing with dt>0 accumulates forces from predictor velocity,
-    // then zeroes body cells. compute_forces returns the cached values.
+    // reset_force_accumulator() then apply_forcing(dt>0) accumulates forces.
+    // compute_forces returns the cached values.
     const double dt = 0.001;
+    ibm.reset_force_accumulator();
     ibm.apply_forcing(vel, dt);
     auto [Fx, Fy, Fz] = ibm.compute_forces(vel, dt);
 

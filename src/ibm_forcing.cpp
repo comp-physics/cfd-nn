@@ -254,6 +254,12 @@ void IBMForcing::unmap_from_gpu() {
     gpu_mapped_ = false;
 }
 
+void IBMForcing::reset_force_accumulator() {
+    last_Fx_ = 0.0;
+    last_Fy_ = 0.0;
+    last_Fz_ = 0.0;
+}
+
 void IBMForcing::apply_forcing(VectorField& vel, double dt) {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
@@ -262,14 +268,13 @@ void IBMForcing::apply_forcing(VectorField& vel, double dt) {
     const bool is2D = mesh_->is2D();
     int Nz_eff = is2D ? 1 : Nz;
 
-    // Accumulate force on body from predictor velocity (before weight multiply)
-    // Only accumulate when dt > 0 (first call on velocity_star_); skip second call (dt=0).
+    // Accumulate IBM momentum correction into force accumulator (ADD, don't reset).
+    // Call reset_force_accumulator() once per step before the first apply_forcing call.
+    // Both calls (predictor + corrected velocity) contribute: predictor captures viscous
+    // damping, corrected velocity captures pressure drag (u^{n+1} = u*_IBM - dt*grad(p)).
     if (dt > 0.0) {
         const double dx = mesh_->dx;
         const double dz_val = is2D ? 1.0 : mesh_->dz;
-        last_Fx_ = 0.0;
-        last_Fy_ = 0.0;
-        last_Fz_ = 0.0;
 
         for (int k = Ng; k < Nz_eff + Ng; ++k) {
             for (int j = Ng; j < Ny + Ng; ++j) {
@@ -362,8 +367,9 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
     const int v_n = static_cast<int>(v_total_);
     const int w_n = static_cast<int>(w_total_);
 
-    // Accumulate force on body from predictor velocity (before weight multiply)
-    // Only accumulate when dt > 0 (first call on velocity_star_); skip second call (dt=0).
+    // Accumulate IBM momentum correction (ADD to accumulator; caller resets via
+    // reset_force_accumulator() once per step). Both calls (predictor + corrected
+    // velocity) contribute so the total captures viscous + pressure drag.
     if (dt > 0.0) {
         [[maybe_unused]] const double dV = mesh_->dx * mesh_->dy * (mesh_->is2D() ? 1.0 : mesh_->dz);
         double Fx_acc = 0.0;
@@ -390,9 +396,9 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
             }
         }
 
-        last_Fx_ = Fx_acc / dt * dV;
-        last_Fy_ = Fy_acc / dt * dV;
-        last_Fz_ = Fz_acc / dt * dV;
+        last_Fx_ += Fx_acc / dt * dV;
+        last_Fy_ += Fy_acc / dt * dV;
+        last_Fz_ += Fz_acc / dt * dV;
     }
 
     #pragma omp target teams distribute parallel for \

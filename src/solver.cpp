@@ -1751,8 +1751,11 @@ double RANSSolver::step() {
     }
 
     // 3b. Apply IBM forcing to predicted velocity (before Poisson solve)
-    // Must apply to velocity_star_ (the predictor), not velocity_ (current step)
+    // Must apply to velocity_star_ (the predictor), not velocity_ (current step).
+    // Reset force accumulator here so both IBM calls (predictor + corrected velocity)
+    // contribute: predictor captures viscous damping, second call captures pressure drag.
     if (ibm_) {
+        ibm_->reset_force_accumulator();
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->apply_forcing_device(velocity_star_u_ptr_, velocity_star_v_ptr_,
                                        mesh_->is2D() ? nullptr : velocity_star_w_ptr_,
@@ -2220,14 +2223,16 @@ double RANSSolver::step() {
     }
 
     // 5b. Re-apply IBM forcing after velocity correction
-    // Pressure correction may introduce non-zero velocity inside the body
-    // dt=0.0 (default): do not overwrite last_Fx_/Fy_/Fz_ accumulated from predictor
+    // Re-force corrected velocity: pressure correction may introduce non-zero velocity
+    // inside the body. Pass current_dt_ so this call also contributes to force accumulator
+    // (pressure drag u^{n+1} = u*_IBM - dt*grad(p) inside body captures pressure force).
     if (ibm_) {
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->apply_forcing_device(velocity_u_ptr_, velocity_v_ptr_,
-                                       mesh_->is2D() ? nullptr : velocity_w_ptr_);
+                                       mesh_->is2D() ? nullptr : velocity_w_ptr_,
+                                       current_dt_);
         } else {
-            ibm_->apply_forcing(velocity_, 0.0);
+            ibm_->apply_forcing(velocity_, current_dt_);
         }
     }
 
