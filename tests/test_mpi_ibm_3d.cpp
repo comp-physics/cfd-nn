@@ -110,12 +110,11 @@ int main(int argc, char** argv) {
             if (step > avg_start) {
                 solver.sync_from_gpu();
                 auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), dt);
-                // MPI: each rank holds its z-slab contribution; sum across all ranks
-                double Fx_global = decomp.allreduce_sum(Fx);
-                double Fy_global = decomp.allreduce_sum(Fy);
-                // compute_forces returns force on fluid (negative of force on body)
-                double Cd = -(Fx_global / Lz) / (q_inf * D);
-                double Cl = -(Fy_global / Lz) / (q_inf * D);
+                // Each rank runs the full domain (no z-slab decomp in solver yet),
+                // so each rank has the full-domain force. Use local value directly.
+                // compute_forces returns force on fluid (negative of force on body).
+                double Cd = -(Fx / Lz) / (q_inf * D);
+                double Cl = -(Fy / Lz) / (q_inf * D);
                 sum_Cd += Cd;
                 sum_Cl += Cl;
                 ++n_avg;
