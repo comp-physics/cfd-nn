@@ -140,7 +140,11 @@ void test_force_computation() {
         }
     }
 
-    auto [Fx, Fy, Fz] = ibm.compute_forces(vel, 0.001);
+    // apply_forcing with dt>0 accumulates forces from predictor velocity,
+    // then zeroes body cells. compute_forces returns the cached values.
+    const double dt = 0.001;
+    ibm.apply_forcing(vel, dt);
+    auto [Fx, Fy, Fz] = ibm.compute_forces(vel, dt);
 
     CHECK(std::abs(Fx) > 0.0, "Force must be nonzero for flow through body");
 
