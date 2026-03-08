@@ -21,7 +21,10 @@ using namespace nncfd;
 
 int main(int argc, char** argv) {
 #ifdef USE_MPI
-    MPI_Init(&argc, &argv);
+    if (MPI_Init(&argc, &argv) != MPI_SUCCESS) {
+        std::cerr << "[MPI] MPI_Init failed\n";
+        return 1;
+    }
     int mpi_rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
 #else

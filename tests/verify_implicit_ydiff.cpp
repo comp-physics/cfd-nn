@@ -13,6 +13,7 @@
 #include <cmath>
 #include <iostream>
 #include <iomanip>
+#include <stdexcept>
 #include <string>
 #include <chrono>
 
@@ -168,6 +169,10 @@ void test_poiseuille_accuracy() {
     std::cout << "  Relative = " << max_err / u_center_exact << "\n";
     bool ok = (residual < 1e-5) && (max_err / u_center_exact < 1e-2);
     std::cout << "  => " << (ok ? "PASS" : "FAIL") << "\n\n";
+    if (!ok)
+        throw std::runtime_error("test_poiseuille_accuracy FAILED: residual=" +
+                                 std::to_string(residual) + " rel_err=" +
+                                 std::to_string(max_err / u_center_exact));
 }
 
 // ============================================================================
@@ -282,6 +287,9 @@ void test_all_models_stretched() {
         ++total;
     }
     std::cout << "\n  " << pass_count << "/" << total << " models passed\n\n";
+    if (pass_count != total)
+        throw std::runtime_error("test_all_models_stretched FAILED: " +
+                                 std::to_string(total - pass_count) + " model(s) failed");
 }
 
 // ============================================================================
@@ -383,9 +391,14 @@ void test_wallclock_comparison() {
 }
 
 int main() {
-    test_dt_speedup();
-    test_poiseuille_accuracy();
-    test_all_models_stretched();
-    test_wallclock_comparison();
+    try {
+        test_dt_speedup();
+        test_poiseuille_accuracy();
+        test_all_models_stretched();
+        test_wallclock_comparison();
+    } catch (const std::exception& e) {
+        std::cerr << "[FAIL] " << e.what() << "\n";
+        return 1;
+    }
     return 0;
 }

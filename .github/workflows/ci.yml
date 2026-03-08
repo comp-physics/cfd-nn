@@ -112,6 +112,8 @@ jobs:
         mpirun --oversubscribe -n 2 ./test_decomposition
         echo "--- HaloExchangeTest (2 ranks) ---"
         mpirun --oversubscribe -n 2 ./test_halo_exchange
+        echo "--- MPIChannelTest (2 ranks) ---"
+        mpirun --oversubscribe -n 2 ./test_mpi_channel
 
     - name: Run MPI tests (4 ranks)
       run: |
@@ -120,3 +122,5 @@ jobs:
         mpirun --oversubscribe -n 4 ./test_decomposition
         echo "--- HaloExchangeTest (4 ranks) ---"
         mpirun --oversubscribe -n 4 ./test_halo_exchange
+        echo "--- MPIChannelTest (4 ranks) ---"
+        mpirun --oversubscribe -n 4 ./test_mpi_channel

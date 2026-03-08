@@ -17,6 +17,19 @@
 #include <numeric>
 #include <stdexcept>
 
+#ifdef USE_MPI
+#include <mpi.h>
+namespace {
+void mpi_check(int rc, const char* call) {
+    if (rc != MPI_SUCCESS) {
+        char msg[MPI_MAX_ERROR_STRING]; int len;
+        MPI_Error_string(rc, msg, &len);
+        throw std::runtime_error(std::string("[MPI] ") + call + " failed: " + msg);
+    }
+}
+} // namespace
+#endif
+
 namespace nncfd {
 
 FFTMPIPoissonSolver::FFTMPIPoissonSolver(const Mesh& mesh, const Decomposition& decomp)
@@ -330,9 +343,10 @@ int FFTMPIPoissonSolver::solve_distributed_cpu(const ScalarField& rhs, ScalarFie
         }
     }
 
-    MPI_Alltoallv(send_buf_.data(), send_counts_.data(), send_displs_.data(), MPI_DOUBLE,
-                  recv_buf_.data(), recv_counts_.data(), recv_displs_.data(), MPI_DOUBLE,
-                  decomp_->comm());
+    mpi_check(MPI_Alltoallv(send_buf_.data(), send_counts_.data(), send_displs_.data(), MPI_DOUBLE,
+                            recv_buf_.data(), recv_counts_.data(), recv_displs_.data(), MPI_DOUBLE,
+                            decomp_->comm()),
+              "MPI_Alltoallv(forward)");
 
     // Unpack: each rank now has full z for its kx range
     int my_kx_start = decomp_->rank() * kx_base + std::min(decomp_->rank(), kx_rem);
@@ -503,9 +517,10 @@ int FFTMPIPoissonSolver::solve_distributed_cpu(const ScalarField& rhs, ScalarFie
     }
 
     std::vector<double> rev_recv(r_off, 0.0);
-    MPI_Alltoallv(rev_send.data(), rev_send_counts.data(), rev_send_displs.data(), MPI_DOUBLE,
-                  rev_recv.data(), rev_recv_counts.data(), rev_recv_displs.data(), MPI_DOUBLE,
-                  decomp_->comm());
+    mpi_check(MPI_Alltoallv(rev_send.data(), rev_send_counts.data(), rev_send_displs.data(), MPI_DOUBLE,
+                            rev_recv.data(), rev_recv_counts.data(), rev_recv_displs.data(), MPI_DOUBLE,
+                            decomp_->comm()),
+              "MPI_Alltoallv(reverse)");
 
     // Unpack: rebuild hat_real/hat_imag in z-slab layout
     std::fill(hat_real.begin(), hat_real.end(), 0.0);
