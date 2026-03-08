@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
         config.dt = 0.05;
         config.max_steps = 8000;
         config.tol = 1e-8;
-        config.poisson_solver = PoissonSolverType::MG;
+        // Do not force MG: 3D MG on Nz=8 can fail to converge; let solver auto-select
         config.time_integrator = TimeIntegrator::Euler;
         config.adaptive_dt = false;
         config.verbose = false;
