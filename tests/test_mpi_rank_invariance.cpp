@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
     int rank = 0, nprocs = 1;
 #endif
 
-    const int Nx = 8, Ny = 32, Nz = 8;
+    const int Nx = 8, Ny = 16, Nz = 8;
     const double nu = 0.1;
     const double fx = 1.0;
     const double H = 1.0;
@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
         config.Nx = Nx;
         config.Ny = Ny;
         config.Nz = Nz;
+
         config.nu = nu;
         config.dt = 0.05;
         config.max_steps = 8000;
