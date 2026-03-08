@@ -716,6 +716,37 @@ if(BUILD_TESTS)
     add_nncfd_test(verify_implicit_ydiff TEST_NAME_SUFFIX ImplicitYDiffTest LABELS "medium")
 
     # =========================================================================
+    # Physics validation tests (IBM, LES, MPI)
+    # =========================================================================
+
+    # IBM drag: Cd ~ 2.05 at Re=20 (Tritton 1959)
+    add_nncfd_test(test_ibm_cylinder_drag TEST_NAME_SUFFIX IBMCylinderDragTest LABELS "medium")
+
+    # IBM symmetry: NACA 0012 at AoA=0 must produce Cl ~ 0
+    add_nncfd_test(test_ibm_naca_symmetry TEST_NAME_SUFFIX IBMNACASymmetryTest LABELS "medium")
+
+    # IBM unsteady: Strouhal number ~ 0.165 at Re=100 (Williamson 1989)
+    add_nncfd_test(test_ibm_strouhal TEST_NAME_SUFFIX IBMStrouhalTest LABELS "slow")
+
+    # IBM 3D: sphere drag Cd ~ 1.08 at Re=100 (Schiller-Naumann)
+    add_nncfd_test(test_ibm_sphere_drag TEST_NAME_SUFFIX IBMSphereDragTest LABELS "slow")
+
+    # LES physics: SGS models must add dissipation relative to no model (TGV)
+    add_nncfd_test(test_les_tgv_dissipation TEST_NAME_SUFFIX LESTGVDissipationTest LABELS "medium")
+
+    # LES channel: Smagorinsky channel produces physically reasonable Re_tau
+    add_nncfd_test(test_les_channel_retau TEST_NAME_SUFFIX LESChannelReTauTest LABELS "medium")
+
+    # MPI physics: Poiseuille bulk velocity invariant to rank count
+    add_nncfd_test(test_mpi_rank_invariance TEST_NAME_SUFFIX MPIRankInvarianceTest LABELS "fast")
+
+    # MPI energy: allreduce_sum gives correct global kinetic energy
+    add_nncfd_test(test_mpi_energy_allreduce TEST_NAME_SUFFIX MPIEnergyAllreduceTest LABELS "fast")
+
+    # MPI IBM: 3D IBM cylinder flow with z-slab decomposition
+    add_nncfd_test(test_mpi_ibm_3d TEST_NAME_SUFFIX MPIIBMTest3D LABELS "slow")
+
+    # =========================================================================
     # Convenience targets for running tests
     # =========================================================================
     # Run all tests: make check
