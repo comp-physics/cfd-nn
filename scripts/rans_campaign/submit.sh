@@ -53,7 +53,8 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 cd "$PROJECT_DIR"
-JOB_ID=$(sbatch --parsable "${SCRIPT_DIR}/submit_campaign.sbatch")
+export RANS_PROJECT_DIR="$PROJECT_DIR"
+JOB_ID=$(sbatch --parsable --export=ALL "${SCRIPT_DIR}/submit_campaign.sbatch")
 
 echo "Submitted RANS campaign as SLURM array job: $JOB_ID"
 echo ""

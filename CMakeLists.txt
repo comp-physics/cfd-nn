@@ -243,7 +243,17 @@ if(USE_GPU_OFFLOAD)
                 message(STATUS "  GPU_CC fallback: ${GPU_CC}")
             endif()
         endif()
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc${GPU_CC}")
+        # Format GPU_CC for nvc++: "70,80,90" → "cc70,cc80,cc90"
+        string(REPLACE "," ";" GPU_CC_LIST "${GPU_CC}")
+        set(GPU_CC_FLAGS "")
+        foreach(cc IN LISTS GPU_CC_LIST)
+            if(GPU_CC_FLAGS)
+                set(GPU_CC_FLAGS "${GPU_CC_FLAGS},cc${cc}")
+            else()
+                set(GPU_CC_FLAGS "cc${cc}")
+            endif()
+        endforeach()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=${GPU_CC_FLAGS}")
         # Add -cuda for OpenMP+CUDA interoperability
         # Required for: hypre CUDA backend, FFT solver CUDA kernels
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")

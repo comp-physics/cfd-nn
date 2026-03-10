@@ -12,11 +12,10 @@
 
 set -euo pipefail
 
-# Resolve project root relative to this script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Project root passed via environment from submit.sh
+PROJECT_DIR="${RANS_PROJECT_DIR:?ERROR: RANS_PROJECT_DIR not set}"
 BUILD_DIR="${PROJECT_DIR}/build_gpu_campaign"
-JOB_LIST="${SCRIPT_DIR}/job_list.txt"
+JOB_LIST="${PROJECT_DIR}/scripts/rans_campaign/job_list.txt"
 
 # Read job info for this array task
 LINE=$(grep "^${SLURM_ARRAY_TASK_ID} " "$JOB_LIST") || {
