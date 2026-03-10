@@ -78,6 +78,11 @@ private:
     // Device-resident sum for mean subtraction (avoids host scalar transfer)
     double* sum_dev_ = nullptr;
 
+    // Volume weights for stretched-grid mean subtraction (solvability condition)
+    // dyv_dev_[j] = face-to-face spacing for interior cell j (0..Ny-1)
+    double* dyv_dev_ = nullptr;
+    double total_volume_ = 0.0;  // Nx * Nz * Σ dyv[j] = Nx * Nz * Ly
+
     // Partial sums buffer for block-level reduction (owned by this instance)
     double* partial_sums_ = nullptr;
     size_t partial_sums_size_ = 0;

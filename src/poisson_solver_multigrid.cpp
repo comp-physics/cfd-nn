@@ -3649,7 +3649,9 @@ int MultigridPoissonSolver::solve(const ScalarField& rhs, ScalarField& p, const 
     const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : (accurate_mode ? 3 : 2);
     const int nu2 = (cfg.nu2 > 0) ? cfg.nu2 : 1;
     const int degree = cfg.chebyshev_degree;
-    const int check_interval = std::max(1, cfg.check_interval);
+    // Semi-coarsening cycles are expensive — increase default check interval
+    const int default_interval_cpu = semi_coarsening_ ? std::max(4, cfg.check_interval) : cfg.check_interval;
+    const int check_interval = std::max(1, default_interval_cpu);
 
     // Compute reference norms for relative tolerances (CPU path)
     // ||b||_∞ = max|f| and ||b||_2 = sqrt(sum(f^2)) on finest level - store in member for diagnostics
@@ -4010,6 +4012,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
             };
 
             // Check residual and add more cycles if needed
+            // Semi-coarsening cycles are expensive — check less frequently
+            const int add_per_check = semi_coarsening_ ? 4 : 2;
             while (cycles_run < max_cycles) {
                 // Compute residual norm (this is the only D→H transfer per check)
                 compute_residual_and_norms(0, residual_, residual_l2_);
@@ -4019,8 +4023,8 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
                     break;  // Converged!
                 }
 
-                // Run 2 more cycles
-                int add = std::min(2, max_cycles - cycles_run);
+                // Run more cycles before next check
+                int add = std::min(add_per_check, max_cycles - cycles_run);
                 run_cycles(add);
                 cycles_run += add;
 
@@ -4081,7 +4085,9 @@ int MultigridPoissonSolver::solve_device(double* rhs_present, double* p_present,
     const int nu1 = (cfg.nu1 > 0) ? cfg.nu1 : (accurate_mode ? 3 : 2);
     const int nu2 = (cfg.nu2 > 0) ? cfg.nu2 : 1;
     const int degree = cfg.chebyshev_degree;
-    const int check_interval = std::max(1, cfg.check_interval);
+    // Semi-coarsening cycles are expensive — increase default check interval
+    const int default_interval = semi_coarsening_ ? std::max(4, cfg.check_interval) : cfg.check_interval;
+    const int check_interval = std::max(1, default_interval);
 
     // Compute ||b||_∞ and ||b||_2 on device via fused reduction - store in members for diagnostics
     auto& finest_gpu = *levels_[0];

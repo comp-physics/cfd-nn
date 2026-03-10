@@ -880,6 +880,12 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     double*       diff_u_ptr = v.diff_u;
     double*       diff_v_ptr = v.diff_v;
 
+    // Only skip y-diffusion if implicit AND y is not periodic
+    // (periodic y skips the implicit step, so explicit must include it)
+    const bool y_periodic = (velocity_bc_.y_lo == VelocityBC::Periodic) &&
+                            (velocity_bc_.y_hi == VelocityBC::Periodic);
+    const bool xz_only = config_.implicit_y_diffusion && !y_periodic;
+
     // 3D path
     if (!mesh_->is2D()) {
         const double dz = v.dz;
@@ -893,47 +899,86 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
 
         // Compute u-momentum diffusion at x-faces (3D)
         const int n_u_faces = (Nx + 1) * Ny * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
-            firstprivate(dx, dy, dz, u_stride, u_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_u_faces; ++idx) {
-            int i = idx % (Nx + 1) + Ng;
-            int j = (idx / (Nx + 1)) % Ny + Ng;
-            int k = idx / ((Nx + 1) * Ny) + Ng;
-
-            diffusive_u_face_kernel_staggered_3d(i, j, k,
-                u_stride, u_plane_stride, nu_stride, nu_plane_stride, u_stride, u_plane_stride,
-                dx, dy, dz, u_ptr, nu_ptr, diff_u_ptr);
+        if (xz_only) {
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, u_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+                diffusive_u_face_kernel_staggered_3d_xz(i, j, k,
+                    u_stride, u_plane_stride, nu_stride, nu_plane_stride, u_stride, u_plane_stride,
+                    dx, dy, dz, u_ptr, nu_ptr, diff_u_ptr);
+            }
+        } else {
+            #pragma omp target teams distribute parallel for \
+                map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
+                firstprivate(dx, dy, dz, u_stride, u_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_u_faces; ++idx) {
+                int i = idx % (Nx + 1) + Ng;
+                int j = (idx / (Nx + 1)) % Ny + Ng;
+                int k = idx / ((Nx + 1) * Ny) + Ng;
+                diffusive_u_face_kernel_staggered_3d(i, j, k,
+                    u_stride, u_plane_stride, nu_stride, nu_plane_stride, u_stride, u_plane_stride,
+                    dx, dy, dz, u_ptr, nu_ptr, diff_u_ptr);
+            }
         }
 
         // Compute v-momentum diffusion at y-faces (3D)
         const int n_v_faces = Nx * (Ny + 1) * Nz;
-        #pragma omp target teams distribute parallel for \
-            map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
-            firstprivate(dx, dy, dz, v_stride, v_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_v_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % (Ny + 1) + Ng;
-            int k = idx / (Nx * (Ny + 1)) + Ng;
-
-            diffusive_v_face_kernel_staggered_3d(i, j, k,
-                v_stride, v_plane_stride, nu_stride, nu_plane_stride, v_stride, v_plane_stride,
-                dx, dy, dz, v_ptr, nu_ptr, diff_v_ptr);
+        if (xz_only) {
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, v_stride, v_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+                diffusive_v_face_kernel_staggered_3d_xz(i, j, k,
+                    v_stride, v_plane_stride, nu_stride, nu_plane_stride, v_stride, v_plane_stride,
+                    dx, dy, dz, v_ptr, nu_ptr, diff_v_ptr);
+            }
+        } else {
+            #pragma omp target teams distribute parallel for \
+                map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
+                firstprivate(dx, dy, dz, v_stride, v_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_v_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % (Ny + 1) + Ng;
+                int k = idx / (Nx * (Ny + 1)) + Ng;
+                diffusive_v_face_kernel_staggered_3d(i, j, k,
+                    v_stride, v_plane_stride, nu_stride, nu_plane_stride, v_stride, v_plane_stride,
+                    dx, dy, dz, v_ptr, nu_ptr, diff_v_ptr);
+            }
         }
 
         // Compute w-momentum diffusion at z-faces (3D)
         const int n_w_faces = Nx * Ny * (Nz + 1);
-        #pragma omp target teams distribute parallel for \
-            map(present: w_ptr[0:w_total_size], nu_ptr[0:nu_total_size], diff_w_ptr[0:w_total_size]) \
-            firstprivate(dx, dy, dz, w_stride, w_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
-        for (int idx = 0; idx < n_w_faces; ++idx) {
-            int i = idx % Nx + Ng;
-            int j = (idx / Nx) % Ny + Ng;
-            int k = idx / (Nx * Ny) + Ng;
-
-            diffusive_w_face_kernel_staggered_3d(i, j, k,
-                w_stride, w_plane_stride, nu_stride, nu_plane_stride, w_stride, w_plane_stride,
-                dx, dy, dz, w_ptr, nu_ptr, diff_w_ptr);
+        if (xz_only) {
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size], nu_ptr[0:nu_total_size], diff_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, w_stride, w_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+                diffusive_w_face_kernel_staggered_3d_xz(i, j, k,
+                    w_stride, w_plane_stride, nu_stride, nu_plane_stride, w_stride, w_plane_stride,
+                    dx, dy, dz, w_ptr, nu_ptr, diff_w_ptr);
+            }
+        } else {
+            #pragma omp target teams distribute parallel for \
+                map(present: w_ptr[0:w_total_size], nu_ptr[0:nu_total_size], diff_w_ptr[0:w_total_size]) \
+                firstprivate(dx, dy, dz, w_stride, w_plane_stride, nu_stride, nu_plane_stride, Nx, Ny, Ng)
+            for (int idx = 0; idx < n_w_faces; ++idx) {
+                int i = idx % Nx + Ng;
+                int j = (idx / Nx) % Ny + Ng;
+                int k = idx / (Nx * Ny) + Ng;
+                diffusive_w_face_kernel_staggered_3d(i, j, k,
+                    w_stride, w_plane_stride, nu_stride, nu_plane_stride, w_stride, w_plane_stride,
+                    dx, dy, dz, w_ptr, nu_ptr, diff_w_ptr);
+            }
         }
         return;
     }
@@ -941,32 +986,58 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     // 2D path
     // Compute u-momentum diffusion at x-faces
     const int n_u_faces = (Nx + 1) * Ny;
-    #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
-        firstprivate(dx, dy, u_stride, nu_stride, Nx, Ng)
-    for (int idx = 0; idx < n_u_faces; ++idx) {
-        int i_local = idx % (Nx + 1);
-        int j_local = idx / (Nx + 1);
-        int i = i_local + Ng;
-        int j = j_local + Ng;
-
-        diffusive_u_face_kernel_staggered(i, j, u_stride, nu_stride, u_stride, dx, dy,
-                                         u_ptr, nu_ptr, diff_u_ptr);
+    if (xz_only) {
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, u_stride, nu_stride, Nx, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i_local = idx % (Nx + 1);
+            int j_local = idx / (Nx + 1);
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            diffusive_u_face_kernel_staggered_xz(i, j, u_stride, nu_stride, u_stride, dx, dy,
+                                                 u_ptr, nu_ptr, diff_u_ptr);
+        }
+    } else {
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], nu_ptr[0:nu_total_size], diff_u_ptr[0:u_total_size]) \
+            firstprivate(dx, dy, u_stride, nu_stride, Nx, Ng)
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i_local = idx % (Nx + 1);
+            int j_local = idx / (Nx + 1);
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            diffusive_u_face_kernel_staggered(i, j, u_stride, nu_stride, u_stride, dx, dy,
+                                             u_ptr, nu_ptr, diff_u_ptr);
+        }
     }
 
     // Compute v-momentum diffusion at y-faces
     const int n_v_faces = Nx * (Ny + 1);
-    #pragma omp target teams distribute parallel for \
-        map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
-        firstprivate(dx, dy, v_stride, nu_stride, Nx, Ng)
-    for (int idx = 0; idx < n_v_faces; ++idx) {
-        int i_local = idx % Nx;
-        int j_local = idx / Nx;
-        int i = i_local + Ng;
-        int j = j_local + Ng;
-
-        diffusive_v_face_kernel_staggered(i, j, v_stride, nu_stride, v_stride, dx, dy,
-                                         v_ptr, nu_ptr, diff_v_ptr);
+    if (xz_only) {
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, v_stride, nu_stride, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = idx / Nx;
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            diffusive_v_face_kernel_staggered_xz(i, j, v_stride, nu_stride, v_stride, dx, dy,
+                                                 v_ptr, nu_ptr, diff_v_ptr);
+        }
+    } else {
+        #pragma omp target teams distribute parallel for \
+            map(present: v_ptr[0:v_total_size], nu_ptr[0:nu_total_size], diff_v_ptr[0:v_total_size]) \
+            firstprivate(dx, dy, v_stride, nu_stride, Nx, Ng)
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = idx / Nx;
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            diffusive_v_face_kernel_staggered(i, j, v_stride, nu_stride, v_stride, dx, dy,
+                                             v_ptr, nu_ptr, diff_v_ptr);
+        }
     }
 }
 

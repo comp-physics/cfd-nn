@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
 project(nn_cfd VERSION 0.1.0 LANGUAGES CXX)
 
+# Enable CUDA for custom kernels when GPU offload is enabled
+if(USE_GPU_OFFLOAD)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CMAKE_CUDA_STANDARD 17)
+        set(CMAKE_CUDA_ARCHITECTURES ${GPU_CC})
+        message(STATUS "CUDA enabled for custom kernels (arch: ${GPU_CC})")
+    endif()
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(CMAKE_EXPORT_COMPILE_COMMANDS)
   add_custom_target(clangd_compile_commands ALL
@@ -21,6 +33,43 @@ option(USE_GPU_OFFLOAD "Enable OpenMP GPU target offloading" OFF)
 
 # Hypre solver option (requires CUDA toolkit)
 option(USE_HYPRE "Enable HYPRE PFMG Poisson solver" OFF)
+
+# MPI support for multi-GPU domain decomposition
+option(USE_MPI "Enable MPI for multi-GPU domain decomposition" OFF)
+
+# HDF5 checkpoint/restart (optional)
+option(USE_HDF5 "Enable HDF5 checkpoint/restart" OFF)
+if(USE_HDF5)
+    # Try system HDF5 first
+    find_package(HDF5 QUIET COMPONENTS C)
+    if(HDF5_FOUND)
+        message(STATUS "HDF5 ENABLED (system): ${HDF5_C_LIBRARIES}")
+        set(HDF5_FROM_FETCHCONTENT OFF)
+    else()
+        message(STATUS "System HDF5 not found — building from source via FetchContent")
+        include(FetchContent)
+        FetchContent_Declare(
+            hdf5
+            URL https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz
+            URL_HASH SHA256=e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b
+        )
+        # Configure HDF5 build options — minimal C-only build
+        set(HDF5_BUILD_CPP_LIB OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_FORTRAN OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_JAVA OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_HL_LIB OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+        set(HDF5_BUILD_UTILS OFF CACHE BOOL "" FORCE)
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(HDF5_ENABLE_Z_LIB_SUPPORT OFF CACHE BOOL "" FORCE)
+        set(HDF5_ENABLE_SZIP_SUPPORT OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(hdf5)
+        set(HDF5_FROM_FETCHCONTENT ON)
+        message(STATUS "HDF5 ENABLED (built from source)")
+    endif()
+endif()
 
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
@@ -220,6 +269,10 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Force all executables to the build root (prevents HYPRE FetchContent from
+# creating config subdirectories like Deployment/ that confuse CTest)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
@@ -235,6 +288,7 @@ set(LIB_SOURCES
     src/solver_recycling.cpp
     src/solver_time_kernels_blend.cpp
     src/solver_time_kernels_euler.cpp
+    src/solver_time_kernels_implicit.cpp
     src/solver_time_kernels_periodic.cpp
     src/solver_time_kernels_projection.cpp
     src/solver_periodic_halos.cpp
@@ -252,6 +306,14 @@ set(LIB_SOURCES
     src/turbulence_transport.cpp
     src/turbulence_earsm.cpp
     src/gpu_kernels.cpp
+    src/decomposition.cpp
+    src/halo_exchange.cpp
+    src/poisson_solver_fft_mpi.cpp
+    src/ibm_geometry.cpp
+    src/ibm_forcing.cpp
+    src/velocity_gradient.cpp
+    src/turbulence_les.cpp
+    src/checkpoint.cpp
 )
 
 # Core library
@@ -267,6 +329,26 @@ if(USE_GPU_OFFLOAD)
     # Propagate USE_GPU_OFFLOAD to all targets that link this library
     # This ensures tests compile with the same GPU settings as the library
     target_compile_definitions(nn_cfd_core PUBLIC USE_GPU_OFFLOAD)
+
+    # MPI support
+    if(USE_MPI)
+        find_package(MPI REQUIRED)
+        target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+        message(STATUS "  MPI enabled for multi-GPU domain decomposition")
+    endif()
+
+    # Custom CUDA kernels (shared-memory smoothers, reductions, halo packing)
+    if(CMAKE_CUDA_COMPILER)
+        file(GLOB CUDA_KERNEL_SOURCES "src/cuda_kernels/*.cu")
+        if(CUDA_KERNEL_SOURCES)
+            target_sources(nn_cfd_core PRIVATE ${CUDA_KERNEL_SOURCES})
+            set_source_files_properties(${CUDA_KERNEL_SOURCES} PROPERTIES LANGUAGE CUDA)
+            target_link_libraries(nn_cfd_core CUDA::cublas)
+            target_compile_definitions(nn_cfd_core PUBLIC USE_CUDA_KERNELS)
+            message(STATUS "  Custom CUDA kernels added: ${CUDA_KERNEL_SOURCES}")
+        endif()
+    endif()
 endif()
 
 # Add HYPRE Poisson solver when enabled
@@ -295,6 +377,28 @@ if(USE_GPU_OFFLOAD)
         target_compile_definitions(nn_cfd_core PUBLIC USE_FFT_POISSON)
         message(STATUS "  FFT Poisson solvers added (2D FFT + 1D FFT + cuSPARSE)")
     endif()
+endif()
+
+# MPI support (CPU-only builds)
+if(USE_MPI AND NOT USE_GPU_OFFLOAD)
+    find_package(MPI REQUIRED)
+    target_link_libraries(nn_cfd_core MPI::MPI_CXX)
+    target_compile_definitions(nn_cfd_core PUBLIC USE_MPI)
+    message(STATUS "  MPI enabled (CPU build)")
+endif()
+
+# HDF5 checkpoint/restart linking
+if(USE_HDF5)
+    if(HDF5_FROM_FETCHCONTENT)
+        # FetchContent build: link the CMake target directly
+        target_link_libraries(nn_cfd_core hdf5-static)
+    else()
+        # System HDF5: use find_package variables
+        target_include_directories(nn_cfd_core PUBLIC ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(nn_cfd_core ${HDF5_C_LIBRARIES})
+    endif()
+    target_compile_definitions(nn_cfd_core PUBLIC USE_HDF5)
+    message(STATUS "  HDF5 checkpoint/restart enabled")
 endif()
 
 # Suppress unknown pragma warnings in CPU builds
@@ -372,6 +476,12 @@ target_link_libraries(duct nn_cfd_core)
 add_executable(taylor_green_3d app/main_taylor_green_3d.cpp)
 target_link_libraries(taylor_green_3d nn_cfd_core)
 
+add_executable(cylinder app/main_cylinder.cpp)
+target_link_libraries(cylinder nn_cfd_core)
+
+add_executable(airfoil app/main_airfoil.cpp)
+target_link_libraries(airfoil nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
@@ -427,6 +537,18 @@ if(BUILD_TESTS)
     add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest LABELS fast)
     add_nncfd_test(test_config LABELS fast)
     add_nncfd_test(test_mpi_guard LABELS fast)
+    add_nncfd_test(test_decomposition TEST_NAME_SUFFIX DecompositionTest LABELS fast)
+    add_nncfd_test(test_halo_exchange TEST_NAME_SUFFIX HaloExchangeTest LABELS fast)
+    add_nncfd_test(test_mpi_channel TEST_NAME_SUFFIX MPIChannelTest LABELS fast)
+    add_nncfd_test(test_mpi_poisson TEST_NAME_SUFFIX MPIPoissonTest LABELS fast)
+    add_nncfd_test(test_ibm_sdf TEST_NAME_SUFFIX IBMSDFTest LABELS fast)
+    add_nncfd_test(test_ibm_forcing TEST_NAME_SUFFIX IBMForcingTest LABELS fast)
+    add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
+    add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)
+    add_nncfd_test(test_les_channel TEST_NAME_SUFFIX LESChannelTest LABELS fast)
+    add_nncfd_test(test_checkpoint TEST_NAME_SUFFIX CheckpointTest LABELS fast)
+    add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
+    add_nncfd_test(test_les_tgv TEST_NAME_SUFFIX LESTGVTest LABELS medium)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
@@ -453,7 +575,6 @@ if(BUILD_TESTS)
     add_nncfd_test(test_tgv_2d_invariants TEST_NAME_SUFFIX TGV2DInvariantsTest LABELS fast)
     add_nncfd_test(test_tgv_repeatability TEST_NAME_SUFFIX TGVRepeatabilityTest LABELS fast)
     add_nncfd_test(test_invariant_scaling TEST_NAME_SUFFIX InvariantScalingTest LABELS fast)
-    add_nncfd_test(test_convection_diagnostic TEST_NAME_SUFFIX ConvectionDiagnosticTest LABELS fast)
     add_nncfd_test(test_step_trace TEST_NAME_SUFFIX StepTraceTest LABELS fast)
     add_nncfd_test(test_term_values TEST_NAME_SUFFIX TermValuesTest LABELS fast)
     add_nncfd_test(test_div_constant TEST_NAME_SUFFIX DivConstantTest LABELS fast)
@@ -470,7 +591,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_galilean_stage_breakdown TEST_NAME_SUFFIX GalileanStageBreakdownTest LABELS fast)
     add_nncfd_test(test_mg_ramp_diagnostic TEST_NAME_SUFFIX MGRampDiagnosticTest LABELS fast)
     add_nncfd_test(test_projection_trace TEST_NAME_SUFFIX ProjectionTraceTest LABELS fast)
-    add_nncfd_test(test_conv_diff_constant TEST_NAME_SUFFIX ConvDiffConstantTest LABELS fast)
+    add_nncfd_test(test_stretched_gradient TEST_NAME_SUFFIX StretchedGradientTest LABELS fast)
 
     # =========================================================================
     # Medium tests (30-120s) - run with: ctest -L medium
@@ -478,12 +599,15 @@ if(BUILD_TESTS)
     add_nncfd_test(test_conservation_audit TEST_NAME_SUFFIX ConservationAuditTest LABELS medium)
     add_nncfd_test(test_skew_energy_conservation TEST_NAME_SUFFIX SkewEnergyTest LABELS medium)
     add_nncfd_test(test_tgv_3d_invariants TEST_NAME_SUFFIX TGV3DInvariantsTest LABELS medium)
+    add_nncfd_test(test_tgv_validation TEST_NAME_SUFFIX TGVValidationTest LABELS "gpu;medium")
+    set_tests_properties(TGVValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
     add_nncfd_test(test_mms_convergence TEST_NAME_SUFFIX MMSConvergenceTest LABELS medium)
     add_nncfd_test(test_fractional_step_temporal_convergence TEST_NAME_SUFFIX FractionalStepTest LABELS medium)
     add_nncfd_test(test_poisson_unified LABELS medium)
     add_nncfd_test(test_mg_manufactured_solution LABELS medium)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest LABELS medium)
     add_nncfd_test(test_turbulence_unified LABELS medium)
+    add_nncfd_test(test_turbulence_cross_geometry TEST_NAME_SUFFIX TurbulenceCrossGeometryTest LABELS medium)
     add_nncfd_test(test_projection_invariants LABELS medium)
     add_nncfd_test(test_perf_sentinel LABELS medium)
     add_nncfd_test(test_solver_selection LABELS medium)
@@ -494,6 +618,16 @@ if(BUILD_TESTS)
     add_nncfd_test(test_o4_integration TEST_NAME_SUFFIX O4IntegrationTest LABELS medium)
     add_nncfd_test(test_time_integrators TEST_NAME_SUFFIX TimeIntegratorsTest LABELS medium)
     add_nncfd_test(test_scheme_combinations TEST_NAME_SUFFIX SchemeCombinationsTest LABELS medium)
+    add_nncfd_test(test_poiseuille_validation TEST_NAME_SUFFIX PoiseuilleValidationTest LABELS "gpu;medium")
+    set_tests_properties(PoiseuilleValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+    add_nncfd_test(test_rans_channel_validation TEST_NAME_SUFFIX RANSChannelValidationTest LABELS "gpu;medium")
+    set_tests_properties(RANSChannelValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+    add_nncfd_test(test_dns_channel_validation TEST_NAME_SUFFIX DNSChannelValidationTest LABELS "gpu;medium")
+    set_tests_properties(DNSChannelValidationTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+    add_nncfd_test(test_rans_accuracy TEST_NAME_SUFFIX RANSAccuracyTest LABELS medium)
+    add_nncfd_test(test_rans_3d_channel TEST_NAME_SUFFIX RANS3DChannelTest LABELS medium)
+    add_nncfd_test(test_duct_poiseuille TEST_NAME_SUFFIX DuctPoiseuilleTest LABELS medium)
+    add_nncfd_test(test_duct_validation TEST_NAME_SUFFIX DuctValidationTest LABELS fast)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow
@@ -530,6 +664,15 @@ if(BUILD_TESTS)
         # GPU turbulence readiness acceptance test - validates all systems before production runs
         add_nncfd_test(test_gpu_turbulence_readiness TEST_NAME_SUFFIX GPUTurbulenceReadinessTest LABELS "gpu;acceptance")
         set_tests_properties(GPUTurbulenceReadinessTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+        # CUDA kernel tests
+        if(CMAKE_CUDA_COMPILER)
+            add_nncfd_test(test_cuda_smoother TEST_NAME_SUFFIX CUDASmootherTest LABELS "gpu;fast")
+            set_tests_properties(CUDASmootherTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+
+            add_nncfd_test(test_cuda_halo TEST_NAME_SUFFIX CUDAHaloTest LABELS "gpu;fast")
+            set_tests_properties(CUDAHaloTest PROPERTIES ENVIRONMENT "OMP_TARGET_OFFLOAD=MANDATORY")
+        endif()
     endif()
 
     # =========================================================================
@@ -537,6 +680,7 @@ if(BUILD_TESTS)
     # =========================================================================
     if(USE_GPU_OFFLOAD AND CUDAToolkit_FOUND)
         add_nncfd_test(test_fft_unified TEST_NAME_SUFFIX FFTUnifiedTest LABELS "fft;gpu")
+        add_nncfd_test(test_fft_stretched TEST_NAME_SUFFIX FFTStretchedTest LABELS "fft;gpu")
     endif()
 
     # =========================================================================
@@ -553,6 +697,8 @@ if(BUILD_TESTS)
     # =========================================================================
     add_executable(bench_fft_vs_mg tests/bench_fft_vs_mg.cpp)
     target_link_libraries(bench_fft_vs_mg PRIVATE nn_cfd_core)
+    add_executable(bench_fft_stretched_timing tests/bench_fft_stretched_timing.cpp)
+    target_link_libraries(bench_fft_stretched_timing PRIVATE nn_cfd_core)
     add_executable(bench_mg_tuning tests/bench_mg_tuning.cpp)
     target_link_libraries(bench_mg_tuning PRIVATE nn_cfd_core)
     add_executable(bench_mg_bc_sweep tests/bench_mg_bc_sweep.cpp)
@@ -560,7 +706,43 @@ if(BUILD_TESTS)
     if(USE_GPU_OFFLOAD)
         add_executable(bench_mg_cuda_graphs tests/bench_mg_cuda_graphs.cpp)
         target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
+        add_executable(bench_les_ibm_gpu tests/bench_les_ibm_gpu.cpp)
+        target_link_libraries(bench_les_ibm_gpu PRIVATE nn_cfd_core)
     endif()
+
+    add_nncfd_test(verify_implicit_ydiff TEST_NAME_SUFFIX ImplicitYDiffTest LABELS "medium")
+    target_include_directories(verify_implicit_ydiff PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+
+    # =========================================================================
+    # Physics validation tests (IBM, LES, MPI)
+    # =========================================================================
+
+    # IBM drag: Cd ~ 2.05 at Re=20 (Tritton 1959)
+    add_nncfd_test(test_ibm_cylinder_drag TEST_NAME_SUFFIX IBMCylinderDragTest LABELS "medium")
+
+    # IBM symmetry: NACA 0012 at AoA=0 must produce Cl ~ 0
+    add_nncfd_test(test_ibm_naca_symmetry TEST_NAME_SUFFIX IBMNACASymmetryTest LABELS "medium")
+
+    # IBM unsteady: Strouhal number ~ 0.165 at Re=100 (Williamson 1989)
+    add_nncfd_test(test_ibm_strouhal TEST_NAME_SUFFIX IBMStrouhalTest LABELS "slow")
+
+    # IBM 3D: sphere drag Cd ~ 1.08 at Re=100 (Schiller-Naumann)
+    add_nncfd_test(test_ibm_sphere_drag TEST_NAME_SUFFIX IBMSphereDragTest LABELS "slow")
+
+    # LES physics: SGS models must add dissipation relative to no model (TGV)
+    add_nncfd_test(test_les_tgv_dissipation TEST_NAME_SUFFIX LESTGVDissipationTest LABELS "medium")
+
+    # LES channel: Smagorinsky channel produces physically reasonable Re_tau
+    add_nncfd_test(test_les_channel_retau TEST_NAME_SUFFIX LESChannelReTauTest LABELS "medium")
+
+    # MPI physics: Poiseuille bulk velocity invariant to rank count
+    add_nncfd_test(test_mpi_rank_invariance TEST_NAME_SUFFIX MPIRankInvarianceTest LABELS "fast")
+
+    # MPI energy: allreduce_sum gives correct global kinetic energy
+    add_nncfd_test(test_mpi_energy_allreduce TEST_NAME_SUFFIX MPIEnergyAllreduceTest LABELS "fast")
+
+    # MPI IBM: 3D IBM cylinder flow with z-slab decomposition
+    add_nncfd_test(test_mpi_ibm_3d TEST_NAME_SUFFIX MPIIBMTest3D LABELS "slow")
 
     # =========================================================================
     # Convenience targets for running tests

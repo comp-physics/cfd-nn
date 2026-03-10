@@ -29,16 +29,6 @@ public:
     /// Fill with constant value
     void fill(double val);
 
-    /// Get min/max values in interior
-    double max_interior() const;
-    double min_interior() const;
-
-    /// L2 norm of interior values
-    double norm_L2() const;
-
-    /// Linf norm of interior values
-    double norm_Linf() const;
-
     /// Raw data access
     std::vector<double>& data() { return data_; }
     const std::vector<double>& data() const { return data_; }
@@ -110,9 +100,6 @@ public:
 
     /// Max velocity magnitude in interior (at cell centers)
     double max_magnitude() const;
-
-    /// L2 norm of velocity field
-    double norm_L2() const;
 
     /// Get velocity at cell center by interpolation - 2D backward compatible
     double u_center(int i, int j) const;

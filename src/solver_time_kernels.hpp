@@ -127,5 +127,38 @@ void update_pressure_2d(double* p, double* p_corr, int Nx, int Ny, int Ng,
 void update_pressure_3d(double* p, double* p_corr, int Nx, int Ny, int Nz, int Ng,
                          int stride, int plane_stride, size_t total);
 
+// ============================================================================
+// Implicit y-diffusion (Thomas algorithm tridiagonal solve per column)
+// ============================================================================
+
+void thomas_y_diffusion_2d(double* u, double* v, double* nu_eff,
+                           int Nx, int Ny, int Ng,
+                           int u_stride, int v_stride, int cell_stride,
+                           double dt, double dy);
+
+void thomas_y_diffusion_3d(double* u, double* v, double* w, double* nu_eff,
+                           int Nx, int Ny, int Nz, int Ng,
+                           int u_stride, int v_stride, int w_stride,
+                           int u_plane, int v_plane, int w_plane,
+                           int cell_stride, int cell_plane,
+                           double dt, double dy);
+
+/// Stretched-grid variants: use per-row dyv[j], dyc[j] instead of uniform dy.
+/// dyv[j] = cell height at row j, dyc[j] = center-to-center at face j.
+/// Both arrays must be device-resident (mapped via target enter data).
+void thomas_y_diffusion_2d_stretched(double* u, double* v, double* nu_eff,
+                                     int Nx, int Ny, int Ng,
+                                     int u_stride, int v_stride, int cell_stride,
+                                     double dt,
+                                     const double* dyv, const double* dyc);
+
+void thomas_y_diffusion_3d_stretched(double* u, double* v, double* w, double* nu_eff,
+                                     int Nx, int Ny, int Nz, int Ng,
+                                     int u_stride, int v_stride, int w_stride,
+                                     int u_plane, int v_plane, int w_plane,
+                                     int cell_stride, int cell_plane,
+                                     double dt,
+                                     const double* dyv, const double* dyc);
+
 } // namespace time_kernels
 } // namespace nncfd

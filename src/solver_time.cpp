@@ -638,6 +638,84 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
                                        u_plane, v_plane, w_plane, u_total, v_total, w_total);
         }
     }
+
+    // Implicit y-diffusion: solve (I - dt * nu_eff * d²/dy²) u_out = u_out
+    if (config_.implicit_y_diffusion) {
+        implicit_y_diffusion_step(vel_out, dt);
+    }
+}
+
+// ============================================================================
+// Implicit y-diffusion via Thomas algorithm (tridiagonal solve per column)
+// Delegates to free-function kernels to avoid NVHPC this-pointer transfer.
+// ============================================================================
+void RANSSolver::implicit_y_diffusion_step(VectorField& vel, double dt) {
+    // Skip for periodic y — dy is uniform and not the bottleneck
+    if (velocity_bc_.y_lo == VelocityBC::Periodic &&
+        velocity_bc_.y_hi == VelocityBC::Periodic) return;
+
+    // Get velocity pointers for the target field
+    double *u_ptr = nullptr, *v_ptr = nullptr, *w_ptr = nullptr;
+    if (&vel == &velocity_) {
+        u_ptr = velocity_u_ptr_; v_ptr = velocity_v_ptr_; w_ptr = velocity_w_ptr_;
+    } else if (&vel == &velocity_star_) {
+        u_ptr = velocity_star_u_ptr_; v_ptr = velocity_star_v_ptr_; w_ptr = velocity_star_w_ptr_;
+    } else if (&vel == &velocity_old_) {
+        u_ptr = velocity_old_u_ptr_; v_ptr = velocity_old_v_ptr_; w_ptr = velocity_old_w_ptr_;
+    } else if (&vel == &velocity_rk_) {
+        u_ptr = velocity_rk_u_ptr_; v_ptr = velocity_rk_v_ptr_; w_ptr = velocity_rk_w_ptr_;
+    } else {
+        throw std::runtime_error("implicit_y_diffusion_step: unknown VectorField");
+    }
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    const int u_stride = Nx + 2 * Ng + 1;
+    const int v_stride = Nx + 2 * Ng;
+    const int cell_stride = Nx + 2 * Ng;
+
+    const bool stretched = mesh_->is_y_stretched();
+    const double* dyv = stretched ? dyv_ptr_ : nullptr;
+    const double* dyc = stretched ? dyc_ptr_ : nullptr;
+
+    if (mesh_->is2D()) {
+        if (stretched) {
+            time_kernels::thomas_y_diffusion_2d_stretched(
+                u_ptr, v_ptr, nu_eff_ptr_,
+                Nx, Ny, Ng, u_stride, v_stride, cell_stride,
+                dt, dyv, dyc);
+        } else {
+            time_kernels::thomas_y_diffusion_2d(
+                u_ptr, v_ptr, nu_eff_ptr_,
+                Nx, Ny, Ng, u_stride, v_stride, cell_stride,
+                dt, mesh_->dy);
+        }
+    } else {
+        const int w_stride_local = Nx + 2 * Ng;
+        const int u_plane = u_stride * (Ny + 2 * Ng);
+        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+        const int w_plane = w_stride_local * (Ny + 2 * Ng);
+        const int cell_plane = cell_stride * (Ny + 2 * Ng);
+
+        if (stretched) {
+            time_kernels::thomas_y_diffusion_3d_stretched(
+                u_ptr, v_ptr, w_ptr, nu_eff_ptr_,
+                Nx, Ny, mesh_->Nz, Ng,
+                u_stride, v_stride, w_stride_local,
+                u_plane, v_plane, w_plane,
+                cell_stride, cell_plane,
+                dt, dyv, dyc);
+        } else {
+            time_kernels::thomas_y_diffusion_3d(
+                u_ptr, v_ptr, w_ptr, nu_eff_ptr_,
+                Nx, Ny, mesh_->Nz, Ng,
+                u_stride, v_stride, w_stride_local,
+                u_plane, v_plane, w_plane,
+                cell_stride, cell_plane,
+                dt, mesh_->dy);
+        }
+    }
 }
 
 void RANSSolver::project_velocity(VectorField& vel, double dt) {

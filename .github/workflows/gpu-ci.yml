@@ -6,7 +6,7 @@ on:
 jobs:
   gpu-tests:
     runs-on: self-hosted
-    timeout-minutes: 150
+    timeout-minutes: 240
     # Serialize per branch (keeps parallelism across branches)
     concurrency:
       group: gpu-ci-${{ github.workflow }}-${{ github.ref }}

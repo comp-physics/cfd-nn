@@ -165,15 +165,20 @@ inline void sst_transport_cell_kernel(
               * (dkdx * domegadx + dkdy * domegady);
     CD = (CD > 0.0) ? CD : 0.0;
 
-    // RHS
-    double rhs_k = P_k - beta_star * k_c * omega_c + diff_k - adv_k;
-    double rhs_omega = alpha * (omega_c / k_c) * P_k
-                     - beta * omega_c * omega_c
-                     + diff_omega - adv_omega + CD;
+    // Point-implicit time integration: treat destruction terms implicitly
+    // for unconditional stability of stiff source terms at wall cells.
+    //   k:     dk/dt = P_k - β* k ω + diff - adv
+    //   ω:     dω/dt = α(ω/k)P_k - β ω² + diff - adv + CD
+    // Implicit form: k_new = (k + dt*source) / (1 + dt*sink_coeff)
+    double source_k = P_k + diff_k - adv_k;
+    double sink_k = beta_star * omega_c;  // destruction coefficient for k
 
-    // Time integration (explicit Euler)
-    double k_new = k_c + dt * rhs_k;
-    double omega_new = omega_c + dt * rhs_omega;
+    double source_omega = alpha * (omega_c / k_c) * P_k
+                        + diff_omega - adv_omega + CD;
+    double sink_omega = beta * omega_c;  // destruction coefficient for ω
+
+    double k_new = (k_c + dt * source_k) / (1.0 + dt * sink_k);
+    double omega_new = (omega_c + dt * source_omega) / (1.0 + dt * sink_omega);
 
     // Clipping
     k_new = (k_new > k_min) ? k_new : k_min;
@@ -908,25 +913,51 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
     const ScalarField& nu_t_prev)
 {
     TIMED_SCOPE("sst_transport_gpu");
-    
+
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
     const int n_cells = Nx * Ny;
     const int n_total = (Nx + 2) * (Ny + 2);
     const int stride = Nx + 2;
     const double dx = mesh.dx;
-    const double dy = mesh.dy;
     const double dx2 = dx * dx;
-    const double dy2 = dy * dy;
     const double inv_2dx = 1.0 / (2.0 * dx);
-    const double inv_2dy = 1.0 / (2.0 * dy);
-    
+
+    // Precompute per-j y-spacing factors (correct for both uniform and stretched)
+    const bool y_str = mesh.is_y_stretched() && !mesh.dyc.empty();
+    const double dy_mean = mesh.dy;
+    std::vector<double> inv_dy_grad(Ny);    // Central gradient: 1/(yc[j+1]-yc[j-1])
+    std::vector<double> inv_dyc_s(Ny);      // Upwind south: 1/(yc[j]-yc[j-1])
+    std::vector<double> inv_dyc_n(Ny);      // Upwind north: 1/(yc[j+1]-yc[j])
+    std::vector<double> inv_dyv_j(Ny);      // Cell height: 1/dyv[j]
+    for (int j = 0; j < Ny; ++j) {
+        int jj = j + 1;  // index with Ng=1 ghost offset
+        if (y_str) {
+            double ds = mesh.dyc[jj];
+            double dn = mesh.dyc[jj + 1];
+            inv_dy_grad[j] = 1.0 / (ds + dn);
+            inv_dyc_s[j] = 1.0 / ds;
+            inv_dyc_n[j] = 1.0 / dn;
+            inv_dyv_j[j] = 1.0 / mesh.dyv[jj];
+        } else {
+            double inv_2dy = 1.0 / (2.0 * dy_mean);
+            inv_dy_grad[j] = inv_2dy;
+            inv_dyc_s[j] = 1.0 / dy_mean;
+            inv_dyc_n[j] = 1.0 / dy_mean;
+            inv_dyv_j[j] = 1.0 / dy_mean;
+        }
+    }
+    double* inv_dy_grad_ptr = inv_dy_grad.data();
+    double* inv_dyc_s_ptr = inv_dyc_s.data();
+    double* inv_dyc_n_ptr = inv_dyc_n.data();
+    double* inv_dyv_j_ptr = inv_dyv_j.data();
+
     // Copy data to flat arrays
     std::copy(velocity.u_data().begin(), velocity.u_data().end(), u_flat_.begin());
     std::copy(velocity.v_data().begin(), velocity.v_data().end(), v_flat_.begin());
     std::copy(k.data().begin(), k.data().end(), k_flat_.begin());
     std::copy(omega.data().begin(), omega.data().end(), omega_flat_.begin());
-    
+
     // Copy nu_t_prev to flat array
     int idx = 0;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
@@ -934,7 +965,7 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
             nu_t_flat_[idx++] = nu_t_prev(i, j);
         }
     }
-    
+
     // Get pointers (buffers are already persistently mapped to GPU)
     double* u_ptr = u_flat_.data();
     double* v_ptr = v_flat_.data();
@@ -943,12 +974,12 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
     const double* nu_t_ptr = nu_t_flat_.data();
     const double* wall_dist_ptr = wall_dist_flat_.data();
     double* work_ptr = work_flat_.data();
-    
+
     // Update GPU with input data (buffers are persistent, just update contents)
     #pragma omp target update to(u_ptr[0:n_total], v_ptr[0:n_total], \
                                  k_ptr[0:n_total], omega_ptr[0:n_total], \
                                  nu_t_ptr[0:n_cells])
-    
+
     // Model constants (copy to local for GPU capture)
     const double nu = nu_;
     const double beta_star = constants_.beta_star;
@@ -965,55 +996,62 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
     const double omega_min = constants_.omega_min;
     const double omega_max = constants_.omega_max;
     const double CD_min = constants_.CD_omega_min;
-    
-    // GPU kernel - let OpenMP runtime figure out device mapping automatically
-    // Data was mapped with target enter data, so runtime will find it in the mapping table
-    #pragma omp target teams distribute parallel for
+
+    // GPU kernel with per-j y-spacing for stretched grids
+    #pragma omp target teams distribute parallel for \
+        map(to: inv_dy_grad_ptr[0:Ny], inv_dyc_s_ptr[0:Ny], \
+                inv_dyc_n_ptr[0:Ny], inv_dyv_j_ptr[0:Ny])
     for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
         int i = cell_idx % Nx;
         int j = cell_idx / Nx;
         int ii = i + 1;  // With ghost cells
         int jj = j + 1;
-        
+
         int idx_c = jj * stride + ii;
         int idx_ip = jj * stride + (ii + 1);
         int idx_im = jj * stride + (ii - 1);
         int idx_jp = (jj + 1) * stride + ii;
         int idx_jm = (jj - 1) * stride + ii;
-        
-        // Velocity gradients
+
+        // Per-j y-spacing factors
+        double inv_dy_g = inv_dy_grad_ptr[j];
+        double inv_dy_s = inv_dyc_s_ptr[j];
+        double inv_dy_n = inv_dyc_n_ptr[j];
+        double inv_dy_cell = inv_dyv_j_ptr[j];
+
+        // Velocity gradients (using per-j y-spacing)
         double dudx_v = (u_ptr[idx_ip] - u_ptr[idx_im]) * inv_2dx;
-        double dudy_v = (u_ptr[idx_jp] - u_ptr[idx_jm]) * inv_2dy;
+        double dudy_v = (u_ptr[idx_jp] - u_ptr[idx_jm]) * inv_dy_g;
         double dvdx_v = (v_ptr[idx_ip] - v_ptr[idx_im]) * inv_2dx;
-        double dvdy_v = (v_ptr[idx_jp] - v_ptr[idx_jm]) * inv_2dy;
-        
+        double dvdy_v = (v_ptr[idx_jp] - v_ptr[idx_jm]) * inv_dy_g;
+
         double u_c = u_ptr[idx_c];
         double v_c = v_ptr[idx_c];
         double k_c = k_ptr[idx_c];
         double omega_c = omega_ptr[idx_c];
         double y_wall = wall_dist_ptr[cell_idx];
         double nu_t_c = nu_t_ptr[cell_idx];
-        
+
         k_c = (k_c > k_min) ? k_c : k_min;
         omega_c = (omega_c > omega_min) ? omega_c : omega_min;
         double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
         nu_t_c = (nu_t_c > 0.0) ? nu_t_c : 0.0;
-        
+
         // Strain rate
         double Sxx = dudx_v;
         double Syy = dvdy_v;
         double Sxy = 0.5 * (dudy_v + dvdx_v);
         double S2 = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
-        
-        // Cross-diffusion for F1
+
+        // Cross-diffusion for F1 (using per-j y-spacing)
         double dkdx = (k_ptr[idx_ip] - k_ptr[idx_im]) * inv_2dx;
-        double dkdy = (k_ptr[idx_jp] - k_ptr[idx_jm]) * inv_2dy;
+        double dkdy = (k_ptr[idx_jp] - k_ptr[idx_jm]) * inv_dy_g;
         double domegadx = (omega_ptr[idx_ip] - omega_ptr[idx_im]) * inv_2dx;
-        double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_2dy;
-        
+        double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_dy_g;
+
         double CD_omega = 2.0 * sigma_omega2 / omega_c * (dkdx * domegadx + dkdy * domegady);
         CD_omega = (CD_omega > CD_min) ? CD_omega : CD_min;
-        
+
         // F1 blending
         double sqrt_k = sqrt(k_c);
         double arg1_1 = sqrt_k / (beta_star * omega_c * y_safe);
@@ -1023,23 +1061,23 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
         arg1 = (arg1 > arg1_2) ? arg1 : arg1_2;
         arg1 = (arg1 < arg1_3) ? arg1 : arg1_3;
         double F1 = tanh(arg1 * arg1 * arg1 * arg1);
-        
+
         // Blended constants
         double beta = F1 * beta1 + (1.0 - F1) * beta2;
         double alpha = F1 * alpha1 + (1.0 - F1) * alpha2;
         double sigma_k = F1 * sigma_k1 + (1.0 - F1) * sigma_k2;
         double sigma_omega = F1 * sigma_omega1 + (1.0 - F1) * sigma_omega2;
-        
+
         // Effective diffusivities
         double nu_k = nu + sigma_k * nu_t_c;
         double nu_omega_eff = nu + sigma_omega * nu_t_c;
-        
+
         // Production (limited)
         double P_k = 2.0 * nu_t_c * S2;
         double P_k_limit = 10.0 * beta_star * k_c * omega_c;
         P_k = (P_k < P_k_limit) ? P_k : P_k_limit;
-        
-        // Advection (upwind)
+
+        // Advection (upwind, using per-j y-spacing)
         double adv_k, adv_omega;
         if (u_c >= 0) {
             adv_k = u_c * (k_c - k_ptr[idx_im]) / dx;
@@ -1049,40 +1087,46 @@ void SSTKOmegaTransport::advance_turbulence_gpu(
             adv_omega = u_c * (omega_ptr[idx_ip] - omega_c) / dx;
         }
         if (v_c >= 0) {
-            adv_k += v_c * (k_c - k_ptr[idx_jm]) / dy;
-            adv_omega += v_c * (omega_c - omega_ptr[idx_jm]) / dy;
+            adv_k += v_c * (k_c - k_ptr[idx_jm]) * inv_dy_s;
+            adv_omega += v_c * (omega_c - omega_ptr[idx_jm]) * inv_dy_s;
         } else {
-            adv_k += v_c * (k_ptr[idx_jp] - k_c) / dy;
-            adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) / dy;
+            adv_k += v_c * (k_ptr[idx_jp] - k_c) * inv_dy_n;
+            adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) * inv_dy_n;
         }
-        
-        // Diffusion (simple Laplacian for now - could use face-averaged viscosity)
-        double diff_k = nu_k * ((k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2
-                              + (k_ptr[idx_jp] - 2.0*k_c + k_ptr[idx_jm]) / dy2);
-        double diff_omega = nu_omega_eff * ((omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2
-                                          + (omega_ptr[idx_jp] - 2.0*omega_c + omega_ptr[idx_jm]) / dy2);
-        
+
+        // Diffusion (non-uniform y-spacing)
+        // x-diffusion: standard uniform
+        double diff_k_x = nu_k * (k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2;
+        double diff_omega_x = nu_omega_eff * (omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2;
+        // y-diffusion: [(f[j+1]-f[j])/dyc_n - (f[j]-f[j-1])/dyc_s] / dyv
+        double diff_k_y = nu_k * ((k_ptr[idx_jp] - k_c) * inv_dy_n
+                                 - (k_c - k_ptr[idx_jm]) * inv_dy_s) * inv_dy_cell;
+        double diff_omega_y = nu_omega_eff * ((omega_ptr[idx_jp] - omega_c) * inv_dy_n
+                                             - (omega_c - omega_ptr[idx_jm]) * inv_dy_s) * inv_dy_cell;
+        double diff_k = diff_k_x + diff_k_y;
+        double diff_omega = diff_omega_x + diff_omega_y;
+
         // Cross-diffusion term for omega equation
-        double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c 
+        double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c
                   * (dkdx * domegadx + dkdy * domegady);
         CD = (CD > 0.0) ? CD : 0.0;
-        
-        // RHS
-        double rhs_k = P_k - beta_star * k_c * omega_c + diff_k - adv_k;
-        double rhs_omega = alpha * (omega_c / k_c) * P_k 
-                         - beta * omega_c * omega_c
-                         + diff_omega - adv_omega + CD;
-        
-        // Update
-        double k_new = k_c + dt * rhs_k;
-        double omega_new = omega_c + dt * rhs_omega;
-        
+
+        // Point-implicit: treat destruction terms implicitly for stability
+        double source_k = P_k + diff_k - adv_k;
+        double sink_k = beta_star * omega_c;
+        double source_omega = alpha * (omega_c / k_c) * P_k
+                            + diff_omega - adv_omega + CD;
+        double sink_omega = beta * omega_c;
+
+        double k_new = (k_c + dt * source_k) / (1.0 + dt * sink_k);
+        double omega_new = (omega_c + dt * source_omega) / (1.0 + dt * sink_omega);
+
         // Clip
         k_new = (k_new > k_min) ? k_new : k_min;
         k_new = (k_new < k_max) ? k_new : k_max;
         omega_new = (omega_new > omega_min) ? omega_new : omega_min;
         omega_new = (omega_new < omega_max) ? omega_new : omega_max;
-        
+
         k_ptr[idx_c] = k_new;
         omega_ptr[idx_c] = omega_new;
     }
@@ -1142,7 +1186,9 @@ void SSTKOmegaTransport::update(
                 stride,
                 velocity.u_total_size(),
                 velocity.v_total_size(),
-                total_size
+                total_size,
+                device_view->dyc,
+                device_view->dyc_size
             );
             
             // Now compute SST closure using gradients
@@ -1337,15 +1383,15 @@ void KOmegaTransport::advance_turbulence(
             double diff_omega = nu_omega * ((omega(i+1,j) - 2.0*omega(i,j) + omega(i-1,j)) / dx2
                                           + (omega(i,j+1) - 2.0*omega(i,j) + omega(i,j-1)) / dy2);
             
-            // RHS
-            double rhs_k = P_k - constants_.beta_star * k_old * omega_old + diff_k - adv_k;
-            double rhs_omega = constants_.alpha * (omega_old / k_old) * P_k 
-                             - constants_.beta * omega_old * omega_old
-                             + diff_omega - adv_omega;
-            
-            // Update
-            double k_new = k_old + dt * rhs_k;
-            double omega_new = omega_old + dt * rhs_omega;
+            // Point-implicit: treat destruction implicitly for stability
+            double source_k = P_k + diff_k - adv_k;
+            double sink_k = constants_.beta_star * omega_old;
+            double source_omega = constants_.alpha * (omega_old / k_old) * P_k
+                                + diff_omega - adv_omega;
+            double sink_omega = constants_.beta * omega_old;
+
+            double k_new = (k_old + dt * source_k) / (1.0 + dt * sink_k);
+            double omega_new = (omega_old + dt * source_omega) / (1.0 + dt * sink_omega);
             
             k(i, j) = std::min(std::max(k_new, constants_.k_min), constants_.k_max);
             omega(i, j) = std::min(std::max(omega_new, constants_.omega_min), constants_.omega_max);

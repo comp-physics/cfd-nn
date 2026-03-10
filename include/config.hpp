@@ -20,7 +20,13 @@ enum class TurbulenceModelType {
     // EARSM models
     EARSM_WJ,       ///< SST k-ω + Wallin-Johansson EARSM
     EARSM_GS,       ///< SST k-ω + Gatski-Speziale EARSM
-    EARSM_Pope      ///< SST k-ω + Pope quadratic model
+    EARSM_Pope,     ///< SST k-ω + Pope quadratic model
+    // LES SGS models
+    Smagorinsky,    ///< Static Smagorinsky (Cs = 0.17)
+    DynamicSmagorinsky, ///< Dynamic Smagorinsky (Germano)
+    WALE,           ///< Wall-Adapting Local Eddy-viscosity
+    Vreman,         ///< Vreman model
+    Sigma           ///< Sigma model
 };
 
 /// Convective/advection scheme selection
@@ -44,7 +50,8 @@ enum class PoissonSolverType {
     FFT2D,      ///< 2D mesh FFT solver (periodic x, walls y, Nz=1)
     FFT1D,      ///< 1D FFT + 2D Helmholtz solver (requires periodic x OR z) - 3D only
     HYPRE,      ///< HYPRE PFMG solver (requires USE_HYPRE build)
-    MG          ///< Native geometric multigrid
+    MG,         ///< Native geometric multigrid
+    FFT_MPI     ///< Distributed FFT with MPI pencil transpose (requires USE_MPI)
 };
 
 /// Time integration scheme selection
@@ -92,6 +99,7 @@ struct Config {
     double filter_strength = 0.0;  ///< Explicit velocity filter strength (0=off, 0.01-0.05 typical)
     int filter_interval = 10;      ///< Apply filter every N steps (0=off)
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
+    bool implicit_y_diffusion = false;  ///< Implicit y-diffusion via Thomas algorithm (RANS stability, experimental)
     int max_steps = 10000;      ///< Maximum time steps for simulation
     double T_final = -1.0;      ///< Final time for unsteady simulations (-1 = not set, use max_steps)
     double tol = 1e-6;          ///< Convergence tolerance for steady-state

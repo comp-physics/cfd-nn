@@ -39,46 +39,7 @@ static std::string qoi(double value, double threshold) {
 // Note: compute_max_divergence_3d, compute_kinetic_energy_3d, and
 // compute_mean_velocity_3d are now provided by test_utilities.hpp
 
-// ============================================================================
-// Helper: Initialize 3D Taylor-Green vortex
-// ============================================================================
-static void init_taylor_green_3d(RANSSolver& solver, const Mesh& mesh) {
-    // Classic 3D TGV: u = sin(x)cos(y)cos(z), v = -cos(x)sin(y)cos(z), w = 0
-    // This is divergence-free: du/dx + dv/dy + dw/dz = cos cos cos - cos cos cos + 0 = 0
-
-    // u at x-faces
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
-                double x = mesh.xf[i];  // x-face location
-                double y = mesh.y(j);   // cell center y
-                double z = mesh.z(k);   // cell center z
-                solver.velocity().u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
-            }
-        }
-    }
-
-    // v at y-faces
-    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double x = mesh.x(i);   // cell center x
-                double y = mesh.yf[j];  // y-face location
-                double z = mesh.z(k);   // cell center z
-                solver.velocity().v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
-            }
-        }
-    }
-
-    // w at z-faces (zero for classic TGV)
-    for (int k = mesh.k_begin(); k <= mesh.k_end(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                solver.velocity().w(i, j, k) = 0.0;
-            }
-        }
-    }
-}
+// Note: init_taylor_green_3d is provided by test_utilities.hpp
 
 // ============================================================================
 // Test: 3D Taylor-Green Vortex Invariants

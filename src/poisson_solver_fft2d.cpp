@@ -196,16 +196,27 @@ void FFT2DPoissonSolver::initialize_eigenvalues() {
 
 void FFT2DPoissonSolver::precompute_tridiagonal() {
     // Compute y-direction tridiagonal coefficients
-    // For uniform grid: aS = aN = 1/dy^2, diag_base = -2/dy^2
-    const double invDy2 = 1.0 / (dy_ * dy_);
+    // Use mesh yLap coefficients for D·G=L consistency on stretched grids.
+    // For uniform grids, yLap arrays are empty so we fall back to 1/dy^2.
+    const bool stretched = mesh_->is_y_stretched();
+    const int Ng = mesh_->Nghost;
 
     cudaMallocManaged(&tri_lower_, Ny_ * sizeof(double));
     cudaMallocManaged(&tri_upper_, Ny_ * sizeof(double));
     cudaMallocManaged(&tri_diag_base_, Ny_ * sizeof(double));
 
     for (int j = 0; j < Ny_; ++j) {
-        double aS = invDy2;
-        double aN = invDy2;
+        const int jg = j + Ng;
+
+        double aS, aN;
+        if (stretched) {
+            aS = mesh_->yLap_aS[jg];
+            aN = mesh_->yLap_aN[jg];
+        } else {
+            double invDy2 = 1.0 / (dy_ * dy_);
+            aS = invDy2;
+            aN = invDy2;
+        }
 
         // Apply Neumann BCs at walls
         if (j == 0 && bc_y_lo_ == PoissonBC::Neumann) {
@@ -221,7 +232,8 @@ void FFT2DPoissonSolver::precompute_tridiagonal() {
     }
     cudaDeviceSynchronize();
 
-    std::cout << "[FFT2DPoissonSolver] Precomputed y-direction coefficients\n";
+    std::cout << "[FFT2DPoissonSolver] Precomputed y-direction coefficients"
+              << (stretched ? " (stretched)" : " (uniform)") << "\n";
 }
 
 void FFT2DPoissonSolver::initialize_cusparse() {
@@ -359,24 +371,45 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     // 2D path only uses the first 2D plane [0, Nx_full*Ny_full-1].
     // FFT2D must match this by using 2D indexing (no k offset).
     //
-    // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean subtraction
-    double sum = 0.0;
-    #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum) \
-        map(present: rhs_ptr[0:plane_size]) is_device_ptr(packed)
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            // Source: 2D indexing [j+Ng][i+Ng] - matches solver's 2D path
-            const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
-            // Dest: [j * Nx + i] (contiguous for FFT)
-            const size_t dst_idx = (size_t)j * Nx + i;
-            double val = rhs_ptr[src_idx];
-            packed[dst_idx] = val;
-            sum += val;
+    // 1. Pack RHS from ghost layout to contiguous array + compute sum for mean removal.
+    // Solvability on stretched grids requires Σ f*dyv = 0 (volume-weighted).
+    // On uniform grids, dyv is empty and all weights equal dy, so Σ f*dy = dy*Σf.
+    // Two separate target regions avoid mapping nullptr for the uniform-grid dyv.
+    const bool stretched = mesh_->is_y_stretched();
+    double weighted_sum = 0.0;
+
+    if (stretched) {
+        const double* dyv_ptr = mesh_->dyv.data();
+        #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
+            map(present: rhs_ptr[0:plane_size], dyv_ptr[0:Ny_full]) is_device_ptr(packed)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
+                const size_t dst_idx = (size_t)j * Nx + i;
+                double val = rhs_ptr[src_idx];
+                packed[dst_idx] = val;
+                weighted_sum += val * dyv_ptr[j + Ng];
+            }
+        }
+    } else {
+        const double dy_val = mesh_->dy;
+        #pragma omp target teams distribute parallel for collapse(2) reduction(+:weighted_sum) \
+            map(present: rhs_ptr[0:plane_size]) is_device_ptr(packed)
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                const size_t src_idx = (size_t)(j + Ng) * Nx_full + (i + Ng);
+                const size_t dst_idx = (size_t)j * Nx + i;
+                double val = rhs_ptr[src_idx];
+                packed[dst_idx] = val;
+                weighted_sum += val * dy_val;
+            }
         }
     }
 
-    // 2. Subtract mean (for singular Neumann case)
-    double mean = sum / (Nx * Ny);
+    // 2. Subtract volume-weighted mean (for singular Neumann case)
+    // mean = Σ(f*dyv) / (Nx * Ly) where Ly = Σ dyv[j]
+    double Ly = mesh_->y_max - mesh_->y_min;
+    double mean = weighted_sum / (Nx * Ly);
     #pragma omp target teams distribute parallel for is_device_ptr(packed)
     for (int idx = 0; idx < Nx * Ny; ++idx) {
         packed[idx] -= mean;

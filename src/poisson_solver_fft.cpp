@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <cstdlib>
+#include <vector>
 
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>
@@ -45,14 +46,15 @@ __device__ __forceinline__ double blockReduceSum(double val) {
     return val;
 }
 
-// Kernel: Pack RHS from ghost layout to FFT layout + compute partial sums
+// Kernel: Pack RHS from ghost layout to FFT layout + compute volume-weighted partial sums
 // Input layout:  rhs_ptr[k+Ng][j+Ng][i+Ng]  (ghost cells, field ordering)
 // Output layout: packed[(i*Nz + k)*Ny + j]  (cuFFT interleaved batches)
-// Also: each block writes its partial sum to partial_sums[]
+// Volume-weighted sum: Σ f_{ijk} * dyv[j] for solvability on stretched grids
 __global__ void kernel_pack_and_partial_sum(
     const double* __restrict__ rhs_ptr,
     double* __restrict__ packed,
     double* __restrict__ partial_sums,
+    const double* __restrict__ dyv,
     int Nx, int Ny, int Nz, int Ng, int Nx_full, int Ny_full)
 {
     const size_t n_total = static_cast<size_t>(Nx) * Ny * Nz;
@@ -74,7 +76,7 @@ __global__ void kernel_pack_and_partial_sum(
 
         double val = rhs_ptr[src_idx];
         packed[idx] = val;
-        local_sum = val;
+        local_sum = val * dyv[j];  // Volume-weighted for solvability
     }
 
     // Block-level reduction
@@ -105,15 +107,17 @@ __global__ void kernel_final_reduce(
     }
 }
 
-// Kernel: Subtract mean from packed RHS (reads sum from sum_dev)
+// Kernel: Subtract volume-weighted mean from packed RHS (reads sum from sum_dev)
+// mean = Σ(f*dyv) / total_volume ensures solvability on stretched grids
 __global__ void kernel_subtract_mean(
     double* __restrict__ packed,
     const double* __restrict__ sum_dev,
+    double total_volume,
     size_t n_total)
 {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n_total) {
-        double mean = sum_dev[0] / static_cast<double>(n_total);
+        double mean = sum_dev[0] / total_volume;
         packed[idx] -= mean;
     }
 }
@@ -225,6 +229,7 @@ FFTPoissonSolver::~FFTPoissonSolver() {
     if (ev_fft_done_) cudaEventDestroy(ev_fft_done_);
     if (stream_) cudaStreamDestroy(stream_);
     if (sum_dev_) cudaFree(sum_dev_);
+    if (dyv_dev_) cudaFree(dyv_dev_);
     if (partial_sums_) cudaFree(partial_sums_);
     if (fft_work_area_) cudaFree(fft_work_area_);
     if (rhs_packed_) cudaFree(rhs_packed_);
@@ -412,6 +417,23 @@ void FFTPoissonSolver::initialize_fft() {
     plans_created_ = true;
     std::cout << "[FFTPoissonSolver] cuFFT work area: " << fft_work_size_ << " bytes (locked)\n";
 
+    // Allocate device copy of dyv weights for volume-weighted mean subtraction
+    // On stretched grids, solvability requires Σ f*dyv = 0, not Σ f = 0
+    // On uniform grids, dyv is empty — use constant dy for all cells
+    {
+        const int Ng = mesh_->Nghost;
+        const bool stretched = !mesh_->dyv.empty();
+        std::vector<double> dyv_host(Ny);
+        double Ly = 0.0;
+        for (int j = 0; j < Ny; ++j) {
+            dyv_host[j] = stretched ? mesh_->dyv[j + Ng] : mesh_->dy;
+            Ly += dyv_host[j];
+        }
+        total_volume_ = static_cast<double>(Nx) * Nz * Ly;
+        cudaMalloc(&dyv_dev_, sizeof(double) * Ny);
+        cudaMemcpy(dyv_dev_, dyv_host.data(), sizeof(double) * Ny, cudaMemcpyHostToDevice);
+    }
+
     // Compute eigenvalues and tridiagonal coefficients
     compute_eigenvalues();
     compute_tridiagonal_coeffs();
@@ -488,24 +510,25 @@ void FFTPoissonSolver::compute_tridiagonal_coeffs() {
     const int Ny = mesh_->Ny;
     const int Ng = mesh_->Nghost;
 
-    // For stretched grids, compute coefficients from mesh spacing
-    // aS(j) = 1 / (dy_south * dy_center)
-    // aN(j) = 1 / (dy_north * dy_center)
-    // where dy_south = y(j) - y(j-1), dy_north = y(j+1) - y(j)
-    // and dy_center = (dy_south + dy_north) / 2
-
-    const double* y = mesh_->yc.data();  // Cell centers with ghosts
+    // For stretched grids, compute variable-coefficient tridiagonal entries.
+    // Uses the mesh's D·G=L-consistent Laplacian coefficients:
+    //   aS = 1/(dyv[j] * dyc_south), aN = 1/(dyv[j] * dyc_north)
+    // where dyv = face spacing, dyc = center-to-center spacing.
+    // For uniform grids, yLap arrays are empty so we fall back to 1/dy^2.
+    const bool stretched = mesh_->is_y_stretched();
 
     for (int j = 0; j < Ny; ++j) {
         const int jg = j + Ng;  // Index with ghost offset
 
-        // Compute local spacings
-        double dy_south = y[jg] - y[jg - 1];
-        double dy_north = y[jg + 1] - y[jg];
-        double dy_center = 0.5 * (dy_south + dy_north);
-
-        double aS = 1.0 / (dy_south * dy_center);
-        double aN = 1.0 / (dy_north * dy_center);
+        double aS, aN;
+        if (stretched) {
+            aS = mesh_->yLap_aS[jg];
+            aN = mesh_->yLap_aN[jg];
+        } else {
+            double invDy2 = 1.0 / (mesh_->dy * mesh_->dy);
+            aS = invDy2;
+            aN = invDy2;
+        }
 
         // Apply Neumann BCs at walls
         if (j == 0 && bc_y_lo_ == PoissonBC::Neumann) {
@@ -894,8 +917,9 @@ void FFTPoissonSolver::launch_pack_and_sum(double* rhs_dev) {
     }
 
     // Launch pack + partial sum kernel on stream_
+    // Uses dyv_dev_ for volume-weighted sum (solvability on stretched grids)
     kernel_pack_and_partial_sum<<<num_blocks, block_size, 0, stream_>>>(
-        rhs_dev, rhs_packed_, partial_sums_,
+        rhs_dev, rhs_packed_, partial_sums_, dyv_dev_,
         Nx, Ny, Nz, Ng, Nx_full, Ny_full);
 
     // Launch final reduction kernel to compute total sum into sum_dev_
@@ -908,8 +932,9 @@ void FFTPoissonSolver::launch_subtract_mean(size_t n_total) {
     const int num_blocks = (n_total + block_size - 1) / block_size;
 
     // Launch subtract mean kernel on stream_
+    // Uses total_volume_ for volume-weighted mean (solvability on stretched grids)
     kernel_subtract_mean<<<num_blocks, block_size, 0, stream_>>>(
-        rhs_packed_, sum_dev_, n_total);
+        rhs_packed_, sum_dev_, total_volume_, n_total);
 }
 
 void FFTPoissonSolver::launch_unpack_and_bc(double* p_dev) {

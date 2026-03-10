@@ -14,6 +14,7 @@
 #include "timing.hpp"
 #include "turbulence_model.hpp"
 #include "turbulence_baseline.hpp"
+#include "decomposition.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -210,7 +211,17 @@ void print_usage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
-    std::cout << "=== 3D Square Duct Flow Solver ===\n\n";
+#ifdef USE_MPI
+    MPI_Init(&argc, &argv);
+    int mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+#else
+    int mpi_rank = 0;
+#endif
+
+    if (mpi_rank == 0) {
+        std::cout << "=== 3D Square Duct Flow Solver ===\n\n";
+    }
 
     // Solver configuration with duct-specific defaults
     Config config;
@@ -266,8 +277,16 @@ int main(int argc, char** argv) {
     std::cout << "Mesh: " << mesh.Nx << " x " << mesh.Ny << " x " << mesh.Nz << " cells (3D)\n";
     std::cout << "dx = " << mesh.dx << ", dy = " << mesh.dy << ", dz = " << mesh.dz << "\n\n";
 
+    // Create MPI decomposition
+#ifdef USE_MPI
+    Decomposition decomp(MPI_COMM_WORLD, config.Nz);
+#else
+    Decomposition decomp(config.Nz);
+#endif
+
     // Create solver
     RANSSolver solver(mesh, config);
+    solver.set_decomposition(&decomp);
 
     // Set 3D boundary conditions
     VelocityBC bc;
@@ -448,7 +467,13 @@ int main(int argc, char** argv) {
     }
 
     // Print timing summary
-    TimingStats::instance().print_summary();
+    if (mpi_rank == 0) {
+        TimingStats::instance().print_summary();
+    }
+
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
 
     return 0;
 }

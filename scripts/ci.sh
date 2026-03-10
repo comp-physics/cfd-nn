@@ -580,9 +580,9 @@ run_ctest_suite() {
             test_name=$(echo "$line" | sed 's/.*- //' | sed 's/ .*//')
             FAILED_TESTS="${FAILED_TESTS}\n  - $test_name"
         done < <(grep -E "^\s*[0-9]+.*\*\*\*Failed" "$output_file" || true)
-        # Show last 50 lines of output for debugging
-        echo "  Output (last 50 lines):"
-        tail -50 "$output_file" | sed 's/^/    /'
+        # Show last 200 lines of output for debugging
+        echo "  Output (last 200 lines):"
+        tail -200 "$output_file" | sed 's/^/    /'
     else
         log_success "Label '$label': $suite_passed passed"
         if [ $VERBOSE -eq 1 ]; then
