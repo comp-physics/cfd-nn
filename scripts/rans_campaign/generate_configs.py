@@ -30,8 +30,8 @@ FLOW_CASES = {
             "nu": 0.01, "dp_dx": -0.001,
             "max_steps": 50000, "CFL_max": 0.5,
             "adaptive_dt": "true",
-            "mode": "unsteady",
-            "scheme": "upwind",
+            "simulation_mode": "unsteady",
+            "convective_scheme": "upwind",
             "poisson_solver": "auto",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -50,8 +50,8 @@ FLOW_CASES = {
             "nu": 0.001, "dp_dx": -0.0005,
             "max_steps": 50000, "CFL_max": 0.5,
             "adaptive_dt": "true",
-            "mode": "unsteady",
-            "scheme": "upwind",
+            "simulation_mode": "unsteady",
+            "convective_scheme": "upwind",
             "poisson_solver": "auto",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -70,9 +70,9 @@ FLOW_CASES = {
             "nu": 0.0002, "dp_dx": 0.0,
             "max_steps": 50000, "CFL_max": 0.5,
             "adaptive_dt": "true",
-            "mode": "unsteady",
-            "scheme": "upwind",
-            "poisson_solver": "auto",
+            "simulation_mode": "unsteady",
+            "convective_scheme": "upwind",
+            "poisson_solver": "multigrid",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
             "output_freq": 500,
@@ -90,8 +90,8 @@ FLOW_CASES = {
             "nu": 9.438e-5, "dp_dx": -1.0,
             "max_steps": 50000, "CFL_max": 0.5,
             "adaptive_dt": "true",
-            "mode": "unsteady",
-            "scheme": "upwind",
+            "simulation_mode": "unsteady",
+            "convective_scheme": "upwind",
             "poisson_solver": "auto",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -158,8 +158,8 @@ def write_config(filepath, case_params, model_dict, output_dir):
         f.write(f"max_steps = {case_params['max_steps']}\n")
         f.write(f"CFL_max = {case_params['CFL_max']}\n")
         f.write(f"adaptive_dt = {case_params['adaptive_dt']}\n")
-        f.write(f"mode = {case_params['mode']}\n")
-        f.write(f"scheme = {case_params['scheme']}\n")
+        f.write(f"simulation_mode = {case_params['simulation_mode']}\n")
+        f.write(f"convective_scheme = {case_params['convective_scheme']}\n")
 
         # Poisson solver
         f.write("\n# Poisson solver\n")

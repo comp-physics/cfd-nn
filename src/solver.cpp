@@ -654,8 +654,17 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 
     if (fft1d_poisson_solver_) {
         if (fft1d_compatible) {
-            // Update FFT1D solver BCs
-            fft1d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+            // Update FFT1D solver BCs — may fail if periodic_dir doesn't match
+            try {
+                fft1d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+            } catch (const std::exception& e) {
+                std::cerr << "[Poisson] FFT1D BC update failed: " << e.what()
+                          << ". Disabling FFT1D.\n";
+                fft1d_poisson_solver_.reset();
+                if (selected_solver_ == PoissonSolverType::FFT1D) {
+                    selected_solver_ = PoissonSolverType::MG;
+                }
+            }
         } else if (selected_solver_ == PoissonSolverType::FFT1D) {
             // FFT1D was selected but BCs are now incompatible - switch to MG
             std::cerr << "[Poisson] Warning: FFT1D solver incompatible with BCs "
