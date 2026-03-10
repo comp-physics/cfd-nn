@@ -1461,6 +1461,7 @@ double RANSSolver::step() {
     
     // 3. Compute provisional velocity u* (without pressure gradient) at face locations
     // u* = u^n + dt * (-conv + diff + body_force)
+    {
     TIMED_SCOPE("predictor_step");
     NVTX_PUSH("predictor_step");
     
@@ -1747,11 +1748,12 @@ double RANSSolver::step() {
     }
 #endif
     NVTX_POP();  // End predictor_step
+    }
 
     // Implicit y-diffusion: solve (I - dt * nu_eff * d²/dy²) on velocity_star_
     if (config_.implicit_y_diffusion) {
         TIMED_SCOPE("implicit_y_diffusion");
-        implicit_y_diffusion_step(velocity_star_, dt);
+        implicit_y_diffusion_step(velocity_star_, current_dt_);
     }
 
     // Apply recycling inlet BC BEFORE Poisson solve
@@ -1789,6 +1791,7 @@ double RANSSolver::step() {
 
     // Build RHS on GPU and subtract mean divergence to ensure solvability
     // GPU-RESIDENT OPTIMIZATION: Keep all data on device, only transfer scalars
+    {
     TIMED_SCOPE("poisson_rhs_build");
     NVTX_PUSH("poisson_rhs_build");
     double mean_div = 0.0;
@@ -1940,6 +1943,7 @@ double RANSSolver::step() {
         }
     }
     NVTX_POP();  // End poisson_rhs_build
+    }
 
     // 4a-IBM. Mask solid cells in Poisson RHS (set to zero)
     // This prevents the Poisson solver from generating pressure gradients
@@ -2430,6 +2434,8 @@ double RANSSolver::step() {
     // Note: iter_ is managed by the outer solve loop, don't increment here
 
     // Return max velocity change as convergence criterion (unified view-based)
+    double max_change = 0.0;
+    {
     TIMED_SCOPE("residual_computation");
     NVTX_PUSH("residual_computation");
     auto v_res = get_solver_view();
@@ -2505,7 +2511,7 @@ double RANSSolver::step() {
     }
 #endif
 
-    double max_change = (max_du > max_dv) ? max_du : max_dv;
+    max_change = (max_du > max_dv) ? max_du : max_dv;
 
     // For 3D, also check w component
     if (!is_2d_res) {
@@ -2541,6 +2547,7 @@ double RANSSolver::step() {
     }
 
     NVTX_POP();  // End residual_computation
+    }
 
     // MPI: global max residual across all ranks
     if (decomp_) max_change = decomp_->allreduce_max(max_change);
