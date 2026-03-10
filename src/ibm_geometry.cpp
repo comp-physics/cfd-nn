@@ -186,6 +186,122 @@ double NACABody::phi(double x, double y, double /*z*/) const {
 }
 
 // ============================================================================
+// StepBody — forward-facing step
+// ============================================================================
+
+StepBody::StepBody(double x_step, double y_step)
+    : x_step_(x_step), y_step_(y_step)
+{}
+
+double StepBody::phi(double x, double y, double /*z*/) const {
+    double dx = x - x_step_;
+    double dy = y - y_step_;
+
+    if (dx >= 0.0 && dy <= 0.0) {
+        // Inside solid: phi = -min(dx, -dy)
+        return -std::min(dx, -dy);
+    } else if (dx < 0.0 && dy <= 0.0) {
+        // In front of vertical face
+        return -dx;
+    } else if (dx >= 0.0 && dy > 0.0) {
+        // Above top face
+        return dy;
+    } else {
+        // Corner region (dx < 0 && dy > 0)
+        return std::sqrt(dx * dx + dy * dy);
+    }
+}
+
+std::tuple<double, double, double> StepBody::normal(double x, double y, double /*z*/) const {
+    double dx = x - x_step_;
+    double dy = y - y_step_;
+
+    if (dx >= 0.0 && dy <= 0.0) {
+        // Inside solid: normal points toward nearest surface
+        if (dx < -dy) {
+            return {-1.0, 0.0, 0.0};  // nearest is vertical face
+        } else {
+            return {0.0, 1.0, 0.0};   // nearest is top face
+        }
+    } else if (dx < 0.0 && dy <= 0.0) {
+        // In front of vertical face
+        return {-1.0, 0.0, 0.0};
+    } else if (dx >= 0.0 && dy > 0.0) {
+        // Above top face
+        return {0.0, 1.0, 0.0};
+    } else {
+        // Corner region
+        double r = std::sqrt(dx * dx + dy * dy);
+        if (r < 1e-30) return {-1.0, 1.0, 0.0};
+        return {dx / r, dy / r, 0.0};
+    }
+}
+
+std::string StepBody::name() const {
+    return "ForwardFacingStep";
+}
+
+// ============================================================================
+// PeriodicHillBody — Breuer et al. 2009 periodic hills
+// ============================================================================
+
+PeriodicHillBody::PeriodicHillBody(double h)
+    : h_(h)
+{
+    if (h <= 0.0) throw std::runtime_error("PeriodicHillBody: h must be positive");
+}
+
+double PeriodicHillBody::hill_profile_normalized(double xn) const {
+    // Evaluate hill height y/h for x/h in [0, 1.929]
+    // 6 piecewise cubic polynomial segments
+    // Clamp to zero beyond the hill foot
+    if (xn >= 1.929) return 0.0;
+    if (xn <= 0.3214) {
+        double val = 1.0 + 0.18973 * xn * xn + (-1.66518) * xn * xn * xn;
+        return std::min(1.0, val);
+    } else if (xn <= 0.5) {
+        return 0.8955 + 0.97552 * xn + (-2.84514) * xn * xn + 1.48159 * xn * xn * xn;
+    } else if (xn <= 0.7143) {
+        return 0.9213 + 0.82068 * xn + (-2.53546) * xn * xn + 1.27499 * xn * xn * xn;
+    } else if (xn <= 1.071) {
+        return 1.445 + (-1.37956) * xn + 0.54488 * xn * xn + (-0.16231) * xn * xn * xn;
+    } else if (xn <= 1.429) {
+        return 0.6401 + 0.87444 * xn + (-1.55859) * xn * xn + 0.49216 * xn * xn * xn;
+    } else {
+        double val = 2.0139 + (-2.01040) * xn + 0.46060 * xn * xn + 0.02097 * xn * xn * xn;
+        return std::max(0.0, val);
+    }
+}
+
+double PeriodicHillBody::hill_height(double x) const {
+    // Map to periodic domain [0, 9h)
+    double period = 9.0 * h_;
+    double xp = std::fmod(x, period);
+    if (xp < 0.0) xp += period;
+
+    // Normalize to x/h
+    double xn = xp / h_;
+
+    if (xn <= 1.929) {
+        return h_ * hill_profile_normalized(xn);
+    } else if (xn <= 7.071) {
+        return 0.0;  // flat region
+    } else {
+        // Mirror: hill_height(9h - x) for the descending side
+        double xn_mirror = 9.0 - xn;
+        return h_ * hill_profile_normalized(xn_mirror);
+    }
+}
+
+double PeriodicHillBody::phi(double x, double y, double /*z*/) const {
+    return y - hill_height(x);
+}
+
+std::string PeriodicHillBody::name() const {
+    return "PeriodicHills";
+}
+
+// ============================================================================
 // Factory
 // ============================================================================
 
@@ -198,6 +314,10 @@ std::unique_ptr<IBMBody> create_ibm_body(const std::string& type,
         return std::make_unique<SphereBody>(param1, param2, param3, param4);
     } else if (type == "naca") {
         return std::make_unique<NACABody>(param1, param2, param3, param4, extra);
+    } else if (type == "step") {
+        return std::make_unique<StepBody>(param1, param2);
+    } else if (type == "periodic_hill" || type == "hills") {
+        return std::make_unique<PeriodicHillBody>(param1);
     }
     throw std::runtime_error("Unknown IBM body type: " + type);
 }

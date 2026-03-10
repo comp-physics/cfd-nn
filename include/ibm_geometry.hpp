@@ -87,6 +87,34 @@ private:
     double camber_at(double xn) const;
 };
 
+/// Forward-facing step: solid region for x >= x_step, y <= y_step
+class StepBody : public IBMBody {
+public:
+    StepBody(double x_step, double y_step);
+    double phi(double x, double y, double z) const override;
+    std::tuple<double, double, double> normal(double x, double y, double z) const override;
+    std::string name() const override;
+
+private:
+    double x_step_;
+    double y_step_;
+};
+
+/// Periodic hills (Breuer et al. 2009, ERCOFTAC UFR 3-30)
+/// Hill profile defined by 6 piecewise cubic polynomials, periodic in x with period 9h.
+class PeriodicHillBody : public IBMBody {
+public:
+    explicit PeriodicHillBody(double h);
+    double phi(double x, double y, double z) const override;
+    std::string name() const override;
+    /// Hill profile height y_hill(x) for arbitrary x (periodic, physical coords)
+    double hill_height(double x) const;
+
+private:
+    double h_;
+    double hill_profile_normalized(double xn) const;
+};
+
 /// Factory: create body from type string
 std::unique_ptr<IBMBody> create_ibm_body(const std::string& type,
     double param1, double param2, double param3,
