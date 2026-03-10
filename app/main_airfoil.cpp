@@ -169,6 +169,13 @@ int main(int argc, char** argv) {
         }
     }
 
+    // VTK snapshot setup
+    const std::string vtk_prefix = config.write_fields ?
+        (config.output_dir + "airfoil") : "";
+    const int snapshot_freq = (config.num_snapshots > 0 && config.write_fields) ?
+        std::max(1, config.max_steps / config.num_snapshots) : 0;
+    int snap_count = 0;
+
     ScopedTimer total_timer("Total simulation", false);
 
     double rho = 1.0;
@@ -214,10 +221,21 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Write VTK snapshot at regular intervals
+        if (!vtk_prefix.empty() && snapshot_freq > 0 && (step % snapshot_freq == 0)) {
+            ++snap_count;
+            solver.write_vtk(vtk_prefix + "_" + std::to_string(snap_count) + ".vtk");
+        }
+
         if (std::isnan(residual) || std::isinf(residual)) {
             std::cerr << "ERROR: Solver diverged at step " << step << "\n";
             break;
         }
+    }
+
+    // Write final VTK snapshot
+    if (!vtk_prefix.empty()) {
+        solver.write_vtk(vtk_prefix + "_final.vtk");
     }
 
     total_timer.stop();

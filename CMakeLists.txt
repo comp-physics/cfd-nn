@@ -8,8 +8,10 @@ if(USE_GPU_OFFLOAD)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
         set(CMAKE_CUDA_STANDARD 17)
-        set(CMAKE_CUDA_ARCHITECTURES ${GPU_CC})
-        message(STATUS "CUDA enabled for custom kernels (arch: ${GPU_CC})")
+        # Convert comma-separated GPU_CC to semicolon-separated list for CMake
+        string(REPLACE "," ";" CUDA_ARCH_LIST "${GPU_CC}")
+        set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_LIST})
+        message(STATUS "CUDA enabled for custom kernels (arch: ${CUDA_ARCH_LIST})")
     endif()
 endif()
 
@@ -74,6 +76,7 @@ endif()
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
+option(USE_NVTX "Enable NVTX annotations on all TIMED_SCOPE regions for nsys profiling" OFF)
 
 # Suppress unknown pragma warnings in CPU builds (allows OpenMP pragmas to be ignored silently)
 option(SUPPRESS_UNKNOWN_OMP_PRAGMAS "Silence -Wunknown-pragmas for OpenMP pragmas in CPU build" ON)
@@ -428,7 +431,7 @@ endif()
 if(GPU_PROFILE_KERNELS)
     target_compile_definitions(nn_cfd_core PUBLIC GPU_PROFILE_KERNELS)
     message(STATUS "GPU kernel profiling with NVTX ENABLED")
-    
+
     # Add NVTX include paths for NVHPC compiler
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
         # NVHPC stores NVTX headers in include-stdpar
@@ -440,7 +443,7 @@ if(GPU_PROFILE_KERNELS)
             message(STATUS "  NVTX headers found: ${NVTX_INCLUDE_DIR}")
         endif()
     endif()
-    
+
     # Try to find NVTX library (optional)
     find_library(NVTX_LIB NAMES nvtx3 nvToolsExt PATHS ENV LD_LIBRARY_PATH)
     if(NVTX_LIB)
@@ -448,6 +451,35 @@ if(GPU_PROFILE_KERNELS)
         message(STATUS "  NVTX library found: ${NVTX_LIB}")
     else()
         message(STATUS "  NVTX library not found - using header-only implementation")
+    endif()
+endif()
+
+# NVTX annotations for nsys profiling (header-only, wraps all TIMED_SCOPE regions)
+if(USE_NVTX)
+    # Find NVTX3 headers from CUDAToolkit or system paths
+    find_package(CUDAToolkit QUIET)
+    set(NVTX_FOUND OFF)
+    if(CUDAToolkit_FOUND)
+        # CUDAToolkit include dirs contain nvtx3/
+        target_include_directories(nn_cfd_core PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
+        set(NVTX_FOUND ON)
+        message(STATUS "NVTX annotations ENABLED (via CUDAToolkit: ${CUDAToolkit_INCLUDE_DIRS})")
+    else()
+        # Fallback: search common system paths
+        find_path(NVTX3_INCLUDE_DIR nvtx3/nvToolsExt.h
+            PATHS /usr/local/cuda/include /opt/nvidia/nsight-systems/*/target-linux-x64/nvtx/include
+        )
+        if(NVTX3_INCLUDE_DIR)
+            target_include_directories(nn_cfd_core PUBLIC ${NVTX3_INCLUDE_DIR})
+            set(NVTX_FOUND ON)
+            message(STATUS "NVTX annotations ENABLED (system: ${NVTX3_INCLUDE_DIR})")
+        endif()
+    endif()
+
+    if(NVTX_FOUND)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_NVTX)
+    else()
+        message(WARNING "USE_NVTX requested but nvtx3/nvToolsExt.h not found — disabling")
     endif()
 endif()
 

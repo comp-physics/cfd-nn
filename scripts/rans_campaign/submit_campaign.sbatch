@@ -45,13 +45,26 @@ CONFIG_BASENAME=$(basename "$CONFIG" .cfg)
 OUTPUT_DIR="${PROJECT_DIR}/output/rans_campaign/${CONFIG_BASENAME}"
 mkdir -p "$OUTPUT_DIR"
 
-# Run the solver
+# Run the solver (optionally under nsys for GPU profiling)
 cd "$PROJECT_DIR"
 START_SEC=$SECONDS
 
 set +e
-"${BUILD_DIR}/${EXE}" --config "${CONFIG}"
-EXIT_CODE=$?
+if [ "${RANS_NSYS_PROFILE:-0}" = "1" ]; then
+    NSYS_OUT="${OUTPUT_DIR}/${CONFIG_BASENAME}"
+    echo "Running under nsys profile -> ${NSYS_OUT}.nsys-rep"
+    nsys profile \
+        --output="${NSYS_OUT}" \
+        --force-overwrite=true \
+        --trace=cuda,nvtx,osrt \
+        --cuda-memory-usage=true \
+        --nvtx-capture=range@solver_step \
+        "${BUILD_DIR}/${EXE}" --config "${CONFIG}"
+    EXIT_CODE=$?
+else
+    "${BUILD_DIR}/${EXE}" --config "${CONFIG}"
+    EXIT_CODE=$?
+fi
 set -e
 
 ELAPSED=$((SECONDS - START_SEC))
