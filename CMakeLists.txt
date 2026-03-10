@@ -482,6 +482,12 @@ target_link_libraries(cylinder nn_cfd_core)
 add_executable(airfoil app/main_airfoil.cpp)
 target_link_libraries(airfoil nn_cfd_core)
 
+add_executable(step app/main_step.cpp)
+target_link_libraries(step nn_cfd_core)
+
+add_executable(hills app/main_hills.cpp)
+target_link_libraries(hills nn_cfd_core)
+
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)

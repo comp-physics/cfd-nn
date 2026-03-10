@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
     }
     solver.set_velocity_bc(bc);
 
-    solver.set_body_force(0.0, 0.0);
+    solver.set_body_force(-config.dp_dx, 0.0);
     solver.print_solver_info();
 
     // Initialize with uniform flow
