@@ -13,6 +13,7 @@
 #include "ibm_geometry.hpp"
 #include "ibm_forcing.hpp"
 #include "decomposition.hpp"
+#include "turbulence_model.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -147,6 +148,17 @@ int main(int argc, char** argv) {
 
     // Body force from pressure gradient
     solver.set_body_force(-config.dp_dx, 0.0);
+
+    // Set turbulence model if requested
+    if (config.turb_model != TurbulenceModelType::None) {
+        auto turb_model = create_turbulence_model(config.turb_model,
+                                                  config.nn_weights_path,
+                                                  config.nn_scaling_path);
+        if (turb_model) {
+            turb_model->set_nu(config.nu);
+            solver.set_turbulence_model(std::move(turb_model));
+        }
+    }
 
     solver.print_solver_info();
 
