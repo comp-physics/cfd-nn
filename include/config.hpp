@@ -85,7 +85,8 @@ struct Config {
     double nu = 0.001;          ///< Kinematic viscosity (computed from Re)
     double rho = 1.0;           ///< Density
     double dp_dx = -1.0;        ///< Pressure gradient (or body force) driving the flow
-    
+    double bulk_velocity_target = 0.0;  ///< Target bulk velocity for controller (0 = disabled)
+
     // Control flags for Re-based setup
     bool Re_specified = false;
     bool nu_specified = false;

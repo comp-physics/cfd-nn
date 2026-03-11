@@ -2,13 +2,13 @@
 #SBATCH -J rans_campaign
 #SBATCH -A gts-sbryngelson3
 #SBATCH -N 1 --ntasks-per-node=1
-#SBATCH -p gpu-h100,gpu-h200,gpu-a100,gpu-v100
-#SBATCH -G 1
+#SBATCH -p gpu-h100
+#SBATCH --gres=gpu:h100:1
 #SBATCH --qos=embers
 #SBATCH -t 02:00:00
 #SBATCH -o output/rans_campaign/slurm-%A_%a.out
 #SBATCH -e output/rans_campaign/slurm-%A_%a.err
-#SBATCH --array=0-37
+#SBATCH --array=20-37
 
 set -euo pipefail
 

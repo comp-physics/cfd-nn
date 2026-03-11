@@ -155,8 +155,14 @@ int main(int argc, char** argv) {
 
     solver.set_velocity_bc(bc);
 
-    // No body force (flow driven by inflow)
-    solver.set_body_force(0.0, 0.0);
+    // Body force: use bulk velocity controller if target specified,
+    // otherwise no forcing (flow driven by inflow)
+    if (config.bulk_velocity_target > 0.0) {
+        solver.set_body_force(0.0, 0.0);
+        solver.enable_bulk_velocity_control(config.bulk_velocity_target);
+    } else {
+        solver.set_body_force(-config.dp_dx, 0.0);
+    }
 
     // Set turbulence model if requested
     if (config.turb_model != TurbulenceModelType::None) {
@@ -203,26 +209,25 @@ int main(int argc, char** argv) {
         if (config.adaptive_dt) {
             solver.set_dt(solver.compute_adaptive_dt());
         }
-        double residual = solver.step();
 
-        // Compute forces on the body
-        // Must sync velocity from GPU since compute_forces reads host memory
-#ifdef USE_GPU_OFFLOAD
-        solver.sync_solution_from_gpu();
-#endif
-        auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
+        bool need_forces = (step % config.output_freq == 0 || step == 1);
+        ibm.set_accumulate_forces(need_forces);
+
+        double residual = solver.step();
 
         double time = solver.current_time();
 
-        if (mpi_rank == 0) {
-            if (force_file.is_open()) {
-                force_file << step << " " << time << " "
-                           << Fx << " " << Fy << " "
-                           << residual << "\n";
-                if (step % config.output_freq == 0) force_file.flush();
-            }
+        if (need_forces) {
+            auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
 
-            if (step % config.output_freq == 0 || step == 1) {
+            if (mpi_rank == 0) {
+                if (force_file.is_open()) {
+                    force_file << step << " " << time << " "
+                               << Fx << " " << Fy << " "
+                               << residual << "\n";
+                    force_file.flush();
+                }
+
                 std::cout << "Step " << std::setw(6) << step
                           << "  t=" << std::fixed << std::setprecision(4) << time
                           << "  res=" << std::scientific << std::setprecision(3) << residual
@@ -230,6 +235,11 @@ int main(int argc, char** argv) {
                           << "  Fy=" << std::setprecision(4) << Fy
                           << "\n" << std::flush;
             }
+        } else if (mpi_rank == 0 && !config.perf_mode) {
+            std::cout << "Step " << std::setw(6) << step
+                      << "  t=" << std::fixed << std::setprecision(4) << time
+                      << "  res=" << std::scientific << std::setprecision(3) << residual
+                      << "\n" << std::flush;
         }
 
         // Write VTK snapshot at regular intervals

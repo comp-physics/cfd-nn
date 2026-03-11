@@ -149,7 +149,14 @@ int main(int argc, char** argv) {
     }
     solver.set_velocity_bc(bc);
 
-    solver.set_body_force(-config.dp_dx, 0.0);
+    // Body force: use bulk velocity controller if target specified,
+    // otherwise fall back to fixed dp_dx
+    if (config.bulk_velocity_target > 0.0) {
+        solver.set_body_force(0.0, 0.0);
+        solver.enable_bulk_velocity_control(config.bulk_velocity_target);
+    } else {
+        solver.set_body_force(-config.dp_dx, 0.0);
+    }
 
     // Set turbulence model if requested
     if (config.turb_model != TurbulenceModelType::None) {
@@ -199,32 +206,34 @@ int main(int argc, char** argv) {
         if (config.adaptive_dt) {
             solver.set_dt(solver.compute_adaptive_dt());
         }
+
+        // Enable force accumulation only at output steps (avoids expensive
+        // GPU reductions every step)
+        bool need_forces = (step % config.output_freq == 0 || step == 1);
+        ibm.set_accumulate_forces(need_forces);
+
         double residual = solver.step();
-
-        // Must sync velocity from GPU since compute_forces reads host memory
-#ifdef USE_GPU_OFFLOAD
-        solver.sync_solution_from_gpu();
-#endif
-        auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
-
-        // Rotate forces to lift/drag coordinates if AoA != 0
-        double Fd = Fx * std::cos(aoa_rad) + Fy * std::sin(aoa_rad);
-        double Fl = -Fx * std::sin(aoa_rad) + Fy * std::cos(aoa_rad);
-
-        double Cd = Fd / (q_inf * A_ref);
-        double Cl = Fl / (q_inf * A_ref);
 
         double time = solver.current_time();
 
-        if (mpi_rank == 0) {
-            if (force_file.is_open()) {
-                force_file << step << " " << time << " "
-                           << Fx << " " << Fy << " "
-                           << Cd << " " << Cl << "\n";
-                if (step % config.output_freq == 0) force_file.flush();
-            }
+        if (need_forces) {
+            auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
 
-            if (step % config.output_freq == 0 || step == 1) {
+            // Rotate forces to lift/drag coordinates if AoA != 0
+            double Fd = Fx * std::cos(aoa_rad) + Fy * std::sin(aoa_rad);
+            double Fl = -Fx * std::sin(aoa_rad) + Fy * std::cos(aoa_rad);
+
+            double Cd = Fd / (q_inf * A_ref);
+            double Cl = Fl / (q_inf * A_ref);
+
+            if (mpi_rank == 0) {
+                if (force_file.is_open()) {
+                    force_file << step << " " << time << " "
+                               << Fx << " " << Fy << " "
+                               << Cd << " " << Cl << "\n";
+                    force_file.flush();
+                }
+
                 std::cout << "Step " << std::setw(6) << step
                           << "  t=" << std::fixed << std::setprecision(4) << time
                           << "  res=" << std::scientific << std::setprecision(3) << residual
@@ -232,6 +241,11 @@ int main(int argc, char** argv) {
                           << "  Cl=" << std::setprecision(4) << Cl
                           << "\n" << std::flush;
             }
+        } else if (mpi_rank == 0 && !config.perf_mode) {
+            std::cout << "Step " << std::setw(6) << step
+                      << "  t=" << std::fixed << std::setprecision(4) << time
+                      << "  res=" << std::scientific << std::setprecision(3) << residual
+                      << "\n" << std::flush;
         }
 
         // Write VTK snapshot at regular intervals

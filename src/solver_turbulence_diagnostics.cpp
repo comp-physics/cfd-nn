@@ -985,6 +985,11 @@ double RANSSolver::get_effective_fz() const {
     return fz_target_ * ramp;
 }
 
+void RANSSolver::enable_bulk_velocity_control(double target) {
+    bulk_velocity_control_ = true;
+    bulk_velocity_target_ = target;
+}
+
 // ============================================================================
 // Initial velocity projection (divergence cleanup after perturbation)
 // ============================================================================

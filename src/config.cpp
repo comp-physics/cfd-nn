@@ -154,7 +154,8 @@ void Config::load(const std::string& filename) {
     nu = get_double("nu", nu);
     rho = get_double("rho", rho);
     dp_dx = get_double("dp_dx", dp_dx);
-    
+    bulk_velocity_target = get_double("bulk_velocity_target", bulk_velocity_target);
+
     // Track which parameters were explicitly set in config file
     if (params_map.find("Re") != params_map.end()) Re_specified = true;
     if (params_map.find("nu") != params_map.end()) nu_specified = true;
@@ -376,6 +377,8 @@ void Config::parse_args(int argc, char** argv) {
         } else if ((val = get_value(i, arg, "--dp_dx")) != "") {
             dp_dx = std::stod(val);
             dp_dx_specified = true;
+        } else if ((val = get_value(i, arg, "--bulk_velocity_target")) != "") {
+            bulk_velocity_target = std::stod(val);
         } else if ((val = get_value(i, arg, "--dt")) != "") {
             dt = std::stod(val);
         } else if ((val = get_value(i, arg, "--max_steps")) != "") {

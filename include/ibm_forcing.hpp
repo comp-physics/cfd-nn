@@ -56,6 +56,12 @@ public:
     /// @param dt     Time step size; when >0 accumulates predictor forces into last_Fx_/Fy_/Fz_
     void apply_forcing_device(double* u_ptr, double* v_ptr, double* w_ptr, double dt = 0.0);
 
+    /// Enable/disable force accumulation during apply_forcing_device.
+    /// When disabled (default after construction), the force reductions are skipped
+    /// and apply_forcing_device only does the cheap weight multiply.
+    /// Enable at output intervals when you need Cd/Cl values.
+    void set_accumulate_forces(bool enable) { accumulate_forces_ = enable; }
+
     /// Zero out Poisson RHS at solid cell centers (GPU, no CPU sync)
     /// @param rhs_ptr  Device-resident RHS pointer (cell-centered)
     void mask_rhs_device(double* rhs_ptr);
@@ -126,6 +132,7 @@ private:
     double* weight_w_ptr_ = nullptr;
     size_t u_total_ = 0, v_total_ = 0, w_total_ = 0;
     bool gpu_mapped_ = false;
+    bool accumulate_forces_ = false;
 
     int n_forcing_ = 0;
     int n_solid_ = 0;

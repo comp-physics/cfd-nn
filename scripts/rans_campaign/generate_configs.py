@@ -27,11 +27,12 @@ FLOW_CASES = {
             "x_min": 0.0, "x_max": 30.0,
             "y_min": -10.0, "y_max": 10.0,
             "z_min": 0.0, "z_max": 3.14159,
-            "nu": 0.01, "dp_dx": -0.001,
-            "max_steps": 50000, "CFL_max": 0.5,
+            "nu": 0.01, "dp_dx": 0.0,
+            "bulk_velocity_target": 1.0,
+            "max_steps": 50000, "CFL_max": 0.3,
             "adaptive_dt": "true",
             "simulation_mode": "unsteady",
-            "convective_scheme": "upwind",
+            "convective_scheme": "upwind2",
             "poisson_solver": "auto",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -43,15 +44,16 @@ FLOW_CASES = {
     "airfoil_re1000": {
         "exe": "airfoil",
         "params": {
-            "Nx": 256, "Ny": 128, "Nz": 4,
-            "x_min": -5.0, "x_max": 15.0,
-            "y_min": -8.0, "y_max": 8.0,
+            "Nx": 512, "Ny": 256, "Nz": 4,
+            "x_min": -2.0, "x_max": 6.0,
+            "y_min": -4.0, "y_max": 4.0,
             "z_min": 0.0, "z_max": 1.0,
-            "nu": 0.001, "dp_dx": -0.0005,
-            "max_steps": 50000, "CFL_max": 0.5,
+            "nu": 0.001, "dp_dx": 0.0,
+            "bulk_velocity_target": 1.0,
+            "max_steps": 50000, "CFL_max": 0.3,
             "adaptive_dt": "true",
             "simulation_mode": "unsteady",
-            "convective_scheme": "upwind",
+            "convective_scheme": "upwind2",
             "poisson_solver": "auto",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -68,10 +70,11 @@ FLOW_CASES = {
             "y_min": 0.0, "y_max": 6.0,
             "z_min": 0.0, "z_max": 1.0,
             "nu": 0.0002, "dp_dx": 0.0,
-            "max_steps": 50000, "CFL_max": 0.5,
+            "bulk_velocity_target": 1.0,
+            "max_steps": 50000, "CFL_max": 0.3,
             "adaptive_dt": "true",
             "simulation_mode": "unsteady",
-            "convective_scheme": "upwind",
+            "convective_scheme": "upwind2",
             "poisson_solver": "multigrid",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -88,10 +91,10 @@ FLOW_CASES = {
             "y_min": 0.0, "y_max": 3.035,
             "z_min": 0.0, "z_max": 1.0,
             "nu": 9.438e-5, "dp_dx": -1.0,
-            "max_steps": 50000, "CFL_max": 0.5,
+            "max_steps": 50000, "CFL_max": 0.3,
             "adaptive_dt": "true",
             "simulation_mode": "unsteady",
-            "convective_scheme": "upwind",
+            "convective_scheme": "upwind2",
             "poisson_solver": "auto",
             "poisson_tol": 1e-6,
             "poisson_max_vcycles": 20,
@@ -146,6 +149,8 @@ def write_config(filepath, case_params, model_dict, output_dir):
         f.write("\n# Physics\n")
         f.write(f"nu = {case_params['nu']}\n")
         f.write(f"dp_dx = {case_params['dp_dx']}\n")
+        if "bulk_velocity_target" in case_params:
+            f.write(f"bulk_velocity_target = {case_params['bulk_velocity_target']}\n")
 
         # Turbulence
         f.write("\n# Turbulence model\n")
