@@ -169,7 +169,36 @@ int main(int argc, char** argv) {
     solver.print_solver_info();
 
     // Initialize with quiescent flow (body force will drive it)
-    solver.initialize_uniform(0.0, 0.0);
+    // Use bulk_velocity_target as reference velocity for perturbation scaling
+    double U_ref = (config.bulk_velocity_target > 0.0) ? config.bulk_velocity_target : 1.0;
+    solver.initialize_uniform(U_ref, 0.0);
+
+    if (config.perturbation_amplitude > 0.0) {
+        const double amp = config.perturbation_amplitude;
+        std::srand(42);
+        auto& vel = solver.velocity();
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    double r = 2.0 * static_cast<double>(std::rand()) / RAND_MAX - 1.0;
+                    if (is3D) vel.u(i, j, k) += amp * U_ref * r;
+                    else      vel.u(i, j)     += amp * U_ref * r;
+                }
+            }
+        }
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double r = 2.0 * static_cast<double>(std::rand()) / RAND_MAX - 1.0;
+                    if (is3D) vel.v(i, j, k) += amp * U_ref * r;
+                    else      vel.v(i, j)     += amp * U_ref * r;
+                }
+            }
+        }
+        if (mpi_rank == 0) {
+            std::cout << "Added random perturbations (amplitude=" << amp << ")\n";
+        }
+    }
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();

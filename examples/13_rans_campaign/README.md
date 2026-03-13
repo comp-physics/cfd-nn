@@ -6,10 +6,9 @@ Systematic evaluation of 9 turbulence closures across 4 IBM flow geometries on G
 
 | Case | Re | Domain | Grid | IBM Body |
 |------|----|--------|------|----------|
-| Cylinder | 100 | 30x20x&pi; | 192x128x4 | Circular cylinder (r=0.5) |
-| Airfoil | 1000 | 40x30x&pi; | 256x192x4 | NACA 0012 (chord=1, AoA=5&deg;) |
-| Backward-facing step | 5000 | 40x6x&pi; | 384x128x4 | Step (height=1) |
-| Periodic hills | 10595 | 9x3.036x&pi; | 192x128x4 | Hill profile (Mellen et al.) |
+| Cylinder | 100 | 30x20x1 | 192x128x4 | Circular cylinder (r=0.5) |
+| Airfoil | 1000 | 8x8x1 | 512x256x4 | NACA 0012 (chord=1, AoA=5&deg;) |
+| Periodic hills | 10595 | 9x3.036x1 | 192x96x4 | Hill profile (Mellen et al.) |
 
 ## Turbulence Models
 
@@ -25,7 +24,7 @@ Systematic evaluation of 9 turbulence closures across 4 IBM flow geometries on G
 | NN-MLP | Neural network | `_nnmlp` |
 | NN-TBNN | Neural network | `_nntbnn` |
 
-Hills also has 2 extra configs with physics-informed loss (`_nnmlp_phll`, `_nntbnn_phll`), totaling **38 jobs**.
+Hills also has 2 extra configs with physics-informed loss (`_nnmlp_phll`, `_nntbnn_phll`), totaling **29 jobs**.
 
 ## Running the Campaign
 
@@ -67,14 +66,14 @@ python3 scripts/rans_campaign/analyze_campaign.py
 
 After IBM optimization (lazy force accumulation, removal of unnecessary GPU sync):
 
-| Component | Cylinder | Airfoil | Step | Hills |
+| Component | Cylinder | Airfoil | Hills |
 |-----------|----------|---------|------|-------|
-| **IBM total** | 3.4-3.6s | 5.2-5.3s | 3.5-4.0s | 3.7-3.8s |
-| **Poisson solve** | 6.8-7.9s | 8.4-8.5s | 34-37s | 8.2-8.6s |
-| **Turb (algebraic)** | 1.2-2.8s | 1.3-2.8s | 1.1-2.5s | 1.3-2.8s |
-| **Turb (transport)** | 0.5-1.2s | 0.5-1.4s | 0.5-1.1s | 0.6-1.3s |
-| **Turb (NN-MLP)** | 12.5s | 42.2s | 12.9s | 12.9s |
-| **Turb (NN-TBNN)** | 95.8s | 400.6s | 120.2s | 95.2s |
+| **IBM total** | 3.4-3.6s | 5.2-5.3s | 3.7-3.8s |
+| **Poisson solve** | 6.8-7.9s | 8.4-8.5s | 8.2-8.6s |
+| **Turb (algebraic)** | 1.2-2.8s | 1.3-2.8s | 1.3-2.8s |
+| **Turb (transport)** | 0.5-1.2s | 0.5-1.4s | 0.6-1.3s |
+| **Turb (NN-MLP)** | 12.5s | 42.2s | 12.9s |
+| **Turb (NN-TBNN)** | 95.8s | 400.6s | 95.2s |
 
 IBM overhead is negligible (~0.07ms/step) for all non-NN models. Poisson dominates for algebraic/transport models; NN inference dominates for neural network models.
 

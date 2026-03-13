@@ -177,8 +177,35 @@ int main(int argc, char** argv) {
 
     solver.print_solver_info();
 
-    // Initialize with uniform flow
+    // Initialize with uniform flow + perturbations for RANS activation
     solver.initialize_uniform(U_inf, 0.0);
+
+    if (config.perturbation_amplitude > 0.0) {
+        const double amp = config.perturbation_amplitude;
+        std::srand(42);
+        auto& vel = solver.velocity();
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    double r = 2.0 * static_cast<double>(std::rand()) / RAND_MAX - 1.0;
+                    if (is3D) vel.u(i, j, k) += amp * U_inf * r;
+                    else      vel.u(i, j)     += amp * U_inf * r;
+                }
+            }
+        }
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j <= mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double r = 2.0 * static_cast<double>(std::rand()) / RAND_MAX - 1.0;
+                    if (is3D) vel.v(i, j, k) += amp * U_inf * r;
+                    else      vel.v(i, j)     += amp * U_inf * r;
+                }
+            }
+        }
+        if (mpi_rank == 0) {
+            std::cout << "Added random perturbations (amplitude=" << amp << ")\n";
+        }
+    }
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();

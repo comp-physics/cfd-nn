@@ -62,27 +62,6 @@ FLOW_CASES = {
             "num_snapshots": 10,
         },
     },
-    "step_re5000": {
-        "exe": "step",
-        "params": {
-            "Nx": 256, "Ny": 128, "Nz": 4,
-            "x_min": -10.0, "x_max": 20.0,
-            "y_min": 0.0, "y_max": 6.0,
-            "z_min": 0.0, "z_max": 1.0,
-            "nu": 0.0002, "dp_dx": 0.0,
-            "bulk_velocity_target": 1.0,
-            "max_steps": 50000, "CFL_max": 0.3,
-            "adaptive_dt": "true",
-            "simulation_mode": "unsteady",
-            "convective_scheme": "upwind2",
-            "poisson_solver": "multigrid",
-            "poisson_tol": 1e-6,
-            "poisson_max_vcycles": 20,
-            "output_freq": 500,
-            "write_fields": "true",
-            "num_snapshots": 10,
-        },
-    },
     "hills_re10595": {
         "exe": "hills",
         "params": {
@@ -91,6 +70,7 @@ FLOW_CASES = {
             "y_min": 0.0, "y_max": 3.035,
             "z_min": 0.0, "z_max": 1.0,
             "nu": 9.438e-5, "dp_dx": -1.0,
+            "perturbation_amplitude": 0.05,
             "max_steps": 50000, "CFL_max": 0.3,
             "adaptive_dt": "true",
             "simulation_mode": "unsteady",
@@ -151,6 +131,8 @@ def write_config(filepath, case_params, model_dict, output_dir):
         f.write(f"dp_dx = {case_params['dp_dx']}\n")
         if "bulk_velocity_target" in case_params:
             f.write(f"bulk_velocity_target = {case_params['bulk_velocity_target']}\n")
+        if "perturbation_amplitude" in case_params:
+            f.write(f"perturbation_amplitude = {case_params['perturbation_amplitude']}\n")
 
         # Turbulence
         f.write("\n# Turbulence model\n")
