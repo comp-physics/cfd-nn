@@ -271,40 +271,78 @@ void SSTClosure::compute_nu_t(
     // Compute velocity gradients (MAC-aware for CPU/GPU consistency)
     compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
-    const double a1 = constants_.a1;
-    
-    // NOTE: SSTClosure GPU path is intentionally disabled to avoid pointer aliasing
-    // issues with RANSSolver's GPU buffers. The caller (RANSSolver or SSTKOmegaTransport)
-    // handles GPU synchronization when needed. This host path is acceptable because
-    // the SST closure computation is relatively cheap compared to transport equation solves.
-    
-    // CPU path
-    using namespace numerics;
+    const double a1         = constants_.a1;
+    const double beta_star  = constants_.beta_star;
+    const double k_min      = constants_.k_min;
+    const double omega_min  = constants_.omega_min;
+    const double nu_t_max   = 1000.0 * nu_;
+    const double nu         = nu_;
 
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double k_loc = std::max(constants_.k_min, k(i, j));
-            double omega_loc = std::max(constants_.omega_min, omega(i, j));
-            double y_wall = mesh.wall_distance(i, j);
+    const int Nx     = mesh.Nx;
+    const int Ny     = mesh.Ny;
+    const int Ng     = mesh.Nghost;
+    const int stride = mesh.total_Nx();
+    const int n_cells = Nx * Ny;
+    [[maybe_unused]] const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
 
-            // Strain rate magnitude
-            double Sxx = dudx_(i, j);
-            double Syy = dvdy_(i, j);
-            double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
-            double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+    // Flatten wall distances — mesh.wall_distance() is virtual, cannot call on GPU.
+    std::vector<double> wall_buf(total_size);
+    for (int j = 0; j < mesh.total_Ny(); ++j)
+        for (int i = 0; i < mesh.total_Nx(); ++i)
+            wall_buf[j * stride + i] = mesh.wall_distance(i, j);
 
-            // F2 blending function
-            double F2 = compute_F2(k_loc, omega_loc, y_wall);
+    const double* k_ptr    = k.data().data();
+    const double* om_ptr   = omega.data().data();
+    const double* dudx_ptr = dudx_.data().data();
+    const double* dudy_ptr = dudy_.data().data();
+    const double* dvdx_ptr = dvdx_.data().data();
+    const double* dvdy_ptr = dvdy_.data().data();
+    const double* wall_ptr = wall_buf.data();
+    double*       nu_t_ptr = nu_t.data().data();
 
-            // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
-            double denom = std::max(a1 * omega_loc, S_mag * F2);
-            double nu_t_loc = safe_divide(a1 * k_loc, denom, K_FLOOR);
+    #pragma omp target teams distribute parallel for \
+        map(to: k_ptr[0:total_size], om_ptr[0:total_size], \
+                dudx_ptr[0:total_size], dudy_ptr[0:total_size], \
+                dvdx_ptr[0:total_size], dvdy_ptr[0:total_size], \
+                wall_ptr[0:total_size]) \
+        map(from: nu_t_ptr[0:total_size])
+    for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
+        const int i   = cell_idx % Nx + Ng;
+        const int j   = cell_idx / Nx + Ng;
+        const int idx = j * stride + i;
 
-            // Clipping
-            nu_t_loc = std::clamp(nu_t_loc, 0.0, 1000.0 * nu_);
+        double k_val    = k_ptr[idx];
+        double omega_val = om_ptr[idx];
+        const double y_wall = wall_ptr[idx];
 
-            nu_t(i, j) = nu_t_loc;
-        }
+        k_val    = (k_val    > k_min)  ? k_val    : k_min;
+        omega_val = (omega_val > omega_min) ? omega_val : omega_min;
+        const double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
+
+        // Strain rate magnitude from MAC-grid gradients
+        const double Sxx = dudx_ptr[idx];
+        const double Syy = dvdy_ptr[idx];
+        const double Sxy = 0.5 * (dudy_ptr[idx] + dvdx_ptr[idx]);
+        const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+
+        // F2 blending: arg2 = max(2√k/(β*ωy), 500ν/(y²ω))
+        const double sqrt_k = sqrt(k_val);
+        const double t1  = 2.0 * sqrt_k / (beta_star * omega_val * y_safe);
+        const double t2  = 500.0 * nu / (y_safe * y_safe * omega_val);
+        const double arg2 = (t1 > t2) ? t1 : t2;
+        const double F2  = tanh(arg2 * arg2);
+
+        // ν_t = a₁k / max(a₁ω, S·F₂)
+        double denom = a1 * omega_val;
+        const double SF2 = S_mag * F2;
+        denom = (denom > SF2) ? denom : SF2;
+        denom = (denom > 1e-20) ? denom : 1e-20;
+
+        double nu_t_val = a1 * k_val / denom;
+        nu_t_val = (nu_t_val > 0.0)      ? nu_t_val : 0.0;
+        nu_t_val = (nu_t_val < nu_t_max) ? nu_t_val : nu_t_max;
+
+        nu_t_ptr[idx] = nu_t_val;
     }
 }
 
@@ -785,21 +823,52 @@ void SSTKOmegaTransport::advance_turbulence(
             omega_ptr[idx_c] = omega_new;
         }
 
-        // Apply wall boundary conditions - sync to CPU, apply, sync back
-        // This was missing and caused NaN at step 5 - ghost cells had garbage values
-        // Using target update instead of inline kernel to avoid nvc++ compiler crash
+        // Apply wall BCs directly on GPU — no CPU roundtrip.
+        // k BC: ghost = -interior (linear extrapolation gives k=0 at wall)
+        const int total_Nx_bc = cell_stride;  // == mesh.total_Nx()
+        #pragma omp target teams distribute parallel for \
+            map(present: k_ptr[0:cell_total_size])
+        for (int i = 0; i < total_Nx_bc; ++i) {
+            for (int g = 0; g < Ng; ++g) {
+                k_ptr[g * cell_stride + i]            = -k_ptr[Ng * cell_stride + i];
+                k_ptr[(Ny + Ng + g) * cell_stride + i] = -k_ptr[(Ny + Ng - 1) * cell_stride + i];
+            }
+        }
 
-        // Sync k and omega from device to host
-        #pragma omp target update from(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
+        // omega BC: ghost = 2*omega_wall - interior, where omega_wall = 60*nu/(beta1*y1^2)
+        const double* wall_ptr   = device_view->wall_distance;
+        [[maybe_unused]] const int wall_total = device_view->cell_total;
+        const double nu_bc       = nu;
+        const double beta1_bc    = beta1;
+        const double omega_max_bc = omega_max;
+        #pragma omp target teams distribute parallel for \
+            map(present: omega_ptr[0:cell_total_size], wall_ptr[0:wall_total])
+        for (int i = Ng; i < Nx + Ng; ++i) {
+            for (int g = 0; g < Ng; ++g) {
+                // Bottom wall
+                {
+                    const int idx_ghost = g * cell_stride + i;
+                    const int idx_int   = Ng * cell_stride + i;
+                    double y1 = wall_ptr[idx_int];
+                    y1 = (y1 > 1e-10) ? y1 : 1e-10;
+                    double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
+                    ow = (ow < omega_max_bc) ? ow : omega_max_bc;
+                    omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
+                }
+                // Top wall
+                {
+                    const int idx_ghost = (Ny + Ng + g) * cell_stride + i;
+                    const int idx_int   = (Ny + Ng - 1) * cell_stride + i;
+                    double y1 = wall_ptr[idx_int];
+                    y1 = (y1 > 1e-10) ? y1 : 1e-10;
+                    double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
+                    ow = (ow < omega_max_bc) ? ow : omega_max_bc;
+                    omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
+                }
+            }
+        }
 
-        // Apply wall BCs on CPU (reuses existing tested code)
-        apply_wall_bc_k(mesh, k);
-        apply_wall_bc_omega(mesh, omega, k);
-
-        // Sync back to device
-        #pragma omp target update to(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
-
-        // Transport PDE done - wall BCs now applied
+        // Transport PDE done — wall BCs applied on GPU, no CPU roundtrip.
         return;
     }
 #else
