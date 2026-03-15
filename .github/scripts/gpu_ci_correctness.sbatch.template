@@ -217,19 +217,11 @@ echo "  Phase 4: GPU+MPI Build and Test"
 echo "==================================================================="
 echo ""
 
-# nvhpc ships OpenMPI in $NVHPC_ROOT/comm_libs/mpi — CMake find_package(MPI)
-# locates it automatically when nvhpc module is loaded.
-echo "MPI compiler: $(which mpicc 2>/dev/null || echo 'not in PATH — checking NVHPC comm_libs')"
+# Load OpenMPI for GPU+MPI build
+module load openmpi/4.1.8 2>/dev/null || module load openmpi 2>/dev/null || true
 if ! which mpicc &>/dev/null; then
-    # Try nvhpc bundled MPI (check both /opt/nvidia and module-based installs)
-    NVHPC_MPI=$(find /opt/nvidia /usr/local/pace-apps/manual/packages/nvhpc ${NVHPC_ROOT:-/nonexistent} -name mpicc -path '*/comm_libs/*/ompi/bin/mpicc' 2>/dev/null | head -1 || true)
-    if [ -n "$NVHPC_MPI" ]; then
-        export PATH="$(dirname "$NVHPC_MPI"):$PATH"
-        echo "Added nvhpc MPI to PATH: $(dirname "$NVHPC_MPI")"
-    else
-        echo "[SKIP] No MPI found — skipping GPU+MPI phase"
-        exit 0
-    fi
+    echo "[SKIP] No MPI module available — skipping GPU+MPI phase"
+    exit 0
 fi
 echo "MPI: $(mpicc --version 2>&1 | head -1)"
 echo ""
