@@ -136,7 +136,9 @@ struct NvtxColoredScope {
 // Iteration Markers (for tracking iterations in profiler)
 // ============================================================================
 
+#ifndef NVTX_MARK
 #define NVTX_MARK(name) nvtxMarkA(name)
+#endif
 
 inline void nvtx_mark_iteration(const char* prefix, int iter) {
     char buf[64];
@@ -186,8 +188,12 @@ struct NvtxColoredScope {
 #define NVTX_SCOPE_MG(name)
 #define NVTX_SCOPE_RESIDUAL(name)
 
+#ifndef NVTX_MARK
 #define NVTX_MARK(name)
+#endif
+#ifndef NVTX_ITERATION
 #define NVTX_ITERATION(prefix, iter)
+#endif
 
 #endif // NVTX_AVAILABLE
 
@@ -231,7 +237,11 @@ struct NvtxColoredScope {
 #define NVTX_SCOPE_MG(name)
 #define NVTX_SCOPE_RESIDUAL(name)
 
+#ifndef NVTX_MARK
 #define NVTX_MARK(name)
+#endif
+#ifndef NVTX_ITERATION
 #define NVTX_ITERATION(prefix, iter)
+#endif
 
 #endif // GPU_PROFILE_KERNELS
