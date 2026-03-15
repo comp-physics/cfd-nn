@@ -84,9 +84,16 @@ SIGNAL=$(echo "$EXIT_CODE_FULL" | cut -d: -f2)
 echo "Job state: ${JOB_STATE}, exit code: ${EXIT_CODE_FULL}"
 
 # Fail on non-COMPLETED states (TIMEOUT, CANCELLED, FAILED, etc.)
+# sacct can lag behind squeue — if the job output contains a Slurm Epilog
+# (meaning the job truly finished), trust the exit code from sacct instead.
 if [ "$JOB_STATE" != "COMPLETED" ]; then
-  echo "Job did not complete successfully (state: ${JOB_STATE})"
-  exit 1
+  if grep -q "Begin Slurm Epilog" "${SLURM_OUT}" 2>/dev/null; then
+    echo "sacct reports '${JOB_STATE}' but Slurm Epilog found in output — job completed"
+    echo "Trusting exit code from sacct: ${EXIT_CODE_FULL}"
+  else
+    echo "Job did not complete successfully (state: ${JOB_STATE})"
+    exit 1
+  fi
 fi
 
 # Fail on non-zero exit code or signal

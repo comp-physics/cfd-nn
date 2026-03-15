@@ -221,8 +221,8 @@ echo ""
 # locates it automatically when nvhpc module is loaded.
 echo "MPI compiler: $(which mpicc 2>/dev/null || echo 'not in PATH — checking NVHPC comm_libs')"
 if ! which mpicc &>/dev/null; then
-    # Try nvhpc bundled MPI
-    NVHPC_MPI=$(find /opt/nvidia -name mpicc -path '*/comm_libs/*' 2>/dev/null | head -1 || true)
+    # Try nvhpc bundled MPI (check both /opt/nvidia and module-based installs)
+    NVHPC_MPI=$(find /opt/nvidia /usr/local/pace-apps/manual/packages/nvhpc ${NVHPC_ROOT:-/nonexistent} -name mpicc -path '*/comm_libs/*/ompi/bin/mpicc' 2>/dev/null | head -1 || true)
     if [ -n "$NVHPC_MPI" ]; then
         export PATH="$(dirname "$NVHPC_MPI"):$PATH"
         echo "Added nvhpc MPI to PATH: $(dirname "$NVHPC_MPI")"
