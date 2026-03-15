@@ -17,6 +17,9 @@ module load nvhpc
 
 cd "__WORKDIR__"
 
+# Build for all PACE GPU architectures: V100=cc70, A100=cc80, L40S=cc89, H100/H200=cc90
+GPU_CC="70,80,89,90"
+
 # Create separate log files for build and test output
 BUILD_LOG="__WORKDIR__/gpu_ci_build.log"
 TEST_LOG="__WORKDIR__/gpu_ci_test.log"
@@ -124,9 +127,6 @@ echo ""
     echo "==================================================================="
     echo "Building GPU version..."
     echo "==================================================================="
-    # Build GPU version for all PACE GPU architectures
-    # V100=cc70, A100=cc80, L40S=cc89, H100/H200=cc90
-    GPU_CC="70,80,89,90"
     echo "Building for GPU_CC=${GPU_CC}"
     mkdir -p build_gpu
     cd build_gpu
