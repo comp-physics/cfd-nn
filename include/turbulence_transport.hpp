@@ -288,16 +288,6 @@ private:
     void apply_wall_bc_k(const Mesh& mesh, ScalarField& k);
     void apply_wall_bc_omega(const Mesh& mesh, ScalarField& omega, 
                              const ScalarField& k);
-    
-    // GPU kernels
-    void advance_turbulence_gpu(
-        const Mesh& mesh,
-        const VectorField& velocity,
-        double dt,
-        ScalarField& k,
-        ScalarField& omega,
-        const ScalarField& nu_t_prev
-    );
 };
 
 // ============================================================================
