@@ -3,7 +3,7 @@
 #SBATCH -A gts-sbryngelson3
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=4
-#SBATCH -p gpu-h200
+#SBATCH -p gpu-h200,gpu-h100,gpu-a100,gpu-l40s,gpu-v100
 #SBATCH -G 1
 #SBATCH --qos=embers
 #SBATCH -t 01:00:00
@@ -124,13 +124,15 @@ echo ""
     echo "==================================================================="
     echo "Building GPU version..."
     echo "==================================================================="
-    # Build GPU version
-    # Note: H200 requires cc90 (Hopper architecture)
+    # Build GPU version for all PACE GPU architectures
+    # V100=cc70, A100=cc80, L40S=cc89, H100/H200=cc90
+    GPU_CC="70,80,89,90"
+    echo "Building for GPU_CC=${GPU_CC}"
     mkdir -p build_gpu
     cd build_gpu
     # Force fresh configure: remove CMake cache but preserve _deps (HYPRE)
     rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
-    cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON -DGPU_CC=90
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DBUILD_TESTS=ON -DGPU_CC=${GPU_CC}
     make -j8
     cd ..
 
@@ -247,7 +249,7 @@ echo ""
              -DUSE_GPU_OFFLOAD=ON \
              -DUSE_MPI=ON \
              -DBUILD_TESTS=ON \
-             -DGPU_CC=90
+             -DGPU_CC=${GPU_CC}
     make -j8 test_decomposition test_halo_exchange
     cd ..
     echo ""
