@@ -6,6 +6,10 @@
 #include <iostream>
 #include <iomanip>
 
+#ifdef USE_NVTX
+#include <nvtx3/nvToolsExt.h>
+#endif
+
 namespace nncfd {
 
 /// Simple scoped timer that records elapsed time
@@ -109,8 +113,36 @@ private:
     std::chrono::steady_clock::time_point start_;
 };
 
-/// Macro for easy timing
-#define TIMED_SCOPE(name) nncfd::AutoTimer _timer_##__LINE__(name)
+/// RAII NVTX range (no timing, just nsys annotation)
+class NvtxRange {
+public:
+    explicit NvtxRange([[maybe_unused]] const char* name) {
+#ifdef USE_NVTX
+        nvtxRangePushA(name);
+#endif
+    }
+    ~NvtxRange() {
+#ifdef USE_NVTX
+        nvtxRangePop();
+#endif
+    }
+};
+
+/// Macro for easy timing + NVTX annotation
+/// Uses __COUNTER__ for unique variable names (nvc++ expands __LINE__ literally in ## context)
+#define TIMED_SCOPE_CONCAT2(a, b) a##b
+#define TIMED_SCOPE_CONCAT(a, b) TIMED_SCOPE_CONCAT2(a, b)
+#define TIMED_SCOPE(name) nncfd::AutoTimer TIMED_SCOPE_CONCAT(_timer_, __COUNTER__)(name)
+
+/// NVTX-only scoped range (no timing overhead, visible in nsys)
+#define NVTX_SCOPE(name) nncfd::NvtxRange TIMED_SCOPE_CONCAT(_nvtx_, __COUNTER__)(name)
+
+/// NVTX instant marker (zero-duration event visible in nsys timeline)
+#ifdef USE_NVTX
+#define NVTX_MARK(name) nvtxMarkA(name)
+#else
+#define NVTX_MARK(name) ((void)0)
+#endif
 
 } // namespace nncfd
 

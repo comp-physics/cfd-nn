@@ -87,6 +87,7 @@ void test_sphere_drag_re100() {
     // IBM: sphere centered at (cx, cy, cz)
     auto body = std::make_shared<SphereBody>(cx, cy, cz, radius);
     IBMForcing ibm(mesh, body);
+    ibm.set_accumulate_forces(true);
     solver.set_ibm_forcing(&ibm);
 
     std::cout << "  IBM sphere: " << ibm.num_forcing_cells() << " forcing cells, "

@@ -281,12 +281,19 @@ void TimingStats::print_summary(std::ostream& os) const {
 }
 
 AutoTimer::AutoTimer(const std::string& name)
-    : name_(name), start_(std::chrono::steady_clock::now()) {}
+    : name_(name), start_(std::chrono::steady_clock::now()) {
+#ifdef USE_NVTX
+    nvtxRangePushA(name.c_str());
+#endif
+}
 
 AutoTimer::~AutoTimer() {
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = now - start_;
     TimingStats::instance().record(name_, diff.count());
+#ifdef USE_NVTX
+    nvtxRangePop();
+#endif
 }
 
 } // namespace nncfd

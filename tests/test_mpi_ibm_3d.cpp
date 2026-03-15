@@ -86,6 +86,7 @@ int main(int argc, char** argv) {
 
         auto body = std::make_shared<CylinderBody>(cx, cy, radius);
         IBMForcing ibm(mesh, body);
+        ibm.set_accumulate_forces(true);
         solver.set_ibm_forcing(&ibm);
 
         if (rank == 0) {

@@ -272,12 +272,12 @@ void SSTClosure::compute_nu_t(
     compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
     const double a1 = constants_.a1;
-    
-    // NOTE: SSTClosure GPU path is intentionally disabled to avoid pointer aliasing
-    // issues with RANSSolver's GPU buffers. The caller (RANSSolver or SSTKOmegaTransport)
-    // handles GPU synchronization when needed. This host path is acceptable because
-    // the SST closure computation is relatively cheap compared to transport equation solves.
-    
+
+    // NOTE: GPU path for SST closure is handled by the caller
+    // (SSTKOmegaTransport::update) which calls compute_sst_closure_gpu()
+    // with device_view pointers and map(present:). This CPU path is the
+    // fallback for non-GPU builds or custom closures.
+
     // CPU path
     using namespace numerics;
 
@@ -785,21 +785,52 @@ void SSTKOmegaTransport::advance_turbulence(
             omega_ptr[idx_c] = omega_new;
         }
 
-        // Apply wall boundary conditions - sync to CPU, apply, sync back
-        // This was missing and caused NaN at step 5 - ghost cells had garbage values
-        // Using target update instead of inline kernel to avoid nvc++ compiler crash
+        // Apply wall BCs directly on GPU — no CPU roundtrip.
+        // k BC: ghost = -interior (linear extrapolation gives k=0 at wall)
+        const int total_Nx_bc = cell_stride;  // == mesh.total_Nx()
+        #pragma omp target teams distribute parallel for \
+            map(present: k_ptr[0:cell_total_size])
+        for (int i = 0; i < total_Nx_bc; ++i) {
+            for (int g = 0; g < Ng; ++g) {
+                k_ptr[g * cell_stride + i]            = -k_ptr[Ng * cell_stride + i];
+                k_ptr[(Ny + Ng + g) * cell_stride + i] = -k_ptr[(Ny + Ng - 1) * cell_stride + i];
+            }
+        }
 
-        // Sync k and omega from device to host
-        #pragma omp target update from(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
+        // omega BC: ghost = 2*omega_wall - interior, where omega_wall = 60*nu/(beta1*y1^2)
+        const double* wall_ptr   = device_view->wall_distance;
+        [[maybe_unused]] const int wall_total = device_view->cell_total;
+        const double nu_bc       = nu;
+        const double beta1_bc    = beta1;
+        const double omega_max_bc = omega_max;
+        #pragma omp target teams distribute parallel for \
+            map(present: omega_ptr[0:cell_total_size], wall_ptr[0:wall_total])
+        for (int i = Ng; i < Nx + Ng; ++i) {
+            for (int g = 0; g < Ng; ++g) {
+                // Bottom wall
+                {
+                    const int idx_ghost = g * cell_stride + i;
+                    const int idx_int   = Ng * cell_stride + i;
+                    double y1 = wall_ptr[idx_int];
+                    y1 = (y1 > 1e-10) ? y1 : 1e-10;
+                    double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
+                    ow = (ow < omega_max_bc) ? ow : omega_max_bc;
+                    omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
+                }
+                // Top wall
+                {
+                    const int idx_ghost = (Ny + Ng + g) * cell_stride + i;
+                    const int idx_int   = (Ny + Ng - 1) * cell_stride + i;
+                    double y1 = wall_ptr[idx_int];
+                    y1 = (y1 > 1e-10) ? y1 : 1e-10;
+                    double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
+                    ow = (ow < omega_max_bc) ? ow : omega_max_bc;
+                    omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
+                }
+            }
+        }
 
-        // Apply wall BCs on CPU (reuses existing tested code)
-        apply_wall_bc_k(mesh, k);
-        apply_wall_bc_omega(mesh, omega, k);
-
-        // Sync back to device
-        #pragma omp target update to(k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size])
-
-        // Transport PDE done - wall BCs now applied
+        // Transport PDE done — wall BCs applied on GPU, no CPU roundtrip.
         return;
     }
 #else
@@ -902,247 +933,6 @@ void SSTKOmegaTransport::advance_turbulence(
     apply_wall_bc_k(mesh, k);
     apply_wall_bc_omega(mesh, omega, k);
 }
-
-#ifdef USE_GPU_OFFLOAD
-void SSTKOmegaTransport::advance_turbulence_gpu(
-    const Mesh& mesh,
-    const VectorField& velocity,
-    double dt,
-    ScalarField& k,
-    ScalarField& omega,
-    const ScalarField& nu_t_prev)
-{
-    TIMED_SCOPE("sst_transport_gpu");
-
-    const int Nx = mesh.Nx;
-    const int Ny = mesh.Ny;
-    const int n_cells = Nx * Ny;
-    const int n_total = (Nx + 2) * (Ny + 2);
-    const int stride = Nx + 2;
-    const double dx = mesh.dx;
-    const double dx2 = dx * dx;
-    const double inv_2dx = 1.0 / (2.0 * dx);
-
-    // Precompute per-j y-spacing factors (correct for both uniform and stretched)
-    const bool y_str = mesh.is_y_stretched() && !mesh.dyc.empty();
-    const double dy_mean = mesh.dy;
-    std::vector<double> inv_dy_grad(Ny);    // Central gradient: 1/(yc[j+1]-yc[j-1])
-    std::vector<double> inv_dyc_s(Ny);      // Upwind south: 1/(yc[j]-yc[j-1])
-    std::vector<double> inv_dyc_n(Ny);      // Upwind north: 1/(yc[j+1]-yc[j])
-    std::vector<double> inv_dyv_j(Ny);      // Cell height: 1/dyv[j]
-    for (int j = 0; j < Ny; ++j) {
-        int jj = j + 1;  // index with Ng=1 ghost offset
-        if (y_str) {
-            double ds = mesh.dyc[jj];
-            double dn = mesh.dyc[jj + 1];
-            inv_dy_grad[j] = 1.0 / (ds + dn);
-            inv_dyc_s[j] = 1.0 / ds;
-            inv_dyc_n[j] = 1.0 / dn;
-            inv_dyv_j[j] = 1.0 / mesh.dyv[jj];
-        } else {
-            double inv_2dy = 1.0 / (2.0 * dy_mean);
-            inv_dy_grad[j] = inv_2dy;
-            inv_dyc_s[j] = 1.0 / dy_mean;
-            inv_dyc_n[j] = 1.0 / dy_mean;
-            inv_dyv_j[j] = 1.0 / dy_mean;
-        }
-    }
-    double* inv_dy_grad_ptr = inv_dy_grad.data();
-    double* inv_dyc_s_ptr = inv_dyc_s.data();
-    double* inv_dyc_n_ptr = inv_dyc_n.data();
-    double* inv_dyv_j_ptr = inv_dyv_j.data();
-
-    // Copy data to flat arrays
-    std::copy(velocity.u_data().begin(), velocity.u_data().end(), u_flat_.begin());
-    std::copy(velocity.v_data().begin(), velocity.v_data().end(), v_flat_.begin());
-    std::copy(k.data().begin(), k.data().end(), k_flat_.begin());
-    std::copy(omega.data().begin(), omega.data().end(), omega_flat_.begin());
-
-    // Copy nu_t_prev to flat array
-    int idx = 0;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            nu_t_flat_[idx++] = nu_t_prev(i, j);
-        }
-    }
-
-    // Get pointers (buffers are already persistently mapped to GPU)
-    double* u_ptr = u_flat_.data();
-    double* v_ptr = v_flat_.data();
-    double* k_ptr = k_flat_.data();
-    double* omega_ptr = omega_flat_.data();
-    const double* nu_t_ptr = nu_t_flat_.data();
-    const double* wall_dist_ptr = wall_dist_flat_.data();
-    double* work_ptr = work_flat_.data();
-
-    // Update GPU with input data (buffers are persistent, just update contents)
-    #pragma omp target update to(u_ptr[0:n_total], v_ptr[0:n_total], \
-                                 k_ptr[0:n_total], omega_ptr[0:n_total], \
-                                 nu_t_ptr[0:n_cells])
-
-    // Model constants (copy to local for GPU capture)
-    const double nu = nu_;
-    const double beta_star = constants_.beta_star;
-    const double beta1 = constants_.beta1;
-    const double beta2 = constants_.beta2;
-    const double alpha1 = constants_.alpha1;
-    const double alpha2 = constants_.alpha2;
-    const double sigma_k1 = constants_.sigma_k1;
-    const double sigma_k2 = constants_.sigma_k2;
-    const double sigma_omega1 = constants_.sigma_omega1;
-    const double sigma_omega2 = constants_.sigma_omega2;
-    const double k_min = constants_.k_min;
-    const double k_max = constants_.k_max;
-    const double omega_min = constants_.omega_min;
-    const double omega_max = constants_.omega_max;
-    const double CD_min = constants_.CD_omega_min;
-
-    // GPU kernel with per-j y-spacing for stretched grids
-    #pragma omp target teams distribute parallel for \
-        map(to: inv_dy_grad_ptr[0:Ny], inv_dyc_s_ptr[0:Ny], \
-                inv_dyc_n_ptr[0:Ny], inv_dyv_j_ptr[0:Ny])
-    for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
-        int i = cell_idx % Nx;
-        int j = cell_idx / Nx;
-        int ii = i + 1;  // With ghost cells
-        int jj = j + 1;
-
-        int idx_c = jj * stride + ii;
-        int idx_ip = jj * stride + (ii + 1);
-        int idx_im = jj * stride + (ii - 1);
-        int idx_jp = (jj + 1) * stride + ii;
-        int idx_jm = (jj - 1) * stride + ii;
-
-        // Per-j y-spacing factors
-        double inv_dy_g = inv_dy_grad_ptr[j];
-        double inv_dy_s = inv_dyc_s_ptr[j];
-        double inv_dy_n = inv_dyc_n_ptr[j];
-        double inv_dy_cell = inv_dyv_j_ptr[j];
-
-        // Velocity gradients (using per-j y-spacing)
-        double dudx_v = (u_ptr[idx_ip] - u_ptr[idx_im]) * inv_2dx;
-        double dudy_v = (u_ptr[idx_jp] - u_ptr[idx_jm]) * inv_dy_g;
-        double dvdx_v = (v_ptr[idx_ip] - v_ptr[idx_im]) * inv_2dx;
-        double dvdy_v = (v_ptr[idx_jp] - v_ptr[idx_jm]) * inv_dy_g;
-
-        double u_c = u_ptr[idx_c];
-        double v_c = v_ptr[idx_c];
-        double k_c = k_ptr[idx_c];
-        double omega_c = omega_ptr[idx_c];
-        double y_wall = wall_dist_ptr[cell_idx];
-        double nu_t_c = nu_t_ptr[cell_idx];
-
-        k_c = (k_c > k_min) ? k_c : k_min;
-        omega_c = (omega_c > omega_min) ? omega_c : omega_min;
-        double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
-        nu_t_c = (nu_t_c > 0.0) ? nu_t_c : 0.0;
-
-        // Strain rate
-        double Sxx = dudx_v;
-        double Syy = dvdy_v;
-        double Sxy = 0.5 * (dudy_v + dvdx_v);
-        double S2 = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
-
-        // Cross-diffusion for F1 (using per-j y-spacing)
-        double dkdx = (k_ptr[idx_ip] - k_ptr[idx_im]) * inv_2dx;
-        double dkdy = (k_ptr[idx_jp] - k_ptr[idx_jm]) * inv_dy_g;
-        double domegadx = (omega_ptr[idx_ip] - omega_ptr[idx_im]) * inv_2dx;
-        double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_dy_g;
-
-        double CD_omega = 2.0 * sigma_omega2 / omega_c * (dkdx * domegadx + dkdy * domegady);
-        CD_omega = (CD_omega > CD_min) ? CD_omega : CD_min;
-
-        // F1 blending
-        double sqrt_k = sqrt(k_c);
-        double arg1_1 = sqrt_k / (beta_star * omega_c * y_safe);
-        double arg1_2 = 500.0 * nu / (y_safe * y_safe * omega_c);
-        double arg1_3 = 4.0 * sigma_omega2 * k_c / (CD_omega * y_safe * y_safe);
-        double arg1 = arg1_1;
-        arg1 = (arg1 > arg1_2) ? arg1 : arg1_2;
-        arg1 = (arg1 < arg1_3) ? arg1 : arg1_3;
-        double F1 = tanh(arg1 * arg1 * arg1 * arg1);
-
-        // Blended constants
-        double beta = F1 * beta1 + (1.0 - F1) * beta2;
-        double alpha = F1 * alpha1 + (1.0 - F1) * alpha2;
-        double sigma_k = F1 * sigma_k1 + (1.0 - F1) * sigma_k2;
-        double sigma_omega = F1 * sigma_omega1 + (1.0 - F1) * sigma_omega2;
-
-        // Effective diffusivities
-        double nu_k = nu + sigma_k * nu_t_c;
-        double nu_omega_eff = nu + sigma_omega * nu_t_c;
-
-        // Production (limited)
-        double P_k = 2.0 * nu_t_c * S2;
-        double P_k_limit = 10.0 * beta_star * k_c * omega_c;
-        P_k = (P_k < P_k_limit) ? P_k : P_k_limit;
-
-        // Advection (upwind, using per-j y-spacing)
-        double adv_k, adv_omega;
-        if (u_c >= 0) {
-            adv_k = u_c * (k_c - k_ptr[idx_im]) / dx;
-            adv_omega = u_c * (omega_c - omega_ptr[idx_im]) / dx;
-        } else {
-            adv_k = u_c * (k_ptr[idx_ip] - k_c) / dx;
-            adv_omega = u_c * (omega_ptr[idx_ip] - omega_c) / dx;
-        }
-        if (v_c >= 0) {
-            adv_k += v_c * (k_c - k_ptr[idx_jm]) * inv_dy_s;
-            adv_omega += v_c * (omega_c - omega_ptr[idx_jm]) * inv_dy_s;
-        } else {
-            adv_k += v_c * (k_ptr[idx_jp] - k_c) * inv_dy_n;
-            adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) * inv_dy_n;
-        }
-
-        // Diffusion (non-uniform y-spacing)
-        // x-diffusion: standard uniform
-        double diff_k_x = nu_k * (k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2;
-        double diff_omega_x = nu_omega_eff * (omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2;
-        // y-diffusion: [(f[j+1]-f[j])/dyc_n - (f[j]-f[j-1])/dyc_s] / dyv
-        double diff_k_y = nu_k * ((k_ptr[idx_jp] - k_c) * inv_dy_n
-                                 - (k_c - k_ptr[idx_jm]) * inv_dy_s) * inv_dy_cell;
-        double diff_omega_y = nu_omega_eff * ((omega_ptr[idx_jp] - omega_c) * inv_dy_n
-                                             - (omega_c - omega_ptr[idx_jm]) * inv_dy_s) * inv_dy_cell;
-        double diff_k = diff_k_x + diff_k_y;
-        double diff_omega = diff_omega_x + diff_omega_y;
-
-        // Cross-diffusion term for omega equation
-        double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c
-                  * (dkdx * domegadx + dkdy * domegady);
-        CD = (CD > 0.0) ? CD : 0.0;
-
-        // Point-implicit: treat destruction terms implicitly for stability
-        double source_k = P_k + diff_k - adv_k;
-        double sink_k = beta_star * omega_c;
-        double source_omega = alpha * (omega_c / k_c) * P_k
-                            + diff_omega - adv_omega + CD;
-        double sink_omega = beta * omega_c;
-
-        double k_new = (k_c + dt * source_k) / (1.0 + dt * sink_k);
-        double omega_new = (omega_c + dt * source_omega) / (1.0 + dt * sink_omega);
-
-        // Clip
-        k_new = (k_new > k_min) ? k_new : k_min;
-        k_new = (k_new < k_max) ? k_new : k_max;
-        omega_new = (omega_new > omega_min) ? omega_new : omega_min;
-        omega_new = (omega_new < omega_max) ? omega_new : omega_max;
-
-        k_ptr[idx_c] = k_new;
-        omega_ptr[idx_c] = omega_new;
-    }
-    
-    // Update CPU with results from GPU
-    #pragma omp target update from(k_ptr[0:n_total], omega_ptr[0:n_total])
-    
-    // Copy back to fields
-    std::copy(k_flat_.begin(), k_flat_.end(), k.data().begin());
-    std::copy(omega_flat_.begin(), omega_flat_.end(), omega.data().begin());
-    
-    // Apply wall BCs on CPU (simpler for now)
-    apply_wall_bc_k(mesh, k);
-    apply_wall_bc_omega(mesh, omega, k);
-}
-#endif
 
 void SSTKOmegaTransport::update(
     const Mesh& mesh,

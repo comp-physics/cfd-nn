@@ -68,6 +68,7 @@ void test_cylinder_drag_re20() {
     // Cylinder IBM
     auto body = std::make_shared<CylinderBody>(cx, cy, radius);
     IBMForcing ibm(mesh, body);
+    ibm.set_accumulate_forces(true);
     solver.set_ibm_forcing(&ibm);
 
     CHECK(ibm.num_forcing_cells() > 0, "Must have IBM forcing cells");

@@ -654,8 +654,17 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 
     if (fft1d_poisson_solver_) {
         if (fft1d_compatible) {
-            // Update FFT1D solver BCs
-            fft1d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+            // Update FFT1D solver BCs — may fail if periodic_dir doesn't match
+            try {
+                fft1d_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+            } catch (const std::exception& e) {
+                std::cerr << "[Poisson] FFT1D BC update failed: " << e.what()
+                          << ". Disabling FFT1D.\n";
+                fft1d_poisson_solver_.reset();
+                if (selected_solver_ == PoissonSolverType::FFT1D) {
+                    selected_solver_ = PoissonSolverType::MG;
+                }
+            }
         } else if (selected_solver_ == PoissonSolverType::FFT1D) {
             // FFT1D was selected but BCs are now incompatible - switch to MG
             std::cerr << "[Poisson] Warning: FFT1D solver incompatible with BCs "
@@ -1226,6 +1235,7 @@ double RANSSolver::step() {
     // causes nu_avg = nu/2 at boundaries, leading to systematic energy loss.
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_) {
+        TIMED_SCOPE("nu_eff_computation");
         NVTX_PUSH("nu_eff_computation");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
@@ -1451,6 +1461,8 @@ double RANSSolver::step() {
     
     // 3. Compute provisional velocity u* (without pressure gradient) at face locations
     // u* = u^n + dt * (-conv + diff + body_force)
+    {
+    TIMED_SCOPE("predictor_step");
     NVTX_PUSH("predictor_step");
     
     // Get unified view (reuse Nx, Ny, Ng from function scope)
@@ -1736,10 +1748,12 @@ double RANSSolver::step() {
     }
 #endif
     NVTX_POP();  // End predictor_step
+    }
 
     // Implicit y-diffusion: solve (I - dt * nu_eff * d²/dy²) on velocity_star_
     if (config_.implicit_y_diffusion) {
-        implicit_y_diffusion_step(velocity_star_, dt);
+        TIMED_SCOPE("implicit_y_diffusion");
+        implicit_y_diffusion_step(velocity_star_, current_dt_);
     }
 
     // Apply recycling inlet BC BEFORE Poisson solve
@@ -1755,6 +1769,7 @@ double RANSSolver::step() {
     // Reset force accumulator here so both IBM calls (predictor + corrected velocity)
     // contribute: predictor captures viscous damping, second call captures pressure drag.
     if (ibm_) {
+        TIMED_SCOPE("ibm_forcing");
         ibm_->reset_force_accumulator();
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->apply_forcing_device(velocity_star_u_ptr_, velocity_star_v_ptr_,
@@ -1776,6 +1791,8 @@ double RANSSolver::step() {
 
     // Build RHS on GPU and subtract mean divergence to ensure solvability
     // GPU-RESIDENT OPTIMIZATION: Keep all data on device, only transfer scalars
+    {
+    TIMED_SCOPE("poisson_rhs_build");
     NVTX_PUSH("poisson_rhs_build");
     double mean_div = 0.0;
     
@@ -1926,11 +1943,13 @@ double RANSSolver::step() {
         }
     }
     NVTX_POP();  // End poisson_rhs_build
+    }
 
     // 4a-IBM. Mask solid cells in Poisson RHS (set to zero)
     // This prevents the Poisson solver from generating pressure gradients
     // inside the body, which would create spurious velocity corrections.
     if (ibm_) {
+        TIMED_SCOPE("ibm_rhs_mask");
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->mask_rhs_device(rhs_poisson_ptr_);
         } else {
@@ -2227,6 +2246,7 @@ double RANSSolver::step() {
     // inside the body. Pass current_dt_ so this call also contributes to force accumulator
     // (pressure drag u^{n+1} = u*_IBM - dt*grad(p) inside body captures pressure force).
     if (ibm_) {
+        TIMED_SCOPE("ibm_reforcing");
         if (gpu_ready_ && ibm_->is_gpu_ready()) {
             ibm_->apply_forcing_device(velocity_u_ptr_, velocity_v_ptr_,
                                        mesh_->is2D() ? nullptr : velocity_w_ptr_,
@@ -2237,7 +2257,10 @@ double RANSSolver::step() {
     }
 
     // 6. Apply boundary conditions
-    apply_velocity_bc();
+    {
+        TIMED_SCOPE("apply_bc");
+        apply_velocity_bc();
+    }
 
     // 7. Recycling inflow: extract from projected (div-free) flow for next step
     // Note: BC application was moved to BEFORE Poisson solve to maintain div-free
@@ -2411,6 +2434,9 @@ double RANSSolver::step() {
     // Note: iter_ is managed by the outer solve loop, don't increment here
 
     // Return max velocity change as convergence criterion (unified view-based)
+    double max_change = 0.0;
+    {
+    TIMED_SCOPE("residual_computation");
     NVTX_PUSH("residual_computation");
     auto v_res = get_solver_view();
 
@@ -2485,7 +2511,7 @@ double RANSSolver::step() {
     }
 #endif
 
-    double max_change = (max_du > max_dv) ? max_du : max_dv;
+    max_change = (max_du > max_dv) ? max_du : max_dv;
 
     // For 3D, also check w component
     if (!is_2d_res) {
@@ -2521,6 +2547,7 @@ double RANSSolver::step() {
     }
 
     NVTX_POP();  // End residual_computation
+    }
 
     // MPI: global max residual across all ranks
     if (decomp_) max_change = decomp_->allreduce_max(max_change);
