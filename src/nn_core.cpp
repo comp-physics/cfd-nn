@@ -351,7 +351,7 @@ void MLP::free_gpu() {
 #endif
 }
 
-void MLP::forward_batch_gpu(double* x_batch, double* y_batch, 
+void MLP::forward_batch_gpu(double* x_batch, double* y_batch,
                             int batch_size, [[maybe_unused]] double* workspace) const {
 #ifdef USE_GPU_OFFLOAD
     if (!gpu_ready_ || layers_.empty()) {
@@ -364,103 +364,115 @@ void MLP::forward_batch_gpu(double* x_batch, double* y_batch,
         }
         return;
     }
-    
-    // Get device pointers
+
+    // Device-resident pointers (mapped via sync_weights_to_gpu)
     const double* weights_ptr = all_weights_.data();
     const double* biases_ptr = all_biases_.data();
-    const int* w_offsets_ptr = weight_offsets_.data();
-    const int* b_offsets_ptr = bias_offsets_.data();
-    const int* dims_ptr = layer_dims_.data();
-    const int* act_ptr = activation_types_.data();
     const double* means_ptr = has_scaling_ ? input_means_.data() : nullptr;
     const double* stds_ptr = has_scaling_ ? input_stds_.data() : nullptr;
-    
-    const int n_layers = static_cast<int>(layers_.size());
+
     const int max_dim = max_layer_dim();
     const int in_dim = input_dim();
     const int out_dim_final = output_dim();
     const bool do_scaling = has_scaling_;
     const int scale_size = has_scaling_ ? static_cast<int>(input_means_.size()) : 0;
-    
-    // Process all samples in parallel on GPU
-    // Each sample gets its own workspace slice
-    // All pointers (x_batch, y_batch, workspace, weights_ptr, etc.) are already mapped via target enter data
-    // The target region will use the device copies automatically
+
+    // Workspace layout: two contiguous buffers for ping-pong
+    //   buf1 = workspace[0 : batch_size * max_dim]
+    //   buf2 = workspace[batch_size * max_dim : 2 * batch_size * max_dim]
+    // Within each buffer: sample b, neuron i at index [b * max_dim + i]
+    double* buf1 = workspace;
+    double* buf2 = workspace + static_cast<size_t>(batch_size) * max_dim;
+
+    // Step 1: Copy input features to buf1 with scaling
+    // Parallelized over all (sample, feature) pairs
+    const int total_input = batch_size * in_dim;
     #pragma omp target teams distribute parallel for
-    for (int b = 0; b < batch_size; ++b) {
-        // Each thread works on one sample
-        // Workspace layout: [sample0_buf1][sample0_buf2][sample1_buf1][sample1_buf2]...
-        double* buf1 = workspace + b * max_dim * 2;
-        double* buf2 = buf1 + max_dim;
-        
-        // Copy input to buf1 with scaling
-        const double* x = x_batch + b * in_dim;
-        for (int i = 0; i < in_dim; ++i) {
-            if (do_scaling && i < scale_size) {
-                buf1[i] = (x[i] - means_ptr[i]) / stds_ptr[i];
-            } else {
-                buf1[i] = x[i];
+    for (int idx = 0; idx < total_input; ++idx) {
+        const int b = idx / in_dim;
+        const int i = idx % in_dim;
+        double val = x_batch[b * in_dim + i];
+        if (do_scaling && i < scale_size) {
+            val = (val - means_ptr[i]) / stds_ptr[i];
+        }
+        buf1[b * max_dim + i] = val;
+    }
+
+    // Step 2: Layer-by-layer forward pass
+    // Each layer launches a separate GPU kernel parallelized over
+    // (sample, neuron) pairs — this is the key optimization over the old
+    // approach which only parallelized over samples with serial per-neuron work.
+    double* current = buf1;
+    double* next = buf2;
+
+    const int n_layers = static_cast<int>(layers_.size());
+    for (int l = 0; l < n_layers; ++l) {
+        // Read layer metadata on host (vectors exist on both host and device)
+        const int layer_in = layer_dims_[l * 2];
+        const int layer_out = layer_dims_[l * 2 + 1];
+        const int w_off = weight_offsets_[l];
+        const int b_off = bias_offsets_[l];
+        const int act_type = activation_types_[l];
+        const int total_work = batch_size * layer_out;
+
+        // Each thread computes one (sample, neuron) pair
+        // Thread ordering: adjacent threads have adjacent neuron index i
+        // (same sample b), giving coalesced output writes and broadcast input reads
+        #pragma omp target teams distribute parallel for
+        for (int idx = 0; idx < total_work; ++idx) {
+            const int b = idx / layer_out;
+            const int i = idx % layer_out;
+
+            // Dot product: y_i = W_i . x + b_i
+            double sum = biases_ptr[b_off + i];
+            const int w_row_off = w_off + i * layer_in;
+            const int x_off = b * max_dim;
+            for (int j = 0; j < layer_in; ++j) {
+                sum += weights_ptr[w_row_off + j] * current[x_off + j];
             }
-        }
-        
-        // Ping-pong buffers through layers
-        double* current = buf1;
-        double* next = buf2;
-        
-        for (int l = 0; l < n_layers; ++l) {
-            int layer_in = dims_ptr[l * 2];
-            int layer_out = dims_ptr[l * 2 + 1];
-            int w_off = w_offsets_ptr[l];
-            int b_off = b_offsets_ptr[l];
-            int act_type = act_ptr[l];
-            
-            // Matrix-vector multiply: next = W * current + b
-            for (int i = 0; i < layer_out; ++i) {
-                double sum = biases_ptr[b_off + i];
-                const double* W_row = weights_ptr + w_off + i * layer_in;
-                for (int j = 0; j < layer_in; ++j) {
-                    sum += W_row[j] * current[j];
+
+            // Apply activation inline
+            switch (act_type) {
+                case 0: // Linear
+                    break;
+                case 1: // ReLU
+                    sum = sum > 0.0 ? sum : 0.0;
+                    break;
+                case 2: // Tanh
+                    sum = tanh(sum);
+                    break;
+                case 3: // Sigmoid
+                    sum = 1.0 / (1.0 + exp(-sum));
+                    break;
+                case 4: // Swish
+                    sum = sum / (1.0 + exp(-sum));
+                    break;
+                case 5: { // GELU
+                    double c = 0.044715;
+                    double s3 = sum * sum * sum;
+                    sum = 0.5 * sum * (1.0 + tanh(sqrt(2.0/3.14159265358979323846) * (sum + c * s3)));
+                    break;
                 }
-                
-                // Apply activation inline
-                switch (act_type) {
-                    case 0: // Linear
-                        next[i] = sum;
-                        break;
-                    case 1: // ReLU
-                        next[i] = sum > 0.0 ? sum : 0.0;
-                        break;
-                    case 2: // Tanh
-                        next[i] = tanh(sum);
-                        break;
-                    case 3: // Sigmoid
-                        next[i] = 1.0 / (1.0 + exp(-sum));
-                        break;
-                    case 4: // Swish
-                        next[i] = sum / (1.0 + exp(-sum));
-                        break;
-                    case 5: { // GELU
-                        double c = 0.044715;
-                        double s3 = sum * sum * sum;
-                        next[i] = 0.5 * sum * (1.0 + tanh(sqrt(2.0/3.14159265358979323846) * (sum + c * s3)));
-                        break;
-                    }
-                    default:
-                        next[i] = sum;
-                }
+                default:
+                    break;
             }
-            
-            // Swap buffers
-            double* tmp = current;
-            current = next;
-            next = tmp;
+
+            next[b * max_dim + i] = sum;
         }
-        
-        // Copy output
-        double* y = y_batch + b * out_dim_final;
-        for (int i = 0; i < out_dim_final; ++i) {
-            y[i] = current[i];
-        }
+
+        // Swap buffers (host-side pointer swap, no GPU sync)
+        double* tmp = current;
+        current = next;
+        next = tmp;
+    }
+
+    // Step 3: Copy final activations to output buffer
+    const int total_output = batch_size * out_dim_final;
+    #pragma omp target teams distribute parallel for
+    for (int idx = 0; idx < total_output; ++idx) {
+        const int b = idx / out_dim_final;
+        const int i = idx % out_dim_final;
+        y_batch[b * out_dim_final + i] = current[b * max_dim + i];
     }
 #else
     // Host path
