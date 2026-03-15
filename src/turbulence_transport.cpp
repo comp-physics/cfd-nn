@@ -271,78 +271,40 @@ void SSTClosure::compute_nu_t(
     // Compute velocity gradients (MAC-aware for CPU/GPU consistency)
     compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     
-    const double a1         = constants_.a1;
-    const double beta_star  = constants_.beta_star;
-    const double k_min      = constants_.k_min;
-    const double omega_min  = constants_.omega_min;
-    const double nu_t_max   = 1000.0 * nu_;
-    const double nu         = nu_;
+    const double a1 = constants_.a1;
 
-    const int Nx     = mesh.Nx;
-    const int Ny     = mesh.Ny;
-    const int Ng     = mesh.Nghost;
-    const int stride = mesh.total_Nx();
-    const int n_cells = Nx * Ny;
-    [[maybe_unused]] const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
+    // NOTE: GPU path for SST closure is handled by the caller
+    // (SSTKOmegaTransport::update) which calls compute_sst_closure_gpu()
+    // with device_view pointers and map(present:). This CPU path is the
+    // fallback for non-GPU builds or custom closures.
 
-    // Flatten wall distances — mesh.wall_distance() is virtual, cannot call on GPU.
-    std::vector<double> wall_buf(total_size);
-    for (int j = 0; j < mesh.total_Ny(); ++j)
-        for (int i = 0; i < mesh.total_Nx(); ++i)
-            wall_buf[j * stride + i] = mesh.wall_distance(i, j);
+    // CPU path
+    using namespace numerics;
 
-    const double* k_ptr    = k.data().data();
-    const double* om_ptr   = omega.data().data();
-    const double* dudx_ptr = dudx_.data().data();
-    const double* dudy_ptr = dudy_.data().data();
-    const double* dvdx_ptr = dvdx_.data().data();
-    const double* dvdy_ptr = dvdy_.data().data();
-    const double* wall_ptr = wall_buf.data();
-    double*       nu_t_ptr = nu_t.data().data();
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            double k_loc = std::max(constants_.k_min, k(i, j));
+            double omega_loc = std::max(constants_.omega_min, omega(i, j));
+            double y_wall = mesh.wall_distance(i, j);
 
-    #pragma omp target teams distribute parallel for \
-        map(to: k_ptr[0:total_size], om_ptr[0:total_size], \
-                dudx_ptr[0:total_size], dudy_ptr[0:total_size], \
-                dvdx_ptr[0:total_size], dvdy_ptr[0:total_size], \
-                wall_ptr[0:total_size]) \
-        map(from: nu_t_ptr[0:total_size])
-    for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
-        const int i   = cell_idx % Nx + Ng;
-        const int j   = cell_idx / Nx + Ng;
-        const int idx = j * stride + i;
+            // Strain rate magnitude
+            double Sxx = dudx_(i, j);
+            double Syy = dvdy_(i, j);
+            double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
+            double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
 
-        double k_val    = k_ptr[idx];
-        double omega_val = om_ptr[idx];
-        const double y_wall = wall_ptr[idx];
+            // F2 blending function
+            double F2 = compute_F2(k_loc, omega_loc, y_wall);
 
-        k_val    = (k_val    > k_min)  ? k_val    : k_min;
-        omega_val = (omega_val > omega_min) ? omega_val : omega_min;
-        const double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
+            // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
+            double denom = std::max(a1 * omega_loc, S_mag * F2);
+            double nu_t_loc = safe_divide(a1 * k_loc, denom, K_FLOOR);
 
-        // Strain rate magnitude from MAC-grid gradients
-        const double Sxx = dudx_ptr[idx];
-        const double Syy = dvdy_ptr[idx];
-        const double Sxy = 0.5 * (dudy_ptr[idx] + dvdx_ptr[idx]);
-        const double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+            // Clipping
+            nu_t_loc = std::clamp(nu_t_loc, 0.0, 1000.0 * nu_);
 
-        // F2 blending: arg2 = max(2√k/(β*ωy), 500ν/(y²ω))
-        const double sqrt_k = sqrt(k_val);
-        const double t1  = 2.0 * sqrt_k / (beta_star * omega_val * y_safe);
-        const double t2  = 500.0 * nu / (y_safe * y_safe * omega_val);
-        const double arg2 = (t1 > t2) ? t1 : t2;
-        const double F2  = tanh(arg2 * arg2);
-
-        // ν_t = a₁k / max(a₁ω, S·F₂)
-        double denom = a1 * omega_val;
-        const double SF2 = S_mag * F2;
-        denom = (denom > SF2) ? denom : SF2;
-        denom = (denom > 1e-20) ? denom : 1e-20;
-
-        double nu_t_val = a1 * k_val / denom;
-        nu_t_val = (nu_t_val > 0.0)      ? nu_t_val : 0.0;
-        nu_t_val = (nu_t_val < nu_t_max) ? nu_t_val : nu_t_max;
-
-        nu_t_ptr[idx] = nu_t_val;
+            nu_t(i, j) = nu_t_loc;
+        }
     }
 }
 
