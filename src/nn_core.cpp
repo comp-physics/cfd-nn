@@ -377,17 +377,27 @@ void MLP::forward_batch_gpu(double* x_batch, double* y_batch,
     const bool do_scaling = has_scaling_;
     const int scale_size = has_scaling_ ? static_cast<int>(input_means_.size()) : 0;
 
+    // Sizes for map(present:) clauses — required by nvc++ (bare pointers fail silently)
+    [[maybe_unused]] const size_t w_size = all_weights_.size();
+    [[maybe_unused]] const size_t b_size = all_biases_.size();
+    [[maybe_unused]] const size_t buf_size = static_cast<size_t>(batch_size) * max_dim;
+    [[maybe_unused]] const size_t x_size = static_cast<size_t>(batch_size) * in_dim;
+    [[maybe_unused]] const size_t y_size = static_cast<size_t>(batch_size) * out_dim_final;
+    [[maybe_unused]] const size_t sc_size = has_scaling_ ? input_means_.size() : 0;
+
     // Workspace layout: two contiguous buffers for ping-pong
     //   buf1 = workspace[0 : batch_size * max_dim]
     //   buf2 = workspace[batch_size * max_dim : 2 * batch_size * max_dim]
     // Within each buffer: sample b, neuron i at index [b * max_dim + i]
     double* buf1 = workspace;
-    double* buf2 = workspace + static_cast<size_t>(batch_size) * max_dim;
+    double* buf2 = workspace + buf_size;
 
     // Step 1: Copy input features to buf1 with scaling
     // Parallelized over all (sample, feature) pairs
     const int total_input = batch_size * in_dim;
-    #pragma omp target teams distribute parallel for
+    #pragma omp target teams distribute parallel for \
+        map(present: x_batch[0:x_size], buf1[0:buf_size], \
+                     means_ptr[0:sc_size], stds_ptr[0:sc_size])
     for (int idx = 0; idx < total_input; ++idx) {
         const int b = idx / in_dim;
         const int i = idx % in_dim;
@@ -418,7 +428,9 @@ void MLP::forward_batch_gpu(double* x_batch, double* y_batch,
         // Each thread computes one (sample, neuron) pair
         // Thread ordering: adjacent threads have adjacent neuron index i
         // (same sample b), giving coalesced output writes and broadcast input reads
-        #pragma omp target teams distribute parallel for
+        #pragma omp target teams distribute parallel for \
+            map(present: weights_ptr[0:w_size], biases_ptr[0:b_size], \
+                         current[0:buf_size], next[0:buf_size])
         for (int idx = 0; idx < total_work; ++idx) {
             const int b = idx / layer_out;
             const int i = idx % layer_out;
@@ -468,7 +480,8 @@ void MLP::forward_batch_gpu(double* x_batch, double* y_batch,
 
     // Step 3: Copy final activations to output buffer
     const int total_output = batch_size * out_dim_final;
-    #pragma omp target teams distribute parallel for
+    #pragma omp target teams distribute parallel for \
+        map(present: current[0:buf_size], y_batch[0:y_size])
     for (int idx = 0; idx < total_output; ++idx) {
         const int b = idx / out_dim_final;
         const int i = idx % out_dim_final;
