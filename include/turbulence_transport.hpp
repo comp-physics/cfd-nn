@@ -280,11 +280,6 @@ private:
     void free_gpu_buffers();
     
     void ensure_initialized(const Mesh& mesh);
-    void compute_velocity_gradients(const Mesh& mesh, const VectorField& velocity);
-    void compute_blending_functions(const Mesh& mesh, const ScalarField& k, 
-                                    const ScalarField& omega);
-    void compute_production(const Mesh& mesh, const ScalarField& nu_t);
-    
     void apply_wall_bc_k(const Mesh& mesh, ScalarField& k);
     void apply_wall_bc_omega(const Mesh& mesh, ScalarField& omega, 
                              const ScalarField& k);
@@ -365,28 +360,6 @@ void compute_scalar_diffusion_gpu(
     double* diff,                           // Output diffusion term (interior only)
     int Nx, int Ny, int stride,
     double dx, double dy
-);
-
-/// Compute SST production term: P_k = min(2ν_t|S|², 10β*kω)
-void compute_production_gpu(
-    const double* dudx, const double* dudy,
-    const double* dvdx, const double* dvdy,
-    const double* nu_t, const double* k, const double* omega,
-    double* P_k,
-    int n_cells,
-    double beta_star
-);
-
-/// Compute SST blending functions F1, F2
-void compute_blending_functions_gpu(
-    const double* k, const double* omega,
-    const double* wall_distance,
-    const double* dudx, const double* dudy,
-    const double* dvdx, const double* dvdy,
-    double* F1, double* F2,
-    int n_cells,
-    double nu, double beta_star,
-    double sigma_omega2, double CD_omega_min
 );
 
 /// Full SST k-ω transport step (fused kernel)

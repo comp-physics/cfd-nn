@@ -118,34 +118,6 @@ void postprocess_nn_outputs_gpu(
     double nu_ref                          // Reference viscosity for clipping
 );
 
-// ============================================================================
-// GPU Kernel: Full TBNN pipeline (features + NN + postprocess)
-// ============================================================================
-// This combines all operations to minimize data transfers
-// ============================================================================
-void tbnn_full_pipeline_gpu(
-    // Velocity field (with ghost cells)
-    const double* u, const double* v,
-    // Turbulence quantities (interior only)
-    const double* k, const double* omega,
-    const double* wall_distance,
-    // NN weights (already on GPU via MLP::sync_weights_to_gpu)
-    const double* nn_weights, const double* nn_biases,
-    const int* weight_offsets, const int* bias_offsets,
-    const int* layer_dims, const int* activation_types,
-    int n_layers,
-    // Scaling parameters (can be nullptr)
-    const double* input_means, const double* input_stds,
-    int scale_size,
-    // Workspace (pre-allocated on GPU)
-    double* workspace,
-    // Output
-    double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,  // Can be nullptr
-    // Mesh parameters
-    int Nx, int Ny, double dx, double dy,
-    double nu, double delta
-);
 
 // ============================================================================
 // GPU Kernel: Boussinesq k-omega closure (ν_t = k/ω with limiters)
