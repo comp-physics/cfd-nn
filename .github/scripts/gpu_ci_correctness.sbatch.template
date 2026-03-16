@@ -42,7 +42,7 @@ export CXX=nvc++
 # Clean stale builds but preserve _deps (HYPRE cache from GitHub Actions)
 # Note: ci.sh uses build_{cpu,gpu}_hypre directories when HYPRE is enabled
 rm -rf build_ci_cpu_sanity
-for dir in build_cpu build_gpu build_gpu_mpi build_cpu_hypre build_gpu_hypre; do
+for dir in build_cpu build_gpu build_gpu build_cpu_hypre build_gpu_hypre; do
     if [ -d "$dir" ]; then
         find "$dir" -mindepth 1 -maxdepth 1 ! -name '_deps' -exec rm -rf {} +
         # Clean hypre-subbuild - contains CMakeCache.txt with absolute paths
@@ -242,21 +242,17 @@ echo ""
     echo "MPI: $(mpicc --version 2>&1 | head -1)"
     echo ""
 
-    mkdir -p build_gpu_mpi
-    cd build_gpu_mpi
-    rm -rf CMakeCache.txt CMakeFiles cmake_install.cmake Makefile lib*.a
-    cmake .. -DCMAKE_BUILD_TYPE=Release \
-             -DUSE_GPU_OFFLOAD=ON \
-             -DUSE_MPI=ON \
-             -DBUILD_TESTS=ON \
-             -DGPU_CC=${GPU_CC}
+    # Reuse the GPU build directory — it already has the correct CUDA/cublas/cufft
+    # configuration. Just reconfigure with MPI enabled.
+    cd build_gpu
+    cmake .. -DUSE_MPI=ON
     make -j8 test_decomposition test_halo_exchange
     cd ..
     echo ""
-    echo "GPU+MPI build: $(ls -lh build_gpu_mpi/test_decomposition 2>/dev/null || echo 'FAILED')"
+    echo "GPU+MPI build: $(ls -lh build_gpu/test_decomposition 2>/dev/null || echo 'FAILED')"
 } > "$GPU_MPI_LOG" 2>&1
 
-if [ ! -f build_gpu_mpi/test_decomposition ] || [ ! -f build_gpu_mpi/test_halo_exchange ]; then
+if [ ! -f build_gpu/test_decomposition ] || [ ! -f build_gpu/test_halo_exchange ]; then
     echo "[FAIL] GPU+MPI build failed — see $GPU_MPI_LOG"
     echo ""
     echo "=== Last 40 lines of GPU+MPI build log ==="
@@ -279,27 +275,27 @@ set +e
     echo ""
 
     echo "--- DecompositionTest (1 rank) ---"
-    ./build_gpu_mpi/test_decomposition
+    ./build_gpu/test_decomposition
     echo ""
 
     echo "--- HaloExchangeTest (1 rank) ---"
-    ./build_gpu_mpi/test_halo_exchange
+    ./build_gpu/test_halo_exchange
     echo ""
 
     echo "--- DecompositionTest (2 ranks) ---"
-    mpirun --oversubscribe -n 2 ./build_gpu_mpi/test_decomposition
+    mpirun --oversubscribe -n 2 ./build_gpu/test_decomposition
     echo ""
 
     echo "--- HaloExchangeTest (2 ranks) ---"
-    mpirun --oversubscribe -n 2 ./build_gpu_mpi/test_halo_exchange
+    mpirun --oversubscribe -n 2 ./build_gpu/test_halo_exchange
     echo ""
 
     echo "--- DecompositionTest (4 ranks) ---"
-    mpirun --oversubscribe -n 4 ./build_gpu_mpi/test_decomposition
+    mpirun --oversubscribe -n 4 ./build_gpu/test_decomposition
     echo ""
 
     echo "--- HaloExchangeTest (4 ranks) ---"
-    mpirun --oversubscribe -n 4 ./build_gpu_mpi/test_halo_exchange
+    mpirun --oversubscribe -n 4 ./build_gpu/test_halo_exchange
     echo ""
 } >> "$GPU_MPI_LOG" 2>&1
 MPI_EXIT_CODE=$?
