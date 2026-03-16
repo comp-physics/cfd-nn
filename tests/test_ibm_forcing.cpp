@@ -143,6 +143,7 @@ void test_force_computation() {
     // reset_force_accumulator() then apply_forcing(dt>0) accumulates forces.
     // compute_forces returns the cached values.
     const double dt = 0.001;
+    ibm.set_accumulate_forces(true);
     ibm.reset_force_accumulator();
     ibm.apply_forcing(vel, dt);
     auto [Fx, Fy, Fz] = ibm.compute_forces(vel, dt);

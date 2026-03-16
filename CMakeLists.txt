@@ -8,8 +8,10 @@ if(USE_GPU_OFFLOAD)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
         set(CMAKE_CUDA_STANDARD 17)
-        set(CMAKE_CUDA_ARCHITECTURES ${GPU_CC})
-        message(STATUS "CUDA enabled for custom kernels (arch: ${GPU_CC})")
+        # Convert comma-separated GPU_CC to semicolon-separated list for CMake
+        string(REPLACE "," ";" CUDA_ARCH_LIST "${GPU_CC}")
+        set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_LIST})
+        message(STATUS "CUDA enabled for custom kernels (arch: ${CUDA_ARCH_LIST})")
     endif()
 endif()
 
@@ -74,6 +76,7 @@ endif()
 # GPU profiling options
 option(GPU_PROFILE_TRANSFERS "Profile GPU data transfers (verbose output)" OFF)
 option(GPU_PROFILE_KERNELS "Enable NVTX markers for kernel profiling" OFF)
+option(USE_NVTX "Enable NVTX annotations on all TIMED_SCOPE regions for nsys profiling" OFF)
 
 # Suppress unknown pragma warnings in CPU builds (allows OpenMP pragmas to be ignored silently)
 option(SUPPRESS_UNKNOWN_OMP_PRAGMAS "Silence -Wunknown-pragmas for OpenMP pragmas in CPU build" ON)
@@ -243,7 +246,17 @@ if(USE_GPU_OFFLOAD)
                 message(STATUS "  GPU_CC fallback: ${GPU_CC}")
             endif()
         endif()
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=cc${GPU_CC}")
+        # Format GPU_CC for nvc++: "70,80,90" → "cc70,cc80,cc90"
+        string(REPLACE "," ";" GPU_CC_LIST "${GPU_CC}")
+        set(GPU_CC_FLAGS "")
+        foreach(cc IN LISTS GPU_CC_LIST)
+            if(GPU_CC_FLAGS)
+                set(GPU_CC_FLAGS "${GPU_CC_FLAGS},cc${cc}")
+            else()
+                set(GPU_CC_FLAGS "cc${cc}")
+            endif()
+        endforeach()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mp=gpu -gpu=${GPU_CC_FLAGS}")
         # Add -cuda for OpenMP+CUDA interoperability
         # Required for: hypre CUDA backend, FFT solver CUDA kernels
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -cuda")
@@ -344,7 +357,16 @@ if(USE_GPU_OFFLOAD)
         if(CUDA_KERNEL_SOURCES)
             target_sources(nn_cfd_core PRIVATE ${CUDA_KERNEL_SOURCES})
             set_source_files_properties(${CUDA_KERNEL_SOURCES} PROPERTIES LANGUAGE CUDA)
-            target_link_libraries(nn_cfd_core CUDA::cublas)
+            # cublas is needed by CUDA kernels; CUDAToolkit may come from HYPRE's
+            # find_package(CUDAToolkit REQUIRED) or from the FFT solver's QUIET find
+            if(NOT TARGET CUDA::cublas)
+                find_package(CUDAToolkit QUIET)
+            endif()
+            if(TARGET CUDA::cublas)
+                target_link_libraries(nn_cfd_core CUDA::cublas)
+            else()
+                message(WARNING "CUDA::cublas not found — CUDA kernels using cublas will fail to link")
+            endif()
             target_compile_definitions(nn_cfd_core PUBLIC USE_CUDA_KERNELS)
             message(STATUS "  Custom CUDA kernels added: ${CUDA_KERNEL_SOURCES}")
         endif()
@@ -418,7 +440,7 @@ endif()
 if(GPU_PROFILE_KERNELS)
     target_compile_definitions(nn_cfd_core PUBLIC GPU_PROFILE_KERNELS)
     message(STATUS "GPU kernel profiling with NVTX ENABLED")
-    
+
     # Add NVTX include paths for NVHPC compiler
     if(CMAKE_CXX_COMPILER_ID MATCHES "NVHPC|PGI")
         # NVHPC stores NVTX headers in include-stdpar
@@ -430,7 +452,7 @@ if(GPU_PROFILE_KERNELS)
             message(STATUS "  NVTX headers found: ${NVTX_INCLUDE_DIR}")
         endif()
     endif()
-    
+
     # Try to find NVTX library (optional)
     find_library(NVTX_LIB NAMES nvtx3 nvToolsExt PATHS ENV LD_LIBRARY_PATH)
     if(NVTX_LIB)
@@ -438,6 +460,35 @@ if(GPU_PROFILE_KERNELS)
         message(STATUS "  NVTX library found: ${NVTX_LIB}")
     else()
         message(STATUS "  NVTX library not found - using header-only implementation")
+    endif()
+endif()
+
+# NVTX annotations for nsys profiling (header-only, wraps all TIMED_SCOPE regions)
+if(USE_NVTX)
+    # Find NVTX3 headers from CUDAToolkit or system paths
+    find_package(CUDAToolkit QUIET)
+    set(NVTX_FOUND OFF)
+    if(CUDAToolkit_FOUND)
+        # CUDAToolkit include dirs contain nvtx3/
+        target_include_directories(nn_cfd_core PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
+        set(NVTX_FOUND ON)
+        message(STATUS "NVTX annotations ENABLED (via CUDAToolkit: ${CUDAToolkit_INCLUDE_DIRS})")
+    else()
+        # Fallback: search common system paths
+        find_path(NVTX3_INCLUDE_DIR nvtx3/nvToolsExt.h
+            PATHS /usr/local/cuda/include /opt/nvidia/nsight-systems/*/target-linux-x64/nvtx/include
+        )
+        if(NVTX3_INCLUDE_DIR)
+            target_include_directories(nn_cfd_core PUBLIC ${NVTX3_INCLUDE_DIR})
+            set(NVTX_FOUND ON)
+            message(STATUS "NVTX annotations ENABLED (system: ${NVTX3_INCLUDE_DIR})")
+        endif()
+    endif()
+
+    if(NVTX_FOUND)
+        target_compile_definitions(nn_cfd_core PUBLIC USE_NVTX)
+    else()
+        message(WARNING "USE_NVTX requested but nvtx3/nvToolsExt.h not found — disabling")
     endif()
 endif()
 
@@ -481,6 +532,12 @@ target_link_libraries(cylinder nn_cfd_core)
 
 add_executable(airfoil app/main_airfoil.cpp)
 target_link_libraries(airfoil nn_cfd_core)
+
+add_executable(step app/main_step.cpp)
+target_link_libraries(step nn_cfd_core)
+
+add_executable(hills app/main_hills.cpp)
+target_link_libraries(hills nn_cfd_core)
 
 # Tests (optional)
 option(BUILD_TESTS "Build unit tests" ON)
@@ -542,6 +599,8 @@ if(BUILD_TESTS)
     add_nncfd_test(test_mpi_channel TEST_NAME_SUFFIX MPIChannelTest LABELS fast)
     add_nncfd_test(test_mpi_poisson TEST_NAME_SUFFIX MPIPoissonTest LABELS fast)
     add_nncfd_test(test_ibm_sdf TEST_NAME_SUFFIX IBMSDFTest LABELS fast)
+    add_nncfd_test(test_ibm_step_sdf TEST_NAME_SUFFIX IBMStepSDFTest LABELS fast)
+    add_nncfd_test(test_ibm_hills_sdf TEST_NAME_SUFFIX IBMHillsSDFTest LABELS fast)
     add_nncfd_test(test_ibm_forcing TEST_NAME_SUFFIX IBMForcingTest LABELS fast)
     add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
     add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)

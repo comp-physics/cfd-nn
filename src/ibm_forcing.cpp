@@ -268,11 +268,8 @@ void IBMForcing::apply_forcing(VectorField& vel, double dt) {
     const bool is2D = mesh_->is2D();
     int Nz_eff = is2D ? 1 : Nz;
 
-    // Accumulate IBM momentum correction into force accumulator (ADD, don't reset).
-    // Call reset_force_accumulator() once per step before the first apply_forcing call.
-    // Both calls (predictor + corrected velocity) contribute: predictor captures viscous
-    // damping, corrected velocity captures pressure drag (u^{n+1} = u*_IBM - dt*grad(p)).
-    if (dt > 0.0) {
+    // Force accumulation: only when enabled (expensive loops over all cells).
+    if (accumulate_forces_ && dt > 0.0) {
         const double dx = mesh_->dx;
         const double dz_val = is2D ? 1.0 : mesh_->dz;
 
@@ -367,10 +364,9 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
     const int v_n = static_cast<int>(v_total_);
     const int w_n = static_cast<int>(w_total_);
 
-    // Accumulate IBM momentum correction (ADD to accumulator; caller resets via
-    // reset_force_accumulator() once per step). Both calls (predictor + corrected
-    // velocity) contribute so the total captures viscous + pressure drag.
-    if (dt > 0.0) {
+    // Force accumulation: only when enabled (expensive GPU reductions).
+    // Callers enable this at output intervals via set_accumulate_forces(true).
+    if (accumulate_forces_ && dt > 0.0) {
         [[maybe_unused]] const double dV = mesh_->dx * mesh_->dy * (mesh_->is2D() ? 1.0 : mesh_->dz);
         double Fx_acc = 0.0;
         double Fy_acc = 0.0;
@@ -401,6 +397,8 @@ void IBMForcing::apply_forcing_device(double* u_ptr, double* v_ptr, double* w_pt
         last_Fz_ += Fz_acc / dt * dV;
     }
 
+    // Weight multiply: u, v, w in separate kernels (cannot fuse — different sizes
+    // and memory regions, and OMP target requires contiguous iteration space)
     #pragma omp target teams distribute parallel for \
         map(present: u_ptr[0:u_n], wu[0:u_n])
     for (int i = 0; i < u_n; ++i) {

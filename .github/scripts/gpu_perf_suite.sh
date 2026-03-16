@@ -50,7 +50,7 @@ if [ -d _deps ]; then
     rm -rf _deps/hypre-subbuild 2>/dev/null || true
 fi
 # H200 requires cc90 (Hopper architecture)
-CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
+CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=70,80,89,90 2>&1 | tee cmake_config.log
 echo "=== Building ==="
 make -j8 channel duct
 mkdir -p output/gpu_perf

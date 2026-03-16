@@ -66,6 +66,7 @@ void test_naca_symmetry() {
     // NACA 0012 IBM
     auto body = std::make_shared<NACABody>(x_le, y_le, chord, aoa_rad, "0012");
     IBMForcing ibm(mesh, body);
+    ibm.set_accumulate_forces(true);
     solver.set_ibm_forcing(&ibm);
 
     CHECK(ibm.num_forcing_cells() > 0, "Must have IBM forcing cells for NACA 0012");

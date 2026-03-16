@@ -46,7 +46,7 @@ if [ ! -d "$WORKDIR/build_ci_gpu_correctness" ]; then
 
     echo "=== CMake Configuration (GPU-offload) ==="
     # H200 requires cc90 (Hopper architecture)
-    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=90 2>&1 | tee cmake_config.log
+    CC=nvc CXX=nvc++ cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_GPU_OFFLOAD=ON -DGPU_CC=70,80,89,90 2>&1 | tee cmake_config.log
     echo ""
     echo "=== Building (GPU-offload) ==="
     make -j8

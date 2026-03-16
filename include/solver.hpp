@@ -696,6 +696,17 @@ public:
     double get_effective_fy() const;
     double get_effective_fz() const;
 
+    /// Enable bulk velocity controller: adjusts fx_ each step to maintain target U_bulk
+    /// Standard approach for periodic-domain IBM simulations (Uhlmann 2005, Luchini 2016)
+    /// @param target Target bulk (streamwise-averaged) velocity
+    void enable_bulk_velocity_control(double target);
+
+    /// Disable bulk velocity controller
+    void disable_bulk_velocity_control() { bulk_velocity_control_ = false; }
+
+    /// Check if bulk velocity controller is enabled
+    bool is_bulk_velocity_control_active() const { return bulk_velocity_control_; }
+
     /// Get current simulation time
     double current_time() const { return current_time_; }
 
@@ -917,6 +928,10 @@ private:
     int step_count_ = 0;  // Track current step for guard
     double current_dt_;
     double current_time_ = 0.0;  // Simulation time (accumulated from dt)
+
+    // Bulk velocity controller (for periodic-domain IBM simulations)
+    bool bulk_velocity_control_ = false;
+    double bulk_velocity_target_ = 0.0;
 
     // Force ramping state (for startup stabilization)
     bool force_ramp_enabled_ = false;
