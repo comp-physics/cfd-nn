@@ -13,14 +13,14 @@ The pressure Poisson equation is solved every time step (or every RK stage) as p
 | **FFT1D** | Hybrid (1D FFT + 2D MG) | Yes | Non-periodic dirs | Exactly one periodic dir, 3D |
 | **HYPRE PFMG** | Iterative (semicoarsening MG) | Yes (CUDA) | All dirs | `USE_HYPRE` build |
 | **Native Multigrid** | Iterative (geometric MG) | Yes (OMP offload) | Yes (semi-coarsening) | Always available |
-| **SOR** | Iterative | No | Yes | Always available |
+| **FFT_MPI** | Direct (distributed FFT) | Yes | y only | `USE_MPI` build |
 
 ### Configuration
 
 Select a solver via config file or CLI:
 
 ```ini
-poisson_solver = auto       # auto, fft, fft2d, fft1d, hypre, mg, sor
+poisson_solver = auto       # auto, fft, fft2d, fft1d, hypre, mg, fft_mpi
 ```
 
 ```bash
@@ -352,15 +352,9 @@ The MG solver supports 4 convergence modes (any triggers exit):
 
 ---
 
-## SOR
+## Legacy SOR
 
-Simple Successive Over-Relaxation (Gauss-Seidel with relaxation factor). CPU-only, O(N^2) convergence.
-
-**Use cases:**
-- Validate other solvers against a known-correct reference
-- Small test problems where setup cost of other solvers is not justified
-
-**Not recommended for production** -- orders of magnitude slower than MG or FFT on any grid larger than ~16^3.
+A simple Successive Over-Relaxation solver exists in `poisson_solver.cpp` but is **not selectable** via `poisson_solver = ...` in config files. It serves only as a reference implementation used internally by the legacy `PoissonSolver` class. The relaxation parameter `poisson_omega` (default 1.8) applies to this class only.
 
 **Implementation files:**
 - `include/poisson_solver.hpp`
@@ -374,10 +368,10 @@ All Poisson solver parameters available in config files or via CLI (`--parameter
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `poisson_solver` | `auto` | Solver backend: `auto`, `fft`, `fft2d`, `fft1d`, `hypre`, `mg`, `sor` |
+| `poisson_solver` | `auto` | Solver backend: `auto`, `fft`, `fft2d`, `fft1d`, `hypre`, `mg`, `fft_mpi` |
 | `poisson_tol` | `1e-6` | Convergence tolerance (RHS-relative or initial-relative) |
-| `poisson_max_steps` | `10` | Maximum V-cycles or iterations per solve |
-| `poisson_fixed_cycles` | `0` | Fixed V-cycle count (0 = convergence-based; >0 enables CUDA Graphs) |
+| `poisson_max_vcycles` | `20` | Maximum V-cycles or iterations per solve |
+| `poisson_fixed_cycles` | `8` | Fixed V-cycle count (0 = convergence-based; >0 enables CUDA Graphs) |
 | `poisson_use_vcycle_graph` | `true` | Enable CUDA Graph capture for MG V-cycles (GPU builds) |
 | `poisson_chebyshev_degree` | `4` | Chebyshev polynomial degree per smoothing sweep (3-4 typical) |
 | `poisson_nu1` | `0` | Pre-smoothing sweeps (0 = auto: 3 for wall BCs) |
@@ -476,7 +470,7 @@ For pure Neumann or fully periodic problems, the Laplacian has a nullspace (cons
 ### Solver Does Not Converge
 
 1. Check that the RHS is compatible: `mean(div(u*))` should be near zero. If not, there may be a mass flux error in the boundary conditions.
-2. Increase `poisson_max_steps` (default 10). For poorly conditioned problems, 20-50 may be needed.
+2. Increase `poisson_max_vcycles` (default 20). For poorly conditioned problems, 30-50 may be needed.
 3. Verify grid quality: extreme stretching ratios (>1.2 between adjacent cells) can slow convergence.
 4. Try `poisson_solver = mg` explicitly to rule out solver-specific issues.
 

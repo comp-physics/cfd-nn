@@ -460,7 +460,7 @@ Low viscosity (nu < 0.01):
 
 ### DNS Channel Flow (No Turbulence Model)
 
-DNS resolves all turbulence scales directly without any model. See `docs/DNS_CHANNEL_GUIDE.md` for the full guide.
+DNS resolves all turbulence scales directly without any model. See the DNS Channel Flow section of `docs/SOLVER_GUIDE.md` for the full guide.
 
 **Target:** Re_tau = 180 channel (Moser, Kim & Mansour 1999)
 
@@ -591,7 +591,7 @@ The RANS validation:
 2. Compares u+ profiles against MKM DNS reference data
 3. Generates plots and a markdown summary report
 
-**Note:** RANS baseline.cfg has Re_tau=21 (not 180). Must override with `--nu 0.005556 --dp_dx -1.0`.
+**Note:** RANS baseline.cfg targets Re_tau=180 in its comment, but the actual parameters (`nu = 0.0006667`, `dp_dx = -0.0002`) yield Re_tau ~ 21. Override with `--nu 0.005556 --dp_dx -1.0` for Re_tau=180.
 
 ### Reference Data
 
@@ -663,10 +663,10 @@ Typical convergence:
 ### Numerical
 
 1. **Explicit time stepping** limits timestep for low viscosity
-   - **Mitigation:** Adaptive time stepping with directional CFL is implemented. See `docs/DNS_CHANNEL_GUIDE.md`.
+   - **Mitigation:** Adaptive time stepping with directional CFL is implemented. See the DNS Channel Flow section of `docs/SOLVER_GUIDE.md`.
 
 2. **Central differences require velocity filter for DNS stability**
-   - Second-order central schemes have zero numerical dissipation, causing grid-scale blow-up in DNS. The velocity filter (`filter_strength`, `filter_interval`) provides explicit diffusion but adds effective viscosity. See `docs/DNS_CHANNEL_GUIDE.md`.
+   - Second-order central schemes have zero numerical dissipation, causing grid-scale blow-up in DNS. The velocity filter (`filter_strength`, `filter_interval`) provides explicit diffusion but adds effective viscosity. See the DNS Channel Flow section of `docs/SOLVER_GUIDE.md`.
 
 3. **Filter-limited Re_tau in DNS**
    - The velocity filter prevents reaching the exact target Re_tau = 180. Best achieved: Re_tau ~ 278 with strength=0.03, interval=2. A higher-order or hybrid convective scheme would reduce filter requirements.

@@ -205,12 +205,16 @@ Output: 1 value (nu_t, with ReLU ensuring >= 0)
 
 ### Input Features
 
-1. **|S|** -- Strain rate magnitude: sqrt(2 S_ij S_ij)
-2. **|Omega|** -- Rotation rate magnitude: sqrt(2 Omega_ij Omega_ij)
-3. **y/delta** -- Normalized wall distance (y / channel half-height)
-4. **k** -- Turbulent kinetic energy from RANS
-5. **omega** -- Specific dissipation rate from RANS
-6. **|u|** -- Velocity magnitude: sqrt(u^2 + v^2)
+The C++ solver (`src/features.cpp`) computes these 6 features:
+
+1. **|S| * delta / u_ref** -- Normalized strain rate magnitude
+2. **|Omega| * delta / u_ref** -- Normalized rotation rate magnitude
+3. **y / delta** -- Normalized wall distance (y / channel half-height)
+4. **|Omega| / |S|** -- Strain-rotation ratio (0 if |S| < 1e-10)
+5. **|S| * delta^2 / nu** -- Local Reynolds number based on strain rate
+6. **|u| / u_ref** -- Normalized velocity magnitude
+
+**Note:** The training script (`scripts/train_mlp_mcconkey.py`) uses raw features (|S|, |Omega|, y, k, omega, |u|) from the dataset, while the C++ solver normalizes by reference scales. Ensure feature normalization files (`input_means.txt`, `input_stds.txt`) account for this difference.
 
 All features are z-score normalized: x_norm = (x - mean) / std.
 
@@ -371,11 +375,11 @@ Compare mean velocity profiles, Reynolds stress components, and friction coeffic
 
 #### `scalar_nut_v1` (6 features)
 
-Used by MLP models. Features: |S|, |Omega|, y/delta, k, omega, d_wall.
+Used by MLP models. C++ features: |S|*delta/u_ref, |Omega|*delta/u_ref, y/delta, |Omega|/|S|, |S|*delta^2/nu, |u|/u_ref.
 
 #### `tbnn_ling2016` (5 invariants)
 
-Used by TBNN models. Features: lambda_1 = tr(S~^2), lambda_2 = tr(Omega~^2), eta_1 = tr(S~^3), eta_2 = tr(Omega~^2 S~), q* = q/k.
+Used by TBNN models. C++ features: tr(S_norm^2), tr(Omega_norm^2), Sxx^2+Syy^2+2*Sxy^2, 2*Oxy^2, y_wall/delta.
 
 To add a new feature set: implement computation in `src/features.cpp`, add a new enum value, update the relevant turbulence model class, and document in `metadata.json`.
 
