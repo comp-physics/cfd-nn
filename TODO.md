@@ -59,13 +59,16 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 - **Fix**: Implement z-direction Inflow/Outflow BCs or document as unsupported.
 
 ### ~~GPU baseline test data all placeholders~~ ✅ DONE
-- Populated `tests/baselines/baseline_gpu.json` from RTX 6000 (cc75) GPU run.
-- 10 sections with real values. 3 legacy sections removed (no matching QOI emitters).
+- Populated `tests/baselines/baseline_gpu.json` from RTX 6000 GPU run.
+- 10 sections with real values. Single baseline works across all GPUs (cross-GPU QoI differences are ~1e-15).
 
 ### Recirculation spike detection is a stub
 - **File**: `src/solver_turbulence_diagnostics.cpp:546-568`
 - **Problem**: `has_recirculation_spike()` always returns `false`. Parameters `x_recycle` and `U_bulk` are unused (marked `/*param*/`). Used in validation but never detects anything.
 - **Fix**: Implement actual spectral spike detection or remove the function.
+
+### ~~GPU CI perf gates fail on slower GPUs~~ ✅ DONE
+- Perf suite now detects GPU compute capability and scales thresholds: V100 4x, A100/L40S 2x, H100/H200 1x.
 
 ---
 
@@ -125,10 +128,8 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 ## Low — Minor / Informational
 
-### Old recycling approach commented out
-- **File**: `src/solver_recycling.cpp:910-915`
-- **Problem**: Old inlet application code commented out with explanation ("creates divergence"). Replaced by current divergence-correcting approach.
-- **Fix**: Remove commented code block.
+### ~~Old recycling approach commented out~~ ✅ DONE
+- Removed commented-out old inlet application code from `solver_recycling.cpp`.
 
 ### NVHPC workarounds throughout codebase
 - **Files**: `src/solver_time.cpp` (8+), `src/solver.cpp` (4+), `src/solver_recycling.cpp`
@@ -149,12 +150,19 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 ## Summary
 
-| Severity | Count | Examples |
-|----------|-------|---------|
-| **Critical** | 5 | FFT_MPI not wired, checkpoint dead code, halo exchange unused |
-| **High** | 6 | DynamicSmag stub, O4 partial, AR1 filter skipped on GPU |
-| **Medium** | 11 | SOR dead code, FFT1D stretched-y, TBNN training stub |
-| **Low** | 4 | Commented code, compiler workarounds |
-| **Total** | **26** | |
+| Severity | Total | Done | Remaining |
+|----------|-------|------|-----------|
+| **Critical** | 5 | 1 | 4 |
+| **High** | 7 | 2 | 5 |
+| **Medium** | 11 | 1 | 10 |
+| **Low** | 4 | 1 | 3 |
+| **Total** | **27** | **5** | **22** |
+
+**Completed in this branch (`workontodo`)**:
+1. ✅ FFT_MPI wired into solver factory, diagnostics, GPU dispatch
+2. ✅ GPU baseline populated from RTX 6000 run (single baseline, GPU-independent QoI)
+3. ✅ SOR solver removed (370 LOC dead code + `poisson_omega` config)
+4. ✅ Old recycling commented code removed
+5. ✅ GPU CI perf gates scaled by compute capability (fixes V100 false failures)
 
 **Codebase health**: ~150 LOC of stubs/dead code out of ~43,000 LOC (0.35%). Core solver, turbulence models (14/15), IBM, Poisson solvers (5/6), and NN inference are production-quality. Main gaps are in MPI integration (infrastructure exists but not connected) and a few misleading feature claims (DynamicSmag, O4, checkpoint).
