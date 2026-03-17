@@ -3,7 +3,7 @@
 #SBATCH -A gts-sbryngelson3
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=4
-#SBATCH -p gpu-h200,gpu-h100,gpu-a100,gpu-l40s,gpu-v100
+#SBATCH -p gpu-h200,gpu-h100,gpu-a100,gpu-l40s
 #SBATCH -G 1
 #SBATCH --qos=embers
 #SBATCH -t 02:00:00

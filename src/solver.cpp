@@ -2295,16 +2295,16 @@ double RANSSolver::step() {
         double max_div = 0.0;
         double sum_div2 = 0.0;
 
-#ifdef USE_GPU_OFFLOAD
-        // GPU reduction - only copies 2 scalars back, not the full field
-        const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
+        // Single code path: pragma falls away in CPU builds
+        const double* div_ptr = div_velocity_ptr_;
+        [[maybe_unused]] const size_t div_sz = field_total_size_;
         if (is_2d) {
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(div_dev) reduction(max: max_div) reduction(+: sum_div2)
+                map(present: div_ptr[0:div_sz]) reduction(max: max_div) reduction(+: sum_div2)
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
                     int idx = j * stride + i;
-                    double d = div_dev[idx];
+                    double d = div_ptr[idx];
                     double abs_d = (d >= 0.0) ? d : -d;
                     if (abs_d > max_div) max_div = abs_d;
                     sum_div2 += d * d;
@@ -2312,12 +2312,12 @@ double RANSSolver::step() {
             }
         } else {
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(div_dev) reduction(max: max_div) reduction(+: sum_div2)
+                map(present: div_ptr[0:div_sz]) reduction(max: max_div) reduction(+: sum_div2)
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = k * plane_stride + j * stride + i;
-                        double d = div_dev[idx];
+                        double d = div_ptr[idx];
                         double abs_d = (d >= 0.0) ? d : -d;
                         if (abs_d > max_div) max_div = abs_d;
                         sum_div2 += d * d;
@@ -2325,28 +2325,6 @@ double RANSSolver::step() {
                 }
             }
         }
-#else
-        // CPU fallback
-        if (is_2d) {
-            for (int j = Ng; j < Ny + Ng; ++j) {
-                for (int i = Ng; i < Nx + Ng; ++i) {
-                    double d = div_velocity_(i, j);
-                    max_div = std::max(max_div, std::abs(d));
-                    sum_div2 += d * d;
-                }
-            }
-        } else {
-            for (int k = Ng; k < Nz + Ng; ++k) {
-                for (int j = Ng; j < Ny + Ng; ++j) {
-                    for (int i = Ng; i < Nx + Ng; ++i) {
-                        double d = div_velocity_(i, j, k);
-                        max_div = std::max(max_div, std::abs(d));
-                        sum_div2 += d * d;
-                    }
-                }
-            }
-        }
-#endif
 
         poisson_stats_.div_after_proj_linf = max_div;
         poisson_stats_.div_after_proj_l2 = std::sqrt(sum_div2);
@@ -3123,30 +3101,6 @@ void RANSSolver::check_for_nan_inf(int step) const {
         std::cerr << "  - Boundary conditions inconsistent\n";
         std::cerr << "========================================\n";
         throw std::runtime_error("NaN/Inf detected in solution fields");
-    }
-}
-
-void RANSSolver::print_velocity_profile(double x_loc) const {
-    // Find i index closest to x_loc
-    int i_loc = mesh_->i_begin();
-    double min_dist = std::abs(mesh_->x(i_loc) - x_loc);
-    
-    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-        double dist = std::abs(mesh_->x(i) - x_loc);
-        if (dist < min_dist) {
-            min_dist = dist;
-            i_loc = i;
-        }
-    }
-    
-    std::cout << "\nVelocity profile at x = " << mesh_->x(i_loc) << ":\n";
-    std::cout << std::setw(12) << "y" << std::setw(12) << "u" << std::setw(12) << "v" << "\n";
-    
-    for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-        std::cout << std::setw(12) << std::fixed << std::setprecision(4) << mesh_->y(j)
-                  << std::setw(12) << velocity_.u(i_loc, j)
-                  << std::setw(12) << velocity_.v(i_loc, j)
-                  << "\n";
     }
 }
 

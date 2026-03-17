@@ -261,9 +261,6 @@ public:
     /// Call this after compute_convective_term() to get meaningful results
     double compute_convective_ke_production() const;
     
-    /// Print velocity profile at x = x_loc
-    void print_velocity_profile(double x_loc = 0.0) const;
-    
     /// Write fields to files
     void write_fields(const std::string& prefix) const;
     
