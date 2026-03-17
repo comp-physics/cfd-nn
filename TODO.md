@@ -58,10 +58,9 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 - **Problem**: Inflow/Outflow BCs in z-direction throw `std::runtime_error`. Only Periodic and NoSlip are supported.
 - **Fix**: Implement z-direction Inflow/Outflow BCs or document as unsupported.
 
-### GPU baseline test data all placeholders
-- **File**: `tests/baselines/baseline_gpu.json`
-- **Problem**: All 30+ metrics are `"TODO"` strings (`"TODO: populate from GPU build"`). GPU CI regression testing has no baselines to compare against.
-- **Fix**: Run GPU test suite once and populate with actual values.
+### ~~GPU baseline test data all placeholders~~ ✅ DONE
+- Populated `tests/baselines/baseline_gpu.json` from RTX 6000 (cc75) GPU run.
+- 10 sections with real values. 3 legacy sections removed (no matching QOI emitters).
 
 ### Recirculation spike detection is a stub
 - **File**: `src/solver_turbulence_diagnostics.cpp:546-568`
