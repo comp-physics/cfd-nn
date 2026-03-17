@@ -1063,7 +1063,25 @@ log_info "Metrics written to: $METRICS_FILE"
 # ============================================================================
 
 BASELINE_DIR="${PROJECT_DIR}/tests/baselines"
-BASELINE_FILE="${BASELINE_DIR}/baseline_${BUILD_TYPE}.json"
+
+# GPU baseline selection: try GPU-specific baseline first, fall back to generic
+# CI can land on any GPU (H200/H100/A100/L40S/V100/RTX6000), and different GPUs
+# produce slightly different floating-point results due to FMA/reduction ordering.
+# Per-GPU baselines eliminate false warnings from cross-GPU comparison.
+if [ "${BUILD_TYPE}" = "gpu" ] && command -v nvidia-smi &>/dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
+    if [ -n "$GPU_NAME" ] && [ -f "${BASELINE_DIR}/baseline_gpu_${GPU_NAME}.json" ]; then
+        BASELINE_FILE="${BASELINE_DIR}/baseline_gpu_${GPU_NAME}.json"
+        log_info "Using GPU-specific baseline: baseline_gpu_${GPU_NAME}.json"
+    else
+        BASELINE_FILE="${BASELINE_DIR}/baseline_${BUILD_TYPE}.json"
+        if [ -n "$GPU_NAME" ]; then
+            log_info "No GPU-specific baseline for '${GPU_NAME}', using generic baseline_gpu.json"
+        fi
+    fi
+else
+    BASELINE_FILE="${BASELINE_DIR}/baseline_${BUILD_TYPE}.json"
+fi
 
 # Helper: compare value against ratio threshold AND absolute ceiling
 # Usage: check_threshold <name> <current> <baseline> <ratio_thresh> <abs_ceiling> <higher_is_worse>

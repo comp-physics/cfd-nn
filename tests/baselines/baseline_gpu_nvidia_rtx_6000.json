@@ -1,0 +1,69 @@
+{
+  "schema_version": "2",
+  "build_type": "gpu",
+  "created": "2026-03-17",
+  "commit": "28093ca",
+  "poiseuille_steady": {
+    "relL2_profile": 0.0003342165159279051,
+    "U_bulk_err": 0.0004881861688944,
+    "tau_w_err": 7.818537386961033e-08,
+    "tau_bot": 0.04999999609073131,
+    "tau_top": -0.04999999609073131,
+    "shear_symmetry_err": 0.0,
+    "momentum_balance_err": 7.818537386961033e-08,
+    "iters_to_steady": 15661,
+    "converged": true
+  },
+  "energy_budget": {
+    "budget_err": 0.03050716312389974,
+    "budget_err_grad": 0.004936076045420843,
+    "power_in": 0.0003004979148554579,
+    "dissipation_op": 0.006086098869311015,
+    "dissipation_grad": 0.005871447347711772,
+    "dissipation_mismatch": 0.0352691479728693,
+    "dKEdt": -0.005599931343461304
+  },
+  "projection_effectiveness": {
+    "div_before_max": 1.977604917762072,
+    "div_before_L2": 6.273096981091878,
+    "div_after_max": 2.055361289566746e-11,
+    "div_after_L2": 4.190475263988261e-11,
+    "reduction_ratio_max": 1.03931845592934e-11,
+    "reduction_ratio_L2": 6.680074095170259e-12
+  },
+  "advection_rotation": {
+    "relL2_error": 0.7994069219889773,
+    "centroid_error_dx": 0.1618322497167318,
+    "steps": 671
+  },
+  "poiseuille_refine": {
+    "err32": 0.001328255529230736,
+    "err64": 0.0002984935557860499,
+    "rate": 2.153761028021399
+  },
+  "rans_frame_invariance": {
+    "max_scalar_err": 6.797283824235653e-16,
+    "max_tensor_err": 5.628436663465912e-16,
+    "max_aniso_err": 8.103047683173726e-16
+  },
+  "galilean_invariance": {
+    "ke_rel_diff": 0.06794184554629941,
+    "u_rel_L2": 1.502662074870725
+  },
+  "projection_galilean": {
+    "U0": 2.0,
+    "V0": 1.5,
+    "div_A_max": 8.881784197001252e-16,
+    "div_B_max": 3.441691376337985e-15,
+    "mean_err": 6.052466811041503e-10,
+    "u_rel_L2": 4.76795958118714e-06
+  },
+  "galilean_breakdown": {
+    "div_initial_rest": 4.107825191113079e-15,
+    "div_initial_offset": 5.551115123125783e-15,
+    "div_adv_rest": 0.01936312808415352,
+    "div_adv_offset": 1.430192861124531,
+    "div_step_rest": 6.198406371504817e-12,
+    "div_step_offset": 7.90360832336745e-12
+  }
+}

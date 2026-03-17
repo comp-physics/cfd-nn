@@ -143,6 +143,16 @@ with open(out_file, "w") as f:
 print(f"Wrote {out_file} with {len([k for k in baseline if isinstance(baseline[k], dict)])} sections")
 PYEOF
 
+# Also create a GPU-specific baseline (e.g., baseline_gpu_nvidia_rtx_6000.json)
+# CI uses GPU-specific baselines when available to avoid false warnings
+# from cross-GPU floating-point differences.
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
+if [ -n "$GPU_NAME" ]; then
+    GPU_BASELINE="${PROJ_DIR}/tests/baselines/baseline_gpu_${GPU_NAME}.json"
+    cp "${PROJ_DIR}/tests/baselines/baseline_gpu.json" "$GPU_BASELINE"
+    echo "=== Also saved GPU-specific baseline: baseline_gpu_${GPU_NAME}.json ==="
+fi
+
 echo ""
 echo "=== Generated baseline ==="
 cat "${PROJ_DIR}/tests/baselines/baseline_gpu.json"
