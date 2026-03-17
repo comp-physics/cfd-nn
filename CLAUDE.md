@@ -2,9 +2,9 @@
 
 ## What This Project Is
 
-An incompressible Navier-Stokes solver in C++17 with pluggable turbulence closures (algebraic, transport, EARSM, neural network) and GPU acceleration via OpenMP target offload. Uses a fractional-step projection method on a staggered MAC grid.
+An incompressible Navier-Stokes solver in C++17 with pluggable turbulence closures (algebraic, transport, EARSM, LES SGS, neural network) and GPU acceleration via OpenMP target offload. Uses a fractional-step projection method on a staggered MAC grid with immersed boundary method (IBM) for complex geometries.
 
-Primary binary: `build/channel`. Config files are INI-style `.cfg` passed via `--config file.cfg`.
+Binaries: `channel`, `cylinder`, `airfoil`, `hills`, `step`, `duct`, `taylor_green_3d`. Config files are INI-style `.cfg` passed via `--config file.cfg`.
 
 ## Build
 
@@ -25,7 +25,7 @@ cmake .. -DCMAKE_CXX_COMPILER=nvc++ -DUSE_GPU_OFFLOAD=ON -DCMAKE_BUILD_TYPE=Rele
 make -j$(nproc)
 ```
 
-GPU compute capability: `-DGPU_CC=90` for H200, `-DGPU_CC=80` for A100.
+GPU compute capability: `-DGPU_CC=90` for H100/H200, `-DGPU_CC=80` for A100, `-DGPU_CC=89` for L40S. Multi-arch: `-DGPU_CC=70,80,89,90`.
 
 ## Tests
 
@@ -38,7 +38,7 @@ ctest -L gpu                              # GPU-specific tests
 
 **Before pushing**: Run `./test_before_ci.sh` (CPU CI) and `./test_before_ci_gpu.sh` (GPU CI).
 
-CI runs: 2 CPU configurations (Ubuntu Debug + Release), a dedicated `mpi-test` job (builds with `USE_MPI=ON`, runs tests at 1/2/4 ranks), plus GPU validation on H200 (Phase 3: full test suite; Phase 4: GPU+MPI build and test).
+CI runs: 2 CPU configurations (Ubuntu Debug + Release), a dedicated `mpi-test` job (builds with `USE_MPI=ON`, runs tests at 1/2/4 ranks), plus GPU validation on any available GPU (H200/H100/A100/L40S) with multi-arch build (cc70,80,89,90) — Phase 3: full test suite; Phase 4: GPU+MPI build and test.
 
 MPI build:
 ```bash
@@ -52,7 +52,7 @@ mpirun --oversubscribe -n 4 ./test_decomposition
 ## Project Layout
 
 ```
-app/            Main executables (main_channel.cpp, main_duct.cpp, etc.)
+app/            Main executables (channel, cylinder, airfoil, hills, step, duct, taylor_green_3d)
 include/        Headers (.hpp)
 src/            Implementation (.cpp)
 tests/          Unit/integration tests + benchmarks
@@ -72,7 +72,7 @@ Key source files:
 - `turbulence_les.cpp` — LES SGS models with fused GPU kernels (Smagorinsky, WALE, Vreman, Sigma, Dynamic Smagorinsky)
 - `turbulence_*.cpp` — Other turbulence closure implementations (RANS, EARSM, NN)
 - `ibm_forcing.cpp` — Immersed boundary method (direct forcing, GPU weight arrays)
-- `ibm_geometry.cpp` — IBM body definitions (cylinder, sphere, signed distance)
+- `ibm_geometry.cpp` — IBM body definitions (cylinder, sphere, NACA airfoil, step, periodic hills)
 - `decomposition.cpp` — MPI z-slab domain decomposition (`Decomposition` class)
 - `halo_exchange.cpp` — MPI halo exchange for z-direction (CPU + GPU-direct)
 - `config.cpp` — Config file parser and CLI args
@@ -356,10 +356,13 @@ stats.assert_gpu_dominant(0.7, "solver test");         // throws if < 70%
 
 ## Performance Notes
 
-- Poisson solver dominates: ~83% of step time at 8.4M cells with MG
+- Poisson solver dominates: ~24-30% of step time for RANS grids (L40S), ~83% at 8.4M cells with MG
+- SST/EARSM turbulence: ~8% of step time (transport + closure). SST is ~2.5x komega cost (F1/F2 blending)
 - LES SGS models add ~4% overhead (fused GPU kernels compute gradient + nu_sgs in one pass)
 - IBM forcing adds <0.3% overhead (element-wise weight multiply, sub-millisecond)
+- NN-MLP inference: ~0.2ms/step (L40S). NN-TBNN: ~0.8ms/step cylinder, ~3.8ms/step airfoil
 - Memory transfers are negligible (<3%) — persistent mapping works well
+- FFT Poisson: 22-32x faster than MG for stretched grids on GPU
 - 3D scaling: memory grows as O(N^3)
 - Benchmark: `bench_les_ibm_gpu [Nx] [Ny] [Nz] [nsteps]` (see `docs/LES_IBM_GPU_GUIDE.md`)
 

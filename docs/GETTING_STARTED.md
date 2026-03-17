@@ -113,6 +113,8 @@ All executables require `--config file.cfg`. Positional arguments are **not** su
 | `taylor_green_3d` | Taylor-Green vortex (3D, periodic) |
 | `cylinder` | Flow past cylinder (IBM) |
 | `airfoil` | Flow past airfoil (IBM) |
+| `step` | Backward-facing step (IBM) |
+| `hills` | Periodic hills (IBM) |
 
 ### CLI Overrides
 
@@ -164,7 +166,7 @@ Specify any 2 of `Re`, `nu`, `dp_dx` — the third is computed automatically.
 | `max_steps` | 10000 | Maximum number of time steps |
 | `T_final` | -1 | Final physical time (-1 = use max_steps instead) |
 | `tol` | 1e-6 | Steady-state convergence tolerance (0 = disable) |
-| `integrator` | euler | Time integrator: `euler`, `rk2`, `rk3` |
+| `time_integrator` | euler | Time integrator: `euler`, `rk2`, `rk3` |
 
 ### Turbulence Model
 
@@ -185,7 +187,7 @@ Available turbulence models:
 | `gep` | RANS | Gene Expression Programming algebraic |
 | `nn_mlp` | RANS | Neural network scalar eddy viscosity |
 | `nn_tbnn` | RANS | Tensor basis neural network |
-| `k_omega` | RANS | Standard k-omega (Wilcox 1988) |
+| `komega` | RANS | Standard k-omega (Wilcox 1988) |
 | `sst` | RANS | SST k-omega transport |
 | `earsm_wj` | RANS | SST + Wallin-Johansson EARSM |
 | `earsm_gs` | RANS | SST + Gatski-Speziale EARSM |
@@ -200,10 +202,9 @@ Available turbulence models:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `scheme` | central | Convective scheme: `central`, `upwind`, `skew`, `upwind2` |
+| `convective_scheme` | central | Convective scheme: `central`, `upwind`, `skew`, `upwind2` |
 | `space_order` | 2 | Spatial discretization order (2 or 4) |
 | `simulation_mode` | steady | Mode: `steady` or `unsteady` |
-| `mode` | steady | Alias for `simulation_mode` |
 
 ### Velocity Filter
 
@@ -384,7 +385,7 @@ Set `OMP_TARGET_OFFLOAD=MANDATORY` to force GPU execution (will error if no GPU)
 ### Simulation blows up (NaN)
 - Reduce `CFL_max` (try 0.15-0.3)
 - Enable velocity filter: `filter_strength = 0.03`, `filter_interval = 2`
-- Use `integrator = rk3` and `scheme = skew` for DNS/LES
+- Use `time_integrator = rk3` and `convective_scheme = skew` for DNS/LES
 - Add `dt_safety = 0.85` for extra headroom
 
 ### Poisson solver slow
@@ -397,8 +398,8 @@ Config comments must be on their own line. Do NOT put inline comments:
 ```ini
 # Correct:
 # Use central scheme
-scheme = central
+convective_scheme = central
 
 # WRONG (parsed as "central  # comment"):
-scheme = central  # comment
+convective_scheme = central  # comment
 ```

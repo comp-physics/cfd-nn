@@ -16,7 +16,7 @@ CFD-NN is an incompressible Navier-Stokes solver in C++17 with GPU acceleration 
 - Staggered MAC grid: u at x-faces, v at y-faces, w at z-faces, p at cell centers
 - Periodic, no-slip wall, and recycling inflow boundary conditions
 - Adaptive time stepping with directional CFL constraints
-- 6 Poisson solver backends: FFT, FFT2D, FFT1D, HYPRE, Multigrid, SOR
+- 6 Poisson solver backends: FFT, FFT2D, FFT1D, HYPRE, Multigrid, FFT_MPI
 - Immersed boundary method (direct forcing)
 - CUDA Graph optimization for multigrid V-cycles
 
@@ -296,9 +296,7 @@ Run with: `./channel --config dns_channel.cfg`
 
 **Known limitations:**
 - Filter-limited Re_tau: best achieved ~278 with strength=0.03, interval=2
-- Explicit time integration only (no implicit diffusion)
 - Second-order spatial discretization only
-- Single GPU (no MPI domain decomposition)
 - No restart/checkpoint capability
 
 ---
@@ -309,11 +307,11 @@ Five LES models are available, all GPU-accelerated with fused kernels:
 
 | Model | Config value | Description |
 |-------|-------------|-------------|
-| Smagorinsky | `smagorinsky` | Classical eddy viscosity, Cs = 0.1 default |
+| Smagorinsky | `smagorinsky` | Classical eddy viscosity, Cs = 0.17 default |
 | WALE | `wale` | Wall-adapting, vanishes at walls naturally |
 | Vreman | `vreman` | Based on first invariant of velocity gradient |
 | Sigma | `sigma` | Based on singular values of gradient tensor |
-| Dynamic Smagorinsky | `dynamic_smag` | Germano procedure for local Cs |
+| Dynamic Smagorinsky | `dynamic_smagorinsky` | Germano procedure for local Cs |
 
 ### GPU Architecture
 
@@ -427,6 +425,9 @@ Three sets of weight arrays exist at staggered locations:
 
 - `CylinderBody` -- infinite cylinder with signed distance function
 - `SphereBody` -- sphere with signed distance function
+- `NACABody` -- NACA airfoil with signed distance function
+- `StepBody` -- backward-facing step
+- `PeriodicHillBody` -- periodic hill geometry
 
 ### GPU Design
 

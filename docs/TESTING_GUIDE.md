@@ -2,7 +2,7 @@
 
 How to run, understand, and extend the NN-CFD test suite.
 
-For validation *results*, see [`VALIDATION.md`](VALIDATION.md).
+For validation *results*, see [`TESTING_AND_VALIDATION.md`](TESTING_AND_VALIDATION.md).
 
 ---
 
