@@ -245,9 +245,8 @@ void Config::load(const std::string& filename) {
     // Poisson
     poisson_tol = get_double("poisson_tol", poisson_tol);
     poisson_max_vcycles = get_int("poisson_max_vcycles", poisson_max_vcycles);
-    poisson_omega = get_double("poisson_omega", poisson_omega);
 
-    // Parse poisson_solver: auto, fft, fft2d, fft1d, hypre, mg
+    // Parse poisson_solver: auto, fft, fft2d, fft1d, hypre, mg, fft_mpi
     std::string solver_str = get_string("poisson_solver", "auto");
     if (solver_str == "auto") {
         poisson_solver = PoissonSolverType::Auto;

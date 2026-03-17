@@ -271,7 +271,6 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     , velocity_rk_(mesh)          // RK work buffer for multi-stage methods
     , dudx_(mesh), dudy_(mesh), dvdx_(mesh), dvdy_(mesh)  // Gradient scratch for turbulence
     , wall_distance_(mesh)        // Precomputed wall distance field
-    , poisson_solver_(mesh)
     , mg_poisson_solver_(mesh)
     , use_multigrid_(true)
     , current_dt_(config.dt)
@@ -305,8 +304,6 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         }
     }
     // Set up Poisson solver BCs (periodic in x, Neumann in y for channel)
-    poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                           PoissonBC::Neumann, PoissonBC::Neumann);
     mg_poisson_solver_.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                               PoissonBC::Neumann, PoissonBC::Neumann);
 
@@ -502,6 +499,32 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         selected_solver_ = PoissonSolverType::MG;
         selection_reason_ ="fallback from HYPRE: not built";
 #endif
+    } else if (requested == PoissonSolverType::FFT_MPI) {
+#if defined(USE_MPI) && defined(USE_FFT_POISSON)
+        if (decomp_) {
+            try {
+                fft_mpi_poisson_solver_ = std::make_unique<FFTMPIPoissonSolver>(mesh, *decomp_);
+                fft_mpi_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                                 PoissonBC::Neumann, PoissonBC::Neumann,
+                                                 PoissonBC::Periodic, PoissonBC::Periodic);
+                fft_mpi_poisson_solver_->set_space_order(config_.space_order);
+                selected_solver_ = PoissonSolverType::FFT_MPI;
+                selection_reason_ = "explicit: user requested FFT_MPI";
+            } catch (const std::exception& e) {
+                std::cerr << "[Solver] Warning: FFT_MPI init failed: " << e.what() << ". Using MG.\n";
+                selected_solver_ = PoissonSolverType::MG;
+                selection_reason_ = "fallback from FFT_MPI: init failed";
+            }
+        } else {
+            std::cerr << "[Solver] Warning: FFT_MPI requested but no MPI decomposition set. Using MG.\n";
+            selected_solver_ = PoissonSolverType::MG;
+            selection_reason_ = "fallback from FFT_MPI: no decomposition";
+        }
+#else
+        std::cerr << "[Solver] Warning: FFT_MPI requested but USE_MPI/USE_FFT_POISSON not built. Using MG.\n";
+        selected_solver_ = PoissonSolverType::MG;
+        selection_reason_ = "fallback from FFT_MPI: not built";
+#endif
     } else {
         // PoissonSolverType::MG
         selected_solver_ = PoissonSolverType::MG;
@@ -512,6 +535,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     const char* solver_name = (selected_solver_ == PoissonSolverType::FFT) ? "FFT" :
                               (selected_solver_ == PoissonSolverType::FFT2D) ? "FFT2D" :
                               (selected_solver_ == PoissonSolverType::FFT1D) ? "FFT1D" :
+                              (selected_solver_ == PoissonSolverType::FFT_MPI) ? "FFT_MPI" :
                               (selected_solver_ == PoissonSolverType::HYPRE) ? "HYPRE" : "MG";
     std::cout << "[Poisson] selected=" << solver_name
               << " reason=" << selection_reason_
@@ -606,7 +630,6 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 
     // Set BCs on Poisson solvers - use 3D overload for 3D meshes
     if (!mesh_->is2D()) {
-        poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
         mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
@@ -614,7 +637,6 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
         }
 #endif
     } else {
-        poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
         mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi);
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
@@ -883,6 +905,9 @@ void RANSSolver::print_solver_info() const {
         case PoissonSolverType::HYPRE:
             std::cout << "HYPRE PFMG (geometric multigrid)";
             break;
+        case PoissonSolverType::FFT_MPI:
+            std::cout << "FFT_MPI (distributed FFT with MPI pencil transpose)";
+            break;
         case PoissonSolverType::MG:
             std::cout << "Native Multigrid (V-cycle)";
             break;
@@ -897,7 +922,7 @@ void RANSSolver::print_solver_info() const {
     if (selected_solver_ == PoissonSolverType::MG) {
         std::cout << "MG params: tol=" << config_.poisson_tol
                   << ", max_vcycles=" << config_.poisson_max_vcycles
-                  << ", omega=" << config_.poisson_omega << "\n";
+                  << "\n";
     }
 
     // Boundary conditions
@@ -2060,7 +2085,7 @@ double RANSSolver::step() {
         //   3. ||r||/||r0|| ≤ tol_rel  (initial-residual relative, backup)
         PoissonConfig pcfg;
         pcfg.max_vcycles = config_.poisson_max_vcycles;
-        pcfg.omega = config_.poisson_omega;
+        pcfg.omega = 1.5;  // Legacy parameter, unused by MG/FFT
         pcfg.verbose = false;  // Disable per-cycle output (too verbose)
 
         // New robust tolerance parameters (preferred for MG)
@@ -2134,6 +2159,18 @@ double RANSSolver::step() {
                     }
                     break;
 #endif
+#if defined(USE_MPI) && defined(USE_FFT_POISSON)
+                case PoissonSolverType::FFT_MPI:
+                    if (fft_mpi_poisson_solver_) {
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using FFT_MPI solve_device() (distributed FFT)\n";
+                            solver_logged = true;
+                        }
+                        cycles = fft_mpi_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        final_residual = fft_mpi_poisson_solver_->residual();
+                    }
+                    break;
+#endif
 #ifdef USE_HYPRE
                 case PoissonSolverType::HYPRE:
                     if (hypre_poisson_solver_) {
@@ -2178,13 +2215,8 @@ double RANSSolver::step() {
                 std::cout << "[Poisson] Using HOST path\n";
                 solver_logged = true;
             }
-            if (use_multigrid_) {
-                cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-                final_residual = mg_poisson_solver_.residual();
-            } else {
-                cycles = poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-                final_residual = poisson_solver_.residual();
-            }
+            cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+            final_residual = mg_poisson_solver_.residual();
         }
 
         // Populate PoissonStats for external access (always, not just when diagnostics enabled)

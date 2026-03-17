@@ -145,7 +145,6 @@ struct Config {
     // Poisson solver
     double poisson_tol = 1e-6;       ///< Legacy absolute tolerance (deprecated)
     int poisson_max_vcycles = 20;    ///< Max MG V-cycles per Poisson solve
-    double poisson_omega = 1.8;      ///< SOR relaxation parameter
     double poisson_abs_tol_floor = 1e-8; ///< Absolute tolerance floor to prevent over-solving near steady state
     PoissonSolverType poisson_solver = PoissonSolverType::Auto;  ///< Poisson solver selection
 

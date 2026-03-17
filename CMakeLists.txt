@@ -293,7 +293,6 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(LIB_SOURCES
     src/mesh.cpp
     src/fields.cpp
-    src/poisson_solver.cpp
     src/poisson_solver_multigrid.cpp
     src/solver.cpp
     src/solver_vtk.cpp

@@ -226,15 +226,10 @@ void RANSSolver::initialize_recycling_inflow() {
 
         // Update all Poisson solvers with new BCs
         if (!mesh_->is2D()) {
-            poisson_solver_.set_bc(poisson_bc_x_lo_, poisson_bc_x_hi_,
-                                   poisson_bc_y_lo_, poisson_bc_y_hi_,
-                                   poisson_bc_z_lo_, poisson_bc_z_hi_);
             mg_poisson_solver_.set_bc(poisson_bc_x_lo_, poisson_bc_x_hi_,
                                       poisson_bc_y_lo_, poisson_bc_y_hi_,
                                       poisson_bc_z_lo_, poisson_bc_z_hi_);
         } else {
-            poisson_solver_.set_bc(poisson_bc_x_lo_, poisson_bc_x_hi_,
-                                   poisson_bc_y_lo_, poisson_bc_y_hi_);
             mg_poisson_solver_.set_bc(poisson_bc_x_lo_, poisson_bc_x_hi_,
                                       poisson_bc_y_lo_, poisson_bc_y_hi_);
         }
@@ -907,15 +902,9 @@ void RANSSolver::apply_recycling_inlet_bc() {
     // The recycled u is used only in the ghost cells below to support the convective stencil
     // This allows the projection to adjust u_inlet to satisfy local continuity
 
-    // Old approach (creates divergence):
-    // Apply u at inlet (i = Ng, first interior x-face)
-    // const int n_u = Ny * Nz;
-    // for (int idx = 0; idx < n_u; ++idx) {
-    //     ... u_ptr[dst_idx] = in_u[idx];
-    // }
-
-    // New approach: Skip setting u at inlet face - only set ghost cells (done below)
-    const int n_u = Ny * Nz;  // Still need for ghost cell loop
+    // Skip setting u at inlet face — let projection determine it for div-free.
+    // Only set ghost cells (done below) to support the convective stencil.
+    const int n_u = Ny * Nz;
 
     // Apply v at inlet (i = Ng)
     const int n_v = (Ny + 1) * Nz;

@@ -6,10 +6,8 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 ## Critical — Broken or Stub Code
 
-### FFT_MPI Poisson solver never instantiated
-- **Files**: `src/solver.cpp` (factory, lines 396-527), `src/poisson_solver_fft_mpi.cpp`
-- **Problem**: `PoissonSolverType::FFT_MPI` is defined in the enum (`config.hpp:54`), parseable from config/CLI (`config.cpp:265,406`), and has a 594-line implementation file — but the solver factory has **no case** for it. Selecting `--poisson fft_mpi` silently falls back to MG.
-- **Fix**: Add `case PoissonSolverType::FFT_MPI:` to solver factory in `solver.cpp`.
+### ~~FFT_MPI Poisson solver never instantiated~~ ✅ DONE
+- Wired FFT_MPI into solver factory, diagnostics, and GPU dispatch.
 
 ### FFT_MPI GPU path unimplemented
 - **File**: `src/poisson_solver_fft_mpi.cpp:133-134`
@@ -74,10 +72,9 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 ## Medium — Incomplete but Functional
 
-### SOR solver is orphaned dead code
-- **File**: `src/poisson_solver.cpp` (370 LOC)
-- **Problem**: Fully implemented red-black SOR solver, but not in the factory, not selectable via config, and has no tests. `PoissonSolverType` enum has no SOR value. The `poisson_omega` config parameter is parsed but never reaches the SOR code.
-- **Fix**: Either integrate into factory with `PoissonSolverType::SOR` or remove the dead code.
+### ~~SOR solver is orphaned dead code~~ ✅ DONE
+- Deleted `src/poisson_solver.cpp` (370 LOC) and removed `PoissonSolver` class.
+- Removed `poisson_omega` from config. Migrated tests to `MultigridPoissonSolver`.
 
 ### FFT1D cannot handle stretched y-grids
 - **File**: `include/poisson_solver_fft1d.hpp:156`
