@@ -144,16 +144,34 @@ run_gpu_perf_info() {
     fi
 }
 
+# Detect GPU and scale thresholds accordingly.
+# CI can land on any GPU: V100 (cc70), A100 (cc80), L40S (cc89), H100/H200 (cc90).
+# Base thresholds are for H100/H200; scale up for slower GPUs.
+GPU_CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+GPU_CC=${GPU_CC:-90}  # default to H100/H200 if detection fails
+case "$GPU_CC" in
+    70) PERF_SCALE=4 ;;   # V100: ~4x slower than H100
+    80) PERF_SCALE=2 ;;   # A100: ~2x slower than H100
+    89) PERF_SCALE=2 ;;   # L40S: ~2x slower than H100
+    90) PERF_SCALE=1 ;;   # H100/H200: baseline
+    *)  PERF_SCALE=4 ;;   # unknown: use conservative scale
+esac
+echo "GPU compute capability: ${GPU_CC}, perf threshold scale: ${PERF_SCALE}x"
+echo ""
+
+# Scale a base threshold by the GPU performance factor
+scale_threshold() { echo "$1 $PERF_SCALE" | awk '{printf "%.1f", $1 * $2}'; }
+
 echo ""
 echo "==================================================================="
 echo "  Running Performance Gates"
 echo "==================================================================="
 
 # Gate 1: 3D Duct with FFT1D (64x64x64, 25 steps with 5 warmup = 20 timed)
-# GPU FFT1D should be very fast - expect < 3 ms/step
-# This validates cuFFT + cuSPARSE tridiagonal solve is working
+# GPU FFT1D should be very fast - base threshold 3 ms/step (H100)
+THRESH=$(scale_threshold 3.0)
 run_gpu_perf_gate "duct_fft1d_64" \
-    duct 3.0 \
+    duct "$THRESH" \
     --Nx 64 --Ny 64 --Nz 64 \
     --nu 0.001 --dp_dx -1.0 \
     --max_steps 25 --warmup_steps 5 \
@@ -162,9 +180,10 @@ run_gpu_perf_gate "duct_fft1d_64" \
     --no_postprocess --no_write_fields --verbose || true
 
 # Gate 2: Larger 3D duct (128x64x64) to verify scaling
-# Expect < 8 ms/step with FFT1D
+# Base threshold 8 ms/step (H100)
+THRESH=$(scale_threshold 8.0)
 run_gpu_perf_gate "duct_fft1d_128" \
-    duct 8.0 \
+    duct "$THRESH" \
     --Nx 128 --Ny 64 --Nz 64 \
     --nu 0.001 --dp_dx -1.0 \
     --max_steps 25 --warmup_steps 5 \
@@ -173,9 +192,10 @@ run_gpu_perf_gate "duct_fft1d_128" \
     --no_postprocess --no_write_fields --verbose || true
 
 # Gate 3: 2D channel with MG at larger size (512x512)
-# At 512x512, GPU MG should beat CPU - expect < 100 ms/step
+# Base threshold 100 ms/step (H100)
+THRESH=$(scale_threshold 100.0)
 run_gpu_perf_gate "channel_mg_512" \
-    channel 100.0 \
+    channel "$THRESH" \
     --Nx 512 --Ny 512 \
     --nu 0.001 --dp_dx -0.0001 \
     --max_steps 25 --warmup_steps 5 \
