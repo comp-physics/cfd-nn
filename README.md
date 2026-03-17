@@ -67,7 +67,7 @@ make -j4
 
 ## Governing Equations
 
-The solver implements the **incompressible Reynolds-Averaged Navier-Stokes (RANS) equations**:
+The solver implements the **incompressible Navier-Stokes equations** (used for DNS, LES, and RANS):
 
 ### Momentum Equation
 
@@ -221,7 +221,7 @@ FFT (3D) → FFT2D (2D) → FFT1D (3D partial-periodic) → HYPRE → Multigrid
 |--------|------------|----------|--------------|
 | **FFT** | O(N log N) | 3D channel flows | Periodic x AND z |
 | **FFT2D** | O(N log N) | 2D channel flows | 2D mesh, periodic x |
-| **FFT1D** | O(N log N) + 2D solve | 3D duct flows | Periodic x OR z (one only) |
+| **FFT1D** | O(N log N) + 2D solve | 3D duct flows | Periodic x OR z (one only), uniform y |
 | **HYPRE PFMG** | O(N) | Stretched grids, GPU | `USE_HYPRE` build flag |
 | **Multigrid** | O(N) | General fallback, stretched grids | Always available |
 | **SOR** | O(N²) | Testing/debugging | Always available |
@@ -668,7 +668,7 @@ Turbulent inflow BC from downstream recycle plane. See [`docs/RECYCLING_INFLOW_G
 | `--poisson` value | Description | Requirements |
 |-------------------|-------------|--------------|
 | `auto` | Auto-select best solver | (default) |
-| `fft` | 2D FFT in x-z + tridiagonal in y | 3D, periodic x AND z, uniform grid |
+| `fft` | 2D FFT in x-z + tridiagonal in y | 3D, periodic x AND z |
 | `fft2d` | 1D FFT in x + tridiagonal in y | 2D only (Nz=1), periodic x |
 | `fft1d` | 1D FFT + 2D Helmholtz per mode | 3D, periodic x OR z (one only) |
 | `hypre` | HYPRE PFMG GPU-accelerated | Requires `USE_HYPRE` build |
