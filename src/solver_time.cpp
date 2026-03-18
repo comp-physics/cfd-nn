@@ -6,6 +6,7 @@
 
 #include "solver.hpp"
 #include "solver_time_kernels.hpp"
+#include "halo_exchange.hpp"
 #include "gpu_utils.hpp"
 #include <cmath>
 #include <algorithm>
@@ -943,6 +944,19 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
                   << "  residual=" << mg_res << "  vcycles=" << vcycles << "\n";
     }
 
+    // Exchange pressure correction halos before velocity correction (MPI)
+#ifdef USE_MPI
+    if (decomp_ && halo_exchange_) {
+        const int p_stride_h = Nx + 2 * Ng;
+        const int p_plane_h = p_stride_h * (Ny + 2 * Ng);
+        if (gpu_ready_) {
+            halo_exchange_->exchange_device(pressure_corr_ptr_, p_stride_h, p_plane_h);
+        } else {
+            halo_exchange_->exchange(pressure_correction_.data().data(), p_stride_h, p_plane_h);
+        }
+    }
+#endif
+
     // Copy velocity_ to velocity_star_ for correct_velocity()
     // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
     const int u_stride = Nx + 2 * Ng + 1;
@@ -970,6 +984,30 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     }
 
     correct_velocity();
+
+    // Exchange velocity halos after correction, before BC application (MPI)
+#ifdef USE_MPI
+    if (decomp_ && halo_exchange_) {
+        const int u_plane_h = u_stride * (Ny + 2 * Ng);
+        const int v_plane_h = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride_h = Nx + 2 * Ng;
+        const int w_plane_h = w_stride_h * (Ny + 2 * Ng);
+        if (gpu_ready_) {
+            halo_exchange_->exchange_device(velocity_u_ptr_, u_stride, u_plane_h);
+            halo_exchange_->exchange_device(velocity_v_ptr_, v_stride, v_plane_h);
+            if (!mesh_->is2D()) {
+                halo_exchange_->exchange_device(velocity_w_ptr_, w_stride_h, w_plane_h);
+            }
+        } else {
+            halo_exchange_->exchange(velocity_.u_data().data(), u_stride, u_plane_h);
+            halo_exchange_->exchange(velocity_.v_data().data(), v_stride, v_plane_h);
+            if (!mesh_->is2D()) {
+                halo_exchange_->exchange(velocity_.w_data().data(), w_stride_h, w_plane_h);
+            }
+        }
+    }
+#endif
+
     apply_velocity_bc();
     // Note: correct_velocity() already updates pressure internally
 

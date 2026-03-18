@@ -2264,7 +2264,26 @@ double RANSSolver::step() {
 
         NVTX_POP();
     }
-    
+
+    // 4b. Exchange pressure correction halos across MPI boundaries
+    // Must happen after Poisson solve and before velocity correction so that
+    // correct_velocity() can compute dp/dz at inter-rank boundaries.
+#ifdef USE_MPI
+    if (decomp_ && halo_exchange_) {
+        TIMED_SCOPE("halo_pressure_corr");
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int Ng = mesh_->Nghost;
+        const int p_stride = Nx + 2 * Ng;
+        const int p_plane_stride = p_stride * (Ny + 2 * Ng);
+        if (gpu_ready_) {
+            halo_exchange_->exchange_device(pressure_corr_ptr_, p_stride, p_plane_stride);
+        } else {
+            halo_exchange_->exchange(pressure_correction_.data().data(), p_stride, p_plane_stride);
+        }
+    }
+#endif
+
     // 5. Correct velocity and pressure
     {
         TIMED_SCOPE("velocity_correction");
@@ -2287,6 +2306,37 @@ double RANSSolver::step() {
             ibm_->apply_forcing(velocity_, current_dt_);
         }
     }
+
+    // 5c. Exchange velocity halos across MPI boundaries
+    // Must happen after velocity correction (and IBM re-forcing) so that
+    // neighboring ranks have consistent ghost cell data before BC application.
+#ifdef USE_MPI
+    if (decomp_ && halo_exchange_) {
+        TIMED_SCOPE("halo_velocity");
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int Ng = mesh_->Nghost;
+        const int u_stride = Nx + 2 * Ng + 1;
+        const int u_plane  = u_stride * (Ny + 2 * Ng);
+        const int v_stride = Nx + 2 * Ng;
+        const int v_plane  = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane  = w_stride * (Ny + 2 * Ng);
+        if (gpu_ready_) {
+            halo_exchange_->exchange_device(velocity_u_ptr_, u_stride, u_plane);
+            halo_exchange_->exchange_device(velocity_v_ptr_, v_stride, v_plane);
+            if (!mesh_->is2D()) {
+                halo_exchange_->exchange_device(velocity_w_ptr_, w_stride, w_plane);
+            }
+        } else {
+            halo_exchange_->exchange(velocity_.u_data().data(), u_stride, u_plane);
+            halo_exchange_->exchange(velocity_.v_data().data(), v_stride, v_plane);
+            if (!mesh_->is2D()) {
+                halo_exchange_->exchange(velocity_.w_data().data(), w_stride, w_plane);
+            }
+        }
+    }
+#endif
 
     // 6. Apply boundary conditions
     {

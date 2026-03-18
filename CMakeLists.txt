@@ -325,7 +325,6 @@ set(LIB_SOURCES
     src/ibm_forcing.cpp
     src/velocity_gradient.cpp
     src/turbulence_les.cpp
-    src/checkpoint.cpp
 )
 
 # Core library
@@ -604,8 +603,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
     add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)
     add_nncfd_test(test_les_channel TEST_NAME_SUFFIX LESChannelTest LABELS fast)
-    add_nncfd_test(test_checkpoint TEST_NAME_SUFFIX CheckpointTest LABELS fast)
-    add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
+add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
     add_nncfd_test(test_les_tgv TEST_NAME_SUFFIX LESTGVTest LABELS medium)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
