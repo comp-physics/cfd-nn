@@ -7,10 +7,10 @@ jobs:
   gpu-tests:
     runs-on: self-hosted
     timeout-minutes: 240
-    # Serialize per branch (keeps parallelism across branches)
+    # Cancel previous runs on same branch when new commit is pushed
     concurrency:
-      group: gpu-ci-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: false
+      group: gpu-ci-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
     - uses: actions/checkout@v4
