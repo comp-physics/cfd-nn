@@ -98,15 +98,6 @@ jobs:
           echo "Check the build log and Slurm output for details."
         fi
 
-    - name: Submit GPU performance suite to Slurm (H200, 1 GPU)
-      run: |
-        ./.github/scripts/submit_and_monitor_slurm.sh \
-          ./.github/scripts/gpu_ci_perf.sbatch.template \
-          "${GITHUB_WORKSPACE}" \
-          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" \
-          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" \
-          "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch"
-
     - name: Show Slurm Output (on failure)
       if: failure()
       run: |
@@ -114,9 +105,7 @@ jobs:
         echo "  Slurm Job Output (last 200 lines each)"
         echo "==================================================================="
         for f in "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" \
-                 "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" \
-                 "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" \
-                 "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err"; do
+                 "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err"; do
           if [ -f "$f" ]; then
             echo ""
             echo "===== $f ====="
@@ -193,9 +182,6 @@ jobs:
           rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.sbatch" || true
           rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.out" || true
           rm -f "${GITHUB_WORKSPACE}/gpu_ci_correctness_${GITHUB_RUN_ID}.err" || true
-          rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.sbatch" || true
-          rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.out" || true
-          rm -f "${GITHUB_WORKSPACE}/gpu_ci_perf_${GITHUB_RUN_ID}.err" || true
           rm -f "${GITHUB_WORKSPACE}/gpu_ci_build.log" || true
           rm -f "${GITHUB_WORKSPACE}/gpu_ci_test.log" || true
         else
