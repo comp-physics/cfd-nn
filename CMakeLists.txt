@@ -797,6 +797,9 @@ add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS med
     # MPI energy: allreduce_sum gives correct global kinetic energy
     add_nncfd_test(test_mpi_energy_allreduce TEST_NAME_SUFFIX MPIEnergyAllreduceTest LABELS "fast")
 
+    # MPI halo exchange during stepping: decomposed mesh with actual halo exchange
+    add_nncfd_test(test_mpi_halo_step TEST_NAME_SUFFIX MPIHaloStepTest LABELS "fast")
+
     # MPI IBM: 3D IBM cylinder flow with z-slab decomposition
     add_nncfd_test(test_mpi_ibm_3d TEST_NAME_SUFFIX MPIIBMTest3D LABELS "slow")
 
