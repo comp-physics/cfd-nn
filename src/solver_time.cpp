@@ -946,7 +946,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 
     // Exchange pressure correction halos before velocity correction (MPI)
 #ifdef USE_MPI
-    if (decomp_ && halo_exchange_ && decomp_->nz_local() < decomp_->nz_global()) {
+    if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
         const int p_stride_h = Nx + 2 * Ng;
         const int p_plane_h = p_stride_h * (Ny + 2 * Ng);
         if (gpu_ready_) {
@@ -987,7 +987,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 
     // Exchange velocity halos after correction, before BC application (MPI)
 #ifdef USE_MPI
-    if (decomp_ && halo_exchange_ && decomp_->nz_local() < decomp_->nz_global()) {
+    if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
         const int u_plane_h = u_stride * (Ny + 2 * Ng);
         const int v_plane_h = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_h = Nx + 2 * Ng;
