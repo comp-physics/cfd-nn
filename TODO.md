@@ -1,29 +1,15 @@
 # TODO — Codebase Audit (March 2026)
 
-Comprehensive list of broken, stub, incomplete, and missing features identified by deep codebase audit. Organized by severity.
+Comprehensive list of broken, stub, incomplete, and missing features identified by deep codebase audit. Organized by severity. Completed items moved to the bottom.
 
 ---
 
 ## Critical — Broken or Stub Code
 
-### ~~FFT_MPI Poisson solver never instantiated~~ ✅ DONE
-- Wired FFT_MPI into solver factory, diagnostics, and GPU dispatch.
-
 ### FFT_MPI GPU distributed path unimplemented
 - **File**: `src/poisson_solver_fft_mpi.cpp:141-144`
 - **Problem**: Multi-rank `solve_device()` throws. Single-rank GPU works (delegates to serial FFTPoissonSolver). Single-rank CPU path correctly errors since FFTPoissonSolver has no CPU solve.
 - **Fix**: Implement distributed GPU FFT using CUDA-aware MPI or cuFFTMp.
-
-### ~~FFT_MPI CPU single-rank path throws~~ ✅ DONE
-- Improved error message: FFTPoissonSolver only has `solve_device()`, so CPU single-rank is architecturally impossible without a new CPU FFT backend. GPU single-rank already works.
-
-### ~~HDF5 checkpoint is dead code~~ ✅ DONE
-- Deleted `include/checkpoint.hpp`, `src/checkpoint.cpp`, `tests/test_checkpoint.cpp` (442 LOC total). Was never called from solver.
-
-### ~~MPI halo exchange never called in solver loop~~ ✅ DONE
-- Wired into Euler path (`solver.cpp`) and RK path (`solver_time.cpp`).
-- Two exchange points: pressure correction halos after Poisson, velocity halos after correction.
-- Guarded by `#ifdef USE_MPI` + nullptr checks. Both CPU and GPU paths.
 
 ---
 
@@ -31,116 +17,112 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 ### DynamicSmagorinsky is a stub (hardcoded Cs=0.17)
 - **File**: `src/turbulence_les.cpp:555-572`
-- **Problem**: No Germano procedure implemented. `update()` unconditionally sets `Cs_dyn_ = 0.17` (identical to static Smagorinsky). Prints a one-time stderr warning, then runs silently with the constant coefficient. Header claims "Germano procedure with test filter" but code does not compute test-filtered quantities, Germano identity, or Lilly optimization.
+- **Problem**: No Germano procedure implemented. `update()` unconditionally sets `Cs_dyn_ = 0.17` (identical to static Smagorinsky). Prints a one-time stderr warning, then runs silently with the constant coefficient.
 - **Fix**: Implement the Germano procedure (test filter at 2Δ, compute L_ij, solve for Cs²) or rename model to make it clear this is a constant-Cs fallback.
 
 ### 4th-order spatial discretization is partial
 - **File**: `src/solver_operators.cpp`
 - **Problem**:
-  - O4 convection: **3D only**. 2D prints a one-time warning and falls back to O2 (line 765-773).
-  - O4 diffusion: **Not implemented at all**. Only O2 stencils exist (lines 883-1015).
-  - O4 divergence: 3D uniform-y only. Stretched-y falls back to O2 (line 1099).
-  - O4 pressure gradient: 3D only. 2D not implemented, no warning.
-  - MG Poisson: Explicitly errors if O4 requested (solver.cpp:522).
-- **Fix**: Implement O4 diffusion kernels, O4 2D advection, and stretched-y O4 divergence — or document `space_order=4` as 3D-convection-only.
+  - O4 convection: **3D only**. 2D falls back to O2.
+  - O4 diffusion: **Not implemented at all**.
+  - O4 divergence: 3D uniform-y only.
+  - O4 pressure gradient: 3D only.
+  - MG Poisson: Explicitly errors if O4 requested.
+- **Fix**: Implement missing O4 operators or document `space_order=4` as 3D-convection-only.
 
 ### AR1 recycling filter skipped on GPU
 - **File**: `src/solver_recycling.cpp:599-602`
-- **Problem**: Comment says "Would need inlet_u_filt_ptr_ etc. on GPU — skipping for now". Since GPU is the primary development target, temporal filtering of the recycled inflow is effectively dead.
+- **Problem**: GPU is the primary target but the AR1 temporal filter is CPU-only and skipped in GPU builds.
 - **Fix**: Allocate filter buffers on GPU and implement the AR1 filter in an OpenMP target kernel.
 
 ### Z-direction BCs restricted to Periodic and NoSlip
 - **File**: `src/solver_operators.cpp:277-283`
-- **Problem**: Inflow/Outflow BCs in z-direction throw `std::runtime_error`. Only Periodic and NoSlip are supported.
+- **Problem**: Inflow/Outflow BCs in z-direction throw `std::runtime_error`.
 - **Fix**: Implement z-direction Inflow/Outflow BCs or document as unsupported.
-
-### ~~GPU baseline test data all placeholders~~ ✅ DONE
-- Populated `tests/baselines/baseline_gpu.json` from RTX 6000 GPU run.
-- 10 sections with real values. Single baseline works across all GPUs (cross-GPU QoI differences are ~1e-15).
 
 ### Recirculation spike detection is a stub
 - **File**: `src/solver_turbulence_diagnostics.cpp:546-568`
-- **Problem**: `has_recirculation_spike()` always returns `false`. Parameters `x_recycle` and `U_bulk` are unused (marked `/*param*/`). Used in validation but never detects anything.
+- **Problem**: `has_recirculation_spike()` always returns `false`. Parameters unused.
 - **Fix**: Implement actual spectral spike detection or remove the function.
-
-### ~~GPU CI perf gates fail on slower GPUs~~ ✅ DONE
-- Perf suite now detects GPU compute capability and scales thresholds: V100 4x, A100/L40S 2x, H100/H200 1x.
 
 ---
 
 ## Medium — Incomplete but Functional
 
-### ~~SOR solver is orphaned dead code~~ ✅ DONE
-- Deleted `src/poisson_solver.cpp` (370 LOC) and removed `PoissonSolver` class.
-- Removed `poisson_omega` from config. Migrated tests to `MultigridPoissonSolver`.
-
 ### FFT1D cannot handle stretched y-grids
 - **File**: `include/poisson_solver_fft1d.hpp:156`
-- **Problem**: Internal 2D MG solver uses uniform `1/(dy*dy)` coefficients. Auto-selection correctly skips FFT1D for stretched-y, but explicitly requesting `--poisson fft1d` on a stretched-y duct will error. No hybrid FFT+stretched-MG path exists.
-- **Fix**: Implement stretched-y support in FFT1D's internal 2D MG (use mesh yLap coefficients) or add a clear error message.
+- **Problem**: Internal 2D MG uses uniform `1/(dy*dy)`. Auto-selection skips FFT1D for stretched-y, but explicit `--poisson fft1d` on a stretched-y duct will error.
+- **Fix**: Implement stretched-y support in FFT1D's 2D MG or add a clear error message.
 
 ### TBNN training script incomplete
 - **File**: `scripts/train_tbnn_mcconkey.py:184`
-- **Problem**: `compute_tensor_basis_from_data()` is a stub. Users cannot train new TBNN models without implementing this function. The training script generates synthetic data as a fallback but cannot process the real McConkey dataset's velocity gradients into tensor basis functions.
+- **Problem**: `compute_tensor_basis_from_data()` is a stub. Cannot train new TBNN models on the McConkey dataset.
 - **Fix**: Implement tensor basis computation (T¹ through T⁴) from strain/rotation tensors.
 
 ### MLP feature definitions mismatch between code and metadata
 - **Files**: `src/features.cpp:96-112`, `data/models/*/metadata.json`
-- **Problem**: C++ computes normalized features (|S|·δ/u_ref, |Ω|·δ/u_ref, y/δ, |Ω|/|S|, |S|·δ²/ν, |u|/u_ref) but metadata.json claims raw features (S_mag, Omega_mag, y_norm, k, omega, u_mag). The training script uses yet another set (raw from dataset). Works because z-score normalization files compensate, but is confusing and error-prone for new models.
-- **Fix**: Align metadata.json with actual C++ feature definitions, or add a feature version field that selects the computation.
+- **Problem**: C++ computes normalized features but metadata.json claims raw features. Confusing for new models.
+- **Fix**: Align metadata.json with actual C++ feature definitions.
 
 ### Pope EARSM constants hardcoded
 - **File**: `src/turbulence_earsm.cpp:652`
-- **Problem**: Pope model constants C1=0.1, C2=0.1 are hardcoded in the factory call. TODO comment says "expose via pope_model". Not configurable via config file or CLI.
+- **Problem**: C1=0.1, C2=0.1 hardcoded. Not configurable via config file.
 - **Fix**: Add `pope_C1` and `pope_C2` config parameters.
 
 ### Variable viscosity face averaging uses 2-point instead of 4-point
 - **File**: `include/solver_kernels.hpp:450,485`
-- **Problem**: Two TODO comments note that variable-viscosity diffusion should use 4-point corner averaging at y-faces but currently uses simpler 2-point center averaging. Affects accuracy when nu_t varies sharply (e.g., near walls with RANS models).
+- **Problem**: Should use 4-point corner averaging at y-faces for sharp nu_t gradients.
 - **Fix**: Implement 4-point face-corner averaging for diffusion coefficients.
 
 ### No moving/rotating IBM bodies
 - **Files**: `include/ibm_geometry.hpp`, `src/ibm_forcing.cpp`
-- **Problem**: All IBM bodies are static. `classify_cells()` and `compute_weights()` run once at initialization. No mechanism to update geometry at runtime. Would require re-classification, weight recomputation, and GPU buffer updates each step.
+- **Problem**: All IBM bodies are static. No runtime geometry update mechanism.
 - **Scope**: Major feature addition, not a bug.
 
 ### No multi-body IBM support
-- **File**: `include/solver.hpp:828`
-- **Problem**: Solver stores a single `ibm_` pointer. Only one IBM body can be active at a time.
-- **Workaround**: Users can combine geometries into a custom IBMBody subclass using `phi = min(body1.phi, body2.phi)`.
-- **Fix**: Support `std::vector<IBMForcing*>` or a composite body class.
+- **File**: `include/solver.hpp`
+- **Problem**: Single `ibm_` pointer. Only one body at a time.
+- **Workaround**: Combine via custom IBMBody subclass with `phi = min(body1.phi, body2.phi)`.
 
 ### Q-criterion VTK output recomputes gradients
 - **File**: `src/solver_vtk.cpp:649-650`
-- **Problem**: TODO says "For large grids, consider precomputing the 3x3 gradient tensor per cell to avoid redundant lambda calls in the output loop."
-- **Fix**: Precompute and cache gradient tensor for Q-criterion output.
+- **Problem**: Redundant gradient computation in output loop.
+- **Fix**: Precompute and cache gradient tensor.
 
 ### MG device pointer optimization not used
 - **File**: `include/poisson_solver_multigrid.hpp:58`
-- **Problem**: Comment says "For true device pointers (omp_target_alloc), use is_device_ptr instead (not implemented)". Current approach uses `map(present:)` which works but is less efficient.
-- **Fix**: Use `is_device_ptr` clause for `omp_target_alloc`-allocated pointers.
+- **Problem**: Uses `map(present:)` instead of more efficient `is_device_ptr` for `omp_target_alloc` pointers.
 
 ---
 
 ## Low — Minor / Informational
 
-### ~~Old recycling approach commented out~~ ✅ DONE
-- Removed commented-out old inlet application code from `solver_recycling.cpp`.
-
 ### NVHPC workarounds throughout codebase
-- **Files**: `src/solver_time.cpp` (8+), `src/solver.cpp` (4+), `src/solver_recycling.cpp`
-- **Problem**: Pattern of copying member variables to locals before GPU kernels to avoid implicit `this` transfer. Documented with "nvc++ workaround" comments. Functional but clutters code.
-- **Status**: Required by current compiler. Remove when nvc++ fixes implicit this handling.
+- **Files**: `src/solver_time.cpp`, `src/solver.cpp`, `src/solver_recycling.cpp`
+- **Status**: Required by current compiler. Remove when nvc++ fixes implicit `this` handling.
 
 ### Simplified 2D invariants in feature computation
 - **File**: `src/features.cpp:162,172`
-- **Problem**: TBNN features use "simplified" 2D invariants (comments note this). Full 3D invariant set not computed for 2D meshes.
 - **Status**: By design — 2D meshes don't have all 3D invariant components.
 
 ### Upwind advection simplified near boundaries
 - **File**: `include/solver_kernels.hpp:1973`
-- **Problem**: 3D 2nd-order upwind uses 1st-order near boundaries.
 - **Status**: Standard practice for upwind schemes at domain edges.
+
+---
+
+## Completed ✅
+
+| # | Item | Severity | Details |
+|---|------|----------|---------|
+| 1 | FFT_MPI wired into solver factory | Critical | Factory case, diagnostics, GPU dispatch, solver name lookup |
+| 2 | GPU baseline populated | High | `baseline_gpu.json` from RTX 6000, single baseline across all GPUs |
+| 3 | SOR solver removed | Medium | Deleted `poisson_solver.cpp` (370 LOC), removed `PoissonSolver` class and `poisson_omega` config |
+| 4 | Old recycling commented code removed | Low | Cleaned dead code from `solver_recycling.cpp` |
+| 5 | GPU CI perf gates scaled by CC | High | V100 4x, A100/L40S 2x, H100/H200 1x thresholds |
+| 6 | FFT_MPI CPU single-rank error | Critical | Clear error message (architectural limitation: FFTPoissonSolver GPU-only) |
+| 7 | HDF5 checkpoint dead code removed | Critical | Deleted header, impl, test (442 LOC total) |
+| 8 | MPI halo exchange wired into step | Critical | Euler + RK paths, pressure + velocity halos, CPU + GPU |
 
 ---
 
@@ -154,14 +136,4 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 | **Low** | 4 | 1 | 3 |
 | **Total** | **27** | **8** | **19** |
 
-**Completed in this branch (`workontodo`)**:
-1. ✅ FFT_MPI wired into solver factory, diagnostics, GPU dispatch
-2. ✅ GPU baseline populated from RTX 6000 run (single baseline, GPU-independent QoI)
-3. ✅ SOR solver removed (370 LOC dead code + `poisson_omega` config)
-4. ✅ Old recycling commented code removed
-5. ✅ GPU CI perf gates scaled by compute capability (fixes V100 false failures)
-6. ✅ FFT_MPI CPU single-rank: clear error message (architectural limitation)
-7. ✅ HDF5 checkpoint dead code removed (442 LOC)
-8. ✅ MPI halo exchange wired into step() — Euler and RK paths
-
-**Codebase health**: ~150 LOC of stubs/dead code out of ~43,000 LOC (0.35%). Core solver, turbulence models (14/15), IBM, Poisson solvers (5/6), and NN inference are production-quality. Main gaps are in MPI integration (infrastructure exists but not connected) and a few misleading feature claims (DynamicSmag, O4, checkpoint).
+**Codebase health**: Core solver, turbulence models (14/15), IBM, Poisson solvers (5/6), and NN inference are production-quality. Main gaps: one critical MPI item (FFT_MPI distributed GPU), DynamicSmagorinsky stub, partial O4 spatial, and several medium-priority feature gaps.
