@@ -2269,7 +2269,7 @@ double RANSSolver::step() {
     // Must happen after Poisson solve and before velocity correction so that
     // correct_velocity() can compute dp/dz at inter-rank boundaries.
 #ifdef USE_MPI
-    if (decomp_ && halo_exchange_) {
+    if (decomp_ && halo_exchange_ && decomp_->nz_local() < decomp_->nz_global()) {
         TIMED_SCOPE("halo_pressure_corr");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
@@ -2311,7 +2311,7 @@ double RANSSolver::step() {
     // Must happen after velocity correction (and IBM re-forcing) so that
     // neighboring ranks have consistent ghost cell data before BC application.
 #ifdef USE_MPI
-    if (decomp_ && halo_exchange_) {
+    if (decomp_ && halo_exchange_ && decomp_->nz_local() < decomp_->nz_global()) {
         TIMED_SCOPE("halo_velocity");
         const int Nx = mesh_->Nx;
         const int Ny = mesh_->Ny;
