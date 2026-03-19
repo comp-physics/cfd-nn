@@ -13,6 +13,9 @@
 #include "solver.hpp"
 #include "config.hpp"
 #include "mesh.hpp"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "decomposition.hpp"
 #include "halo_exchange.hpp"
 #include <cmath>
@@ -106,6 +109,17 @@ int main(int argc, char** argv) {
         double dz = L / Nz_global;
         double z_lo = k_start * dz;
         double z_hi = z_lo + nz_local * dz;
+
+        // Assign each rank to its own GPU BEFORE solver construction
+        // so GPU buffers are allocated on the correct device.
+#if defined(USE_GPU_OFFLOAD) && defined(_OPENMP)
+        {
+            int num_devices = omp_get_num_devices();
+            if (num_devices > 0) {
+                omp_set_default_device(rank % num_devices);
+            }
+        }
+#endif
 
         Mesh mesh;
         mesh.init_uniform(Nx, Ny, nz_local, 0.0, L, 0.0, L, z_lo, z_hi);
