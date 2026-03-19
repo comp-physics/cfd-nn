@@ -6,10 +6,23 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 ## Critical — Broken or Stub Code
 
+### Multi-GPU MPI solver produces incorrect physics
+- **Files**: `src/solver.cpp`, `src/solver_periodic_halos.cpp`, `src/poisson_solver_multigrid.cpp`
+- **Problem**: Halo exchange is wired into `step()` but the solver is not actually multi-GPU correct. Three interacting issues:
+  1. **Poisson solver is local**: Each rank runs MG on its own z-slab independently — no global pressure coupling across ranks. Pressure at slab boundaries is wrong.
+  2. **Periodic z-BC conflicts with MPI**: `enforce_periodic_halos_device()` does local z-wrapping (copies within the same rank), but with MPI decomposition those ghost cells should come from neighboring ranks via halo exchange.
+  3. **Divergence RHS not exchanged**: The Poisson RHS (divergence of u*) has garbage in z-ghost cells because divergence halos are never exchanged before the solve.
+- **Impact**: Multi-rank simulations will accumulate pressure errors at slab boundaries and eventually diverge. The `test_mpi_halo_step` passes at 10 steps but would fail at production step counts.
+- **Fix** (multi-part):
+  1. Skip local z-periodic halo fill when MPI decomposition is active (let halo exchange handle it)
+  2. Add divergence/RHS halo exchange before Poisson solve
+  3. Either implement overlapping Schwarz iteration for MG (exchange pressure halos within V-cycle) or implement FFT_MPI distributed GPU solve for a global pressure solution
+  4. Add a production-length multi-GPU test (100+ steps, check divergence stays bounded)
+
 ### FFT_MPI GPU distributed path unimplemented
 - **File**: `src/poisson_solver_fft_mpi.cpp:141-144`
 - **Problem**: Multi-rank `solve_device()` throws. Single-rank GPU works (delegates to serial FFTPoissonSolver). Single-rank CPU path correctly errors since FFTPoissonSolver has no CPU solve.
-- **Fix**: Implement distributed GPU FFT using CUDA-aware MPI or cuFFTMp.
+- **Fix**: Implement distributed GPU FFT using CUDA-aware MPI or cuFFTMp. This would provide a correct global pressure solve for multi-GPU runs.
 
 ---
 
@@ -130,10 +143,10 @@ Comprehensive list of broken, stub, incomplete, and missing features identified 
 
 | Severity | Total | Done | Remaining |
 |----------|-------|------|-----------|
-| **Critical** | 5 | 4 | 1 |
+| **Critical** | 6 | 4 | 2 |
 | **High** | 7 | 2 | 5 |
 | **Medium** | 11 | 1 | 10 |
 | **Low** | 4 | 1 | 3 |
-| **Total** | **27** | **8** | **19** |
+| **Total** | **28** | **8** | **20** |
 
 **Codebase health**: Core solver, turbulence models (14/15), IBM, Poisson solvers (5/6), and NN inference are production-quality. Main gaps: one critical MPI item (FFT_MPI distributed GPU), DynamicSmagorinsky stub, partial O4 spatial, and several medium-priority feature gaps.
