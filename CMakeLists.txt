@@ -325,6 +325,11 @@ set(LIB_SOURCES
     src/ibm_forcing.cpp
     src/velocity_gradient.cpp
     src/turbulence_les.cpp
+    src/turbulence_les_dynamic.cpp
+    src/turbulence_les_dynamic_germano.cpp
+    src/turbulence_les_dynamic_interp.cpp
+    src/turbulence_les_dynamic_apply.cpp
+    src/turbulence_les_dynamic_gpu.cpp
 )
 
 # Core library

@@ -118,7 +118,7 @@ private:
 /// Uses plane-averaged Cs^2 in x-z (homogeneous directions).
 class DynamicSmagorinskyModel : public LESModel {
 public:
-    ~DynamicSmagorinskyModel();
+    ~DynamicSmagorinskyModel() override;
     std::string name() const override { return "DynamicSmagorinsky"; }
 
     void update(const Mesh& mesh, const VectorField& velocity,
@@ -142,8 +142,6 @@ private:
     double* LM_plane_ = nullptr;  // sum of L_ij * M_ij per plane
     double* MM_plane_ = nullptr;  // sum of M_ij * M_ij per plane
     double* Cs2_plane_ = nullptr; // resulting Cs^2(y)
-    // Host-side Cs^2(y) for CPU fallback
-    std::vector<double> Cs2_plane_host_;
     int Ny_ = 0;
     int cell_total_ = 0;
     bool dyn_gpu_ready_ = false;
