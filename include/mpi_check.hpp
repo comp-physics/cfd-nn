@@ -180,18 +180,24 @@ inline bool enforce_single_rank_gpu(const std::string& caller_name = "Solver") {
     if (result.is_multi_rank) {
 #ifdef USE_MPI
         // MPI build: assign each rank to its own GPU device.
-        // This is the standard multi-GPU MPI pattern.
+        // Use CUDA_VISIBLE_DEVICES so each rank sees exactly one GPU.
+        // This must happen before any OpenMP target operation.
 #ifdef USE_GPU_OFFLOAD
         {
+            // Set CUDA_VISIBLE_DEVICES = local_rank so each MPI rank
+            // gets its own GPU. This is the standard multi-GPU pattern
+            // and must happen before the OpenMP runtime touches CUDA.
+            std::string cvd = std::to_string(rank % 8);  // max 8 GPUs/node
+            const char* existing = std::getenv("CUDA_VISIBLE_DEVICES");
+            if (!existing) {
+                setenv("CUDA_VISIBLE_DEVICES", cvd.c_str(), 1);
+            }
+
             int num_devices = 0;
 #ifdef _OPENMP
             num_devices = omp_get_num_devices();
 #endif
             if (num_devices > 0) {
-                int device_id = rank % num_devices;
-#ifdef _OPENMP
-                omp_set_default_device(device_id);
-#endif
                 if (rank == 0) {
                     std::cerr << "[MPI+GPU] " << nranks << " ranks, "
                               << num_devices << " GPUs — rank-to-GPU mapping active\n";
