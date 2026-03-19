@@ -2,6 +2,7 @@
 // Split from solver.cpp to avoid nvc++ compiler crash on large files
 
 #include "solver.hpp"
+#include "decomposition.hpp"
 #include "gpu_utils.hpp"
 #include "profiling.hpp"
 #include "stencil_operators.hpp"
@@ -269,18 +270,33 @@ void RANSSolver::apply_velocity_bc() {
         double* w_ptr = v.w_face;
         [[maybe_unused]] const size_t w_total_size = velocity_.w_total_size();
 
-        const bool z_lo_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic);
-        const bool z_hi_periodic = (velocity_bc_.z_hi == VelocityBC::Periodic);
+        // When MPI z-decomposition is active, skip local z-periodic wrapping —
+        // halo exchange provides z-ghost data from neighboring ranks instead.
+#ifdef USE_MPI
+        const bool mpi_z_decomposed = (decomp_ && halo_exchange_ &&
+                                        mesh_->Nz == decomp_->nz_local());
+#else
+        const bool mpi_z_decomposed = false;
+#endif
+
+        const bool z_lo_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) && !mpi_z_decomposed;
+        const bool z_hi_periodic = (velocity_bc_.z_hi == VelocityBC::Periodic) && !mpi_z_decomposed;
         const bool z_lo_noslip = (velocity_bc_.z_lo == VelocityBC::NoSlip);
         const bool z_hi_noslip = (velocity_bc_.z_hi == VelocityBC::NoSlip);
 
+        // Skip z-BC entirely if MPI handles it
+        const bool z_needs_local_bc = !mpi_z_decomposed;
+
         // Validate that z-direction BCs are supported (Inflow/Outflow not implemented)
-        if (!z_lo_periodic && !z_lo_noslip) {
+        if (z_needs_local_bc && !z_lo_periodic && !z_lo_noslip) {
             throw std::runtime_error("Unsupported velocity BC type for z_lo (only Periodic and NoSlip are implemented)");
         }
-        if (!z_hi_periodic && !z_hi_noslip) {
+        if (z_needs_local_bc && !z_hi_periodic && !z_hi_noslip) {
             throw std::runtime_error("Unsupported velocity BC type for z_hi (only Periodic and NoSlip are implemented)");
         }
+
+        // Apply z-direction BCs locally — skip when MPI halo exchange handles z-ghosts
+        if (z_needs_local_bc) {
 
         // Apply u BCs in z-direction (for all x-faces, all y rows)
         // Each x-face: (Nx+1) i-values, (Ny) j-values, Ng ghost layers at each z-end
@@ -386,6 +402,8 @@ void RANSSolver::apply_velocity_bc() {
                 }
             }
         }
+
+        } // end if (z_needs_local_bc)
 
         // Apply w BCs in x and y directions
         // w in x-direction

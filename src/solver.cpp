@@ -629,8 +629,19 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
     poisson_bc_z_hi_ = p_z_hi;
 
     // Set BCs on Poisson solvers - use 3D overload for 3D meshes
+    // MPI z-decomposition: use Neumann at z-slab boundaries instead of periodic.
+    // The inter-rank coupling is provided by pressure halo exchange between V-cycles.
+#ifdef USE_MPI
+    PoissonBC mg_z_lo = p_z_lo, mg_z_hi = p_z_hi;
+    if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
+        mg_z_lo = PoissonBC::Neumann;
+        mg_z_hi = PoissonBC::Neumann;
+    }
+#else
+    PoissonBC mg_z_lo = p_z_lo, mg_z_hi = p_z_hi;
+#endif
     if (!mesh_->is2D()) {
-        mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+        mg_poisson_solver_.set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, mg_z_lo, mg_z_hi);
 #ifdef USE_HYPRE
         if (hypre_poisson_solver_) {
             hypre_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
@@ -1805,6 +1816,36 @@ double RANSSolver::step() {
         }
     }
 
+    // 3c. Exchange velocity_star_ halos before divergence computation (MPI)
+    // The divergence stencil reads z-ghost cells; these must come from neighbors.
+#ifdef USE_MPI
+    if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
+        TIMED_SCOPE("halo_velocity_star");
+        const int Nx = mesh_->Nx;
+        const int Ny = mesh_->Ny;
+        const int Ng = mesh_->Nghost;
+        const int u_stride = Nx + 2 * Ng + 1;
+        const int u_plane  = u_stride * (Ny + 2 * Ng);
+        const int v_stride = Nx + 2 * Ng;
+        const int v_plane  = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane  = w_stride * (Ny + 2 * Ng);
+        if (gpu_ready_) {
+            halo_exchange_->exchange_device(velocity_star_u_ptr_, u_stride, u_plane);
+            halo_exchange_->exchange_device(velocity_star_v_ptr_, v_stride, v_plane);
+            if (!mesh_->is2D()) {
+                halo_exchange_->exchange_device(velocity_star_w_ptr_, w_stride, w_plane);
+            }
+        } else {
+            halo_exchange_->exchange(velocity_star_.u_data().data(), u_stride, u_plane);
+            halo_exchange_->exchange(velocity_star_.v_data().data(), v_stride, v_plane);
+            if (!mesh_->is2D()) {
+                halo_exchange_->exchange(velocity_star_.w_data().data(), w_stride, w_plane);
+            }
+        }
+    }
+#endif
+
     // 4. Solve pressure Poisson equation
     // nabla^2p' = (1/dt) nabla*u*
     {
@@ -1859,6 +1900,13 @@ double RANSSolver::step() {
                                           stride, plane_stride);
         }
 
+        // MPI: allreduce to get global sum for solvability condition
+#ifdef USE_MPI
+        if (decomp_ && decomp_->is_parallel()) {
+            sum_div = decomp_->allreduce_sum(sum_div);
+            count = is_2d ? (Nx * Ny) : (Nx * Ny * decomp_->nz_global());
+        }
+#endif
         mean_div = (count > 0) ? sum_div / count : 0.0;
 
         // Build RHS on GPU: rhs = (div - mean_div) / dt
@@ -1920,6 +1968,13 @@ double RANSSolver::step() {
                     ++count;
                 }
             }
+            // MPI: allreduce for global solvability
+#ifdef USE_MPI
+            if (decomp_ && decomp_->is_parallel()) {
+                sum_div = decomp_->allreduce_sum(sum_div);
+                // count stays local for 2D (no z-decomposition in 2D)
+            }
+#endif
             mean_div = (count > 0) ? sum_div / count : 0.0;
 
             // Use multiplication by inverse to match GPU arithmetic exactly
@@ -1942,6 +1997,13 @@ double RANSSolver::step() {
                     }
                 }
             }
+            // MPI: allreduce for global solvability
+#ifdef USE_MPI
+            if (decomp_ && decomp_->is_parallel()) {
+                sum_div = decomp_->allreduce_sum(sum_div);
+                count = mesh_->Nx * mesh_->Ny * decomp_->nz_global();
+            }
+#endif
             mean_div = (count > 0) ? sum_div / count : 0.0;
 
             // Use multiplication by inverse to match GPU arithmetic exactly
@@ -2199,12 +2261,31 @@ double RANSSolver::step() {
 #endif
                 case PoissonSolverType::MG:
                 default:
-                    if (!solver_logged) {
-                        std::cout << "[Poisson] Using MG solve_device()\n";
-                        solver_logged = true;
+#ifdef USE_MPI
+                    if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
+                        // Additive Schwarz: local MG with Neumann z-BCs + pressure halo exchange
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using MG solve_device() + MPI pressure halo (Schwarz)\n";
+                            solver_logged = true;
+                        }
+                        const int p_stride = mesh_->Nx + 2 * mesh_->Nghost;
+                        const int p_plane  = p_stride * (mesh_->Ny + 2 * mesh_->Nghost);
+                        const int max_outer = 10;
+                        for (int outer = 0; outer < max_outer; ++outer) {
+                            cycles += mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                            halo_exchange_->exchange_device(pressure_corr_ptr_, p_stride, p_plane);
+                        }
+                        final_residual = mg_poisson_solver_.residual();
+                    } else
+#endif
+                    {
+                        if (!solver_logged) {
+                            std::cout << "[Poisson] Using MG solve_device()\n";
+                            solver_logged = true;
+                        }
+                        cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        final_residual = mg_poisson_solver_.residual();
                     }
-                    cycles = mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-                    final_residual = mg_poisson_solver_.residual();
                     break;
             }
         } else
@@ -2215,8 +2296,22 @@ double RANSSolver::step() {
                 std::cout << "[Poisson] Using HOST path\n";
                 solver_logged = true;
             }
-            cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
-            final_residual = mg_poisson_solver_.residual();
+#ifdef USE_MPI
+            if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
+                const int p_stride = mesh_->Nx + 2 * mesh_->Nghost;
+                const int p_plane  = p_stride * (mesh_->Ny + 2 * mesh_->Nghost);
+                const int max_outer = 10;
+                for (int outer = 0; outer < max_outer; ++outer) {
+                    cycles += mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+                    halo_exchange_->exchange(pressure_correction_.data().data(), p_stride, p_plane);
+                }
+                final_residual = mg_poisson_solver_.residual();
+            } else
+#endif
+            {
+                cycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+                final_residual = mg_poisson_solver_.residual();
+            }
         }
 
         // Populate PoissonStats for external access (always, not just when diagnostics enabled)

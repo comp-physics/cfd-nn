@@ -3,6 +3,7 @@
 /// Split from solver.cpp to work around nvc++ compiler crash with large TUs
 
 #include "solver.hpp"
+#include "decomposition.hpp"
 #include "gpu_utils.hpp"
 
 namespace nncfd {
@@ -232,8 +233,14 @@ void RANSSolver::enforce_periodic_halos_device(double* u_ptr, double* v_ptr, dou
         }
     }
 
-    // Z-direction
-    if (z_periodic && w_ptr) {
+    // Z-direction — skip when MPI halo exchange handles z-ghosts
+#ifdef USE_MPI
+    const bool mpi_z_decomposed = (decomp_ && halo_exchange_ &&
+                                    mesh_->Nz == decomp_->nz_local());
+#else
+    const bool mpi_z_decomposed = false;
+#endif
+    if (z_periodic && w_ptr && !mpi_z_decomposed) {
         const int w_Nx_total = Nx + 2 * Ng;
         const int w_Ny_total = Ny + 2 * Ng;
 

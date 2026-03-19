@@ -48,7 +48,7 @@ public:
 private:
     const Decomposition& decomp_;
     int Nx_, Ny_, Nz_local_, Ng_;
-    int face_size_;  // (Nx+2Ng) * (Ny+2Ng) * Ng doubles per face
+    int face_size_;  // Max face size across all field types: (Nx+1+2Ng) * (Ny+1+2Ng) * Ng
 
     // Host buffers for packing/unpacking
     std::vector<double> send_lo_, send_hi_;
