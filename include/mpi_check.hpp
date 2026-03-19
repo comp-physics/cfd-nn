@@ -13,6 +13,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace nncfd {
 
@@ -175,8 +178,44 @@ inline bool enforce_single_rank_gpu(const std::string& caller_name = "Solver") {
     result.rank = rank;
 
     if (result.is_multi_rank) {
+#ifdef USE_MPI
+        // MPI build: assign each rank to its own GPU device.
+        // This is the standard multi-GPU MPI pattern.
+#ifdef USE_GPU_OFFLOAD
+        {
+            int num_devices = 0;
+#ifdef _OPENMP
+            num_devices = omp_get_num_devices();
+#endif
+            if (num_devices > 0) {
+                int device_id = rank % num_devices;
+#ifdef _OPENMP
+                omp_set_default_device(device_id);
+#endif
+                if (rank == 0) {
+                    std::cerr << "[MPI+GPU] " << nranks << " ranks, "
+                              << num_devices << " GPUs — rank-to-GPU mapping active\n";
+                }
+            } else if (result.should_exit) {
+                if (rank == 0) {
+                    std::cerr << "\n"
+                        << "================================================================\n"
+                        << "  ERROR: Multi-rank MPI+GPU but no GPU devices found\n"
+                        << "================================================================\n"
+                        << "  [" << caller_name << "]\n"
+                        << "================================================================\n\n";
+                }
+                std::exit(1);
+            }
+        }
+#else
+        // CPU MPI build: just warn
+        warn_if_mpi_detected(caller_name);
+#endif
+        return true;
+#else
+        // No USE_MPI: original behavior — block multi-rank GPU
         if (result.should_exit) {
-            // GPU build, multi-rank, no override -> hard fail
             if (rank == 0) {
                 std::cerr << "\n"
                     << "================================================================\n"
@@ -185,35 +224,18 @@ inline bool enforce_single_rank_gpu(const std::string& caller_name = "Solver") {
                     << "\n"
                     << "  Detected: world_size=" << nranks << ", rank=" << rank << "\n"
                     << "\n"
-                    << "  Problem: Multiple ranks will fight for the same GPU,\n"
-                    << "  causing oversubscription and incorrect results.\n"
-                    << "\n"
-                    << "  Solutions:\n"
-                    << "    1. Run single-rank: ./channel input.yaml\n"
-                    << "    2. Use srun -n 1 instead of srun -n N\n"
-                    << "    3. Override (DANGEROUS): NNCFD_ALLOW_MULTI_RANK=1\n"
+                    << "  Problem: Multiple ranks will fight for the same GPU.\n"
+                    << "  Build with -DUSE_MPI=ON for multi-GPU support.\n"
                     << "\n"
                     << "  [" << caller_name << " - GPU build]\n"
                     << "================================================================\n\n";
             }
             std::exit(1);
-        } else if (result.is_override) {
-            // Multi-rank but override set -> warn loudly
-            if (rank == 0) {
-                std::cerr << "\n"
-                    << "================================================================\n"
-                    << "  WARNING: Multi-rank MPI override active (DANGEROUS)\n"
-                    << "================================================================\n"
-                    << "  world_size=" << nranks << ", NNCFD_ALLOW_MULTI_RANK=1\n"
-                    << "  Proceeding anyway - expect GPU oversubscription issues!\n"
-                    << "  [" << caller_name << "]\n"
-                    << "================================================================\n\n";
-            }
         } else {
-            // CPU build, multi-rank -> just warn
             warn_if_mpi_detected(caller_name);
         }
         return true;
+#endif
     }
 
     return false;
