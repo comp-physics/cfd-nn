@@ -87,6 +87,17 @@ int main(int argc, char** argv) {
     int rank = 0, nprocs = 1;
 #endif
 
+    // Assign each rank to its own GPU FIRST — before any OpenMP target
+    // regions, Mesh construction, or Solver init that would bind to GPU 0.
+#if defined(_OPENMP) && defined(USE_GPU_OFFLOAD)
+    {
+        int num_devices = omp_get_num_devices();
+        if (num_devices > 0 && nprocs > 1) {
+            omp_set_default_device(rank % num_devices);
+        }
+    }
+#endif
+
     const int Nx = 16, Ny = 16;
     const int Nz_global = 16;
     const double L = 2.0 * M_PI;
@@ -109,17 +120,6 @@ int main(int argc, char** argv) {
         double dz = L / Nz_global;
         double z_lo = k_start * dz;
         double z_hi = z_lo + nz_local * dz;
-
-        // Assign each rank to its own GPU BEFORE solver construction
-        // so GPU buffers are allocated on the correct device.
-#if defined(USE_GPU_OFFLOAD) && defined(_OPENMP)
-        {
-            int num_devices = omp_get_num_devices();
-            if (num_devices > 0) {
-                omp_set_default_device(rank % num_devices);
-            }
-        }
-#endif
 
         Mesh mesh;
         mesh.init_uniform(Nx, Ny, nz_local, 0.0, L, 0.0, L, z_lo, z_hi);

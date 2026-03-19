@@ -2164,6 +2164,13 @@ double RANSSolver::step() {
         pcfg.nu2 = config_.poisson_nu2;
         pcfg.chebyshev_degree = config_.poisson_chebyshev_degree;
         pcfg.use_vcycle_graph = config_.poisson_use_vcycle_graph;
+        // Disable CUDA Graphs for MPI z-decomposition: Schwarz outer loop
+        // exchanges pressure halos between V-cycles, invalidating the graph.
+#ifdef USE_MPI
+        if (decomp_ && halo_exchange_ && mesh_->Nz == decomp_->nz_local()) {
+            pcfg.use_vcycle_graph = false;
+        }
+#endif
 
         // Legacy tolerance for backward compatibility (non-MG solvers use this)
         double relative_tol = config_.poisson_tol * std::max(rhs_rms, 1e-12);
