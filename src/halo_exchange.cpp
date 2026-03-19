@@ -12,6 +12,9 @@
 #include "halo_exchange.hpp"
 #include <cstring>
 #include <stdexcept>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #ifdef USE_MPI
 namespace {
@@ -146,10 +149,17 @@ void HaloExchange::exchange_device(double* d_field, int stride, int plane_stride
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_lo_, Nx_, Ny_, Nz_local_, Ng_, true);
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_hi_, Nx_, Ny_, Nz_local_, Ng_, false);
     cudaDeviceSynchronize();
+#elif defined(USE_MPI)
+    // OpenMP offload path: delegate to CPU exchange with host pointer.
+    // The caller must provide a host-accessible pointer (not a device pointer).
+    // For GPU fields, the solver must sync ghost planes GPU↔host around this call.
+    //
+    // This is intentionally simple. GPU-direct MPI requires USE_CUDA_KERNELS.
+    // The solver handles the GPU↔host sync via sync_solution_from/to_gpu() or
+    // field-level target update directives around the exchange() call.
+    exchange(d_field, stride, plane_stride);
 #else
-    // No CUDA kernels + MPI: cannot safely exchange GPU-resident data
-    throw std::runtime_error("[HaloExchange] exchange_device() requires USE_CUDA_KERNELS + USE_MPI. "
-                             "Cannot exchange GPU pointers without CUDA pack/unpack kernels.");
+    throw std::runtime_error("[HaloExchange] exchange_device() requires USE_MPI.");
 #endif
 }
 
