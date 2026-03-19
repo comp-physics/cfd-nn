@@ -293,7 +293,6 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(LIB_SOURCES
     src/mesh.cpp
     src/fields.cpp
-    src/poisson_solver.cpp
     src/poisson_solver_multigrid.cpp
     src/solver.cpp
     src/solver_vtk.cpp
@@ -326,7 +325,6 @@ set(LIB_SOURCES
     src/ibm_forcing.cpp
     src/velocity_gradient.cpp
     src/turbulence_les.cpp
-    src/checkpoint.cpp
 )
 
 # Core library
@@ -605,8 +603,7 @@ if(BUILD_TESTS)
     add_nncfd_test(test_velocity_gradient TEST_NAME_SUFFIX VelocityGradientTest LABELS fast)
     add_nncfd_test(test_les_sgs TEST_NAME_SUFFIX LESSGSTest LABELS fast)
     add_nncfd_test(test_les_channel TEST_NAME_SUFFIX LESChannelTest LABELS fast)
-    add_nncfd_test(test_checkpoint TEST_NAME_SUFFIX CheckpointTest LABELS fast)
-    add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
+add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS medium)
     add_nncfd_test(test_les_tgv TEST_NAME_SUFFIX LESTGVTest LABELS medium)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
@@ -799,6 +796,9 @@ if(BUILD_TESTS)
 
     # MPI energy: allreduce_sum gives correct global kinetic energy
     add_nncfd_test(test_mpi_energy_allreduce TEST_NAME_SUFFIX MPIEnergyAllreduceTest LABELS "fast")
+
+    # MPI halo exchange during stepping: decomposed mesh with actual halo exchange
+    add_nncfd_test(test_mpi_halo_step TEST_NAME_SUFFIX MPIHaloStepTest LABELS "fast")
 
     # MPI IBM: 3D IBM cylinder flow with z-slab decomposition
     add_nncfd_test(test_mpi_ibm_3d TEST_NAME_SUFFIX MPIIBMTest3D LABELS "slow")

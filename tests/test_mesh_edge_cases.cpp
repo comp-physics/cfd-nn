@@ -3,6 +3,7 @@
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
 #include "poisson_solver.hpp"
+#include "poisson_solver_multigrid.hpp"
 #include <cmath>
 
 using namespace nncfd;
@@ -52,13 +53,18 @@ void test_poisson_high_aspect_ratio() {
     Mesh mesh;
     mesh.init_uniform(64, 8, 0.0, 8.0, 0.0, 1.0);
 
-    ScalarField rhs(mesh, 1.0), p(mesh, 0.0);
-    PoissonSolver solver(mesh);
-    solver.set_bc(PoissonBC::Dirichlet, PoissonBC::Dirichlet,
-                  PoissonBC::Dirichlet, PoissonBC::Dirichlet);
-    solver.set_dirichlet_value(0.0);
-
-    PoissonConfig cfg{1e-6, 10000, 1.5};
+    ScalarField rhs(mesh, 0.0), p(mesh, 0.0);
+    // Use manufactured RHS with zero mean for Periodic/Neumann solvability
+    FOR_INTERIOR_2D(mesh, i, j) {
+        rhs(i, j) = std::sin(2.0 * M_PI * mesh.x(i) / 8.0) * std::cos(M_PI * mesh.y(j));
+    }
+    MultigridPoissonSolver solver(mesh);
+    solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                  PoissonBC::Neumann, PoissonBC::Neumann);
+    PoissonConfig cfg;
+    cfg.tol_rhs = 1e-6;
+    cfg.tol_rel = 1e-6;
+    cfg.max_vcycles = 200;
     solver.solve(rhs, p, cfg);
 
     bool all_finite = true;
@@ -91,17 +97,18 @@ void test_small_grid_8x8() {
     Mesh mesh;
     mesh.init_uniform(8, 8, 0.0, 1.0, 0.0, 1.0);
 
-    ScalarField rhs(mesh), p(mesh, 0.0);
+    ScalarField rhs(mesh, 0.0), p(mesh, 0.0);
     FOR_INTERIOR_2D(mesh, i, j) {
-        rhs(i, j) = std::sin(M_PI * mesh.x(i)) * std::sin(M_PI * mesh.y(j));
+        rhs(i, j) = std::sin(2.0 * M_PI * mesh.x(i)) * std::cos(M_PI * mesh.y(j));
     }
 
-    PoissonSolver solver(mesh);
-    solver.set_bc(PoissonBC::Dirichlet, PoissonBC::Dirichlet,
-                  PoissonBC::Dirichlet, PoissonBC::Dirichlet);
-    solver.set_dirichlet_value(0.0);
+    MultigridPoissonSolver solver(mesh);
+    solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                  PoissonBC::Neumann, PoissonBC::Neumann);
 
-    PoissonConfig cfg{1e-6, 5000, 1.5};
+    PoissonConfig cfg;
+    cfg.tol = 1e-6;
+    cfg.max_vcycles = 100;
     solver.solve(rhs, p, cfg);
     record("Small grid (8x8)", solver.residual() < 1e-4);
 }
@@ -110,13 +117,17 @@ void test_small_grid_poisson_convergence() {
     Mesh mesh;
     mesh.init_uniform(4, 4, 0.0, 1.0, 0.0, 1.0);
 
-    ScalarField rhs(mesh, 1.0), p(mesh, 0.0);
-    PoissonSolver solver(mesh);
-    solver.set_bc(PoissonBC::Dirichlet, PoissonBC::Dirichlet,
-                  PoissonBC::Dirichlet, PoissonBC::Dirichlet);
-    solver.set_dirichlet_value(0.0);
+    ScalarField rhs(mesh, 0.0), p(mesh, 0.0);
+    FOR_INTERIOR_2D(mesh, i, j) {
+        rhs(i, j) = std::sin(2.0 * M_PI * mesh.x(i));
+    }
+    MultigridPoissonSolver solver(mesh);
+    solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                  PoissonBC::Neumann, PoissonBC::Neumann);
 
-    PoissonConfig cfg{1e-6, 1000, 1.2};
+    PoissonConfig cfg;
+    cfg.tol = 1e-6;
+    cfg.max_vcycles = 100;
     solver.solve(rhs, p, cfg);
     record("Poisson convergence on 4x4 grid", solver.residual() < 1e-3);
 }
@@ -133,13 +144,18 @@ void test_stretched_mesh_moderate() {
     double dy_center = mesh.y(mesh.Ny / 2 + 1) - mesh.y(mesh.Ny / 2);
     bool stretched = dy_wall < dy_center;
 
-    ScalarField rhs(mesh, 1.0), p(mesh, 0.0);
-    PoissonSolver solver(mesh);
+    ScalarField rhs(mesh, 0.0), p(mesh, 0.0);
+    FOR_INTERIOR_2D(mesh, i, j) {
+        rhs(i, j) = std::sin(2.0 * M_PI * mesh.x(i) / 2.0) * std::cos(M_PI * mesh.y(j));
+    }
+    MultigridPoissonSolver solver(mesh);
     solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
-                  PoissonBC::Dirichlet, PoissonBC::Dirichlet);
-    solver.set_dirichlet_value(0.0);
+                  PoissonBC::Neumann, PoissonBC::Neumann);
 
-    PoissonConfig cfg{1e-6, 5000, 1.5};
+    PoissonConfig cfg;
+    cfg.tol_rhs = 1e-6;
+    cfg.tol_rel = 1e-6;
+    cfg.max_vcycles = 200;
     solver.solve(rhs, p, cfg);
     record("Moderately stretched mesh (beta=2.0)", stretched && solver.residual() < 1e-4);
 }

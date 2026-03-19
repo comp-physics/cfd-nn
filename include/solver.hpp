@@ -11,6 +11,9 @@
 #include "poisson_solver_fft.hpp"
 #include "poisson_solver_fft1d.hpp"
 #include "poisson_solver_fft2d.hpp"
+#ifdef USE_MPI
+#include "poisson_solver_fft_mpi.hpp"
+#endif
 #endif
 #include "turbulence_model.hpp"
 #include "ibm_forcing.hpp"
@@ -855,7 +858,6 @@ private:
     ScalarField wall_distance_;  // Precomputed wall distance field
     
     // Solvers
-    PoissonSolver poisson_solver_;
     MultigridPoissonSolver mg_poisson_solver_;
 #ifdef USE_HYPRE
     std::unique_ptr<HyprePoissonSolver> hypre_poisson_solver_;
@@ -864,6 +866,9 @@ private:
     std::unique_ptr<FFTPoissonSolver> fft_poisson_solver_;      // 2D FFT (periodic x AND z) - 3D only
     std::unique_ptr<FFT1DPoissonSolver> fft1d_poisson_solver_;  // 1D FFT (periodic x OR z) - 3D only
     std::unique_ptr<FFT2DPoissonSolver> fft2d_poisson_solver_;  // 2D mesh FFT (periodic x, walls y)
+#ifdef USE_MPI
+    std::unique_ptr<FFTMPIPoissonSolver> fft_mpi_poisson_solver_;  // Distributed FFT (MPI z-slab)
+#endif
 #endif
     PoissonSolverType selected_solver_ = PoissonSolverType::MG;  // Actually selected solver (after auto)
     std::string selection_reason_;  // Human-readable reason for solver selection (observability)

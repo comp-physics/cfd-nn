@@ -3,6 +3,7 @@
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
 #include "poisson_solver.hpp"
+#include "poisson_solver_multigrid.hpp"
 #include "turbulence_model.hpp"
 #include <cmath>
 #include <stdexcept>
@@ -27,12 +28,12 @@ bool test_poisson_limited_iterations() {
         rhs(i, j) = std::sin(M_PI * mesh.x(i)) * std::sin(M_PI * mesh.y(j));
     }
 
-    PoissonSolver solver(mesh);
+    MultigridPoissonSolver solver(mesh);
     solver.set_bc(PoissonBC::Dirichlet, PoissonBC::Dirichlet,
                   PoissonBC::Dirichlet, PoissonBC::Dirichlet);
-    solver.set_dirichlet_value(0.0);
-
-    PoissonConfig cfg{1e-12, 1, 1.5};  // Very tight tol, 1 iteration
+    PoissonConfig cfg;
+    cfg.tol = 1e-12;
+    cfg.max_vcycles = 1;  // Very tight tol, 1 iteration
     int iters = solver.solve(rhs, p, cfg);
 
     if (iters > cfg.max_vcycles + 1) return false;
@@ -50,11 +51,13 @@ bool test_poisson_singular_neumann() {
 
     ScalarField rhs(mesh, 0.0), p(mesh, 0.0);
 
-    PoissonSolver solver(mesh);
+    MultigridPoissonSolver solver(mesh);
     solver.set_bc(PoissonBC::Neumann, PoissonBC::Neumann,
                   PoissonBC::Neumann, PoissonBC::Neumann);
 
-    PoissonConfig cfg{1e-6, 1000, 1.5};
+    PoissonConfig cfg;
+    cfg.tol = 1e-6;
+    cfg.max_vcycles = 1000;
     solver.solve(rhs, p, cfg);
 
     if (solver.residual() >= 1e-4) return false;
@@ -81,11 +84,14 @@ bool test_poisson_singular_periodic() {
         rhs(i, j) = -2.0 * std::sin(mesh.x(i)) * std::sin(mesh.y(j));
     }
 
-    PoissonSolver solver(mesh);
+    MultigridPoissonSolver solver(mesh);
     solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                   PoissonBC::Periodic, PoissonBC::Periodic);
 
-    PoissonConfig cfg{1e-6, 5000, 1.7};
+    PoissonConfig cfg;
+    cfg.tol_rhs = 1e-6;
+    cfg.tol_rel = 1e-6;
+    cfg.max_vcycles = 200;
     solver.solve(rhs, p, cfg);
 
     if (solver.residual() >= 1e-4) return false;

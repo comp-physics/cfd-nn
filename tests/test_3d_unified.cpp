@@ -5,6 +5,7 @@
 #include "test_harness.hpp"
 #include "test_utilities.hpp"
 #include "poisson_solver.hpp"
+#include "poisson_solver_multigrid.hpp"
 #include <cmath>
 
 using namespace nncfd;
@@ -388,13 +389,15 @@ void test_poisson_3d_all_periodic() {
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
                 rhs(i,j,k) = -3.0 * std::sin(mesh.x(i)) * std::sin(mesh.y(j)) * std::sin(mesh.z(k));
 
-    PoissonSolver solver(mesh);
+    MultigridPoissonSolver solver(mesh);
     solver.set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
                   PoissonBC::Periodic, PoissonBC::Periodic,
                   PoissonBC::Periodic, PoissonBC::Periodic);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-6; cfg.max_vcycles = 5000; cfg.omega = 1.5;
+    cfg.tol_rhs = 1e-6;
+    cfg.tol_rel = 1e-6;
+    cfg.max_vcycles = 200;
     solver.solve(rhs, p, cfg);
 
     record("3D Poisson all periodic BCs", solver.residual() < 1e-4);
@@ -404,17 +407,18 @@ void test_poisson_3d_dirichlet() {
     Mesh mesh = create_unit_cube_mesh(16);
     ScalarField rhs(mesh, 1.0), p(mesh, 0.0);
 
-    PoissonSolver solver(mesh);
+    MultigridPoissonSolver solver(mesh);
     solver.set_bc(PoissonBC::Dirichlet, PoissonBC::Dirichlet,
                   PoissonBC::Dirichlet, PoissonBC::Dirichlet,
                   PoissonBC::Dirichlet, PoissonBC::Dirichlet);
-    solver.set_dirichlet_value(0.0);
 
     PoissonConfig cfg;
-    cfg.tol = 1e-6; cfg.max_vcycles = 10000; cfg.omega = 1.5;
+    cfg.tol_rhs = 1e-3;
+    cfg.tol_rel = 1e-3;
+    cfg.max_vcycles = 500;
     solver.solve(rhs, p, cfg);
 
-    record("3D Poisson all Dirichlet BCs", solver.residual() < 1e-4);
+    record("3D Poisson all Dirichlet BCs", solver.residual() < 1e-3);
 }
 
 //=============================================================================

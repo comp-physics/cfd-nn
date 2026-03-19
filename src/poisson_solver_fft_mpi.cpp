@@ -107,11 +107,21 @@ bool FFTMPIPoissonSolver::using_gpu() const {
 int FFTMPIPoissonSolver::solve(const ScalarField& rhs, ScalarField& p,
                                 const PoissonConfig& /*cfg*/) {
     if (!distributed_) {
-        // Single-rank: use CPU path of serial solver
-        // Note: serial FFT solver only has solve_device; for CPU we'd
-        // need to implement a host path. For now, this is a placeholder.
-        throw std::runtime_error("FFTMPIPoissonSolver::solve() CPU path "
-                                "requires distributed mode or GPU");
+        // Single-rank: delegate to serial FFTPoissonSolver.
+        // FFTPoissonSolver only exposes solve_device() (GPU), not a CPU
+        // solve(ScalarField&, ...) method. So on CPU single-rank we cannot
+        // delegate and must fall back to distributed path or error out.
+#ifdef USE_FFT_POISSON
+        if (serial_solver_) {
+            // serial_solver_ has solve_device() only — no CPU ScalarField path.
+            // The caller should use solve_device() for GPU or the distributed
+            // CPU path for multi-rank. Provide a clear error message.
+        }
+#endif
+        throw std::runtime_error(
+            "FFTMPIPoissonSolver::solve() single-rank CPU path not available: "
+            "FFTPoissonSolver only implements solve_device() (GPU). "
+            "Use solve_device() on GPU or multi-rank MPI for CPU.");
     }
     return solve_distributed_cpu(rhs, p);
 }

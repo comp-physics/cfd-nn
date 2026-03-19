@@ -12,6 +12,9 @@
 #include "halo_exchange.hpp"
 #include <cstring>
 #include <stdexcept>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #ifdef USE_MPI
 namespace {
@@ -36,7 +39,8 @@ HaloExchange::HaloExchange(const Decomposition& decomp,
                            int Nx, int Ny, int Nz_local, int Ng)
     : decomp_(decomp), Nx_(Nx), Ny_(Ny), Nz_local_(Nz_local), Ng_(Ng)
 {
-    face_size_ = (Nx + 2*Ng) * (Ny + 2*Ng) * Ng;
+    // Size for largest face: u has Nx+1 columns, v has Ny+1 rows on staggered grid
+    face_size_ = (Nx + 1 + 2*Ng) * (Ny + 1 + 2*Ng) * Ng;
     send_lo_.resize(face_size_);
     send_hi_.resize(face_size_);
     recv_lo_.resize(face_size_);
@@ -57,11 +61,14 @@ HaloExchange::~HaloExchange() {
 void HaloExchange::pack_face_cpu(const double* field, double* buffer,
                                   int stride, int plane_stride, int k_start)
 {
+    // Pack using caller's stride and plane_stride so all columns are captured.
+    // For u-velocity, stride = Nx+1+2*Ng (one extra face column).
+    int ny_rows = plane_stride / stride;  // Total y-rows including ghosts
     int buf_idx = 0;
     for (int g = 0; g < Ng_; ++g) {
         int k = k_start + g;
-        for (int j = 0; j < Ny_ + 2*Ng_; ++j) {
-            for (int i = 0; i < Nx_ + 2*Ng_; ++i) {
+        for (int j = 0; j < ny_rows; ++j) {
+            for (int i = 0; i < stride; ++i) {
                 buffer[buf_idx++] = field[k * plane_stride + j * stride + i];
             }
         }
@@ -71,11 +78,12 @@ void HaloExchange::pack_face_cpu(const double* field, double* buffer,
 void HaloExchange::unpack_face_cpu(double* field, const double* buffer,
                                     int stride, int plane_stride, int k_start)
 {
+    int ny_rows = plane_stride / stride;
     int buf_idx = 0;
     for (int g = 0; g < Ng_; ++g) {
         int k = k_start + g;
-        for (int j = 0; j < Ny_ + 2*Ng_; ++j) {
-            for (int i = 0; i < Nx_ + 2*Ng_; ++i) {
+        for (int j = 0; j < ny_rows; ++j) {
+            for (int i = 0; i < stride; ++i) {
                 field[k * plane_stride + j * stride + i] = buffer[buf_idx++];
             }
         }
@@ -87,6 +95,9 @@ void HaloExchange::exchange(double* field, int stride, int plane_stride) {
     if (!decomp_.is_parallel()) return;
 
 #ifdef USE_MPI
+    // Actual message size: Ng z-planes * plane_stride doubles each
+    int msg_size = plane_stride * Ng_;
+
     // Pack: send_lo = first Ng interior planes, send_hi = last Ng interior planes
     pack_face_cpu(field, send_lo_.data(), stride, plane_stride, Ng_);
     pack_face_cpu(field, send_hi_.data(), stride, plane_stride, Nz_local_);
@@ -94,13 +105,13 @@ void HaloExchange::exchange(double* field, int stride, int plane_stride) {
     MPI_Request reqs[4];
 
     // Send lo interior → neighbor's hi ghost; send hi interior → neighbor's lo ghost
-    mpi_check(MPI_Isend(send_lo_.data(), face_size_, MPI_DOUBLE,
+    mpi_check(MPI_Isend(send_lo_.data(), msg_size, MPI_DOUBLE,
                         decomp_.rank_lo(), 0, decomp_.comm(), &reqs[0]), "MPI_Isend(lo)");
-    mpi_check(MPI_Isend(send_hi_.data(), face_size_, MPI_DOUBLE,
+    mpi_check(MPI_Isend(send_hi_.data(), msg_size, MPI_DOUBLE,
                         decomp_.rank_hi(), 1, decomp_.comm(), &reqs[1]), "MPI_Isend(hi)");
-    mpi_check(MPI_Irecv(recv_lo_.data(), face_size_, MPI_DOUBLE,
+    mpi_check(MPI_Irecv(recv_lo_.data(), msg_size, MPI_DOUBLE,
                         decomp_.rank_lo(), 1, decomp_.comm(), &reqs[2]), "MPI_Irecv(lo)");
-    mpi_check(MPI_Irecv(recv_hi_.data(), face_size_, MPI_DOUBLE,
+    mpi_check(MPI_Irecv(recv_hi_.data(), msg_size, MPI_DOUBLE,
                         decomp_.rank_hi(), 0, decomp_.comm(), &reqs[3]), "MPI_Irecv(hi)");
 
     mpi_check(MPI_Waitall(4, reqs, MPI_STATUSES_IGNORE), "MPI_Waitall");
@@ -138,10 +149,45 @@ void HaloExchange::exchange_device(double* d_field, int stride, int plane_stride
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_lo_, Nx_, Ny_, Nz_local_, Ng_, true);
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_hi_, Nx_, Ny_, Nz_local_, Ng_, false);
     cudaDeviceSynchronize();
+#elif defined(USE_MPI)
+    // OpenMP offload fallback: caller must pass the HOST pointer (the mapped
+    // copy) and bracket the call with target update from/to for the relevant
+    // z-planes. See exchange_host_staged() below.
+    //
+    // Passing a raw device pointer here would segfault in pack_face_cpu().
+    // The solver should call exchange_host_staged() instead.
+    throw std::runtime_error(
+        "[HaloExchange] exchange_device() without USE_CUDA_KERNELS: "
+        "use exchange_host_staged() for OpenMP offload builds.");
 #else
-    // No CUDA kernels + MPI: cannot safely exchange GPU-resident data
-    throw std::runtime_error("[HaloExchange] exchange_device() requires USE_CUDA_KERNELS + USE_MPI. "
-                             "Cannot exchange GPU pointers without CUDA pack/unpack kernels.");
+    throw std::runtime_error("[HaloExchange] exchange_device() requires USE_MPI.");
+#endif
+}
+
+void HaloExchange::exchange_host_staged(double* host_ptr, int stride,
+                                         int plane_stride, int total_size) {
+    if (!decomp_.is_parallel()) return;
+
+#ifdef USE_MPI
+    int lo_off = Ng_ * plane_stride;           // First interior z-plane
+    int hi_off = Nz_local_ * plane_stride;     // Last Ng interior z-planes
+    int ghost_len = Ng_ * plane_stride;        // Doubles per Ng z-planes
+    int hi_ghost_off = (Nz_local_ + Ng_) * plane_stride;
+
+    // GPU → host: fetch interior z-face planes that we need to send
+    #pragma omp target update from(host_ptr[lo_off : ghost_len])
+    #pragma omp target update from(host_ptr[hi_off : ghost_len])
+
+    // CPU exchange: pack, MPI send/recv, unpack — all on host memory
+    exchange(host_ptr, stride, plane_stride);
+
+    // Host → GPU: push received ghost z-planes back to device
+    #pragma omp target update to(host_ptr[0 : ghost_len])
+    #pragma omp target update to(host_ptr[hi_ghost_off : ghost_len])
+
+    (void)total_size;  // Used for future bounds checking
+#else
+    (void)host_ptr; (void)stride; (void)plane_stride; (void)total_size;
 #endif
 }
 

@@ -56,14 +56,14 @@ done
 # Wait for sacct to report a terminal state (COMPLETED, FAILED, TIMEOUT, etc.)
 # sacct can lag behind squeue on some SLURM clusters, so poll until terminal
 echo "Waiting for sacct to report terminal state..."
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   JOB_STATE=$(sacct -j ${JOB_ID} --format=State --noheader | head -n1 | tr -d ' ')
   case "$JOB_STATE" in
     COMPLETED|FAILED|CANCELLED*|TIMEOUT|NODE_FAIL|PREEMPTED|OUT_OF_MEMORY)
       break
       ;;
     *)
-      echo "  sacct state: ${JOB_STATE} (attempt $i/30, waiting 10s...)"
+      echo "  sacct state: ${JOB_STATE} (attempt $i/60, waiting 10s...)"
       sleep 10
       ;;
   esac

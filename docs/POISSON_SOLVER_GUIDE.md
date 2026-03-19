@@ -352,14 +352,6 @@ The MG solver supports 4 convergence modes (any triggers exit):
 
 ---
 
-## Legacy SOR
-
-A simple Successive Over-Relaxation solver exists in `poisson_solver.cpp` but is **not selectable** via `poisson_solver = ...` in config files. It serves only as a reference implementation used internally by the legacy `PoissonSolver` class. The relaxation parameter `poisson_omega` (default 1.8) applies to this class only.
-
-**Implementation files:**
-- `include/poisson_solver.hpp`
-- `src/poisson_solver.cpp`
-
 ---
 
 ## Configuration Reference
