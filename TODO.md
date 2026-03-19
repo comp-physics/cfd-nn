@@ -16,10 +16,9 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ## High
 
-### DynamicSmagorinsky is a stub (hardcoded Cs=0.17)
-- **File**: `src/turbulence_les.cpp:555-572`
-- **Problem**: No Germano procedure. Identical to static Smagorinsky with a warning on first call.
-- **Fix**: Implement Germano procedure or rename to `smagorinsky_constant`.
+### ~~DynamicSmagorinsky is a stub~~ ✅ DONE (branch: `dynamic-smag`)
+- Implemented full Germano procedure: 3-pass GPU kernel (interpolate, accumulate LM/MM, apply Cs²).
+- Plane-averaged Cs² with box test filter at 2Δ, y-wall truncation, [0, 0.5] clipping.
 
 ### 4th-order spatial discretization is partial
 - **File**: `src/solver_operators.cpp`
