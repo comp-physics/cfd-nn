@@ -1831,10 +1831,10 @@ double RANSSolver::step() {
         const int w_stride = Nx + 2 * Ng;
         const int w_plane  = w_stride * (Ny + 2 * Ng);
         if (gpu_ready_) {
-            halo_exchange_->exchange_device(velocity_star_u_ptr_, u_stride, u_plane);
-            halo_exchange_->exchange_device(velocity_star_v_ptr_, v_stride, v_plane);
+            halo_exchange_->exchange_host_staged(velocity_star_.u_data().data(), u_stride, u_plane, velocity_star_.u_total_size());
+            halo_exchange_->exchange_host_staged(velocity_star_.v_data().data(), v_stride, v_plane, velocity_star_.v_total_size());
             if (!mesh_->is2D()) {
-                halo_exchange_->exchange_device(velocity_star_w_ptr_, w_stride, w_plane);
+                halo_exchange_->exchange_host_staged(velocity_star_.w_data().data(), w_stride, w_plane, velocity_star_.w_total_size());
             }
         } else {
             halo_exchange_->exchange(velocity_star_.u_data().data(), u_stride, u_plane);
@@ -2273,7 +2273,7 @@ double RANSSolver::step() {
                         const int max_outer = 10;
                         for (int outer = 0; outer < max_outer; ++outer) {
                             cycles += mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-                            halo_exchange_->exchange_device(pressure_corr_ptr_, p_stride, p_plane);
+                            halo_exchange_->exchange_host_staged(pressure_correction_.data().data(), p_stride, p_plane, field_total_size_);
                         }
                         final_residual = mg_poisson_solver_.residual();
                     } else
@@ -2372,7 +2372,7 @@ double RANSSolver::step() {
         const int p_stride = Nx + 2 * Ng;
         const int p_plane_stride = p_stride * (Ny + 2 * Ng);
         if (gpu_ready_) {
-            halo_exchange_->exchange_device(pressure_corr_ptr_, p_stride, p_plane_stride);
+            halo_exchange_->exchange_host_staged(pressure_correction_.data().data(), p_stride, p_plane_stride, field_total_size_);
         } else {
             halo_exchange_->exchange(pressure_correction_.data().data(), p_stride, p_plane_stride);
         }
@@ -2418,10 +2418,10 @@ double RANSSolver::step() {
         const int w_stride = Nx + 2 * Ng;
         const int w_plane  = w_stride * (Ny + 2 * Ng);
         if (gpu_ready_) {
-            halo_exchange_->exchange_device(velocity_u_ptr_, u_stride, u_plane);
-            halo_exchange_->exchange_device(velocity_v_ptr_, v_stride, v_plane);
+            halo_exchange_->exchange_host_staged(velocity_.u_data().data(), u_stride, u_plane, velocity_.u_total_size());
+            halo_exchange_->exchange_host_staged(velocity_.v_data().data(), v_stride, v_plane, velocity_.v_total_size());
             if (!mesh_->is2D()) {
-                halo_exchange_->exchange_device(velocity_w_ptr_, w_stride, w_plane);
+                halo_exchange_->exchange_host_staged(velocity_.w_data().data(), w_stride, w_plane, velocity_.w_total_size());
             }
         } else {
             halo_exchange_->exchange(velocity_.u_data().data(), u_stride, u_plane);

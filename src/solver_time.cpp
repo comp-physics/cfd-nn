@@ -950,7 +950,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
         const int p_stride_h = Nx + 2 * Ng;
         const int p_plane_h = p_stride_h * (Ny + 2 * Ng);
         if (gpu_ready_) {
-            halo_exchange_->exchange_device(pressure_corr_ptr_, p_stride_h, p_plane_h);
+            halo_exchange_->exchange_host_staged(pressure_correction_.data().data(), p_stride_h, p_plane_h, field_total_size_);
         } else {
             halo_exchange_->exchange(pressure_correction_.data().data(), p_stride_h, p_plane_h);
         }
@@ -993,10 +993,10 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
         const int w_stride_h = Nx + 2 * Ng;
         const int w_plane_h = w_stride_h * (Ny + 2 * Ng);
         if (gpu_ready_) {
-            halo_exchange_->exchange_device(velocity_u_ptr_, u_stride, u_plane_h);
-            halo_exchange_->exchange_device(velocity_v_ptr_, v_stride, v_plane_h);
+            halo_exchange_->exchange_host_staged(velocity_.u_data().data(), u_stride, u_plane_h, velocity_.u_total_size());
+            halo_exchange_->exchange_host_staged(velocity_.v_data().data(), v_stride, v_plane_h, velocity_.v_total_size());
             if (!mesh_->is2D()) {
-                halo_exchange_->exchange_device(velocity_w_ptr_, w_stride_h, w_plane_h);
+                halo_exchange_->exchange_host_staged(velocity_.w_data().data(), w_stride_h, w_plane_h, velocity_.w_total_size());
             }
         } else {
             halo_exchange_->exchange(velocity_.u_data().data(), u_stride, u_plane_h);

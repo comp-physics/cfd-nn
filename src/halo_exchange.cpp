@@ -150,16 +150,44 @@ void HaloExchange::exchange_device(double* d_field, int stride, int plane_stride
     cuda_kernels::launch_unpack_z_face(d_field, d_recv_hi_, Nx_, Ny_, Nz_local_, Ng_, false);
     cudaDeviceSynchronize();
 #elif defined(USE_MPI)
-    // OpenMP offload path: delegate to CPU exchange with host pointer.
-    // The caller must provide a host-accessible pointer (not a device pointer).
-    // For GPU fields, the solver must sync ghost planes GPU↔host around this call.
+    // OpenMP offload fallback: caller must pass the HOST pointer (the mapped
+    // copy) and bracket the call with target update from/to for the relevant
+    // z-planes. See exchange_host_staged() below.
     //
-    // This is intentionally simple. GPU-direct MPI requires USE_CUDA_KERNELS.
-    // The solver handles the GPU↔host sync via sync_solution_from/to_gpu() or
-    // field-level target update directives around the exchange() call.
-    exchange(d_field, stride, plane_stride);
+    // Passing a raw device pointer here would segfault in pack_face_cpu().
+    // The solver should call exchange_host_staged() instead.
+    throw std::runtime_error(
+        "[HaloExchange] exchange_device() without USE_CUDA_KERNELS: "
+        "use exchange_host_staged() for OpenMP offload builds.");
 #else
     throw std::runtime_error("[HaloExchange] exchange_device() requires USE_MPI.");
+#endif
+}
+
+void HaloExchange::exchange_host_staged(double* host_ptr, int stride,
+                                         int plane_stride, int total_size) {
+    if (!decomp_.is_parallel()) return;
+
+#ifdef USE_MPI
+    int lo_off = Ng_ * plane_stride;           // First interior z-plane
+    int hi_off = Nz_local_ * plane_stride;     // Last Ng interior z-planes
+    int ghost_len = Ng_ * plane_stride;        // Doubles per Ng z-planes
+    int hi_ghost_off = (Nz_local_ + Ng_) * plane_stride;
+
+    // GPU → host: fetch interior z-face planes that we need to send
+    #pragma omp target update from(host_ptr[lo_off : ghost_len])
+    #pragma omp target update from(host_ptr[hi_off : ghost_len])
+
+    // CPU exchange: pack, MPI send/recv, unpack — all on host memory
+    exchange(host_ptr, stride, plane_stride);
+
+    // Host → GPU: push received ghost z-planes back to device
+    #pragma omp target update to(host_ptr[0 : ghost_len])
+    #pragma omp target update to(host_ptr[hi_ghost_off : ghost_len])
+
+    (void)total_size;  // Used for future bounds checking
+#else
+    (void)host_ptr; (void)stride; (void)plane_stride; (void)total_size;
 #endif
 }
 

@@ -42,6 +42,13 @@ public:
     /// Uses CUDA pack/unpack kernels + MPI on device pointers
     void exchange_device(double* d_field, int stride, int plane_stride);
 
+    /// Exchange z-halos for an OpenMP-mapped field (host pointer, GPU-resident)
+    /// Uses target update from/to for GPU↔host sync + CPU MPI exchange.
+    /// @param host_ptr  Host pointer to the mapped array (NOT device pointer)
+    /// @param total_size Total array size in doubles (for target update bounds)
+    void exchange_host_staged(double* host_ptr, int stride, int plane_stride,
+                               int total_size);
+
     /// Exchange z-halos for multiple fields simultaneously (CPU)
     void exchange_batch(double** fields, int num_fields, int stride, int plane_stride);
 
