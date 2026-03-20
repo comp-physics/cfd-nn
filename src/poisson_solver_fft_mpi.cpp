@@ -13,6 +13,7 @@
 #include "poisson_solver_fft.hpp"
 #endif
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
@@ -138,10 +139,38 @@ int FFTMPIPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
     (void)rhs_ptr; (void)p_ptr; (void)cfg;
 #endif
 
-    // Multi-rank GPU path: would use CUDA-aware MPI + cuFFT
-    // For now, fall back to error since this needs GPU + MPI testing
-    throw std::runtime_error("FFTMPIPoissonSolver::solve_device() distributed "
-                            "GPU path not yet implemented (requires CUDA-aware MPI)");
+    // Multi-rank GPU path: stage through host memory.
+    // 1. Copy RHS from GPU to host ScalarField
+    // 2. Run the existing distributed CPU solve (MPI transpose + FFT + tridiag)
+    // 3. Copy solution from host back to GPU
+    // No CUDA-aware MPI needed — all MPI communication happens on host.
+    {
+        const int total_Nx = Nx_ + 2 * Ng_;
+        const int total_Ny = Ny_ + 2 * Ng_;
+        const int total_Nz = Nz_local_ + 2 * Ng_;
+        const int field_size = total_Nx * total_Ny * total_Nz;
+
+        ScalarField rhs_host(*mesh_);
+        ScalarField p_host(*mesh_);
+
+        // GPU → host: copy RHS
+        #pragma omp target update from(rhs_ptr[0:field_size])
+        std::memcpy(rhs_host.data().data(), rhs_ptr, field_size * sizeof(double));
+
+        // Copy initial guess for warm-start
+        #pragma omp target update from(p_ptr[0:field_size])
+        std::memcpy(p_host.data().data(), p_ptr, field_size * sizeof(double));
+
+        // Solve on host via MPI distributed FFT
+        int result = solve_distributed_cpu(rhs_host, p_host);
+        residual_ = 0.0;  // Direct solver
+
+        // Host → GPU: copy solution
+        std::memcpy(p_ptr, p_host.data().data(), field_size * sizeof(double));
+        #pragma omp target update to(p_ptr[0:field_size])
+
+        return result;
+    }
 }
 
 // ============================================================================
