@@ -540,8 +540,8 @@ public:
         std::vector<double> k_z;      ///< Wavenumbers
         std::vector<double> E_uu;     ///< Energy spectrum of u
 
-        /// Check for narrow spike at recirculation frequency
-        bool has_recirculation_spike(double x_recycle, double U_bulk, double tol = 5.0) const;
+        /// Check for narrow spike in spanwise spectrum
+        bool has_recirculation_spike(double tol = 5.0) const;
 
         /// Check for aliasing pileup at high wavenumbers
         bool has_aliasing_pileup(double tol = 1.5) const;

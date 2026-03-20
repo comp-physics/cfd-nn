@@ -566,14 +566,8 @@ RANSSolver::SpanwiseSpectrum RANSSolver::compute_spanwise_spectrum(double y_plus
     return spec;
 }
 
-bool RANSSolver::SpanwiseSpectrum::has_recirculation_spike(double /*x_recycle*/,
-                                                            double /*U_bulk*/,
-                                                            double tol) const {
+bool RANSSolver::SpanwiseSpectrum::has_recirculation_spike(double tol) const {
     if (k_z.empty() || E_uu.empty()) return false;
-
-    // Recirculation timescale: tau = x_recycle / U_bulk
-    // Corresponding frequency spike would appear if there's inlet memory
-    // This is more of a time-series check, but we can look for narrow peaks
 
     // Find the peak energy and check if any single wavenumber has >> average
     double E_mean = std::accumulate(E_uu.begin(), E_uu.end(), 0.0) / E_uu.size();
@@ -652,7 +646,7 @@ RANSSolver::TurbulenceRealismReport RANSSolver::validate_turbulence_realism() co
         auto spec = compute_spanwise_spectrum(15.0);
         double U_bulk = bulk_velocity();
         double x_recycle = (use_recycling_) ? mesh_->xc[recycle_i_] : mesh_->x_max;
-        report.spectrum_ok = !spec.has_recirculation_spike(x_recycle, U_bulk) &&
+        report.spectrum_ok = !spec.has_recirculation_spike() &&
                              !spec.has_aliasing_pileup();
     } else {
         report.spectrum_ok = true;  // Skip for 2D
@@ -1158,7 +1152,7 @@ RANSSolver::TurbulenceRealismReport RANSSolver::validate_turbulence_realism(Vali
         auto spec = compute_spanwise_spectrum(15.0);
         double U_bulk = bulk_velocity();
         double x_recycle = (use_recycling_) ? mesh_->xc[recycle_i_] : mesh_->x_max;
-        report.spectrum_ok = !spec.has_recirculation_spike(x_recycle, U_bulk) &&
+        report.spectrum_ok = !spec.has_recirculation_spike() &&
                              !spec.has_aliasing_pileup();
     } else {
         report.spectrum_ok = true;  // Skip for 2D
