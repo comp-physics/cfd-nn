@@ -627,6 +627,25 @@ void RANSSolver::set_decomposition(Decomposition* decomp) {
         auto* dsmag = dynamic_cast<DynamicSmagorinskyModel*>(turb_model_.get());
         if (dsmag) dsmag->set_decomposition(decomp);
     }
+
+    // Retry FFT_MPI initialization if it was requested but decomp wasn't set yet
+#if defined(USE_MPI) && defined(USE_FFT_POISSON)
+    if (decomp_ && config_.poisson_solver == PoissonSolverType::FFT_MPI &&
+        selected_solver_ != PoissonSolverType::FFT_MPI && !fft_mpi_poisson_solver_) {
+        try {
+            fft_mpi_poisson_solver_ = std::make_unique<FFTMPIPoissonSolver>(*mesh_, *decomp_);
+            fft_mpi_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                             PoissonBC::Neumann, PoissonBC::Neumann,
+                                             PoissonBC::Periodic, PoissonBC::Periodic);
+            fft_mpi_poisson_solver_->set_space_order(config_.space_order);
+            selected_solver_ = PoissonSolverType::FFT_MPI;
+            selection_reason_ = "deferred: FFT_MPI initialized after set_decomposition";
+            std::cout << "[Poisson] FFT_MPI initialized (deferred)\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[Solver] Warning: Deferred FFT_MPI init failed: " << e.what() << "\n";
+        }
+    }
+#endif
 }
 
 void RANSSolver::set_velocity_bc(const VelocityBC& bc) {

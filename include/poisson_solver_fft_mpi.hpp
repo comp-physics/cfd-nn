@@ -1,19 +1,18 @@
 #pragma once
 
 /// @file poisson_solver_fft_mpi.hpp
-/// @brief Distributed FFT Poisson solver with MPI pencil transpose
+/// @brief Distributed GPU FFT Poisson solver with MPI pencil transpose
 ///
-/// For single-rank: delegates to the existing FFTPoissonSolver.
-/// For multi-rank (z-slab decomposition):
-///   1. Forward 1D FFT in x (local, each rank has full x)
-///   2. MPI_Alltoallv transpose: z-slabs → z-pencils
-///   3. Forward 1D FFT in z (local, each rank now has full z)
-///   4. Tridiagonal solve in y for each (kx,kz) mode
-///   5. Inverse 1D FFT in z
-///   6. MPI_Alltoallv transpose: z-pencils → z-slabs
-///   7. Inverse 1D FFT in x
+/// For single-rank: delegates to the existing FFTPoissonSolver (GPU).
+/// For multi-rank (z-slab decomposition), all compute stays on GPU:
+///   1. cuFFT 1D R2C in x (local, each rank has full x)
+///   2. MPI_Alltoallv: z-slabs → kx-pencils (host-staged)
+///   3. cuFFT 1D C2C in z (local, each rank now has full z)
+///   4. Transpose j↔kz for cuSPARSE layout
+///   5. cuSPARSE batched tridiagonal solve in y
+///   6. Inverse of steps 4-1
 ///
-/// Requires USE_MPI and USE_FFT_POISSON.
+/// Requires USE_MPI and USE_FFT_POISSON (implies GPU + CUDAToolkit).
 
 #include "mesh.hpp"
 #include "fields.hpp"
@@ -22,6 +21,12 @@
 
 #include <vector>
 #include <memory>
+
+#ifdef USE_FFT_POISSON
+#include <cufft.h>
+#include <cusparse.h>
+#include <cuda_runtime.h>
+#endif
 
 namespace nncfd {
 
@@ -55,17 +60,11 @@ public:
                            PoissonBC z_lo, PoissonBC z_hi,
                            bool uniform_x, bool uniform_z);
 
-    /// Solve on host memory (CPU path)
-    /// @param rhs  Right-hand side field (local z-slab)
-    /// @param p    Pressure solution (local z-slab)
-    /// @return Number of iterations (1 for direct solver)
+    /// Solve on host memory (not supported for distributed — use solve_device)
     int solve(const ScalarField& rhs, ScalarField& p,
               const PoissonConfig& cfg = PoissonConfig());
 
     /// Solve on device memory (GPU path)
-    /// @param rhs_ptr  Device pointer to RHS with ghost cells
-    /// @param p_ptr    Device pointer to solution with ghost cells
-    /// @return 1 (direct solver)
     int solve_device(double* rhs_ptr, double* p_ptr,
                      const PoissonConfig& cfg = PoissonConfig());
 
@@ -94,38 +93,64 @@ private:
     std::unique_ptr<FFTPoissonSolver> serial_solver_;
 #endif
 
-    // Multi-rank distributed solve buffers
     bool distributed_ = false;
     int Nx_, Ny_, Nz_local_, Nz_global_, Ng_;
 
-    // MPI transpose buffers (host-staged for CPU path)
-    std::vector<double> send_buf_;  // packed local data for alltoallv
-    std::vector<double> recv_buf_;  // received pencil data
-    std::vector<int> send_counts_;
-    std::vector<int> send_displs_;
-    std::vector<int> recv_counts_;
-    std::vector<int> recv_displs_;
+#ifdef USE_FFT_POISSON
+    int Nx_c_ = 0;  // Nx/2 + 1 (R2C complex output size in x)
 
-    // Precomputed eigenvalues
-    std::vector<double> lambda_x_;  // size Nx
-    std::vector<double> lambda_z_;  // size Nz_global
+    // Lazy GPU initialization: set up on first solve_device() call
+    bool gpu_initialized_ = false;
+    void initialize_gpu();
+    void free_gpu();
 
-    // Tridiagonal coefficients for y-direction
-    std::vector<double> tri_lower_;  // aS(j), size Ny
-    std::vector<double> tri_upper_;  // aN(j), size Ny
-    std::vector<double> tri_diag_;   // -(aS+aN), size Ny
+    // cuFFT plans
+    cufftHandle x_r2c_ = 0;   // 1D R2C in x, batch = Ny * Nz_local
+    cufftHandle x_c2r_ = 0;   // 1D C2R in x, batch = Ny * Nz_local
+    cufftHandle z_fwd_ = 0;   // 1D C2C forward in z, batch = my_kx_count * Ny
+    cufftHandle z_inv_ = 0;   // 1D C2C inverse in z, batch = my_kx_count * Ny
+    cudaStream_t stream_ = nullptr;
 
-    // Work arrays for CPU distributed solve
-    std::vector<double> work_real_;
-    std::vector<double> work_imag_;
+    // GPU buffers (cudaMallocManaged)
+    double* rhs_packed_ = nullptr;            // Nx * Ny * Nz_local (real)
+    double* p_packed_ = nullptr;              // Nx * Ny * Nz_local (real)
+    cufftDoubleComplex* hat_x_ = nullptr;     // Nx_c * Ny * Nz_local (after x-FFT)
+    cufftDoubleComplex* pencil_ = nullptr;    // my_kx_count * Ny * Nz_global (after transpose)
+    cufftDoubleComplex* mode_buf_ = nullptr;  // n_local_modes * Ny (cuSPARSE layout)
 
-    void initialize_distributed();
-    void compute_eigenvalues();
-    void compute_tridiagonal_coeffs();
-    void compute_alltoallv_params();
+    // Eigenvalues and tridiag coefficients (cudaMallocManaged)
+    double* lambda_x_ = nullptr;       // size Nx_c
+    double* lambda_z_ = nullptr;       // size Nz_global
+    double* tri_lower_ = nullptr;      // size Ny (aS)
+    double* tri_upper_ = nullptr;      // size Ny (aN)
+    double* tri_diag_base_ = nullptr;  // size Ny (-(aS+aN))
+    double* dyv_dev_ = nullptr;        // size Ny (volume weights)
+    double total_volume_ = 0.0;
 
-    // CPU distributed solve implementation
-    int solve_distributed_cpu(const ScalarField& rhs, ScalarField& p);
+    // cuSPARSE for batched tridiagonal solve
+    cusparseHandle_t cusparse_handle_ = nullptr;
+    cufftDoubleComplex* tri_dl_ = nullptr;  // n_local_modes * Ny
+    cufftDoubleComplex* tri_d_ = nullptr;
+    cufftDoubleComplex* tri_du_ = nullptr;
+    void* cusparse_buffer_ = nullptr;
+    size_t cusparse_buffer_size_ = 0;
+
+    // MPI transpose parameters
+    int my_kx_start_ = 0;
+    int my_kx_count_ = 0;
+    int n_local_modes_ = 0;  // my_kx_count * Nz_global
+    std::vector<int> fwd_send_counts_, fwd_send_displs_;
+    std::vector<int> fwd_recv_counts_, fwd_recv_displs_;
+    std::vector<int> rev_send_counts_, rev_send_displs_;
+    std::vector<int> rev_recv_counts_, rev_recv_displs_;
+
+    // Host staging for MPI (non-CUDA-aware MPI)
+    std::vector<double> send_host_;
+    std::vector<double> recv_host_;
+
+    // GPU pipeline steps
+    int solve_device_distributed(double* rhs_ptr, double* p_ptr);
+#endif
 };
 
 } // namespace nncfd

@@ -769,6 +769,8 @@ add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS med
         target_link_libraries(bench_mg_cuda_graphs PRIVATE nn_cfd_core)
         add_executable(bench_les_ibm_gpu tests/bench_les_ibm_gpu.cpp)
         target_link_libraries(bench_les_ibm_gpu PRIVATE nn_cfd_core)
+        add_executable(bench_mpi_poisson tests/bench_mpi_poisson.cpp)
+        target_link_libraries(bench_mpi_poisson PRIVATE nn_cfd_core)
     endif()
 
     add_nncfd_test(verify_implicit_ydiff TEST_NAME_SUFFIX ImplicitYDiffTest LABELS "medium")
