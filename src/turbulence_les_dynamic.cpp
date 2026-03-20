@@ -69,10 +69,29 @@ void DynamicSmagorinskyModel::update(
     const ScalarField& k, const ScalarField& omega,
     ScalarField& nu_t, TensorField* tau_ij,
     const TurbulenceDeviceView* device_view) {
+    // 2D: Germano test filter requires 3D stencils — force CPU path
+    // which uses static Cs=0.17 via compute_nu_sgs_cell
+    if (mesh.is2D()) {
+        static bool warned_2d = false;
+        if (!warned_2d) {
+            std::cerr << "[LES] WARNING: DynamicSmagorinsky in 2D uses static Cs=0.17 "
+                      << "(Germano test filter requires 3D).\n";
+            warned_2d = true;
+        }
+        // Force CPU path by passing nullptr for device_view
+        LESModel::update(mesh, velocity, k, omega, nu_t, tau_ij, nullptr);
+        return;
+    }
     LESModel::update(mesh, velocity, k, omega, nu_t, tau_ij, device_view);
 }
 
 void DynamicSmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
+    // 2D guard: should not reach here for 2D (handled in update() above)
+    // but if it does, fall back safely
+    if (!dv->is3D()) {
+        return;  // nu_t stays at whatever compute_nu_sgs_cell set
+    }
+
     if (!dyn_gpu_ready_) init_dynamic_gpu(dv);
     dsmag_pass0_interpolate(dv, u_cc_, v_cc_, w_cc_, cell_total_);
     dsmag_pass1_germano(dv, u_cc_, v_cc_, w_cc_, LM_plane_, MM_plane_, cell_total_, Ny_);
