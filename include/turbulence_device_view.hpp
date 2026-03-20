@@ -9,7 +9,6 @@
 
 namespace nncfd {
 
-/// Device view for turbulence models: raw pointers + scalars for GPU kernels
 struct TurbulenceDeviceView {
     double* u_face = nullptr;
     double* v_face = nullptr;

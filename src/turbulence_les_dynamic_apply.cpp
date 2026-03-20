@@ -1,4 +1,5 @@
 /// @file turbulence_les_dynamic_apply.cpp
+#include "turbulence_device_view.hpp"
 #include <cmath>
 #ifdef USE_GPU_OFFLOAD
 #include <omp.h>

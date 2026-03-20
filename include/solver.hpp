@@ -888,6 +888,7 @@ private:
 
     // Recycling inflow state and buffers
     bool use_recycling_ = false;           ///< Recycling inflow enabled
+    bool recycle_mpi_z_ = false;           ///< MPI z-decomposition active for recycling
     int recycle_i_ = -1;                   ///< Grid index of recycle plane
     int recycle_shift_k_ = 0;              ///< Current spanwise shift (z-index units)
     int recycle_shift_step_ = 0;           ///< Steps since last shift update
