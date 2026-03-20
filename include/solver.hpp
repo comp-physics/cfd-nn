@@ -1061,6 +1061,9 @@ private:
     double* inlet_u_ptr_ = nullptr;        ///< Device: processed inlet u
     double* inlet_v_ptr_ = nullptr;        ///< Device: processed inlet v
     double* inlet_w_ptr_ = nullptr;        ///< Device: processed inlet w
+    double* inlet_u_filt_ptr_ = nullptr;   ///< Device: AR1 filter state u
+    double* inlet_v_filt_ptr_ = nullptr;   ///< Device: AR1 filter state v
+    double* inlet_w_filt_ptr_ = nullptr;   ///< Device: AR1 filter state w
     size_t recycle_u_size_ = 0;            ///< Size of u recycle buffer
     size_t recycle_v_size_ = 0;            ///< Size of v recycle buffer
     size_t recycle_w_size_ = 0;            ///< Size of w recycle buffer

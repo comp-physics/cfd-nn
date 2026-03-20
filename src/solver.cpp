@@ -298,6 +298,20 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         config_.space_order = 2;
     }
 
+    // Warn about O4 limitations
+    if (config_.space_order == 4) {
+        if (mesh.is2D()) {
+            std::cerr << "[Solver] WARNING: space_order=4 is 3D-only for advection. "
+                      << "2D falls back to O2 for all operators.\n";
+        }
+        if (config_.implicit_y_diffusion) {
+            std::cerr << "[Solver] WARNING: space_order=4 with implicit_y_diffusion uses "
+                      << "O2 Thomas algorithm (no O4 pentadiagonal solver).\n";
+        }
+        std::cerr << "[Solver] NOTE: O4 applies to advection and pressure gradient only. "
+                  << "Diffusion always uses O2 stencils.\n";
+    }
+
     // Precompute wall distance (once, then stays on GPU if enabled)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -572,6 +586,20 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
 RANSSolver::~RANSSolver() {
     cleanup_gpu_buffers();  // Safe to call unconditionally (no-op when GPU disabled)
+
+    // Free recycling GPU buffers (allocated via omp_target_alloc, not target enter data)
+#ifdef USE_GPU_OFFLOAD
+    int dev = omp_get_default_device();
+    if (recycle_u_ptr_) omp_target_free(recycle_u_ptr_, dev);
+    if (recycle_v_ptr_) omp_target_free(recycle_v_ptr_, dev);
+    if (recycle_w_ptr_) omp_target_free(recycle_w_ptr_, dev);
+    if (inlet_u_ptr_) omp_target_free(inlet_u_ptr_, dev);
+    if (inlet_v_ptr_) omp_target_free(inlet_v_ptr_, dev);
+    if (inlet_w_ptr_) omp_target_free(inlet_w_ptr_, dev);
+    if (inlet_u_filt_ptr_) omp_target_free(inlet_u_filt_ptr_, dev);
+    if (inlet_v_filt_ptr_) omp_target_free(inlet_v_filt_ptr_, dev);
+    if (inlet_w_filt_ptr_) omp_target_free(inlet_w_filt_ptr_, dev);
+#endif
 }
 
 void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {

@@ -874,6 +874,16 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     (void)nu_eff;  // Unused - always operates on nu_eff_ via view
     (void)diff;    // Unused - always operates on diff_ via view
 
+    // O4 diffusion is not implemented — always uses O2 stencils
+    if (config_.space_order == 4) {
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "[Solver] WARNING: space_order=4 but O4 diffusion is not implemented. "
+                      << "Using O2 diffusion (3-point Laplacian).\n";
+            warned = true;
+        }
+    }
+
     // Get unified view
     auto v = get_solver_view();
 
@@ -1076,6 +1086,14 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
 
     // O4 spatial discretization for divergence (Dfc_O4)
     const bool use_O4 = (config_.space_order == 4);
+    if (use_O4 && mesh_->is_y_stretched()) {
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "[Solver] WARNING: space_order=4 divergence falls back to O2 "
+                      << "on stretched y-grids.\n";
+            warned = true;
+        }
+    }
 
     // Periodic flags for O4 boundary handling
     const bool x_periodic = (velocity_bc_.x_lo == VelocityBC::Periodic) &&

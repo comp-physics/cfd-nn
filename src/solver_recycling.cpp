@@ -359,8 +359,17 @@ void RANSSolver::initialize_recycling_inflow() {
     inlet_w_ptr_ = static_cast<double*>(
         omp_target_alloc(recycle_w_size_ * sizeof(double), device_id));
 
+    // AR1 temporal filter buffers (GPU)
+    inlet_u_filt_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_u_size_ * sizeof(double), device_id));
+    inlet_v_filt_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_v_size_ * sizeof(double), device_id));
+    inlet_w_filt_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_w_size_ * sizeof(double), device_id));
+
     if (!recycle_u_ptr_ || !recycle_v_ptr_ || !recycle_w_ptr_ ||
-        !inlet_u_ptr_ || !inlet_v_ptr_ || !inlet_w_ptr_) {
+        !inlet_u_ptr_ || !inlet_v_ptr_ || !inlet_w_ptr_ ||
+        !inlet_u_filt_ptr_ || !inlet_v_filt_ptr_ || !inlet_w_filt_ptr_) {
         throw std::runtime_error("Failed to allocate recycling buffers on GPU");
     }
 
@@ -374,21 +383,27 @@ void RANSSolver::initialize_recycling_inflow() {
     double* in_u = inlet_u_ptr_;
     double* in_v = inlet_v_ptr_;
     double* in_w = inlet_w_ptr_;
+    double* filt_u = inlet_u_filt_ptr_;
+    double* filt_v = inlet_v_filt_ptr_;
+    double* filt_w = inlet_w_filt_ptr_;
 
-    #pragma omp target teams distribute parallel for is_device_ptr(rec_u, in_u)
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_u, in_u, filt_u)
     for (size_t i = 0; i < n_u; ++i) {
         rec_u[i] = 0.0;
         in_u[i] = 0.0;
+        filt_u[i] = 0.0;
     }
-    #pragma omp target teams distribute parallel for is_device_ptr(rec_v, in_v)
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_v, in_v, filt_v)
     for (size_t i = 0; i < n_v; ++i) {
         rec_v[i] = 0.0;
         in_v[i] = 0.0;
+        filt_v[i] = 0.0;
     }
-    #pragma omp target teams distribute parallel for is_device_ptr(rec_w, in_w)
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_w, in_w, filt_w)
     for (size_t i = 0; i < n_w; ++i) {
         rec_w[i] = 0.0;
         in_w[i] = 0.0;
+        filt_w[i] = 0.0;
     }
 #endif
 
@@ -709,10 +724,32 @@ void RANSSolver::process_recycle_inflow() {
         recycle_diag_.L2_copy = std::sqrt(gpu_sum_sq_reduce(in_u, n_u));
     }
 
-    // Step 2: Temporal filtering (if enabled)
+    // Step 2: Temporal AR1 filtering on GPU
+    // filtered = alpha * filtered_old + (1 - alpha) * new_value
     if (use_filter) {
-        // Would need inlet_u_filt_ptr_ etc. on GPU - skipping for now
-        // In practice, filtering on GPU requires additional device buffers
+        double* filt_u = inlet_u_filt_ptr_;
+        double* filt_v = inlet_v_filt_ptr_;
+        double* filt_w = inlet_w_filt_ptr_;
+        const double one_minus_alpha = 1.0 - alpha;
+
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(in_u, filt_u) firstprivate(alpha, one_minus_alpha)
+        for (int i = 0; i < n_u; ++i) {
+            filt_u[i] = alpha * filt_u[i] + one_minus_alpha * in_u[i];
+            in_u[i] = filt_u[i];
+        }
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(in_v, filt_v) firstprivate(alpha, one_minus_alpha)
+        for (int i = 0; i < n_v; ++i) {
+            filt_v[i] = alpha * filt_v[i] + one_minus_alpha * in_v[i];
+            in_v[i] = filt_v[i];
+        }
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(in_w, filt_w) firstprivate(alpha, one_minus_alpha)
+        for (int i = 0; i < n_w; ++i) {
+            filt_w[i] = alpha * filt_w[i] + one_minus_alpha * in_w[i];
+            in_w[i] = filt_w[i];
+        }
     }
 
     // [Diag] Capture state after AR1 filter (GPU) - same as copy when no filter
