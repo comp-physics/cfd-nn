@@ -182,6 +182,19 @@ void RANSSolver::reset_statistics() {
 }
 
 void RANSSolver::accumulate_statistics() {
+    // MPI: statistics plane averages require allreduce between mean and
+    // fluctuation passes — not yet implemented for z-decomposition.
+#ifdef USE_MPI
+    if (decomp_ && decomp_->is_parallel() && mesh_->Nz == decomp_->nz_local()) {
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "[Stats] WARNING: accumulate_statistics() not MPI-aware. "
+                      << "Plane averages are local per rank.\n";
+            warned = true;
+        }
+    }
+#endif
+
     // Sync velocity data from GPU to CPU before computing statistics
     // Without this, CPU reads stale initial-condition data (Poiseuille)
     if (gpu_ready_) {

@@ -174,6 +174,15 @@ void RANSSolver::initialize_recycling_inflow() {
         throw std::runtime_error("Recycling inflow requires 3D simulation (Nz > 1)");
     }
 
+    // MPI z-decomposition not supported: spanwise shift and plane extraction
+    // require global z-access that is not yet implemented for multi-rank.
+#ifdef USE_MPI
+    if (decomp_ && decomp_->is_parallel() && mesh_->Nz == decomp_->nz_local()) {
+        throw std::runtime_error("Recycling inflow is not yet compatible with MPI "
+                                 "z-decomposition. Use single-rank for recycling cases.");
+    }
+#endif
+
     // Must have periodic z for spanwise shift
     if (velocity_bc_.z_lo != VelocityBC::Periodic || velocity_bc_.z_hi != VelocityBC::Periodic) {
         throw std::runtime_error("Recycling inflow requires periodic z boundary conditions");

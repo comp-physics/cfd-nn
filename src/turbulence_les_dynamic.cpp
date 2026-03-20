@@ -9,6 +9,7 @@
 ///   - turbulence_les_dynamic_gpu.cpp      — GPU buffer allocation/deallocation
 
 #include "turbulence_les.hpp"
+#include "decomposition.hpp"
 #include <cmath>
 #include <iostream>
 
@@ -75,6 +76,18 @@ void DynamicSmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
     if (!dyn_gpu_ready_) init_dynamic_gpu(dv);
     dsmag_pass0_interpolate(dv, u_cc_, v_cc_, w_cc_, cell_total_);
     dsmag_pass1_germano(dv, u_cc_, v_cc_, w_cc_, LM_plane_, MM_plane_, cell_total_, Ny_);
+
+    // MPI: allreduce plane sums so Cs²(j) uses the global LM/MM
+#ifdef USE_MPI
+    if (decomp_ && decomp_->is_parallel()) {
+        // Sync LM/MM from GPU to host for allreduce
+        #pragma omp target update from(LM_plane_[0:Ny_], MM_plane_[0:Ny_])
+        decomp_->allreduce_sum(LM_plane_, Ny_);
+        decomp_->allreduce_sum(MM_plane_, Ny_);
+        #pragma omp target update to(LM_plane_[0:Ny_], MM_plane_[0:Ny_])
+    }
+#endif
+
     dsmag_pass2_apply(dv, LM_plane_, MM_plane_, Cs2_plane_, Ny_);
 }
 

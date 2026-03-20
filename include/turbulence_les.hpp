@@ -116,10 +116,15 @@ private:
 /// Dynamic Smagorinsky model (Germano et al. 1991, Lilly 1992)
 /// Cs^2 computed dynamically via Germano identity with test filter at 2*delta.
 /// Uses plane-averaged Cs^2 in x-z (homogeneous directions).
+class Decomposition;  // Forward declaration
+
 class DynamicSmagorinskyModel : public LESModel {
 public:
     ~DynamicSmagorinskyModel() override;
     std::string name() const override { return "DynamicSmagorinsky"; }
+
+    /// Set MPI decomposition for plane-averaged Cs² allreduce
+    void set_decomposition(Decomposition* decomp) { decomp_ = decomp; }
 
     void update(const Mesh& mesh, const VectorField& velocity,
                 const ScalarField& k, const ScalarField& omega,
@@ -145,6 +150,7 @@ private:
     int Ny_ = 0;
     int cell_total_ = 0;
     bool dyn_gpu_ready_ = false;
+    Decomposition* decomp_ = nullptr;  // For MPI allreduce of plane sums
 };
 
 } // namespace nncfd

@@ -13,6 +13,7 @@
 /// ensuring numerical consistency between platforms.
 
 #include "solver.hpp"
+#include "turbulence_les.hpp"
 #include "ibm_forcing.hpp"
 #include "decomposition.hpp"
 #include "halo_exchange.hpp"
@@ -592,6 +593,11 @@ void RANSSolver::set_decomposition(Decomposition* decomp) {
             *decomp_,
             mesh_->Nx, mesh_->Ny, decomp_->nz_local(),
             mesh_->Nghost);
+    }
+    // Forward decomposition to Dynamic Smagorinsky for LM/MM plane allreduce
+    if (turb_model_) {
+        auto* dsmag = dynamic_cast<DynamicSmagorinskyModel*>(turb_model_.get());
+        if (dsmag) dsmag->set_decomposition(decomp);
     }
 }
 
