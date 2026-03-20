@@ -31,10 +31,6 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 ### NVHPC workarounds throughout codebase
 - **Status**: Required by current compiler. Remove when nvc++ fixes implicit `this` handling.
 
-### Recirculation spike detection has unused parameters
-- **File**: `src/solver_turbulence_diagnostics.cpp:546-568`
-- **Note**: Function is called (3 call sites) and has real spike-detection logic. `x_recycle`/`U_bulk` params are unused but the function is NOT dead.
-
 ---
 
 ## Completed ✅
@@ -85,6 +81,6 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | **Critical** | 0 |
 | **High** | 0 |
 | **Medium** | 2 |
-| **Low** | 2 |
-| **Total open** | **4** |
+| **Low** | 1 |
+| **Total open** | **3** |
 | **Completed** | **34** |
