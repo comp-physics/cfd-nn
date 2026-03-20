@@ -16,10 +16,6 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ## High
 
-### ~~DynamicSmagorinsky is a stub~~ ✅ DONE (branch: `dynamic-smag`)
-- Implemented full Germano procedure: 3-pass GPU kernel (interpolate, accumulate LM/MM, apply Cs²).
-- Plane-averaged Cs² with box test filter at 2Δ, y-wall truncation, [0, 0.5] clipping.
-
 ### 4th-order spatial discretization is partial
 - **File**: `src/solver_operators.cpp`
 - **Problem**: O4 convection is 3D-only. O4 diffusion not implemented. O4 divergence 3D uniform-y only. MG errors on O4.
@@ -54,12 +50,9 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 - **Problem**: Should use 4-point corner averaging for sharp nu_t gradients near walls.
 
 ### No moving/rotating IBM bodies
-- **Files**: `include/ibm_geometry.hpp`, `src/ibm_forcing.cpp`
 - **Scope**: Major feature addition, not a bug. Static bodies only.
 
 ### No multi-body IBM support
-- **File**: `include/solver.hpp`
-- **Problem**: Single `ibm_` pointer.
 - **Workaround**: Combine via custom IBMBody subclass with `phi = min(body1.phi, body2.phi)`.
 
 ---
@@ -71,12 +64,10 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ### Recirculation spike detection stub
 - **File**: `src/solver_turbulence_diagnostics.cpp:546-568`
-- **Problem**: `has_recirculation_spike()` always returns `false`.
-- **Fix**: Remove the function (it's never meaningfully used).
+- **Fix**: Remove the function (always returns false, never used).
 
 ### Pope EARSM constants hardcoded
 - **File**: `src/turbulence_earsm.cpp:652`
-- **Problem**: C1=0.1, C2=0.1 not configurable.
 - **Fix**: Add `pope_C1` and `pope_C2` config parameters.
 
 ---
@@ -87,21 +78,27 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 |---|------|----------|---------|
 | 1 | FFT_MPI wired into solver factory | Critical | Factory case, diagnostics, GPU dispatch |
 | 2 | Multi-GPU MPI solver fixed | Critical | 5 fixes: z-BC skip, velocity_star_ halo, global mean_div, Schwarz pressure, halo buffer sizing |
-| 3 | GPU↔host staged halo exchange | Critical | `exchange_host_staged()` with `target update from/to` — no CUDA-aware MPI needed |
+| 3 | GPU↔host staged halo exchange | Critical | `exchange_host_staged()` with `target update from/to` |
 | 4 | Auto GPU assignment for MPI | Critical | `CUDA_VISIBLE_DEVICES=local_rank` inside solver constructor |
 | 5 | CUDA Graphs disabled for MPI | Critical | Auto-disabled when Schwarz outer loop is active |
 | 6 | MPI halo exchange wired into step | Critical | Euler + RK paths, pressure + velocity halos |
 | 7 | FFT_MPI CPU single-rank error | Critical | Clear error (FFTPoissonSolver is GPU-only) |
 | 8 | HDF5 checkpoint dead code removed | Critical | Deleted header, impl, test (442 LOC) |
-| 9 | SOR solver removed | Medium | Deleted `poisson_solver.cpp` (370 LOC), `PoissonSolver` class, `poisson_omega` config |
+| 9 | SOR solver removed | Medium | Deleted `poisson_solver.cpp` (370 LOC), `PoissonSolver` class |
 | 10 | GPU baseline populated | High | `baseline_gpu.json` from RTX 6000 run |
-| 11 | GPU CI perf suite removed | High | Unreliable across GPU types; manual benchmarking via scripts |
-| 12 | CI auto-cancel on push | — | `cancel-in-progress: true` on both CPU and GPU CI |
-| 13 | CI timeouts increased | — | 240→360 min GitHub Actions, 30→60 sacct retries |
-| 14 | Orphaned CI scripts removed | — | gpu_perf_suite.sh, gpu_ci_perf.sbatch.template, gpu_correctness_suite.sh |
-| 15 | MPI halo step test added | — | `test_mpi_halo_step`: decomposed mesh, 1/2/4 ranks, verified on 2×L40S GPU |
-| 16 | Old recycling commented code removed | Low | Cleaned dead code from `solver_recycling.cpp` |
-| 17 | Poisson test thresholds fixed | — | Migrated from SOR to MG with proper `tol_rhs`/`tol_rel` |
+| 11 | GPU CI perf suite removed | High | Unreliable across GPU types |
+| 12 | CI auto-cancel on push | — | `cancel-in-progress: true` on both workflows |
+| 13 | CI timeouts increased | — | 240→360 min, 30→60 sacct retries |
+| 14 | Orphaned CI scripts removed | — | 3 dead scripts deleted |
+| 15 | MPI halo step test added | — | Decomposed mesh, 1/2/4 ranks, verified on 2×L40S + 2×H200 |
+| 16 | Old recycling commented code removed | Low | Cleaned dead code |
+| 17 | Poisson test thresholds fixed | — | Migrated SOR tests to MG with proper tolerances |
+| 18 | Dynamic Smagorinsky implemented | High | Full Germano procedure, 3-pass GPU, plane-averaged Cs² |
+| 19 | Dynamic Smag nvc++ workaround | — | Split into 5 files with minimal header to avoid nvc++ crash |
+| 20 | Dynamic Smag MPI allreduce | — | LM/MM plane sums allreduced for multi-GPU Cs² |
+| 21 | Statistics MPI allreduce | — | Two-pass mean/fluctuation with allreduce between passes |
+| 22 | Recycling inflow MPI support | — | MPI_Allgather for global plane assembly, shift with Nz_global |
+| 23 | TurbulenceDeviceView extracted | — | Minimal 97-line header avoids 107K preprocessed lines in GPU kernels |
 
 ---
 
@@ -110,8 +107,8 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | Severity | Remaining |
 |----------|-----------|
 | **Critical** | 1 (FFT_MPI distributed GPU) |
-| **High** | 3 |
+| **High** | 2 |
 | **Medium** | 6 |
 | **Low** | 3 |
-| **Total open** | **13** |
-| **Completed** | **17** |
+| **Total open** | **12** |
+| **Completed** | **23** |
