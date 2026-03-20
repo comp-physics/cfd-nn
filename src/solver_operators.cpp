@@ -1221,10 +1221,10 @@ void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
         }
     } else {
         // 2D divergence with uniform spacing
-        #pragma omp target data map(to: dx, dy, u_stride, v_stride, div_stride, Nx, Ng)
         {
             #pragma omp target teams distribute parallel for \
-                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size])
+                map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], div_ptr[0:div_total_size]) \
+                firstprivate(dx, dy, u_stride, v_stride, div_stride, Nx, Ng)
             for (int idx = 0; idx < n_cells; ++idx) {
                 const int i = idx % Nx + Ng;  // Cell center i index (with ghosts)
                 const int j = idx / Nx + Ng;  // Cell center j index (with ghosts)
