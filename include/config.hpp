@@ -119,7 +119,9 @@ struct Config {
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
     double nu_t_max = 1.0;      ///< Maximum eddy viscosity (clipping)
-    
+    double pope_C1 = 0.1;       ///< Pope quadratic EARSM C1 constant
+    double pope_C2 = 0.1;       ///< Pope quadratic EARSM C2 constant
+
     // NN model paths (must be explicitly specified - no legacy fallback)
     std::string nn_weights_path;
     std::string nn_scaling_path;

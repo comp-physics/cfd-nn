@@ -168,7 +168,9 @@ protected:
 std::unique_ptr<TurbulenceModel> create_turbulence_model(
     TurbulenceModelType type,
     const std::string& weights_path = "",
-    const std::string& scaling_path = ""
+    const std::string& scaling_path = "",
+    double pope_C1 = 0.1,
+    double pope_C2 = 0.1
 );
 
 } // namespace nncfd

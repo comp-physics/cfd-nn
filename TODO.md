@@ -18,12 +18,6 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ## Medium
 
-### FFT1D cannot handle stretched y-grids
-- **File**: `include/poisson_solver_fft1d.hpp:156`
-- **Problem**: Internal 2D MG uses uniform `1/(dy*dy)`. Auto-selection correctly skips it; explicit request will error.
-- **Fix**: Add a clear error message, or implement stretched-y support in FFT1D's 2D MG.
-
-
 ### No moving/rotating IBM bodies
 - **Scope**: Major feature addition, not a bug. Static bodies only.
 
@@ -37,13 +31,9 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 ### NVHPC workarounds throughout codebase
 - **Status**: Required by current compiler. Remove when nvc++ fixes implicit `this` handling.
 
-### Recirculation spike detection stub
+### Recirculation spike detection has unused parameters
 - **File**: `src/solver_turbulence_diagnostics.cpp:546-568`
-- **Fix**: Remove the function (always returns false, never used).
-
-### Pope EARSM constants hardcoded
-- **File**: `src/turbulence_earsm.cpp:652`
-- **Fix**: Add `pope_C1` and `pope_C2` config parameters.
+- **Note**: Function is called (3 call sites) and has real spike-detection logic. `x_recycle`/`U_bulk` params are unused but the function is NOT dead.
 
 ---
 
@@ -83,6 +73,8 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | 30 | TBNN tensor basis implemented | Medium | Full Pope (1975) 10-tensor basis for 3D, 4-tensor for 2D, consistent with C++ |
 | 31 | MLP/TBNN metadata fixed | Medium | All 4 metadata.json files updated to match actual C++ normalized features |
 | 32 | 4-point viscosity face averaging | Medium | Cross-direction faces use proper corner average; same-direction use direct cell value |
+| 33 | FFT1D stretched y-grid error message | Medium | Clear runtime_error when FFT1D explicitly requested on stretched grid |
+| 34 | Pope EARSM constants configurable | Low | `pope_C1`/`pope_C2` config params (default 0.1), passed through factory to EARSM |
 
 ---
 
@@ -92,7 +84,7 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 |----------|-----------|
 | **Critical** | 0 |
 | **High** | 0 |
-| **Medium** | 3 |
-| **Low** | 3 |
-| **Total open** | **6** |
-| **Completed** | **32** |
+| **Medium** | 2 |
+| **Low** | 2 |
+| **Total open** | **4** |
+| **Completed** | **34** |

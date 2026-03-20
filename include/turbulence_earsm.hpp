@@ -258,6 +258,8 @@ public:
     std::string name() const override { return "Pope-Quadratic"; }
     EARSMType type() const override { return EARSMType::Pope1975; }
     
+    double C1() const { return C1_; }
+    double C2() const { return C2_; }
     void set_C1(double C1) { C1_ = C1; }
     void set_C2(double C2) { C2_ = C2; }
     
@@ -351,6 +353,9 @@ public:
     /// Access underlying models
     SSTKOmegaTransport& transport() { return transport_; }
     EARSMClosure& closure() { return *closure_; }
+
+    /// Set Pope EARSM constants (no-op if closure is not Pope type)
+    void set_pope_constants(double C1, double C2);
     
 private:
     SSTKOmegaTransport transport_;

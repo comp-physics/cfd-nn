@@ -649,7 +649,7 @@ void SSTWithEARSM::update(
                 device_view->nu_t,
                 device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
                 Nx, Ny, Ng, stride,
-                nu_, 0.1, 0.1  // Pope C1, C2 constants - TODO: expose via pope_model
+                nu_, pope_model->C1(), pope_model->C2()
             );
         }
         
@@ -677,6 +677,13 @@ std::string SSTWithEARSM::name() const {
         return base + closure_->name();
     }
     return base + "EARSM";
+}
+
+void SSTWithEARSM::set_pope_constants(double C1, double C2) {
+    if (auto* pope = dynamic_cast<PopeQuadraticEARSM*>(closure_.get())) {
+        pope->set_C1(C1);
+        pope->set_C2(C2);
+    }
 }
 
 // ============================================================================
