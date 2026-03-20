@@ -246,7 +246,7 @@ echo ""
     # configuration. Just reconfigure with MPI enabled.
     cd build_gpu
     cmake .. -DUSE_MPI=ON
-    make -j8 test_decomposition test_halo_exchange
+    make -j8 test_decomposition test_halo_exchange test_mpi_poisson
     cd ..
     echo ""
     echo "GPU+MPI build: $(ls -lh build_gpu/test_decomposition 2>/dev/null || echo 'FAILED')"
@@ -282,6 +282,10 @@ set +e
     ./build_gpu/test_halo_exchange
     echo ""
 
+    echo "--- MPIPoissonTest (1 rank) ---"
+    ./build_gpu/test_mpi_poisson
+    echo ""
+
     echo "--- DecompositionTest (2 ranks) ---"
     mpirun --oversubscribe -n 2 ./build_gpu/test_decomposition
     echo ""
@@ -290,12 +294,20 @@ set +e
     mpirun --oversubscribe -n 2 ./build_gpu/test_halo_exchange
     echo ""
 
+    echo "--- MPIPoissonTest (2 ranks) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu/test_mpi_poisson
+    echo ""
+
     echo "--- DecompositionTest (4 ranks) ---"
     mpirun --oversubscribe -n 4 ./build_gpu/test_decomposition
     echo ""
 
     echo "--- HaloExchangeTest (4 ranks) ---"
     mpirun --oversubscribe -n 4 ./build_gpu/test_halo_exchange
+    echo ""
+
+    echo "--- MPIPoissonTest (4 ranks) ---"
+    mpirun --oversubscribe -n 4 ./build_gpu/test_mpi_poisson
     echo ""
 } >> "$GPU_MPI_LOG" 2>&1
 MPI_EXIT_CODE=$?
