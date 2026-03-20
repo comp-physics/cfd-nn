@@ -6,11 +6,7 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ## Critical
 
-### FFT_MPI GPU distributed path unimplemented
-- **File**: `src/poisson_solver_fft_mpi.cpp:141-144`
-- **Problem**: Multi-rank `solve_device()` throws. Single-rank GPU works. CPU distributed path works.
-- **Fix**: Implement distributed GPU FFT using CUDA-aware MPI or cuFFTMp.
-- **Note**: The current additive Schwarz approach (local MG + pressure halo exchange) works but converges slower than a global FFT solve would.
+*No critical items remaining.*
 
 ---
 
@@ -99,6 +95,7 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | 21 | Statistics MPI allreduce | — | Two-pass mean/fluctuation with allreduce between passes |
 | 22 | Recycling inflow MPI support | — | MPI_Allgather for global plane assembly, shift with Nz_global |
 | 23 | TurbulenceDeviceView extracted | — | Minimal 97-line header avoids 107K preprocessed lines in GPU kernels |
+| 24 | FFT_MPI GPU distributed path | Critical | Host-staged: `target update from/to` + existing CPU distributed solve |
 
 ---
 
@@ -106,9 +103,9 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 | Severity | Remaining |
 |----------|-----------|
-| **Critical** | 1 (FFT_MPI distributed GPU) |
+| **Critical** | 0 |
 | **High** | 2 |
 | **Medium** | 6 |
 | **Low** | 3 |
-| **Total open** | **12** |
-| **Completed** | **23** |
+| **Total open** | **11** |
+| **Completed** | **24** |
