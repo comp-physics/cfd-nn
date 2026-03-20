@@ -774,6 +774,13 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
             selected_solver_ = PoissonSolverType::MG;
         }
     }
+
+    // Update FFT_MPI solver BCs if it exists
+#if defined(USE_MPI) && defined(USE_FFT_POISSON)
+    if (fft_mpi_poisson_solver_) {
+        fft_mpi_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+    }
+#endif
 #endif
 
 #ifdef USE_HYPRE

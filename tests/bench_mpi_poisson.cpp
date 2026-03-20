@@ -17,7 +17,7 @@
 #ifdef USE_MPI
 #include <mpi.h>
 #endif
-#ifdef _OPENMP
+#ifdef USE_GPU_OFFLOAD
 #include <omp.h>
 #endif
 
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
     int rank = 0, nprocs = 1;
 #endif
 
-#if defined(_OPENMP) && defined(USE_GPU_OFFLOAD)
+#ifdef USE_GPU_OFFLOAD
     {
         int num_devices = omp_get_num_devices();
         if (num_devices > 0 && nprocs > 1) {

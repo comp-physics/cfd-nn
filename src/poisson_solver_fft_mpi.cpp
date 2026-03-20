@@ -29,8 +29,11 @@ void mpi_check(int rc, const char* call) {
 } // namespace
 #endif
 
-#ifdef USE_FFT_POISSON
+#ifdef USE_GPU_OFFLOAD
 #include <omp.h>
+#endif
+
+#ifdef USE_FFT_POISSON
 namespace {
 void cuda_check(cudaError_t rc, const char* call) {
     if (rc != cudaSuccess) {
