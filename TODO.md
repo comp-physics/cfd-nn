@@ -12,15 +12,7 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ## High
 
-### 4th-order spatial discretization is partial
-- **File**: `src/solver_operators.cpp`
-- **Problem**: O4 convection is 3D-only. O4 diffusion not implemented. O4 divergence 3D uniform-y only. MG errors on O4.
-- **Fix**: Document `space_order=4` as 3D-convection-only, or implement missing operators.
-
-### AR1 recycling filter skipped on GPU
-- **File**: `src/solver_recycling.cpp:599-602`
-- **Problem**: GPU is the primary target but the AR1 temporal filter is skipped in GPU builds.
-- **Fix**: Implement AR1 filter in an OpenMP target kernel.
+*No high-priority items remaining.*
 
 ---
 
@@ -96,6 +88,8 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | 22 | Recycling inflow MPI support | — | MPI_Allgather for global plane assembly, shift with Nz_global |
 | 23 | TurbulenceDeviceView extracted | — | Minimal 97-line header avoids 107K preprocessed lines in GPU kernels |
 | 24 | FFT_MPI GPU distributed path | Critical | Host-staged: `target update from/to` + existing CPU distributed solve |
+| 25 | AR1 recycling filter on GPU | High | GPU kernel with filter state buffers, fixes leak, MPI-compatible |
+| 26 | O4 spatial warnings | High | All silent O2 fallbacks now warn; documented as advection-only |
 
 ---
 
@@ -104,8 +98,8 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | Severity | Remaining |
 |----------|-----------|
 | **Critical** | 0 |
-| **High** | 2 |
+| **High** | 0 |
 | **Medium** | 6 |
 | **Low** | 3 |
-| **Total open** | **11** |
-| **Completed** | **24** |
+| **Total open** | **9** |
+| **Completed** | **26** |
