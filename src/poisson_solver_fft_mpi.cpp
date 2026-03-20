@@ -31,6 +31,20 @@ void mpi_check(int rc, const char* call) {
 
 #ifdef USE_FFT_POISSON
 #include <omp.h>
+namespace {
+void cuda_check(cudaError_t rc, const char* call) {
+    if (rc != cudaSuccess) {
+        throw std::runtime_error(std::string("[CUDA] ") + call +
+            " failed: " + cudaGetErrorString(rc));
+    }
+}
+void cusparse_check(cusparseStatus_t rc, const char* call) {
+    if (rc != CUSPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error(std::string("[cuSPARSE] ") + call +
+            " failed: code=" + std::to_string(static_cast<int>(rc)));
+    }
+}
+} // namespace
 #endif
 
 namespace nncfd {
@@ -254,7 +268,7 @@ void FFTMPIPoissonSolver::initialize_gpu() {
     recv_host_.resize(max_host, 0.0);
 
     // ---- CUDA stream ----
-    cudaStreamCreate(&stream_);
+    cuda_check(cudaStreamCreate(&stream_), "cudaStreamCreate");
 
     // ---- GPU buffer allocation (cudaMallocManaged) ----
     size_t real_slab = static_cast<size_t>(Nx) * Ny * Nz_local;
@@ -262,15 +276,15 @@ void FFTMPIPoissonSolver::initialize_gpu() {
     size_t cx_pencil = static_cast<size_t>(my_kx_count_) * Ny * Nz_global;
     size_t cx_modes = static_cast<size_t>(n_local_modes_) * Ny;
 
-    cudaMallocManaged(&rhs_packed_, sizeof(double) * real_slab);
-    cudaMallocManaged(&p_packed_, sizeof(double) * real_slab);
-    cudaMallocManaged(&hat_x_, sizeof(cufftDoubleComplex) * cx_slab);
-    cudaMallocManaged(&pencil_, sizeof(cufftDoubleComplex) * cx_pencil);
-    cudaMallocManaged(&mode_buf_, sizeof(cufftDoubleComplex) * cx_modes);
+    cuda_check(cudaMallocManaged(&rhs_packed_, sizeof(double) * real_slab), "alloc rhs_packed");
+    cuda_check(cudaMallocManaged(&p_packed_, sizeof(double) * real_slab), "alloc p_packed");
+    cuda_check(cudaMallocManaged(&hat_x_, sizeof(cufftDoubleComplex) * cx_slab), "alloc hat_x");
+    cuda_check(cudaMallocManaged(&pencil_, sizeof(cufftDoubleComplex) * cx_pencil), "alloc pencil");
+    cuda_check(cudaMallocManaged(&mode_buf_, sizeof(cufftDoubleComplex) * cx_modes), "alloc mode_buf");
 
     // ---- Eigenvalues ----
-    cudaMallocManaged(&lambda_x_, sizeof(double) * Nx_c);
-    cudaMallocManaged(&lambda_z_, sizeof(double) * Nz_global);
+    cuda_check(cudaMallocManaged(&lambda_x_, sizeof(double) * Nx_c), "alloc lambda_x");
+    cuda_check(cudaMallocManaged(&lambda_z_, sizeof(double) * Nz_global), "alloc lambda_z");
 
     const double dx = mesh_->dx;
     const double dz = mesh_->dz;
@@ -294,9 +308,9 @@ void FFTMPIPoissonSolver::initialize_gpu() {
     }
 
     // ---- Tridiagonal coefficients (y-direction) ----
-    cudaMallocManaged(&tri_lower_, sizeof(double) * Ny);
-    cudaMallocManaged(&tri_upper_, sizeof(double) * Ny);
-    cudaMallocManaged(&tri_diag_base_, sizeof(double) * Ny);
+    cuda_check(cudaMallocManaged(&tri_lower_, sizeof(double) * Ny), "alloc tri_lower");
+    cuda_check(cudaMallocManaged(&tri_upper_, sizeof(double) * Ny), "alloc tri_upper");
+    cuda_check(cudaMallocManaged(&tri_diag_base_, sizeof(double) * Ny), "alloc tri_diag_base");
 
     const bool stretched = mesh_->is_y_stretched();
     for (int j = 0; j < Ny; ++j) {
@@ -318,7 +332,7 @@ void FFTMPIPoissonSolver::initialize_gpu() {
     }
 
     // ---- Volume weights for mean subtraction ----
-    cudaMallocManaged(&dyv_dev_, sizeof(double) * Ny);
+    cuda_check(cudaMallocManaged(&dyv_dev_, sizeof(double) * Ny), "alloc dyv_dev");
     double Ly = 0.0;
     for (int j = 0; j < Ny; ++j) {
         dyv_dev_[j] = (!mesh_->dyv.empty()) ? mesh_->dyv[j + Ng] : mesh_->dy;
@@ -349,8 +363,9 @@ void FFTMPIPoissonSolver::initialize_gpu() {
             CUFFT_Z2D, x_batch);
         if (rc != CUFFT_SUCCESS) throw std::runtime_error("cuFFT x_c2r plan failed");
 
-        cufftSetStream(x_r2c_, stream_);
-        cufftSetStream(x_c2r_, stream_);
+        if (cufftSetStream(x_r2c_, stream_) != CUFFT_SUCCESS ||
+            cufftSetStream(x_c2r_, stream_) != CUFFT_SUCCESS)
+            throw std::runtime_error("cuFFT x setStream failed");
     }
 
     // z-direction: 1D C2C, batch = my_kx_count * Ny
@@ -372,17 +387,18 @@ void FFTMPIPoissonSolver::initialize_gpu() {
             CUFFT_Z2Z, z_batch);
         if (rc != CUFFT_SUCCESS) throw std::runtime_error("cuFFT z_inv plan failed");
 
-        cufftSetStream(z_fwd_, stream_);
-        cufftSetStream(z_inv_, stream_);
+        if (cufftSetStream(z_fwd_, stream_) != CUFFT_SUCCESS ||
+            cufftSetStream(z_inv_, stream_) != CUFFT_SUCCESS)
+            throw std::runtime_error("cuFFT z setStream failed");
     }
 
     // ---- cuSPARSE batched tridiagonal ----
-    cusparseCreate(&cusparse_handle_);
-    cusparseSetStream(cusparse_handle_, stream_);
+    cusparse_check(cusparseCreate(&cusparse_handle_), "cusparseCreate");
+    cusparse_check(cusparseSetStream(cusparse_handle_, stream_), "cusparseSetStream");
 
-    cudaMallocManaged(&tri_dl_, sizeof(cufftDoubleComplex) * cx_modes);
-    cudaMallocManaged(&tri_d_,  sizeof(cufftDoubleComplex) * cx_modes);
-    cudaMallocManaged(&tri_du_, sizeof(cufftDoubleComplex) * cx_modes);
+    cuda_check(cudaMallocManaged(&tri_dl_, sizeof(cufftDoubleComplex) * cx_modes), "alloc tri_dl");
+    cuda_check(cudaMallocManaged(&tri_d_,  sizeof(cufftDoubleComplex) * cx_modes), "alloc tri_d");
+    cuda_check(cudaMallocManaged(&tri_du_, sizeof(cufftDoubleComplex) * cx_modes), "alloc tri_du");
 
     // Precompute tridiagonal matrices with eigenvalue shifts
     for (int kx_l = 0; kx_l < my_kx_count_; ++kx_l) {
@@ -408,13 +424,14 @@ void FFTMPIPoissonSolver::initialize_gpu() {
     }
 
     // Query cuSPARSE buffer size
-    cusparseZgtsv2StridedBatch_bufferSizeExt(
+    cusparse_check(cusparseZgtsv2StridedBatch_bufferSizeExt(
         cusparse_handle_, Ny, tri_dl_, tri_d_, tri_du_,
-        mode_buf_, n_local_modes_, Ny, &cusparse_buffer_size_);
-    cudaMalloc(&cusparse_buffer_, cusparse_buffer_size_);
+        mode_buf_, n_local_modes_, Ny, &cusparse_buffer_size_),
+        "gtsv2StridedBatch_bufferSizeExt");
+    cuda_check(cudaMalloc(&cusparse_buffer_, cusparse_buffer_size_), "alloc cusparse_buffer");
 
     // Sync managed memory to device
-    cudaDeviceSynchronize();
+    cuda_check(cudaDeviceSynchronize(), "initialize_gpu sync");
 
     gpu_initialized_ = true;
     std::cout << "[FFT_MPI] GPU initialized: Nx=" << Nx << " Ny=" << Ny
@@ -474,10 +491,10 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
     // ================================================================
     // Step 2: cuFFT 1D R2C in x
     // ================================================================
-    cudaDeviceSynchronize();  // Ensure OMP target kernels complete
+    cuda_check(cudaDeviceSynchronize(), "OMP target sync");
     cufftResult rc = cufftExecD2Z(x_r2c_, rhs_packed_, hat_x_);
     if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: x R2C failed");
-    cudaStreamSynchronize(stream_);
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
 
     // ================================================================
     // Step 3: Forward MPI transpose (z-slabs → kx-pencils)
@@ -492,7 +509,7 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
         // hat_x_ layout: [(k*Ny + j)*Nx_c + kx] complex
         double* cx_host = reinterpret_cast<double*>(hat_x_);
         // Managed memory: sync to host for packing
-        cudaDeviceSynchronize();
+        cuda_check(cudaDeviceSynchronize(), "fwd transpose host sync");
 
         int offset = 0;
         for (int r = 0; r < nprocs; ++r) {
@@ -538,10 +555,10 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
     // ================================================================
     // Step 4: cuFFT 1D C2C forward in z
     // ================================================================
-    cudaDeviceSynchronize();  // Sync managed memory writes
+    cuda_check(cudaDeviceSynchronize(), "managed mem sync");
     rc = cufftExecZ2Z(z_fwd_, pencil_, pencil_, CUFFT_FORWARD);
     if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: z forward failed");
-    cudaStreamSynchronize(stream_);
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
 
     // ================================================================
     // Step 5: Transpose j↔kz → cuSPARSE [mode*Ny + j] layout
@@ -567,11 +584,12 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
     // ================================================================
     // Step 6: cuSPARSE batched tridiagonal solve in y
     // ================================================================
-    cudaDeviceSynchronize();  // Ensure OMP transpose complete
+    cuda_check(cudaDeviceSynchronize(), "transpose sync");
 
     // Zero the (0,0) mode RHS (pinned value for singular mode)
     if (my_kx_start_ == 0) {
-        cudaMemsetAsync(mode_buf_, 0, sizeof(cufftDoubleComplex), stream_);
+        cuda_check(cudaMemsetAsync(mode_buf_, 0, sizeof(cufftDoubleComplex), stream_),
+                   "zero mode memset");
     }
     cusparseStatus_t cs = cusparseZgtsv2StridedBatch(
         cusparse_handle_, Ny,
@@ -581,7 +599,7 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
         throw std::runtime_error("FFT_MPI: cuSPARSE tridiag failed, code=" +
                                  std::to_string(static_cast<int>(cs)));
     }
-    cudaStreamSynchronize(stream_);
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
 
     // ================================================================
     // Step 7: Transpose back kz↔j → pencil layout
@@ -607,10 +625,10 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
     // ================================================================
     // Step 8: cuFFT 1D C2C inverse in z
     // ================================================================
-    cudaDeviceSynchronize();
+    cuda_check(cudaDeviceSynchronize(), "inv transpose sync");
     rc = cufftExecZ2Z(z_inv_, pencil_, pencil_, CUFFT_INVERSE);
     if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: z inverse failed");
-    cudaStreamSynchronize(stream_);
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
 
     // ================================================================
     // Step 9: Reverse MPI transpose (kx-pencils → z-slabs)
@@ -621,7 +639,7 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
 
         // Pack pencil_ for reverse transpose
         double* pencil_host = reinterpret_cast<double*>(pencil_);
-        cudaDeviceSynchronize();
+        cuda_check(cudaDeviceSynchronize(), "rev transpose host sync");
 
         int offset = 0;
         for (int r = 0; r < nprocs; ++r) {
@@ -667,10 +685,10 @@ int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr
     // ================================================================
     // Step 10: cuFFT 1D C2R inverse in x
     // ================================================================
-    cudaDeviceSynchronize();
+    cuda_check(cudaDeviceSynchronize(), "inv x sync");
     rc = cufftExecZ2D(x_c2r_, hat_x_, p_packed_);
     if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: x C2R failed");
-    cudaStreamSynchronize(stream_);
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
 
     // ================================================================
     // Step 11: Unpack to ghost layout + normalize + BCs
