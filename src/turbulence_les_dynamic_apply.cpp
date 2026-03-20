@@ -1,4 +1,5 @@
 /// @file turbulence_les_dynamic_apply.cpp
+/// @brief Pass 2: Cs² computation and nu_t application (2D/3D)
 #include "turbulence_device_view.hpp"
 #include <cmath>
 #ifdef USE_GPU_OFFLOAD
@@ -22,13 +23,26 @@ inline void tg3c(int ig, int jg, int kg, double dx, double dz, const double* yc,
     g[7]=(0.5*(w[kg*wp+(jg+1)*ws+ig]+w[(kg+1)*wp+(jg+1)*ws+ig])-0.5*(w[kg*wp+(jg-1)*ws+ig]+w[(kg+1)*wp+(jg-1)*ws+ig]))/dyc;
     g[8]=(w[(kg+1)*wp+jg*ws+ig]-w[kg*wp+jg*ws+ig])/dz;
 }
+inline void tg2dc(int ig, int jg, double dx, const double* yc,
+    const double* u, int us, const double* v, int vs, double g[9]) {
+    double dyc=yc[jg+1]-yc[jg-1];
+    g[0]=(u[jg*us+ig+1]-u[jg*us+ig])/dx;
+    g[1]=(0.5*(u[(jg+1)*us+ig]+u[(jg+1)*us+ig+1])-0.5*(u[(jg-1)*us+ig]+u[(jg-1)*us+ig+1]))/dyc;
+    g[2]=0;
+    g[3]=(0.5*(v[jg*vs+ig+1]+v[(jg+1)*vs+ig+1])-0.5*(v[jg*vs+ig-1]+v[(jg+1)*vs+ig-1]))/(2*dx);
+    g[4]=(v[(jg+1)*vs+ig]-v[jg*vs+ig])/(yc[jg+1]-yc[jg]);
+    g[5]=0; g[6]=0; g[7]=0; g[8]=0;
+}
 #ifdef USE_GPU_OFFLOAD
 #pragma omp end declare target
 #endif
+
 void dsmag_pass2_apply(const TurbulenceDeviceView* dv,
     double* lm_plane, double* mm_plane, double* cs2_plane, int ny_sz) {
-    const int Nx=dv->Nx, Ny=dv->Ny, Ng=dv->Ng, Nz=dv->Nz;
-    const int total=Nx*Ny*Nz;
+    const int Nx=dv->Nx, Ny=dv->Ny, Ng=dv->Ng;
+    const int Nz_eff = (dv->Nz > 1) ? dv->Nz : 1;
+    const bool is2D = (dv->Nz <= 1);
+    const int total=Nx*Ny*Nz_eff;
     const double dx=dv->dx, dz=dv->dz;
     double *u=dv->u_face, *v=dv->v_face, *w=dv->w_face, *nut=dv->nu_t;
     const double *yf=dv->yf, *yc=dv->yc;
@@ -53,18 +67,23 @@ void dsmag_pass2_apply(const TurbulenceDeviceView* dv,
     #pragma omp target teams distribute parallel for \
         map(present: u[0:usz],v[0:vsz],w[0:wsz],nut[0:nsz], \
             yf[0:yfsz],yc[0:ycsz],cs2_plane[0:ny_sz]) \
-        firstprivate(Nx,Ny,Nz,Ng,dx,dz,us,vs,ws,up,vp,wp,cs,cp)
+        firstprivate(Nx,Ny,Nz_eff,Ng,dx,dz,is2D,us,vs,ws,up,vp,wp,cs,cp)
     for (int idx=0; idx<total; ++idx) {
         int kk=idx/(Nx*Ny), rem=idx-kk*Nx*Ny, j=rem/Nx, i=rem-j*Nx;
         int ig=i+Ng, jg=j+Ng, kg=kk+Ng;
         double g[9];
-        tg3c(ig,jg,kg,dx,dz,yc,u,us,up,v,vs,vp,w,ws,wp,g);
+        if (is2D) {
+            tg2dc(ig, jg, dx, yc, u, us, v, vs, g);
+        } else {
+            tg3c(ig,jg,kg,dx,dz,yc,u,us,up,v,vs,vp,w,ws,wp,g);
+        }
         double S11=g[0],S22=g[4],S33=g[8];
         double S12=0.5*(g[1]+g[3]),S13=0.5*(g[2]+g[6]),S23=0.5*(g[5]+g[7]);
         double Sm=std::sqrt(2.0*(S11*S11+S22*S22+S33*S33+2.0*(S12*S12+S13*S13+S23*S23)));
         double dy=yf[jg+1]-yf[jg];
-        double d=std::cbrt(dx*dy*dz);
-        nut[kg*cp+jg*cs+ig]=cs2_plane[j]*d*d*Sm;
+        double d = is2D ? std::sqrt(dx*dy) : std::cbrt(dx*dy*dz);
+        int ci = is2D ? (jg*cs+ig) : (kg*cp+jg*cs+ig);
+        nut[ci]=cs2_plane[j]*d*d*Sm;
     }
 }
 } // namespace nncfd
