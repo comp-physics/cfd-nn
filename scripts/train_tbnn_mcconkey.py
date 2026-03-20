@@ -132,8 +132,9 @@ def load_mcconkey_data(data_dir, case='periodic_hills', split='train'):
             anisotropy = anisotropy[:, [0, 1, 3]]  # b_xx, b_xy, b_yy
         
         if basis.shape[1] == 10:
-            # Convert 3D basis to 2D (4 basis tensors)
-            basis = basis[:, :4, :]
+            # Convert 3D basis to 2D: take first 4 tensors, extract
+            # xx(0), xy(1), yy(3) from the 6-component layout
+            basis = basis[:, :4, :][:, :, [0, 1, 3]]
         
         print(f"Loaded {len(invariants)} samples")
         print(f"  Invariants shape: {invariants.shape}")
@@ -183,54 +184,180 @@ def generate_synthetic_data(n_samples=10000):
 
 def compute_tensor_basis_from_data(data):
     """
-    Compute Pope tensor basis from velocity gradients.
-    
-    This implements the 2D tensor basis:
+    Compute Pope (1975) / McConkey et al. integrity tensor basis from
+    velocity gradients.
+
+    Supports both 2D (4 basis tensors) and 3D (10 basis tensors).
+
+    2D basis (S, R are 2x2):
         T1 = S
-        T2 = S*Omega - Omega*S
+        T2 = S*R - R*S
         T3 = S^2 - (1/2)*tr(S^2)*I
-        T4 = Omega^2 - (1/2)*tr(Omega^2)*I
-    
+        T4 = R^2 - (1/2)*tr(R^2)*I
+
+    3D basis (S, R are 3x3):
+        T1  = S
+        T2  = S*R - R*S
+        T3  = S^2 - (1/3)*tr(S^2)*I
+        T4  = R^2 - (1/3)*tr(R^2)*I
+        T5  = R*S^2 - S^2*R
+        T6  = R^2*S + S*R^2 - (2/3)*tr(S*R^2)*I
+        T7  = R*S*R^2 - R^2*S*R
+        T8  = S*R*S^2 - S^2*R*S
+        T9  = R^2*S^2 + S^2*R^2 - (2/3)*tr(S^2*R^2)*I
+        T10 = R*S^2*R^2 - R^2*S^2*R
+
     Args:
-        data: Dictionary containing 'S' and 'Omega' tensors
-    
+        data: Dictionary containing 'S' (strain rate) and 'Omega'
+              (rotation rate) tensors, each [N, d, d] with d = 2 or 3.
+
     Returns:
-        basis: [N, 4, 3] tensor basis (xx, xy, yy components)
+        basis: [N, 4, 3] for 2D input (xx, xy, yy components)
+               [N, 10, 6] for 3D input (xx, xy, xz, yy, yz, zz components)
     """
-    
-    S = data['S']  # [N, 2, 2] strain tensor
-    Omega = data['Omega']  # [N, 2, 2] rotation tensor
-    
+
+    S = data['S']        # [N, d, d] strain tensor
+    R = data['Omega']    # [N, d, d] rotation tensor
+
     N = S.shape[0]
+    d = S.shape[1]
+
+    if d == 2:
+        return _compute_tensor_basis_2d(S, R, N)
+    elif d == 3:
+        return _compute_tensor_basis_3d(S, R, N)
+    else:
+        raise ValueError(f"Unexpected tensor dimension d={d}; expected 2 or 3")
+
+
+def _sym_components_2d(T):
+    """Extract (xx, xy, yy) from [N, 2, 2] tensor batch."""
+    return T[:, 0, 0], T[:, 0, 1], T[:, 1, 1]
+
+
+def _sym_components_3d(T):
+    """Extract (xx, xy, xz, yy, yz, zz) from [N, 3, 3] tensor batch."""
+    return (T[:, 0, 0], T[:, 0, 1], T[:, 0, 2],
+            T[:, 1, 1], T[:, 1, 2], T[:, 2, 2])
+
+
+def _deviatoric_2d(A, N):
+    """Return deviatoric part of [N, 2, 2] tensor: A - (1/2)*tr(A)*I."""
+    trA = A[:, 0, 0] + A[:, 1, 1]
+    I2 = np.zeros_like(A)
+    I2[:, 0, 0] = 1.0
+    I2[:, 1, 1] = 1.0
+    return A - 0.5 * trA[:, None, None] * I2
+
+
+def _deviatoric_3d(A, N):
+    """Return deviatoric part of [N, 3, 3] tensor: A - (1/3)*tr(A)*I."""
+    trA = A[:, 0, 0] + A[:, 1, 1] + A[:, 2, 2]
+    I3 = np.zeros_like(A)
+    I3[:, 0, 0] = 1.0
+    I3[:, 1, 1] = 1.0
+    I3[:, 2, 2] = 1.0
+    return A - (1.0 / 3.0) * trA[:, None, None] * I3
+
+
+def _trace_3d(A):
+    """Compute trace of [N, 3, 3] tensor batch."""
+    return A[:, 0, 0] + A[:, 1, 1] + A[:, 2, 2]
+
+
+def _compute_tensor_basis_2d(S, R, N):
+    """Compute the 4 basis tensors for the 2D case."""
     basis = np.zeros((N, 4, 3))
-    
+
     # T1 = S
-    basis[:, 0, 0] = S[:, 0, 0]  # S_xx
-    basis[:, 0, 1] = S[:, 0, 1]  # S_xy
-    basis[:, 0, 2] = S[:, 1, 1]  # S_yy
-    
-    # T2 = S*Omega - Omega*S (commutator)
-    SOmega = np.matmul(S, Omega)
-    OmegaS = np.matmul(Omega, S)
-    T2 = SOmega - OmegaS
-    basis[:, 1, 0] = T2[:, 0, 0]
-    basis[:, 1, 1] = T2[:, 0, 1]
-    basis[:, 1, 2] = T2[:, 1, 1]
-    
+    basis[:, 0, 0], basis[:, 0, 1], basis[:, 0, 2] = _sym_components_2d(S)
+
+    # T2 = S*R - R*S
+    T2 = np.matmul(S, R) - np.matmul(R, S)
+    basis[:, 1, 0], basis[:, 1, 1], basis[:, 1, 2] = _sym_components_2d(T2)
+
     # T3 = S^2 - (1/2)*tr(S^2)*I
     S2 = np.matmul(S, S)
-    trS2 = S2[:, 0, 0] + S2[:, 1, 1]
-    basis[:, 2, 0] = S2[:, 0, 0] - 0.5 * trS2
-    basis[:, 2, 1] = S2[:, 0, 1]
-    basis[:, 2, 2] = S2[:, 1, 1] - 0.5 * trS2
-    
-    # T4 = Omega^2 - (1/2)*tr(Omega^2)*I
-    Omega2 = np.matmul(Omega, Omega)
-    trOmega2 = Omega2[:, 0, 0] + Omega2[:, 1, 1]
-    basis[:, 3, 0] = Omega2[:, 0, 0] - 0.5 * trOmega2
-    basis[:, 3, 1] = Omega2[:, 0, 1]
-    basis[:, 3, 2] = Omega2[:, 1, 1] - 0.5 * trOmega2
-    
+    T3 = _deviatoric_2d(S2, N)
+    basis[:, 2, 0], basis[:, 2, 1], basis[:, 2, 2] = _sym_components_2d(T3)
+
+    # T4 = R^2 - (1/2)*tr(R^2)*I
+    R2 = np.matmul(R, R)
+    T4 = _deviatoric_2d(R2, N)
+    basis[:, 3, 0], basis[:, 3, 1], basis[:, 3, 2] = _sym_components_2d(T4)
+
+    return basis
+
+
+def _compute_tensor_basis_3d(S, R, N):
+    """
+    Compute the 10 Pope (1975) integrity basis tensors for the 3D case.
+
+    All products are standard matrix products.  S is symmetric, R is
+    antisymmetric.  The output stores the 6 independent symmetric
+    components (xx, xy, xz, yy, yz, zz) for each basis tensor.
+    """
+    basis = np.zeros((N, 10, 6))
+
+    # Pre-compute powers and products used in multiple basis tensors
+    S2 = np.matmul(S, S)      # S^2
+    R2 = np.matmul(R, R)      # R^2
+    SR = np.matmul(S, R)      # S*R
+    RS = np.matmul(R, S)      # R*S
+    SR2 = np.matmul(S, R2)    # S*R^2
+    R2S = np.matmul(R2, S)    # R^2*S
+    S2R = np.matmul(S2, R)    # S^2*R
+    RS2 = np.matmul(R, S2)    # R*S^2
+    R2S2 = np.matmul(R2, S2)  # R^2*S^2
+    S2R2 = np.matmul(S2, R2)  # S^2*R^2
+
+    def store(idx, T):
+        """Store 6 symmetric components of [N, 3, 3] tensor into basis."""
+        (basis[:, idx, 0], basis[:, idx, 1], basis[:, idx, 2],
+         basis[:, idx, 3], basis[:, idx, 4], basis[:, idx, 5]) = \
+            _sym_components_3d(T)
+
+    I3 = np.zeros((N, 3, 3))
+    I3[:, 0, 0] = 1.0
+    I3[:, 1, 1] = 1.0
+    I3[:, 2, 2] = 1.0
+
+    # T1 = S
+    store(0, S)
+
+    # T2 = S*R - R*S
+    store(1, SR - RS)
+
+    # T3 = S^2 - (1/3)*tr(S^2)*I
+    store(2, S2 - (1.0 / 3.0) * _trace_3d(S2)[:, None, None] * I3)
+
+    # T4 = R^2 - (1/3)*tr(R^2)*I
+    store(3, R2 - (1.0 / 3.0) * _trace_3d(R2)[:, None, None] * I3)
+
+    # T5 = R*S^2 - S^2*R
+    store(4, RS2 - S2R)
+
+    # T6 = R^2*S + S*R^2 - (2/3)*tr(S*R^2)*I
+    store(5, R2S + SR2 - (2.0 / 3.0) * _trace_3d(SR2)[:, None, None] * I3)
+
+    # T7 = R*S*R^2 - R^2*S*R
+    RSR2 = np.matmul(RS, R2)   # (R*S)*R^2
+    R2SR = np.matmul(R2S, R)   # (R^2*S)*R
+    store(6, RSR2 - R2SR)
+
+    # T8 = S*R*S^2 - S^2*R*S
+    SRS2 = np.matmul(SR, S2)   # (S*R)*S^2
+    S2RS = np.matmul(S2R, S)   # (S^2*R)*S
+    store(7, SRS2 - S2RS)
+
+    # T9 = R^2*S^2 + S^2*R^2 - (2/3)*tr(S^2*R^2)*I
+    store(8, R2S2 + S2R2 - (2.0 / 3.0) * _trace_3d(S2R2)[:, None, None] * I3)
+
+    # T10 = R*S^2*R^2 - R^2*S^2*R
+    RS2R2 = np.matmul(RS2, R2)   # (R*S^2)*R^2
+    R2S2R = np.matmul(R2S2, R)   # (R^2*S^2)*R
+    store(9, RS2R2 - R2S2R)
+
     return basis
 
 

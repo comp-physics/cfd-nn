@@ -23,19 +23,6 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 - **Problem**: Internal 2D MG uses uniform `1/(dy*dy)`. Auto-selection correctly skips it; explicit request will error.
 - **Fix**: Add a clear error message, or implement stretched-y support in FFT1D's 2D MG.
 
-### TBNN training script incomplete
-- **File**: `scripts/train_tbnn_mcconkey.py:184`
-- **Problem**: `compute_tensor_basis_from_data()` is a stub.
-- **Fix**: Implement tensor basis computation from strain/rotation tensors.
-
-### MLP feature definitions mismatch between code and metadata
-- **Files**: `src/features.cpp`, `data/models/*/metadata.json`
-- **Problem**: C++ computes normalized features but metadata claims raw features.
-- **Fix**: Align metadata.json with actual C++ feature definitions.
-
-### Variable viscosity face averaging uses 2-point instead of 4-point
-- **File**: `include/solver_kernels.hpp:450,485`
-- **Problem**: Should use 4-point corner averaging for sharp nu_t gradients near walls.
 
 ### No moving/rotating IBM bodies
 - **Scope**: Major feature addition, not a bug. Static bodies only.
@@ -90,6 +77,12 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | 24 | FFT_MPI GPU distributed path | Critical | Host-staged: `target update from/to` + existing CPU distributed solve |
 | 25 | AR1 recycling filter on GPU | High | GPU kernel with filter state buffers, fixes leak, MPI-compatible |
 | 26 | O4 spatial warnings | High | All silent O2 fallbacks now warn; documented as advection-only |
+| 27 | Distributed GPU FFT Poisson solver | Critical | Replaced O(N²) CPU DFT with cuFFT+MPI+cuSPARSE GPU pipeline. 200-635x faster than MG Schwarz on 2×A100. Direct solve, machine precision. |
+| 28 | Deferred FFT_MPI init in set_decomposition | Medium | Solver retries FFT_MPI init when decomposition is set after construction |
+| 29 | MPI Poisson benchmark added | — | `bench_mpi_poisson.cpp`: compares FFT_MPI vs MG Schwarz across grid sizes |
+| 30 | TBNN tensor basis implemented | Medium | Full Pope (1975) 10-tensor basis for 3D, 4-tensor for 2D, consistent with C++ |
+| 31 | MLP/TBNN metadata fixed | Medium | All 4 metadata.json files updated to match actual C++ normalized features |
+| 32 | 4-point viscosity face averaging | Medium | Cross-direction faces use proper corner average; same-direction use direct cell value |
 
 ---
 
@@ -99,7 +92,7 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 |----------|-----------|
 | **Critical** | 0 |
 | **High** | 0 |
-| **Medium** | 6 |
+| **Medium** | 3 |
 | **Low** | 3 |
-| **Total open** | **9** |
-| **Completed** | **26** |
+| **Total open** | **6** |
+| **Completed** | **32** |
