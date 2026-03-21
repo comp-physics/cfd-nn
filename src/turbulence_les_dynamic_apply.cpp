@@ -38,7 +38,8 @@ inline void tg2dc(int ig, int jg, double dx, const double* yc,
 #endif
 
 void dsmag_pass2_apply(const TurbulenceDeviceView* dv,
-    double* lm_plane, double* mm_plane, double* cs2_plane, int ny_sz) {
+    double* lm_plane, double* mm_plane, double* cs2_plane,
+    [[maybe_unused]] int ny_sz) {
     const int Nx=dv->Nx, Ny=dv->Ny, Ng=dv->Ng;
     const int Nz_eff = (dv->Nz > 1) ? dv->Nz : 1;
     const bool is2D = (dv->Nz <= 1);

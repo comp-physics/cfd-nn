@@ -101,7 +101,8 @@ inline double tfw2d(const double* yf, int jg, double dx) {
 
 void dsmag_pass1_germano(const TurbulenceDeviceView* dv,
     double* ucc, double* vcc, double* wcc,
-    double* lm_plane, double* mm_plane, int cc_sz, int ny_sz) {
+    double* lm_plane, double* mm_plane,
+    [[maybe_unused]] int cc_sz, [[maybe_unused]] int ny_sz) {
     const int Nx=dv->Nx, Ny=dv->Ny, Ng=dv->Ng;
     const int Nz_eff = (dv->Nz > 1) ? dv->Nz : 1;
     const bool is2D = (dv->Nz <= 1);

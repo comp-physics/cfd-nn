@@ -6,7 +6,7 @@
 #endif
 namespace nncfd {
 void dsmag_pass0_interpolate(const TurbulenceDeviceView* dv,
-    double* ucc, double* vcc, double* wcc, int cc_sz) {
+    double* ucc, double* vcc, double* wcc, [[maybe_unused]] int cc_sz) {
     const int Nx = dv->Nx, Ny = dv->Ny, Ng = dv->Ng;
     const int Nz = dv->is3D() ? dv->Nz : 1;
     const int total = Nx * Ny * Nz;
