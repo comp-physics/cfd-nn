@@ -273,14 +273,17 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
     compute_convective_term(vel_in, conv_);
     compute_diffusive_term(vel_in, nu_eff_, diff_);
 
-    // Get pointers for vel_in and vel_out
-    auto get_ptrs = [this](VectorField& vel, double*& u, double*& v, double*& w) {
+    // Get unified device view (device pointers in GPU build, host in CPU build)
+    auto sv = get_solver_view();
+
+    // Resolve vel_in/vel_out pointers from the solver view
+    auto get_ptrs = [&sv, this](VectorField& vel, double*& u, double*& v, double*& w) {
         if (&vel == &velocity_) {
-            u = velocity_u_ptr_; v = velocity_v_ptr_; w = velocity_w_ptr_;
+            u = sv.u_face; v = sv.v_face; w = sv.w_face;
         } else if (&vel == &velocity_star_) {
-            u = velocity_star_u_ptr_; v = velocity_star_v_ptr_; w = velocity_star_w_ptr_;
+            u = sv.u_star_face; v = sv.v_star_face; w = sv.w_star_face;
         } else if (&vel == &velocity_old_) {
-            u = velocity_old_u_ptr_; v = velocity_old_v_ptr_; w = velocity_old_w_ptr_;
+            u = sv.u_old_face; v = sv.v_old_face; w = sv.w_old_face;
         } else if (&vel == &velocity_rk_) {
             u = velocity_rk_u_ptr_; v = velocity_rk_v_ptr_; w = velocity_rk_w_ptr_;
         }
@@ -321,126 +324,132 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
 
         // Case: velocity_ -> velocity_star_
         if (&vel_in == &velocity_ && &vel_out == &velocity_star_) {
-            // NVHPC workaround: Use dev_ptr() + is_device_ptr pattern
-            const double* u_in_dev = gpu::dev_ptr(velocity_u_ptr_);
-            double* u_out_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-            const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
-            const double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
-            const double* v_in_dev = gpu::dev_ptr(velocity_v_ptr_);
-            double* v_out_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-            const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
-            const double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
+            // Use solver view pointers + map(present:) pattern
+            double* u_in_ptr = sv.u_face;
+            double* u_out_ptr = sv.u_star_face;
+            double* conv_u_ptr = sv.conv_u;
+            double* diff_u_ptr = sv.diff_u;
+            double* v_in_ptr = sv.v_face;
+            double* v_out_ptr = sv.v_star_face;
+            double* conv_v_ptr = sv.conv_v;
+            double* diff_v_ptr = sv.diff_v;
 
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(u_in_dev, u_out_dev, conv_u_dev, diff_u_dev)
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     int idx = j * u_stride + i;
-                    u_out_dev[idx] = u_in_dev[idx] + dt * (-conv_u_dev[idx] + diff_u_dev[idx] + fx);
+                    u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(v_in_dev, v_out_dev, conv_v_dev, diff_v_dev)
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     int idx = j * v_stride + i;
-                    v_out_dev[idx] = v_in_dev[idx] + dt * (-conv_v_dev[idx] + diff_v_dev[idx] + fy);
+                    v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
                 }
             }
 
             // Periodicity for velocity_star_
             if (x_periodic) {
-                #pragma omp target teams distribute parallel for is_device_ptr(u_out_dev)
+                #pragma omp target teams distribute parallel for \
+                    map(present: u_out_ptr[0:u_total])
                 for (int j = Ng; j < Ng + Ny; ++j) {
-                    u_out_dev[j * u_stride + Ng + Nx] = u_out_dev[j * u_stride + Ng];
+                    u_out_ptr[j * u_stride + Ng + Nx] = u_out_ptr[j * u_stride + Ng];
                 }
             }
             if (y_periodic) {
-                #pragma omp target teams distribute parallel for is_device_ptr(v_out_dev)
+                #pragma omp target teams distribute parallel for \
+                    map(present: v_out_ptr[0:v_total])
                 for (int i = Ng; i < Ng + Nx; ++i) {
-                    v_out_dev[(Ng + Ny) * v_stride + i] = v_out_dev[Ng * v_stride + i];
+                    v_out_ptr[(Ng + Ny) * v_stride + i] = v_out_ptr[Ng * v_stride + i];
                 }
             }
         }
         // Case: velocity_star_ -> velocity_
         else if (&vel_in == &velocity_star_ && &vel_out == &velocity_) {
-            // NVHPC workaround: Use dev_ptr() + is_device_ptr pattern
-            const double* u_in_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-            double* u_out_dev = gpu::dev_ptr(velocity_u_ptr_);
-            const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
-            const double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
-            const double* v_in_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-            double* v_out_dev = gpu::dev_ptr(velocity_v_ptr_);
-            const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
-            const double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
+            // Use solver view pointers + map(present:) pattern
+            double* u_in_ptr = sv.u_star_face;
+            double* u_out_ptr = sv.u_face;
+            double* conv_u_ptr = sv.conv_u;
+            double* diff_u_ptr = sv.diff_u;
+            double* v_in_ptr = sv.v_star_face;
+            double* v_out_ptr = sv.v_face;
+            double* conv_v_ptr = sv.conv_v;
+            double* diff_v_ptr = sv.diff_v;
 
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(u_in_dev, u_out_dev, conv_u_dev, diff_u_dev)
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     int idx = j * u_stride + i;
-                    u_out_dev[idx] = u_in_dev[idx] + dt * (-conv_u_dev[idx] + diff_u_dev[idx] + fx);
+                    u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(v_in_dev, v_out_dev, conv_v_dev, diff_v_dev)
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     int idx = j * v_stride + i;
-                    v_out_dev[idx] = v_in_dev[idx] + dt * (-conv_v_dev[idx] + diff_v_dev[idx] + fy);
+                    v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
                 }
             }
             // Periodicity for velocity_
             if (x_periodic) {
-                #pragma omp target teams distribute parallel for is_device_ptr(u_out_dev)
+                #pragma omp target teams distribute parallel for \
+                    map(present: u_out_ptr[0:u_total])
                 for (int j = Ng; j < Ng + Ny; ++j) {
-                    u_out_dev[j * u_stride + Ng + Nx] = u_out_dev[j * u_stride + Ng];
+                    u_out_ptr[j * u_stride + Ng + Nx] = u_out_ptr[j * u_stride + Ng];
                 }
             }
             if (y_periodic) {
-                #pragma omp target teams distribute parallel for is_device_ptr(v_out_dev)
+                #pragma omp target teams distribute parallel for \
+                    map(present: v_out_ptr[0:v_total])
                 for (int i = Ng; i < Ng + Nx; ++i) {
-                    v_out_dev[(Ng + Ny) * v_stride + i] = v_out_dev[Ng * v_stride + i];
+                    v_out_ptr[(Ng + Ny) * v_stride + i] = v_out_ptr[Ng * v_stride + i];
                 }
             }
         }
         // Case: velocity_ -> velocity_ (in-place, for Euler integrator)
         else if (&vel_in == &velocity_ && &vel_out == &velocity_) {
-            // NVHPC workaround: Use dev_ptr() + is_device_ptr pattern
-            double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-            const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
-            const double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
-            double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-            const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
-            const double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
+            // Use solver view pointers + map(present:) pattern
+            double* u_ptr = sv.u_face;
+            double* conv_u_ptr = sv.conv_u;
+            double* diff_u_ptr = sv.diff_u;
+            double* v_ptr = sv.v_face;
+            double* conv_v_ptr = sv.conv_v;
+            double* diff_v_ptr = sv.diff_v;
 
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(u_dev, conv_u_dev, diff_u_dev)
+                map(present: u_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     int idx = j * u_stride + i;
-                    u_dev[idx] = u_dev[idx] + dt * (-conv_u_dev[idx] + diff_u_dev[idx] + fx);
+                    u_ptr[idx] = u_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(v_dev, conv_v_dev, diff_v_dev)
+                map(present: v_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     int idx = j * v_stride + i;
-                    v_dev[idx] = v_dev[idx] + dt * (-conv_v_dev[idx] + diff_v_dev[idx] + fy);
+                    v_ptr[idx] = v_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
                 }
             }
             // Periodicity for velocity_
             if (x_periodic) {
-                #pragma omp target teams distribute parallel for is_device_ptr(u_dev)
+                #pragma omp target teams distribute parallel for \
+                    map(present: u_ptr[0:u_total])
                 for (int j = Ng; j < Ng + Ny; ++j) {
-                    u_dev[j * u_stride + Ng + Nx] = u_dev[j * u_stride + Ng];
+                    u_ptr[j * u_stride + Ng + Nx] = u_ptr[j * u_stride + Ng];
                 }
             }
             if (y_periodic) {
-                #pragma omp target teams distribute parallel for is_device_ptr(v_dev)
+                #pragma omp target teams distribute parallel for \
+                    map(present: v_ptr[0:v_total])
                 for (int i = Ng; i < Ng + Nx; ++i) {
-                    v_dev[(Ng + Ny) * v_stride + i] = v_dev[Ng * v_stride + i];
+                    v_ptr[(Ng + Ny) * v_stride + i] = v_ptr[Ng * v_stride + i];
                 }
             }
         }
@@ -455,13 +464,13 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
         }
     } else {
         // 3D INLINE euler_advance with explicit code paths for each case
-        // Use MEMBER pointers directly (NVHPC workaround - function params don't work)
+        // Use solver view pointers (device in GPU build, host in CPU build)
         const int Nz = mesh_->Nz;
         const int u_plane = u_stride * (Ny + 2 * Ng);
         const int v_plane = v_stride * (Ny + 2 * Ng + 1);
         const int w_stride_local = Nx + 2 * Ng;
         const int w_plane = w_stride_local * (Ny + 2 * Ng);
-        const size_t w_total = vel_in.w_total_size();
+        [[maybe_unused]] const size_t w_total = vel_in.w_total_size();
         const bool z_periodic = (velocity_bc_.z_lo == VelocityBC::Periodic) &&
                                 (velocity_bc_.z_hi == VelocityBC::Periodic);
         const double fx = fx_;
@@ -470,157 +479,162 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
 
         // Case: velocity_ -> velocity_star_
         if (&vel_in == &velocity_ && &vel_out == &velocity_star_) {
-            // NVHPC WORKAROUND: Use gpu::dev_ptr to get actual device addresses.
-            // Member pointers in target regions get HOST addresses in NVHPC.
-            const double* u_in_dev = gpu::dev_ptr(velocity_u_ptr_);
-            double* u_out_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-            const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
-            const double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
-            const double* v_in_dev = gpu::dev_ptr(velocity_v_ptr_);
-            double* v_out_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-            const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
-            const double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
-            const double* w_in_dev = gpu::dev_ptr(velocity_w_ptr_);
-            double* w_out_dev = gpu::dev_ptr(velocity_star_w_ptr_);
-            const double* conv_w_dev = gpu::dev_ptr(conv_w_ptr_);
-            const double* diff_w_dev = gpu::dev_ptr(diff_w_ptr_);
+            // Use solver view pointers + map(present:) pattern
+            double* u_in_ptr = sv.u_face;
+            double* u_out_ptr = sv.u_star_face;
+            double* conv_u_ptr = sv.conv_u;
+            double* diff_u_ptr = sv.diff_u;
+            double* v_in_ptr = sv.v_face;
+            double* v_out_ptr = sv.v_star_face;
+            double* conv_v_ptr = sv.conv_v;
+            double* diff_v_ptr = sv.diff_v;
+            double* w_in_ptr = sv.w_face;
+            double* w_out_ptr = sv.w_star_face;
+            double* conv_w_ptr = sv.conv_w;
+            double* diff_w_ptr = sv.diff_w;
 
             // Euler advance u
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(u_in_dev, u_out_dev, conv_u_dev, diff_u_dev)
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i <= Ng + Nx; ++i) {
                         int idx = k * u_plane + j * u_stride + i;
-                        u_out_dev[idx] = u_in_dev[idx] + dt * (-conv_u_dev[idx] + diff_u_dev[idx] + fx);
+                        u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
                     }
                 }
             }
             // Euler advance v
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(v_in_dev, v_out_dev, conv_v_dev, diff_v_dev)
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j <= Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * v_plane + j * v_stride + i;
-                        v_out_dev[idx] = v_in_dev[idx] + dt * (-conv_v_dev[idx] + diff_v_dev[idx] + fy);
+                        v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
                     }
                 }
             }
             // Euler advance w
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(w_in_dev, w_out_dev, conv_w_dev, diff_w_dev)
+                map(present: w_in_ptr[0:w_total], w_out_ptr[0:w_total], conv_w_ptr[0:w_total], diff_w_ptr[0:w_total])
             for (int k = Ng; k <= Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * w_plane + j * w_stride_local + i;
-                        w_out_dev[idx] = w_in_dev[idx] + dt * (-conv_w_dev[idx] + diff_w_dev[idx] + fz);
+                        w_out_ptr[idx] = w_in_ptr[idx] + dt * (-conv_w_ptr[idx] + diff_w_ptr[idx] + fz);
                     }
                 }
             }
             // Periodicity for velocity_star_
             if (x_periodic) {
-                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_out_dev)
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: u_out_ptr[0:u_total])
                 for (int k = Ng; k < Ng + Nz; ++k) {
                     for (int j = Ng; j < Ng + Ny; ++j) {
-                        u_out_dev[k * u_plane + j * u_stride + Ng + Nx] =
-                            u_out_dev[k * u_plane + j * u_stride + Ng];
+                        u_out_ptr[k * u_plane + j * u_stride + Ng + Nx] =
+                            u_out_ptr[k * u_plane + j * u_stride + Ng];
                     }
                 }
             }
             if (y_periodic) {
-                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(v_out_dev)
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: v_out_ptr[0:v_total])
                 for (int k = Ng; k < Ng + Nz; ++k) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
-                        v_out_dev[k * v_plane + (Ng + Ny) * v_stride + i] =
-                            v_out_dev[k * v_plane + Ng * v_stride + i];
+                        v_out_ptr[k * v_plane + (Ng + Ny) * v_stride + i] =
+                            v_out_ptr[k * v_plane + Ng * v_stride + i];
                     }
                 }
             }
             if (z_periodic) {
-                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(w_out_dev)
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: w_out_ptr[0:w_total])
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
-                        w_out_dev[(Ng + Nz) * w_plane + j * w_stride_local + i] =
-                            w_out_dev[Ng * w_plane + j * w_stride_local + i];
+                        w_out_ptr[(Ng + Nz) * w_plane + j * w_stride_local + i] =
+                            w_out_ptr[Ng * w_plane + j * w_stride_local + i];
                     }
                 }
             }
         }
         // Case: velocity_star_ -> velocity_
         else if (&vel_in == &velocity_star_ && &vel_out == &velocity_) {
-            // NVHPC WORKAROUND: Use gpu::dev_ptr to get actual device addresses.
-            const double* u_in_dev = gpu::dev_ptr(velocity_star_u_ptr_);
-            double* u_out_dev = gpu::dev_ptr(velocity_u_ptr_);
-            const double* conv_u_dev = gpu::dev_ptr(conv_u_ptr_);
-            const double* diff_u_dev = gpu::dev_ptr(diff_u_ptr_);
-            const double* v_in_dev = gpu::dev_ptr(velocity_star_v_ptr_);
-            double* v_out_dev = gpu::dev_ptr(velocity_v_ptr_);
-            const double* conv_v_dev = gpu::dev_ptr(conv_v_ptr_);
-            const double* diff_v_dev = gpu::dev_ptr(diff_v_ptr_);
-            const double* w_in_dev = gpu::dev_ptr(velocity_star_w_ptr_);
-            double* w_out_dev = gpu::dev_ptr(velocity_w_ptr_);
-            const double* conv_w_dev = gpu::dev_ptr(conv_w_ptr_);
-            const double* diff_w_dev = gpu::dev_ptr(diff_w_ptr_);
+            // Use solver view pointers + map(present:) pattern
+            double* u_in_ptr = sv.u_star_face;
+            double* u_out_ptr = sv.u_face;
+            double* conv_u_ptr = sv.conv_u;
+            double* diff_u_ptr = sv.diff_u;
+            double* v_in_ptr = sv.v_star_face;
+            double* v_out_ptr = sv.v_face;
+            double* conv_v_ptr = sv.conv_v;
+            double* diff_v_ptr = sv.diff_v;
+            double* w_in_ptr = sv.w_star_face;
+            double* w_out_ptr = sv.w_face;
+            double* conv_w_ptr = sv.conv_w;
+            double* diff_w_ptr = sv.diff_w;
 
             // Euler advance u
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(u_in_dev, u_out_dev, conv_u_dev, diff_u_dev)
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i <= Ng + Nx; ++i) {
                         int idx = k * u_plane + j * u_stride + i;
-                        u_out_dev[idx] = u_in_dev[idx] + dt * (-conv_u_dev[idx] + diff_u_dev[idx] + fx);
+                        u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
                     }
                 }
             }
             // Euler advance v
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(v_in_dev, v_out_dev, conv_v_dev, diff_v_dev)
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j <= Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * v_plane + j * v_stride + i;
-                        v_out_dev[idx] = v_in_dev[idx] + dt * (-conv_v_dev[idx] + diff_v_dev[idx] + fy);
+                        v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
                     }
                 }
             }
             // Euler advance w
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(w_in_dev, w_out_dev, conv_w_dev, diff_w_dev)
+                map(present: w_in_ptr[0:w_total], w_out_ptr[0:w_total], conv_w_ptr[0:w_total], diff_w_ptr[0:w_total])
             for (int k = Ng; k <= Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * w_plane + j * w_stride_local + i;
-                        w_out_dev[idx] = w_in_dev[idx] + dt * (-conv_w_dev[idx] + diff_w_dev[idx] + fz);
+                        w_out_ptr[idx] = w_in_ptr[idx] + dt * (-conv_w_ptr[idx] + diff_w_ptr[idx] + fz);
                     }
                 }
             }
             // Periodicity for velocity_
             if (x_periodic) {
-                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_out_dev)
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: u_out_ptr[0:u_total])
                 for (int k = Ng; k < Ng + Nz; ++k) {
                     for (int j = Ng; j < Ng + Ny; ++j) {
-                        u_out_dev[k * u_plane + j * u_stride + Ng + Nx] =
-                            u_out_dev[k * u_plane + j * u_stride + Ng];
+                        u_out_ptr[k * u_plane + j * u_stride + Ng + Nx] =
+                            u_out_ptr[k * u_plane + j * u_stride + Ng];
                     }
                 }
             }
             if (y_periodic) {
-                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(v_out_dev)
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: v_out_ptr[0:v_total])
                 for (int k = Ng; k < Ng + Nz; ++k) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
-                        v_out_dev[k * v_plane + (Ng + Ny) * v_stride + i] =
-                            v_out_dev[k * v_plane + Ng * v_stride + i];
+                        v_out_ptr[k * v_plane + (Ng + Ny) * v_stride + i] =
+                            v_out_ptr[k * v_plane + Ng * v_stride + i];
                     }
                 }
             }
             if (z_periodic) {
-                #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(w_out_dev)
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: w_out_ptr[0:w_total])
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
-                        w_out_dev[(Ng + Nz) * w_plane + j * w_stride_local + i] =
-                            w_out_dev[Ng * w_plane + j * w_stride_local + i];
+                        w_out_ptr[(Ng + Nz) * w_plane + j * w_stride_local + i] =
+                            w_out_ptr[Ng * w_plane + j * w_stride_local + i];
                     }
                 }
             }
@@ -760,17 +774,22 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     const double dy = mesh_->dy;
     const int u_stride_div = velocity_.u_stride();
     const int v_stride_div = velocity_.v_stride();
-    const size_t u_total_div = velocity_.u_total_size();
-    const size_t v_total_div = velocity_.v_total_size();
+
+    // Get solver view for all projection kernels (replaces per-kernel dev_ptr calls)
+    auto sv = get_solver_view();
+    double* u_sv = sv.u_face;
+    double* v_sv = sv.v_face;
+    double* div_sv = sv.div;
+    double* rhs_sv = sv.rhs;
+    double* p_corr_sv = sv.p_corr;
+    [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+    [[maybe_unused]] const size_t cell_sz = field_total_size_;
 
     if (is_2d) {
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-        const double* u_dev = gpu::dev_ptr(velocity_u_ptr_);
-        const double* v_dev = gpu::dev_ptr(velocity_v_ptr_);
-        double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
-
         const int n_cells = Nx * Ny;
-        #pragma omp target teams distribute parallel for is_device_ptr(u_dev, v_dev, div_dev)
+        #pragma omp target teams distribute parallel for \
+            map(present: u_sv[0:u_sz], v_sv[0:v_sz], div_sv[0:cell_sz])
         for (int idx = 0; idx < n_cells; ++idx) {
             const int i = idx % Nx + Ng;
             const int j = idx / Nx + Ng;
@@ -781,9 +800,9 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
             const int v_bottom = j * v_stride_div + i;
             const int div_idx = j * stride + i;
 
-            const double dudx_val = (u_dev[u_right] - u_dev[u_left]) / dx;
-            const double dvdy_val = (v_dev[v_top] - v_dev[v_bottom]) / dy;
-            div_dev[div_idx] = dudx_val + dvdy_val;
+            const double dudx_val = (u_sv[u_right] - u_sv[u_left]) / dx;
+            const double dvdy_val = (v_sv[v_top] - v_sv[v_bottom]) / dy;
+            div_sv[div_idx] = dudx_val + dvdy_val;
         }
     } else {
         // For 3D, use the existing compute_divergence call for now
@@ -797,56 +816,50 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     const int count = is_2d ? (Nx * Ny) : (Nx * Ny * Nz);
 
     if (is_2d) {
-        // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
-        const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
-        double* rhs_dev = gpu::dev_ptr(rhs_poisson_ptr_);
-
         // Compute mean divergence
         double sum = 0.0;
         #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum) \
-            is_device_ptr(div_dev)
+            map(present: div_sv[0:cell_sz])
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
                 int idx = (j + Ng) * stride + (i + Ng);
-                sum += div_dev[idx];
+                sum += div_sv[idx];
             }
         }
         mean_div = (count > 0) ? sum / count : 0.0;
 
         // Build Poisson RHS
         #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(div_dev, rhs_dev)
+            map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
         for (int j = 0; j < Ny; ++j) {
             for (int i = 0; i < Nx; ++i) {
                 int idx = (j + Ng) * stride + (i + Ng);
-                rhs_dev[idx] = (div_dev[idx] - mean_div) * dt_inv;
+                rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
             }
         }
     } else {
-        // 3D INLINE: Compute mean divergence using gpu::dev_ptr for NVHPC workaround
-        // Member pointers in target regions get HOST addresses in NVHPC.
-        const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
-        double* rhs_dev = gpu::dev_ptr(rhs_poisson_ptr_);
-
+        // 3D: Compute mean divergence
         double sum = 0.0;
-        #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum) is_device_ptr(div_dev)
+        #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum) \
+            map(present: div_sv[0:cell_sz])
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
-                    sum += div_dev[idx];
+                    sum += div_sv[idx];
                 }
             }
         }
         mean_div = (count > 0) ? sum / count : 0.0;
 
-        // 3D INLINE: Build Poisson RHS
-        #pragma omp target teams distribute parallel for collapse(3) is_device_ptr(div_dev, rhs_dev)
+        // 3D: Build Poisson RHS
+        #pragma omp target teams distribute parallel for collapse(3) \
+            map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
-                    rhs_dev[idx] = (div_dev[idx] - mean_div) * dt_inv;
+                    rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
                 }
             }
         }
@@ -924,18 +937,17 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     if (print_debug && poisson_solve_count <= 10) {
         // Compute max|rhs| and max|p| on device
         double rhs_max = 0.0, p_max = 0.0;
-        const double* rhs_dev = gpu::dev_ptr(rhs_poisson_ptr_);
-        const double* p_dev = gpu::dev_ptr(pressure_corr_ptr_);
         const int n_cells = Nx * Ny * (is_2d ? 1 : Nz);
-        #pragma omp target teams distribute parallel for reduction(max:rhs_max,p_max) is_device_ptr(rhs_dev, p_dev)
+        #pragma omp target teams distribute parallel for reduction(max:rhs_max,p_max) \
+            map(present: rhs_sv[0:cell_sz], p_corr_sv[0:cell_sz])
         for (int idx = 0; idx < n_cells; ++idx) {
             int ii = idx % Nx + Ng;
             int jk = idx / Nx;
             int jj = (is_2d ? jk : jk % Ny) + Ng;
             int kk = (is_2d ? 0 : jk / Ny) + Ng;
             int flat = kk * plane_stride + jj * stride + ii;
-            rhs_max = std::max(rhs_max, std::abs(rhs_dev[flat]));
-            p_max = std::max(p_max, std::abs(p_dev[flat]));
+            rhs_max = std::max(rhs_max, std::abs(rhs_sv[flat]));
+            p_max = std::max(p_max, std::abs(p_corr_sv[flat]));
         }
         // Also get MG residual if using MG
         double mg_res = (selected_solver_ == PoissonSolverType::MG) ? mg_poisson_solver_.residual() : 0.0;
@@ -958,7 +970,6 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 #endif
 
     // Copy velocity_ to velocity_star_ for correct_velocity()
-    // Use dev_ptr + is_device_ptr pattern (NVHPC workaround)
     const int u_stride = Nx + 2 * Ng + 1;
     const int v_stride = Nx + 2 * Ng;
 
@@ -1021,27 +1032,26 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
         compute_divergence(VelocityWhich::Current, div_velocity_);
 
         double max_div = 0.0;
-        const double* div_dev = gpu::dev_ptr(div_velocity_ptr_);
 
         if (is_2d) {
             #pragma omp target teams distribute parallel for collapse(2) \
-                is_device_ptr(div_dev) reduction(max: max_div)
+                map(present: div_sv[0:cell_sz]) reduction(max: max_div)
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
                     int idx = j * stride + i;
-                    double d = div_dev[idx];
+                    double d = div_sv[idx];
                     double abs_d = (d >= 0.0) ? d : -d;
                     if (abs_d > max_div) max_div = abs_d;
                 }
             }
         } else {
             #pragma omp target teams distribute parallel for collapse(3) \
-                is_device_ptr(div_dev) reduction(max: max_div)
+                map(present: div_sv[0:cell_sz]) reduction(max: max_div)
             for (int k = Ng; k < Nz + Ng; ++k) {
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = k * plane_stride + j * stride + i;
-                        double d = div_dev[idx];
+                        double d = div_sv[idx];
                         double abs_d = (d >= 0.0) ? d : -d;
                         if (abs_d > max_div) max_div = abs_d;
                     }
@@ -1060,21 +1070,21 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 
             if (is_2d) {
                 #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum_adapt) \
-                    is_device_ptr(div_dev)
+                    map(present: div_sv[0:cell_sz])
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
                         int idx = (j + Ng) * stride + (i + Ng);
-                        sum_adapt += div_dev[idx];
+                        sum_adapt += div_sv[idx];
                     }
                 }
             } else {
                 #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum_adapt) \
-                    is_device_ptr(div_dev)
+                    map(present: div_sv[0:cell_sz])
                 for (int k = 0; k < Nz; ++k) {
                     for (int j = 0; j < Ny; ++j) {
                         for (int i = 0; i < Nx; ++i) {
                             int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
-                            sum_adapt += div_dev[idx];
+                            sum_adapt += div_sv[idx];
                         }
                     }
                 }
@@ -1082,24 +1092,23 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
             mean_div_adapt = (count > 0) ? sum_adapt / count : 0.0;
 
             // Build Poisson RHS
-            double* rhs_dev_adapt = gpu::dev_ptr(rhs_poisson_ptr_);
             if (is_2d) {
                 #pragma omp target teams distribute parallel for collapse(2) \
-                    is_device_ptr(div_dev, rhs_dev_adapt)
+                    map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
                         int idx = (j + Ng) * stride + (i + Ng);
-                        rhs_dev_adapt[idx] = (div_dev[idx] - mean_div_adapt) * dt_inv;
+                        rhs_sv[idx] = (div_sv[idx] - mean_div_adapt) * dt_inv;
                     }
                 }
             } else {
                 #pragma omp target teams distribute parallel for collapse(3) \
-                    is_device_ptr(div_dev, rhs_dev_adapt)
+                    map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
                 for (int k = 0; k < Nz; ++k) {
                     for (int j = 0; j < Ny; ++j) {
                         for (int i = 0; i < Nx; ++i) {
                             int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
-                            rhs_dev_adapt[idx] = (div_dev[idx] - mean_div_adapt) * dt_inv;
+                            rhs_sv[idx] = (div_sv[idx] - mean_div_adapt) * dt_inv;
                         }
                     }
                 }
@@ -1146,23 +1155,23 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
             max_div = 0.0;
             if (is_2d) {
                 #pragma omp target teams distribute parallel for collapse(2) \
-                    is_device_ptr(div_dev) reduction(max: max_div)
+                    map(present: div_sv[0:cell_sz]) reduction(max: max_div)
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = j * stride + i;
-                        double d = div_dev[idx];
+                        double d = div_sv[idx];
                         double abs_d = (d >= 0.0) ? d : -d;
                         if (abs_d > max_div) max_div = abs_d;
                     }
                 }
             } else {
                 #pragma omp target teams distribute parallel for collapse(3) \
-                    is_device_ptr(div_dev) reduction(max: max_div)
+                    map(present: div_sv[0:cell_sz]) reduction(max: max_div)
                 for (int k = Ng; k < Nz + Ng; ++k) {
                     for (int j = Ng; j < Ny + Ng; ++j) {
                         for (int i = Ng; i < Nx + Ng; ++i) {
                             int idx = k * plane_stride + j * stride + i;
-                            double d = div_dev[idx];
+                            double d = div_sv[idx];
                             double abs_d = (d >= 0.0) ? d : -d;
                             if (abs_d > max_div) max_div = abs_d;
                         }
