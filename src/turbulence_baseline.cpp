@@ -485,7 +485,9 @@ void AlgebraicKOmegaModel::update(
 std::unique_ptr<TurbulenceModel> create_turbulence_model(
     TurbulenceModelType type,
     const std::string& weights_path,
-    const std::string& scaling_path) {
+    const std::string& scaling_path,
+    double pope_C1,
+    double pope_C2) {
     
     switch (type) {
         case TurbulenceModelType::None:
@@ -536,7 +538,9 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
         }
             
         case TurbulenceModelType::EARSM_Pope: {
-            return std::make_unique<SSTWithEARSM>(EARSMType::Pope1975);
+            auto model = std::make_unique<SSTWithEARSM>(EARSMType::Pope1975);
+            model->set_pope_constants(pope_C1, pope_C2);
+            return model;
         }
             
         // LES SGS models

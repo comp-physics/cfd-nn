@@ -499,6 +499,14 @@ FFT1DPoissonSolver::FFT1DPoissonSolver(const Mesh& mesh, int periodic_dir)
         throw std::runtime_error("FFT1DPoissonSolver requires 3D mesh");
     }
 
+    if (mesh.is_y_stretched()) {
+        throw std::runtime_error(
+            "FFT1DPoissonSolver does not support stretched y-grids. "
+            "The internal 2D multigrid uses uniform 1/(dy*dy) which is "
+            "incorrect for non-uniform y spacing. Use FFT or FFT2D instead, "
+            "which support stretched grids via mesh yLap coefficients.");
+    }
+
     if (periodic_dir != 0 && periodic_dir != 2) {
         throw std::runtime_error("periodic_dir must be 0 (x) or 2 (z)");
     }

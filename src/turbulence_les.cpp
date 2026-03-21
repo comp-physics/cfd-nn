@@ -125,6 +125,45 @@ inline void compute_grad_3d(
             w[kg * w_plane + jg * w_stride + ig]) / dz;
 }
 
+/// Box filter (test filter) for cell-centered field: average over 3x3x3 stencil
+/// with y-wall truncation (clamp j indices to [Ng, Ng+Ny-1])
+inline double box_filter_3d(const double* field, int ig, int jg, int kg,
+                            int stride, int plane_stride, int Ny, int Ng) {
+    double sum = 0.0;
+    int count = 0;
+    int j_lo = (jg - 1 >= Ng) ? jg - 1 : jg;
+    int j_hi = (jg + 1 < Ng + Ny) ? jg + 1 : jg;
+    for (int kk = kg - 1; kk <= kg + 1; ++kk) {
+        for (int jj = j_lo; jj <= j_hi; ++jj) {
+            for (int ii = ig - 1; ii <= ig + 1; ++ii) {
+                sum += field[kk * plane_stride + jj * stride + ii];
+                count += 1;
+            }
+        }
+    }
+    return sum / count;
+}
+
+/// Box filter product: average of f1*f2 over 3x3x3 stencil with y-wall truncation
+inline double box_filter_product_3d(const double* f1, const double* f2,
+                                    int ig, int jg, int kg,
+                                    int stride, int plane_stride, int Ny, int Ng) {
+    double sum = 0.0;
+    int count = 0;
+    int j_lo = (jg - 1 >= Ng) ? jg - 1 : jg;
+    int j_hi = (jg + 1 < Ng + Ny) ? jg + 1 : jg;
+    for (int kk = kg - 1; kk <= kg + 1; ++kk) {
+        for (int jj = j_lo; jj <= j_hi; ++jj) {
+            for (int ii = ig - 1; ii <= ig + 1; ++ii) {
+                int idx = kk * plane_stride + jj * stride + ii;
+                sum += f1[idx] * f2[idx];
+                count += 1;
+            }
+        }
+    }
+    return sum / count;
+}
+
 /// Smagorinsky nu_sgs: (Cs*delta)^2 * |S|
 inline double smagorinsky_nu_sgs(const double g[9], double Cs, double delta) {
     double S11 = g[0], S22 = g[4], S33 = g[8];
@@ -544,81 +583,7 @@ void SigmaModel::update_gpu(const TurbulenceDeviceView* dv) {
     }
 }
 
-// ============================================================================
-// Dynamic Smagorinsky model
-// ============================================================================
-
-double DynamicSmagorinskyModel::compute_nu_sgs_cell(const double g[9], double delta) const {
-    return smagorinsky_nu_sgs(g, Cs_dyn_, delta);
-}
-
-void DynamicSmagorinskyModel::update(
-    const Mesh& mesh, const VectorField& velocity,
-    const ScalarField& k, const ScalarField& omega,
-    ScalarField& nu_t, TensorField* tau_ij,
-    const TurbulenceDeviceView* device_view) {
-
-    static bool warned = false;
-    if (!warned) {
-        std::cerr << "[LES] DynamicSmagorinsky: using simplified procedure (Cs=0.17 fallback)\n";
-        warned = true;
-    }
-
-    // Dynamic coefficient: simplified fallback (always Cs=0.17)
-    Cs_dyn_ = 0.17;
-
-    // Use the base class update which handles GPU/CPU dispatch
-    LESModel::update(mesh, velocity, k, omega, nu_t, tau_ij, device_view);
-}
-
-void DynamicSmagorinskyModel::update_gpu(const TurbulenceDeviceView* dv) {
-    // Uses Smagorinsky kernel with dynamic Cs
-    const int Nx = dv->Nx, Ny = dv->Ny, Ng = dv->Ng;
-    const int Nz_eff = dv->is3D() ? dv->Nz : 1;
-    const double dx = dv->dx, dz = dv->dz;
-    const double Cs = Cs_dyn_;
-    const bool is2D = !dv->is3D();
-
-    double* u = dv->u_face;
-    double* v = dv->v_face;
-    double* w = dv->w_face;
-    double* nu_t_ptr = dv->nu_t;
-    const double* yf = dv->yf;
-    const double* yc = dv->yc;
-    const int u_stride = dv->u_stride, v_stride = dv->v_stride, w_stride = dv->w_stride;
-    const int u_plane = dv->u_plane_stride, v_plane = dv->v_plane_stride, w_plane = dv->w_plane_stride;
-    const int cell_stride = dv->cell_stride, cell_plane = dv->cell_plane_stride;
-    [[maybe_unused]] const int u_sz = dv->u_total, v_sz = dv->v_total, w_sz = dv->w_total;
-    [[maybe_unused]] const int nut_sz = dv->cell_total, yf_sz = dv->yf_total, yc_sz = dv->yc_total;
-    const int total = Nx * Ny * Nz_eff;
-
-    #pragma omp target teams distribute parallel for \
-        map(present: u[0:u_sz], v[0:v_sz], w[0:w_sz], nu_t_ptr[0:nut_sz], yf[0:yf_sz], yc[0:yc_sz]) \
-        firstprivate(Nx, Ny, Nz_eff, Ng, dx, dz, Cs, is2D, \
-                     u_stride, v_stride, w_stride, u_plane, v_plane, w_plane, \
-                     cell_stride, cell_plane)
-    for (int idx = 0; idx < total; ++idx) {
-        int k = idx / (Nx * Ny);
-        int rem = idx - k * Nx * Ny;
-        int j = rem / Nx;
-        int i = rem - j * Nx;
-        int ig = i + Ng, jg = j + Ng, kg = k + Ng;
-
-        double g[9];
-        if (is2D) {
-            compute_grad_2d(ig, jg, dx, yc, u, u_stride, v, v_stride, g);
-        } else {
-            compute_grad_3d(ig, jg, kg, dx, dz, yc, u, u_stride, u_plane,
-                           v, v_stride, v_plane, w, w_stride, w_plane, g);
-        }
-
-        double delta = les_filter_width_cell(yf, jg, dx, dz, is2D);
-        double nu_sgs = smagorinsky_nu_sgs(g, Cs, delta);
-
-        int cell_idx = is2D ? (jg * cell_stride + ig)
-                            : (kg * cell_plane + jg * cell_stride + ig);
-        nu_t_ptr[cell_idx] = nu_sgs;
-    }
-}
+// Dynamic Smagorinsky model is in turbulence_les_dynamic.cpp
+// (split to avoid nvc++ compiler crash on large translation units)
 
 } // namespace nncfd

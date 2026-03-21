@@ -1,4 +1,5 @@
 #include "solver.hpp"
+#include "decomposition.hpp"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -183,7 +184,6 @@ void RANSSolver::reset_statistics() {
 
 void RANSSolver::accumulate_statistics() {
     // Sync velocity data from GPU to CPU before computing statistics
-    // Without this, CPU reads stale initial-condition data (Poiseuille)
     if (gpu_ready_) {
         sync_solution_from_gpu();
     }
@@ -203,81 +203,104 @@ void RANSSolver::accumulate_statistics() {
         stats_dUdy_.assign(Ny, 0.0);
     }
 
-    // For each y-location, compute plane-averaged quantities
+    // MPI check: are we z-decomposed?
+#ifdef USE_MPI
+    const bool mpi_z = (decomp_ && decomp_->is_parallel() &&
+                         mesh_->Nz == decomp_->nz_local());
+#else
+    const bool mpi_z = false;
+#endif
+
+    // Pass 1: compute local velocity sums per y-plane
+    std::vector<double> U_sums(Ny, 0.0), V_sums(Ny, 0.0), W_sums(Ny, 0.0);
+    std::vector<double> counts(Ny, 0.0);
+
     for (int jj = 0; jj < Ny; ++jj) {
         int j = jj + Ng;
-
-        double U_sum = 0.0, V_sum = 0.0, W_sum = 0.0;
-        double uu_sum = 0.0, vv_sum = 0.0, ww_sum = 0.0, uv_sum = 0.0;
-        int count = 0;
-
-        if (Nz > 1) {
-            // 3D: average over x and z
-            for (int k = Ng; k < Ng + Nz; ++k) {
-                for (int i = Ng; i < Ng + Nx; ++i) {
-                    double u = velocity_.u(i, j, k);
-                    // v at y-faces: average to cell center
-                    double v = 0.5 * (velocity_.v(i, j, k) + velocity_.v(i, j+1, k));
-                    double w = velocity_.w(i, j, k);
-
-                    U_sum += u;
-                    V_sum += v;
-                    W_sum += w;
-                    ++count;
-                }
-            }
-        } else {
-            // 2D: average over x only
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                double u = velocity_.u(i, j);
-                double v = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
-
-                U_sum += u;
-                V_sum += v;
-                ++count;
-            }
-        }
-
-        double U_mean = U_sum / count;
-        double V_mean = V_sum / count;
-        double W_mean = (Nz > 1) ? W_sum / count : 0.0;
-
-        // Second pass: compute fluctuations
-        uu_sum = vv_sum = ww_sum = uv_sum = 0.0;
-
         if (Nz > 1) {
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
-                    double u_prime = velocity_.u(i, j, k) - U_mean;
-                    double v = 0.5 * (velocity_.v(i, j, k) + velocity_.v(i, j+1, k));
-                    double v_prime = v - V_mean;
-                    double w_prime = velocity_.w(i, j, k) - W_mean;
-
-                    uu_sum += u_prime * u_prime;
-                    vv_sum += v_prime * v_prime;
-                    ww_sum += w_prime * w_prime;
-                    uv_sum += u_prime * v_prime;
+                    U_sums[jj] += velocity_.u(i, j, k);
+                    V_sums[jj] += 0.5 * (velocity_.v(i, j, k) + velocity_.v(i, j+1, k));
+                    W_sums[jj] += velocity_.w(i, j, k);
+                    counts[jj] += 1.0;
                 }
             }
         } else {
             for (int i = Ng; i < Ng + Nx; ++i) {
-                double u_prime = velocity_.u(i, j) - U_mean;
-                double v = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
-                double v_prime = v - V_mean;
-
-                uu_sum += u_prime * u_prime;
-                vv_sum += v_prime * v_prime;
-                uv_sum += u_prime * v_prime;
+                U_sums[jj] += velocity_.u(i, j);
+                V_sums[jj] += 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1));
+                counts[jj] += 1.0;
             }
         }
+    }
 
-        // Accumulate running averages
+    // MPI: allreduce sums across ranks for global plane averages
+#ifdef USE_MPI
+    if (mpi_z) {
+        decomp_->allreduce_sum(U_sums.data(), Ny);
+        decomp_->allreduce_sum(V_sums.data(), Ny);
+        decomp_->allreduce_sum(W_sums.data(), Ny);
+        decomp_->allreduce_sum(counts.data(), Ny);
+    }
+#endif
+
+    // Compute global means
+    std::vector<double> U_means(Ny), V_means(Ny), W_means(Ny);
+    for (int jj = 0; jj < Ny; ++jj) {
+        U_means[jj] = (counts[jj] > 0) ? U_sums[jj] / counts[jj] : 0.0;
+        V_means[jj] = (counts[jj] > 0) ? V_sums[jj] / counts[jj] : 0.0;
+        W_means[jj] = (Nz > 1 && counts[jj] > 0) ? W_sums[jj] / counts[jj] : 0.0;
+    }
+
+    // Pass 2: compute local fluctuation sums using global means
+    std::vector<double> uu_sums(Ny, 0.0), vv_sums(Ny, 0.0);
+    std::vector<double> ww_sums(Ny, 0.0), uv_sums(Ny, 0.0);
+
+    for (int jj = 0; jj < Ny; ++jj) {
+        int j = jj + Ng;
+        if (Nz > 1) {
+            for (int k = Ng; k < Ng + Nz; ++k) {
+                for (int i = Ng; i < Ng + Nx; ++i) {
+                    double up = velocity_.u(i, j, k) - U_means[jj];
+                    double vp = 0.5 * (velocity_.v(i, j, k) + velocity_.v(i, j+1, k)) - V_means[jj];
+                    double wp = velocity_.w(i, j, k) - W_means[jj];
+                    uu_sums[jj] += up * up;
+                    vv_sums[jj] += vp * vp;
+                    ww_sums[jj] += wp * wp;
+                    uv_sums[jj] += up * vp;
+                }
+            }
+        } else {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                double up = velocity_.u(i, j) - U_means[jj];
+                double vp = 0.5 * (velocity_.v(i, j) + velocity_.v(i, j+1)) - V_means[jj];
+                uu_sums[jj] += up * up;
+                vv_sums[jj] += vp * vp;
+                uv_sums[jj] += up * vp;
+            }
+        }
+    }
+
+    // MPI: allreduce fluctuation sums
+#ifdef USE_MPI
+    if (mpi_z) {
+        decomp_->allreduce_sum(uu_sums.data(), Ny);
+        decomp_->allreduce_sum(vv_sums.data(), Ny);
+        decomp_->allreduce_sum(ww_sums.data(), Ny);
+        decomp_->allreduce_sum(uv_sums.data(), Ny);
+    }
+#endif
+
+    // Accumulate running averages
+    for (int jj = 0; jj < Ny; ++jj) {
         double n = static_cast<double>(stats_samples_);
-        stats_U_mean_[jj] = (stats_U_mean_[jj] * n + U_mean) / (n + 1.0);
-        stats_uu_[jj] = (stats_uu_[jj] * n + uu_sum / count) / (n + 1.0);
-        stats_vv_[jj] = (stats_vv_[jj] * n + vv_sum / count) / (n + 1.0);
-        stats_ww_[jj] = (stats_ww_[jj] * n + ww_sum / count) / (n + 1.0);
-        stats_uv_[jj] = (stats_uv_[jj] * n + uv_sum / count) / (n + 1.0);
+        double c = counts[jj];
+        stats_U_mean_[jj] = (stats_U_mean_[jj] * n + U_means[jj]) / (n + 1.0);
+        stats_uu_[jj] = (stats_uu_[jj] * n + ((c > 0) ? uu_sums[jj] / c : 0.0)) / (n + 1.0);
+        stats_vv_[jj] = (stats_vv_[jj] * n + ((c > 0) ? vv_sums[jj] / c : 0.0)) / (n + 1.0);
+        stats_ww_[jj] = (stats_ww_[jj] * n + ((c > 0) ? ww_sums[jj] / c : 0.0)) / (n + 1.0);
+        stats_uv_[jj] = (stats_uv_[jj] * n + ((c > 0) ? uv_sums[jj] / c : 0.0)) / (n + 1.0);
     }
 
     // Compute dU/dy using central differences
@@ -543,14 +566,8 @@ RANSSolver::SpanwiseSpectrum RANSSolver::compute_spanwise_spectrum(double y_plus
     return spec;
 }
 
-bool RANSSolver::SpanwiseSpectrum::has_recirculation_spike(double /*x_recycle*/,
-                                                            double /*U_bulk*/,
-                                                            double tol) const {
+bool RANSSolver::SpanwiseSpectrum::has_recirculation_spike(double tol) const {
     if (k_z.empty() || E_uu.empty()) return false;
-
-    // Recirculation timescale: tau = x_recycle / U_bulk
-    // Corresponding frequency spike would appear if there's inlet memory
-    // This is more of a time-series check, but we can look for narrow peaks
 
     // Find the peak energy and check if any single wavenumber has >> average
     double E_mean = std::accumulate(E_uu.begin(), E_uu.end(), 0.0) / E_uu.size();
@@ -629,7 +646,7 @@ RANSSolver::TurbulenceRealismReport RANSSolver::validate_turbulence_realism() co
         auto spec = compute_spanwise_spectrum(15.0);
         double U_bulk = bulk_velocity();
         double x_recycle = (use_recycling_) ? mesh_->xc[recycle_i_] : mesh_->x_max;
-        report.spectrum_ok = !spec.has_recirculation_spike(x_recycle, U_bulk) &&
+        report.spectrum_ok = !spec.has_recirculation_spike() &&
                              !spec.has_aliasing_pileup();
     } else {
         report.spectrum_ok = true;  // Skip for 2D
@@ -1135,7 +1152,7 @@ RANSSolver::TurbulenceRealismReport RANSSolver::validate_turbulence_realism(Vali
         auto spec = compute_spanwise_spectrum(15.0);
         double U_bulk = bulk_velocity();
         double x_recycle = (use_recycling_) ? mesh_->xc[recycle_i_] : mesh_->x_max;
-        report.spectrum_ok = !spec.has_recirculation_spike(x_recycle, U_bulk) &&
+        report.spectrum_ok = !spec.has_recirculation_spike() &&
                              !spec.has_aliasing_pileup();
     } else {
         report.spectrum_ok = true;  // Skip for 2D

@@ -17,7 +17,16 @@
  */
 
 #include "solver.hpp"
+#include "decomposition.hpp"
 #include "solver_kernels.hpp"
+
+#ifdef USE_MPI
+#include <mpi.h>
+#endif
+
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
@@ -244,9 +253,20 @@ void RANSSolver::initialize_recycling_inflow() {
     use_recycling_ = true;
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->Nz;
+    const int Nz_local = mesh_->Nz;  // Local z-cells on this rank
     const int Ng = mesh_->Nghost;
     const double delta = (mesh_->y_max - mesh_->y_min) / 2.0;  // Half-height
+
+    // For MPI z-decomposition, recycling needs the GLOBAL Nz for buffer sizing
+    // and spanwise shift. Each rank extracts its local portion, then we allgather.
+#ifdef USE_MPI
+    const int Nz_global = (decomp_ && decomp_->is_parallel()) ? decomp_->nz_global() : Nz_local;
+    recycle_mpi_z_ = (decomp_ && decomp_->is_parallel() && Nz_local == decomp_->nz_local());
+#else
+    const int Nz_global = Nz_local;
+    recycle_mpi_z_ = false;
+#endif
+    const int Nz = Nz_global;  // Use global Nz for buffer sizing and shift
 
     // Compute recycle plane index
     double recycle_x = config_.recycle_x;
@@ -339,8 +359,17 @@ void RANSSolver::initialize_recycling_inflow() {
     inlet_w_ptr_ = static_cast<double*>(
         omp_target_alloc(recycle_w_size_ * sizeof(double), device_id));
 
+    // AR1 temporal filter buffers (GPU)
+    inlet_u_filt_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_u_size_ * sizeof(double), device_id));
+    inlet_v_filt_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_v_size_ * sizeof(double), device_id));
+    inlet_w_filt_ptr_ = static_cast<double*>(
+        omp_target_alloc(recycle_w_size_ * sizeof(double), device_id));
+
     if (!recycle_u_ptr_ || !recycle_v_ptr_ || !recycle_w_ptr_ ||
-        !inlet_u_ptr_ || !inlet_v_ptr_ || !inlet_w_ptr_) {
+        !inlet_u_ptr_ || !inlet_v_ptr_ || !inlet_w_ptr_ ||
+        !inlet_u_filt_ptr_ || !inlet_v_filt_ptr_ || !inlet_w_filt_ptr_) {
         throw std::runtime_error("Failed to allocate recycling buffers on GPU");
     }
 
@@ -354,21 +383,27 @@ void RANSSolver::initialize_recycling_inflow() {
     double* in_u = inlet_u_ptr_;
     double* in_v = inlet_v_ptr_;
     double* in_w = inlet_w_ptr_;
+    double* filt_u = inlet_u_filt_ptr_;
+    double* filt_v = inlet_v_filt_ptr_;
+    double* filt_w = inlet_w_filt_ptr_;
 
-    #pragma omp target teams distribute parallel for is_device_ptr(rec_u, in_u)
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_u, in_u, filt_u)
     for (size_t i = 0; i < n_u; ++i) {
         rec_u[i] = 0.0;
         in_u[i] = 0.0;
+        filt_u[i] = 0.0;
     }
-    #pragma omp target teams distribute parallel for is_device_ptr(rec_v, in_v)
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_v, in_v, filt_v)
     for (size_t i = 0; i < n_v; ++i) {
         rec_v[i] = 0.0;
         in_v[i] = 0.0;
+        filt_v[i] = 0.0;
     }
-    #pragma omp target teams distribute parallel for is_device_ptr(rec_w, in_w)
+    #pragma omp target teams distribute parallel for is_device_ptr(rec_w, in_w, filt_w)
     for (size_t i = 0; i < n_w; ++i) {
         rec_w[i] = 0.0;
         in_w[i] = 0.0;
+        filt_w[i] = 0.0;
     }
 #endif
 
@@ -536,10 +571,108 @@ void RANSSolver::process_recycle_inflow() {
     if (!use_recycling_) return;
 
     const int Ny = mesh_->Ny;
-    const int Nz = mesh_->Nz;
+    const int Nz_local = mesh_->Nz;
+
+    // For MPI z-decomposition: use global Nz for shift modulus
+#ifdef USE_MPI
+    const int Nz_global = recycle_mpi_z_ ? decomp_->nz_global() : Nz_local;
+#else
+    const int Nz_global = Nz_local;
+#endif
+    const int Nz = Nz_global;  // Shift uses global Nz
+
     const int shift_k = recycle_shift_k_;
     const double alpha = recycle_filter_alpha_;
     const bool use_filter = (alpha > 0.0 && alpha < 1.0);
+
+    // MPI: allgather local recycle planes into global buffers, apply shift,
+    // then extract this rank's local z-slice into inlet buffers.
+#ifdef USE_MPI
+    if (recycle_mpi_z_) {
+        const int k_start = decomp_->k_global_start();
+
+        // Sync recycle buffers from GPU to host
+#ifdef USE_GPU_OFFLOAD
+        if (gpu_ready_) {
+            omp_target_memcpy(recycle_u_buf_.data(), recycle_u_ptr_,
+                              Ny * Nz_local * sizeof(double), 0, 0,
+                              omp_get_initial_device(), omp_get_default_device());
+            omp_target_memcpy(recycle_v_buf_.data(), recycle_v_ptr_,
+                              (Ny + 1) * Nz_local * sizeof(double), 0, 0,
+                              omp_get_initial_device(), omp_get_default_device());
+            omp_target_memcpy(recycle_w_buf_.data(), recycle_w_ptr_,
+                              Ny * (Nz_local + 1) * sizeof(double), 0, 0,
+                              omp_get_initial_device(), omp_get_default_device());
+        }
+#endif
+
+        // Allgather u (Ny * Nz_local per rank → Ny * Nz_global)
+        std::vector<double> global_u(Ny * Nz_global, 0.0);
+        std::vector<double> global_v((Ny + 1) * Nz_global, 0.0);
+        std::vector<double> global_w(Ny * (Nz_global + 1), 0.0);
+
+        // Gather: each rank contributes its Nz_local z-planes
+        // Layout: buf[k * Ny + j] — z-major, y-minor
+        // Place each rank's data at its global k-offset
+        MPI_Allgather(recycle_u_buf_.data(), Ny * Nz_local, MPI_DOUBLE,
+                      global_u.data(), Ny * Nz_local, MPI_DOUBLE,
+                      decomp_->comm());
+        MPI_Allgather(recycle_v_buf_.data(), (Ny + 1) * Nz_local, MPI_DOUBLE,
+                      global_v.data(), (Ny + 1) * Nz_local, MPI_DOUBLE,
+                      decomp_->comm());
+        // w has Nz_local+1 faces per rank but only Nz_local interior; send Nz_local
+        // For simplicity, gather Ny * Nz_local of w and reconstruct the seam face
+        {
+            std::vector<double> w_local(Ny * Nz_local);
+            for (int k = 0; k < Nz_local; ++k)
+                for (int j = 0; j < Ny; ++j)
+                    w_local[k * Ny + j] = recycle_w_buf_[k * Ny + j];
+            std::vector<double> w_global_cells(Ny * Nz_global);
+            MPI_Allgather(w_local.data(), Ny * Nz_local, MPI_DOUBLE,
+                          w_global_cells.data(), Ny * Nz_local, MPI_DOUBLE,
+                          decomp_->comm());
+            // Copy to global_w with Nz_global+1 faces (periodic: face[Nz_global] = face[0])
+            for (int k = 0; k < Nz_global; ++k)
+                for (int j = 0; j < Ny; ++j)
+                    global_w[k * Ny + j] = w_global_cells[k * Ny + j];
+            for (int j = 0; j < Ny; ++j)
+                global_w[Nz_global * Ny + j] = global_w[j]; // periodic seam
+        }
+
+        // Apply shift on global buffers and extract local z-slice into inlet buffers
+        // inlet_buf uses Nz_global sizing (same as single-rank)
+        for (int k = 0; k < Nz_global; ++k) {
+            int k_src = (k + shift_k) % Nz_global;
+            for (int j = 0; j < Ny; ++j)
+                inlet_u_buf_[k * Ny + j] = global_u[k_src * Ny + j];
+            for (int j = 0; j < Ny + 1; ++j)
+                inlet_v_buf_[k * (Ny + 1) + j] = global_v[k_src * (Ny + 1) + j];
+        }
+        for (int k = 0; k < Nz_global + 1; ++k) {
+            int k_src = (k + shift_k) % (Nz_global + 1);
+            for (int j = 0; j < Ny; ++j)
+                inlet_w_buf_[k * Ny + j] = global_w[k_src * Ny + j];
+        }
+
+        // Upload shifted inlet buffers to GPU
+#ifdef USE_GPU_OFFLOAD
+        if (gpu_ready_) {
+            omp_target_memcpy(inlet_u_ptr_, inlet_u_buf_.data(),
+                              recycle_u_size_ * sizeof(double), 0, 0,
+                              omp_get_default_device(), omp_get_initial_device());
+            omp_target_memcpy(inlet_v_ptr_, inlet_v_buf_.data(),
+                              recycle_v_size_ * sizeof(double), 0, 0,
+                              omp_get_default_device(), omp_get_initial_device());
+            omp_target_memcpy(inlet_w_ptr_, inlet_w_buf_.data(),
+                              recycle_w_size_ * sizeof(double), 0, 0,
+                              omp_get_default_device(), omp_get_initial_device());
+        }
+#endif
+
+        // GPU shift below is skipped — already done on CPU with global data.
+        // Fall through to mass-flux correction, mean removal, etc.
+    }
+#endif
 
 #ifdef USE_GPU_OFFLOAD
     double* rec_u = recycle_u_ptr_;
@@ -551,38 +684,39 @@ void RANSSolver::process_recycle_inflow() {
     const bool track_diag = (config_.recycle_diag_interval > 0) && !diag_u_copy_.empty();
     const double eps = 1e-14;
 
-    // Step 1: Apply spanwise shift to u (Ny × Nz)
+    // Step 1: Apply spanwise shift (GPU path, single-rank only)
+    // MPI path already applied shift on CPU with global data above.
     const int n_u = Ny * Nz;
-    #pragma omp target teams distribute parallel for \
-        is_device_ptr(rec_u, in_u) firstprivate(Ny, Nz, shift_k)
-    for (int idx = 0; idx < n_u; ++idx) {
-        int j = idx % Ny;
-        int k = idx / Ny;
-        int k_src = (k + shift_k) % Nz;
-        in_u[k * Ny + j] = rec_u[k_src * Ny + j];
-    }
-
-    // Step 1: Apply spanwise shift to v ((Ny+1) × Nz)
     const int n_v = (Ny + 1) * Nz;
-    #pragma omp target teams distribute parallel for \
-        is_device_ptr(rec_v, in_v) firstprivate(Ny, Nz, shift_k)
-    for (int idx = 0; idx < n_v; ++idx) {
-        int j = idx % (Ny + 1);
-        int k = idx / (Ny + 1);
-        int k_src = (k + shift_k) % Nz;
-        in_v[k * (Ny + 1) + j] = rec_v[k_src * (Ny + 1) + j];
-    }
-
-    // Step 1: Apply spanwise shift to w (Ny × (Nz+1))
-    // Note: w is at z-faces, periodic so face Nz+1 wraps to face 0
     const int n_w = Ny * (Nz + 1);
-    #pragma omp target teams distribute parallel for \
-        is_device_ptr(rec_w, in_w) firstprivate(Ny, Nz, shift_k)
-    for (int idx = 0; idx < n_w; ++idx) {
-        int j = idx % Ny;
-        int k = idx / Ny;
-        int k_src = (k + shift_k) % (Nz + 1);
-        in_w[k * Ny + j] = rec_w[k_src * Ny + j];
+
+    if (!recycle_mpi_z_) {
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(rec_u, in_u) firstprivate(Ny, Nz, shift_k)
+        for (int idx = 0; idx < n_u; ++idx) {
+            int j = idx % Ny;
+            int k = idx / Ny;
+            int k_src = (k + shift_k) % Nz;
+            in_u[k * Ny + j] = rec_u[k_src * Ny + j];
+        }
+
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(rec_v, in_v) firstprivate(Ny, Nz, shift_k)
+        for (int idx = 0; idx < n_v; ++idx) {
+            int j = idx % (Ny + 1);
+            int k = idx / (Ny + 1);
+            int k_src = (k + shift_k) % Nz;
+            in_v[k * (Ny + 1) + j] = rec_v[k_src * (Ny + 1) + j];
+        }
+
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(rec_w, in_w) firstprivate(Ny, Nz, shift_k)
+        for (int idx = 0; idx < n_w; ++idx) {
+            int j = idx % Ny;
+            int k = idx / Ny;
+            int k_src = (k + shift_k) % (Nz + 1);
+            in_w[k * Ny + j] = rec_w[k_src * Ny + j];
+        }
     }
 
     // [Diag] Capture state after copy+shift (GPU)
@@ -590,10 +724,32 @@ void RANSSolver::process_recycle_inflow() {
         recycle_diag_.L2_copy = std::sqrt(gpu_sum_sq_reduce(in_u, n_u));
     }
 
-    // Step 2: Temporal filtering (if enabled)
+    // Step 2: Temporal AR1 filtering on GPU
+    // filtered = alpha * filtered_old + (1 - alpha) * new_value
     if (use_filter) {
-        // Would need inlet_u_filt_ptr_ etc. on GPU - skipping for now
-        // In practice, filtering on GPU requires additional device buffers
+        double* filt_u = inlet_u_filt_ptr_;
+        double* filt_v = inlet_v_filt_ptr_;
+        double* filt_w = inlet_w_filt_ptr_;
+        const double one_minus_alpha = 1.0 - alpha;
+
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(in_u, filt_u) firstprivate(alpha, one_minus_alpha)
+        for (int i = 0; i < n_u; ++i) {
+            filt_u[i] = alpha * filt_u[i] + one_minus_alpha * in_u[i];
+            in_u[i] = filt_u[i];
+        }
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(in_v, filt_v) firstprivate(alpha, one_minus_alpha)
+        for (int i = 0; i < n_v; ++i) {
+            filt_v[i] = alpha * filt_v[i] + one_minus_alpha * in_v[i];
+            in_v[i] = filt_v[i];
+        }
+        #pragma omp target teams distribute parallel for \
+            is_device_ptr(in_w, filt_w) firstprivate(alpha, one_minus_alpha)
+        for (int i = 0; i < n_w; ++i) {
+            filt_w[i] = alpha * filt_w[i] + one_minus_alpha * in_w[i];
+            in_w[i] = filt_w[i];
+        }
     }
 
     // [Diag] Capture state after AR1 filter (GPU) - same as copy when no filter
@@ -702,23 +858,23 @@ void RANSSolver::process_recycle_inflow() {
     const int n_u = static_cast<int>(recycle_u_size_);
     const double eps = 1e-14;  // Safe denominator for relative L2
 
-    // Step 1: Spanwise shift (copy + shift from recycle plane)
-    for (int k = 0; k < Nz; ++k) {
-        int k_src = (k + shift_k) % Nz;
-        for (int j = 0; j < Ny; ++j) {
-            inlet_u_buf_[k * Ny + j] = recycle_u_buf_[k_src * Ny + j];
+    // Step 1: Spanwise shift (CPU path, single-rank only)
+    // MPI path already applied shift with global data above.
+    if (!recycle_mpi_z_) {
+        for (int k = 0; k < Nz; ++k) {
+            int k_src = (k + shift_k) % Nz;
+            for (int j = 0; j < Ny; ++j)
+                inlet_u_buf_[k * Ny + j] = recycle_u_buf_[k_src * Ny + j];
         }
-    }
-    for (int k = 0; k < Nz; ++k) {
-        int k_src = (k + shift_k) % Nz;
-        for (int j = 0; j < Ny + 1; ++j) {
-            inlet_v_buf_[k * (Ny + 1) + j] = recycle_v_buf_[k_src * (Ny + 1) + j];
+        for (int k = 0; k < Nz; ++k) {
+            int k_src = (k + shift_k) % Nz;
+            for (int j = 0; j < Ny + 1; ++j)
+                inlet_v_buf_[k * (Ny + 1) + j] = recycle_v_buf_[k_src * (Ny + 1) + j];
         }
-    }
-    for (int k = 0; k < Nz + 1; ++k) {
-        int k_src = (k + shift_k) % (Nz + 1);
-        for (int j = 0; j < Ny; ++j) {
-            inlet_w_buf_[k * Ny + j] = recycle_w_buf_[k_src * Ny + j];
+        for (int k = 0; k < Nz + 1; ++k) {
+            int k_src = (k + shift_k) % (Nz + 1);
+            for (int j = 0; j < Ny; ++j)
+                inlet_w_buf_[k * Ny + j] = recycle_w_buf_[k_src * Ny + j];
         }
     }
 

@@ -229,6 +229,8 @@ void Config::load(const std::string& filename) {
     }
     
     nu_t_max = get_double("nu_t_max", nu_t_max);
+    pope_C1 = get_double("pope_C1", pope_C1);
+    pope_C2 = get_double("pope_C2", pope_C2);
     nn_weights_path = get_string("nn_weights_path", nn_weights_path);
     nn_scaling_path = get_string("nn_scaling_path", nn_scaling_path);
     nn_preset = get_string("nn_preset", nn_preset);
@@ -470,6 +472,10 @@ void Config::parse_args(int argc, char** argv) {
             } else if (model == "sigma") {
                 turb_model = TurbulenceModelType::Sigma;
             }
+        } else if ((val = get_value(i, arg, "--pope_C1")) != "") {
+            pope_C1 = std::stod(val);
+        } else if ((val = get_value(i, arg, "--pope_C2")) != "") {
+            pope_C2 = std::stod(val);
         } else if ((val = get_value(i, arg, "--weights")) != "") {
             nn_weights_path = val;
         } else if ((val = get_value(i, arg, "--scaling")) != "") {
@@ -1084,7 +1090,7 @@ void Config::print() const {
         case TurbulenceModelType::KOmega: std::cout << "k-omega (Wilcox)"; break;
         case TurbulenceModelType::EARSM_WJ: std::cout << "SST + Wallin-Johansson EARSM"; break;
         case TurbulenceModelType::EARSM_GS: std::cout << "SST + Gatski-Speziale EARSM"; break;
-        case TurbulenceModelType::EARSM_Pope: std::cout << "SST + Pope Quadratic EARSM"; break;
+        case TurbulenceModelType::EARSM_Pope: std::cout << "SST + Pope Quadratic EARSM (C1=" << pope_C1 << ", C2=" << pope_C2 << ")"; break;
         case TurbulenceModelType::Smagorinsky: std::cout << "LES Smagorinsky"; break;
         case TurbulenceModelType::DynamicSmagorinsky: std::cout << "LES Dynamic Smagorinsky"; break;
         case TurbulenceModelType::WALE: std::cout << "LES WALE"; break;

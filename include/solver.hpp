@@ -540,8 +540,8 @@ public:
         std::vector<double> k_z;      ///< Wavenumbers
         std::vector<double> E_uu;     ///< Energy spectrum of u
 
-        /// Check for narrow spike at recirculation frequency
-        bool has_recirculation_spike(double x_recycle, double U_bulk, double tol = 5.0) const;
+        /// Check for narrow spike in spanwise spectrum
+        bool has_recirculation_spike(double tol = 5.0) const;
 
         /// Check for aliasing pileup at high wavenumbers
         bool has_aliasing_pileup(double tol = 1.5) const;
@@ -888,6 +888,7 @@ private:
 
     // Recycling inflow state and buffers
     bool use_recycling_ = false;           ///< Recycling inflow enabled
+    bool recycle_mpi_z_ = false;           ///< MPI z-decomposition active for recycling
     int recycle_i_ = -1;                   ///< Grid index of recycle plane
     int recycle_shift_k_ = 0;              ///< Current spanwise shift (z-index units)
     int recycle_shift_step_ = 0;           ///< Steps since last shift update
@@ -1060,6 +1061,9 @@ private:
     double* inlet_u_ptr_ = nullptr;        ///< Device: processed inlet u
     double* inlet_v_ptr_ = nullptr;        ///< Device: processed inlet v
     double* inlet_w_ptr_ = nullptr;        ///< Device: processed inlet w
+    double* inlet_u_filt_ptr_ = nullptr;   ///< Device: AR1 filter state u
+    double* inlet_v_filt_ptr_ = nullptr;   ///< Device: AR1 filter state v
+    double* inlet_w_filt_ptr_ = nullptr;   ///< Device: AR1 filter state w
     size_t recycle_u_size_ = 0;            ///< Size of u recycle buffer
     size_t recycle_v_size_ = 0;            ///< Size of v recycle buffer
     size_t recycle_w_size_ = 0;            ///< Size of w recycle buffer

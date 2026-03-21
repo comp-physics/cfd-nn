@@ -13,6 +13,7 @@
 /// ensuring numerical consistency between platforms.
 
 #include "solver.hpp"
+#include "turbulence_les.hpp"
 #include "ibm_forcing.hpp"
 #include "decomposition.hpp"
 #include "halo_exchange.hpp"
@@ -297,6 +298,20 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
         config_.space_order = 2;
     }
 
+    // Warn about O4 limitations
+    if (config_.space_order == 4) {
+        if (mesh.is2D()) {
+            std::cerr << "[Solver] WARNING: space_order=4 is 3D-only for advection. "
+                      << "2D falls back to O2 for all operators.\n";
+        }
+        if (config_.implicit_y_diffusion) {
+            std::cerr << "[Solver] WARNING: space_order=4 with implicit_y_diffusion uses "
+                      << "O2 Thomas algorithm (no O4 pentadiagonal solver).\n";
+        }
+        std::cerr << "[Solver] NOTE: O4 applies to advection and pressure gradient only. "
+                  << "Diffusion always uses O2 stencils.\n";
+    }
+
     // Precompute wall distance (once, then stays on GPU if enabled)
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
@@ -571,6 +586,20 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
 
 RANSSolver::~RANSSolver() {
     cleanup_gpu_buffers();  // Safe to call unconditionally (no-op when GPU disabled)
+
+    // Free recycling GPU buffers (allocated via omp_target_alloc, not target enter data)
+#ifdef USE_GPU_OFFLOAD
+    int dev = omp_get_default_device();
+    if (recycle_u_ptr_) omp_target_free(recycle_u_ptr_, dev);
+    if (recycle_v_ptr_) omp_target_free(recycle_v_ptr_, dev);
+    if (recycle_w_ptr_) omp_target_free(recycle_w_ptr_, dev);
+    if (inlet_u_ptr_) omp_target_free(inlet_u_ptr_, dev);
+    if (inlet_v_ptr_) omp_target_free(inlet_v_ptr_, dev);
+    if (inlet_w_ptr_) omp_target_free(inlet_w_ptr_, dev);
+    if (inlet_u_filt_ptr_) omp_target_free(inlet_u_filt_ptr_, dev);
+    if (inlet_v_filt_ptr_) omp_target_free(inlet_v_filt_ptr_, dev);
+    if (inlet_w_filt_ptr_) omp_target_free(inlet_w_filt_ptr_, dev);
+#endif
 }
 
 void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
@@ -593,6 +622,30 @@ void RANSSolver::set_decomposition(Decomposition* decomp) {
             mesh_->Nx, mesh_->Ny, decomp_->nz_local(),
             mesh_->Nghost);
     }
+    // Forward decomposition to Dynamic Smagorinsky for LM/MM plane allreduce
+    if (turb_model_) {
+        auto* dsmag = dynamic_cast<DynamicSmagorinskyModel*>(turb_model_.get());
+        if (dsmag) dsmag->set_decomposition(decomp);
+    }
+
+    // Retry FFT_MPI initialization if it was requested but decomp wasn't set yet
+#if defined(USE_MPI) && defined(USE_FFT_POISSON)
+    if (decomp_ && config_.poisson_solver == PoissonSolverType::FFT_MPI &&
+        selected_solver_ != PoissonSolverType::FFT_MPI && !fft_mpi_poisson_solver_) {
+        try {
+            fft_mpi_poisson_solver_ = std::make_unique<FFTMPIPoissonSolver>(*mesh_, *decomp_);
+            fft_mpi_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
+                                             PoissonBC::Neumann, PoissonBC::Neumann,
+                                             PoissonBC::Periodic, PoissonBC::Periodic);
+            fft_mpi_poisson_solver_->set_space_order(config_.space_order);
+            selected_solver_ = PoissonSolverType::FFT_MPI;
+            selection_reason_ = "deferred: FFT_MPI initialized after set_decomposition";
+            std::cout << "[Poisson] FFT_MPI initialized (deferred)\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[Solver] Warning: Deferred FFT_MPI init failed: " << e.what() << "\n";
+        }
+    }
+#endif
 }
 
 void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
@@ -721,6 +774,13 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
             selected_solver_ = PoissonSolverType::MG;
         }
     }
+
+    // Update FFT_MPI solver BCs if it exists
+#if defined(USE_MPI) && defined(USE_FFT_POISSON)
+    if (fft_mpi_poisson_solver_) {
+        fft_mpi_poisson_solver_->set_bc(p_x_lo, p_x_hi, p_y_lo, p_y_hi, p_z_lo, p_z_hi);
+    }
+#endif
 #endif
 
 #ifdef USE_HYPRE

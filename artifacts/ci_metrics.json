@@ -1,0 +1,22 @@
+{
+  "schema_version": "2",
+  "metadata": {
+    "git_sha": "e86f3ea",
+    "branch": "checking",
+    "build_type": "gpu+hypre",
+    "test_suite": "full",
+    "timestamp_utc": "2026-03-04T10:00:28Z",
+    "elapsed_s": 2229,
+    "offload": "MANDATORY",
+    "gpu_name": "NVIDIA H200",
+    "gpu_cc": "90"
+  },
+  "summary": {
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0
+  },
+  "qoi": {
+
+  }
+}

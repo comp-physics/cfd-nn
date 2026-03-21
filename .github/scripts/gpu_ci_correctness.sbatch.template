@@ -4,7 +4,7 @@
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=4
 #SBATCH -p gpu-h200,gpu-h100,gpu-a100,gpu-l40s
-#SBATCH -G 1
+#SBATCH -G 2
 #SBATCH --qos=embers
 #SBATCH -t 02:00:00
 #SBATCH -o __SLURM_OUT__
@@ -246,7 +246,8 @@ echo ""
     # configuration. Just reconfigure with MPI enabled.
     cd build_gpu
     cmake .. -DUSE_MPI=ON
-    make -j8 test_decomposition test_halo_exchange
+    make -j8 test_decomposition test_halo_exchange test_mpi_poisson \
+             test_mpi_channel test_mpi_halo_step test_mpi_energy_allreduce
     cd ..
     echo ""
     echo "GPU+MPI build: $(ls -lh build_gpu/test_decomposition 2>/dev/null || echo 'FAILED')"
@@ -262,18 +263,19 @@ fi
 echo "[PASS] GPU+MPI build succeeded"
 echo ""
 
-# Run MPI tests — single GPU is shared across ranks; tests exercise MPI
-# infrastructure (decomposition, halo exchange) which doesn't require GPU compute
+# Run MPI tests — 2 GPUs available, ranks get dedicated GPUs for 2-rank tests
 set +e
 {
     echo ""
     echo "==================================================================="
-    echo "  GPU+MPI Test Run"
+    echo "  GPU+MPI Test Run (2 GPUs available)"
     echo "==================================================================="
     echo "Host: $(hostname)"
     echo "Date: $(date)"
+    nvidia-smi -L
     echo ""
 
+    # --- Single rank ---
     echo "--- DecompositionTest (1 rank) ---"
     ./build_gpu/test_decomposition
     echo ""
@@ -282,6 +284,15 @@ set +e
     ./build_gpu/test_halo_exchange
     echo ""
 
+    echo "--- MPIPoissonTest (1 rank) ---"
+    ./build_gpu/test_mpi_poisson
+    echo ""
+
+    echo "--- MPIChannelTest (1 rank) ---"
+    ./build_gpu/test_mpi_channel
+    echo ""
+
+    # --- 2 ranks (1 GPU per rank) ---
     echo "--- DecompositionTest (2 ranks) ---"
     mpirun --oversubscribe -n 2 ./build_gpu/test_decomposition
     echo ""
@@ -290,12 +301,33 @@ set +e
     mpirun --oversubscribe -n 2 ./build_gpu/test_halo_exchange
     echo ""
 
+    echo "--- MPIPoissonTest (2 ranks, 1 GPU/rank) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu/test_mpi_poisson
+    echo ""
+
+    echo "--- MPIChannelTest (2 ranks) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu/test_mpi_channel
+    echo ""
+
+    echo "--- MPIHaloStepTest (2 ranks, 1 GPU/rank) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu/test_mpi_halo_step
+    echo ""
+
+    echo "--- MPIEnergyAllreduceTest (2 ranks) ---"
+    mpirun --oversubscribe -n 2 ./build_gpu/test_mpi_energy_allreduce
+    echo ""
+
+    # --- 4 ranks (2 GPUs shared) ---
     echo "--- DecompositionTest (4 ranks) ---"
     mpirun --oversubscribe -n 4 ./build_gpu/test_decomposition
     echo ""
 
     echo "--- HaloExchangeTest (4 ranks) ---"
     mpirun --oversubscribe -n 4 ./build_gpu/test_halo_exchange
+    echo ""
+
+    echo "--- MPIPoissonTest (4 ranks) ---"
+    mpirun --oversubscribe -n 4 ./build_gpu/test_mpi_poisson
     echo ""
 } >> "$GPU_MPI_LOG" 2>&1
 MPI_EXIT_CODE=$?

@@ -1,18 +1,17 @@
 /// @file poisson_solver_fft_mpi.cpp
-/// @brief Distributed FFT Poisson solver with MPI pencil transpose
+/// @brief Distributed GPU FFT Poisson solver with MPI pencil transpose
 ///
 /// Single-rank: delegates to FFTPoissonSolver for optimal performance.
-/// Multi-rank: implements x-FFT (local) → z-transpose (MPI) → z-FFT (local) →
-/// y-tridiagonal (local) → inverse z-FFT → z-transpose back → inverse x-FFT.
-///
-/// CPU path uses manual DFT for correctness; GPU path delegates to the serial
-/// FFT solver which uses cuFFT + cuSPARSE.
+/// Multi-rank: cuFFT 1D R2C in x (local) → MPI transpose → cuFFT 1D C2C
+/// in z (local) → cuSPARSE batched tridiag in y → inverse path.
+/// All compute on GPU; MPI uses host-staged buffers for portability.
 
 #include "poisson_solver_fft_mpi.hpp"
 #ifdef USE_FFT_POISSON
 #include "poisson_solver_fft.hpp"
 #endif
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
@@ -30,7 +29,32 @@ void mpi_check(int rc, const char* call) {
 } // namespace
 #endif
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
+#ifdef USE_FFT_POISSON
+namespace {
+void cuda_check(cudaError_t rc, const char* call) {
+    if (rc != cudaSuccess) {
+        throw std::runtime_error(std::string("[CUDA] ") + call +
+            " failed: " + cudaGetErrorString(rc));
+    }
+}
+void cusparse_check(cusparseStatus_t rc, const char* call) {
+    if (rc != CUSPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error(std::string("[cuSPARSE] ") + call +
+            " failed: code=" + std::to_string(static_cast<int>(rc)));
+    }
+}
+} // namespace
+#endif
+
 namespace nncfd {
+
+// ============================================================================
+// Construction / destruction
+// ============================================================================
 
 FFTMPIPoissonSolver::FFTMPIPoissonSolver(const Mesh& mesh, const Decomposition& decomp)
     : mesh_(&mesh), decomp_(&decomp)
@@ -44,15 +68,27 @@ FFTMPIPoissonSolver::FFTMPIPoissonSolver(const Mesh& mesh, const Decomposition& 
 
     if (!distributed_) {
 #ifdef USE_FFT_POISSON
-        // Single-rank: use the serial FFT solver directly (GPU only)
         serial_solver_ = std::make_unique<FFTPoissonSolver>(mesh);
 #endif
-    } else {
-        initialize_distributed();
     }
+#ifdef USE_FFT_POISSON
+    else {
+        Nx_c_ = Nx_ / 2 + 1;
+    }
+#endif
 }
 
-FFTMPIPoissonSolver::~FFTMPIPoissonSolver() = default;
+FFTMPIPoissonSolver::~FFTMPIPoissonSolver() {
+#ifdef USE_FFT_POISSON
+    if (gpu_initialized_) {
+        free_gpu();
+    }
+#endif
+}
+
+// ============================================================================
+// Configuration
+// ============================================================================
 
 void FFTMPIPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
                                   PoissonBC y_lo, PoissonBC y_hi,
@@ -65,13 +101,8 @@ void FFTMPIPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     if (serial_solver_) {
         serial_solver_->set_bc(x_lo, x_hi, y_lo, y_hi, z_lo, z_hi);
     }
+    if (distributed_) gpu_initialized_ = false;  // force re-init
 #endif
-
-    // Recompute tridiagonal coefficients — they depend on bc_y_lo_/bc_y_hi_
-    // (Neumann BCs zero out boundary stencil entries)
-    if (distributed_) {
-        compute_tridiagonal_coeffs();
-    }
 }
 
 void FFTMPIPoissonSolver::set_space_order(int order) {
@@ -80,17 +111,14 @@ void FFTMPIPoissonSolver::set_space_order(int order) {
     if (serial_solver_) {
         serial_solver_->set_space_order(order);
     }
+    if (distributed_) gpu_initialized_ = false;  // force re-init
 #endif
-    if (distributed_) {
-        compute_eigenvalues();
-    }
 }
 
 bool FFTMPIPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
                                        PoissonBC y_lo, PoissonBC y_hi,
                                        PoissonBC z_lo, PoissonBC z_hi,
                                        bool uniform_x, bool uniform_z) {
-    // Same requirements as serial FFT: periodic x/z, non-periodic y, uniform x/z
     return (x_lo == PoissonBC::Periodic && x_hi == PoissonBC::Periodic &&
             z_lo == PoissonBC::Periodic && z_hi == PoissonBC::Periodic &&
             y_lo != PoissonBC::Periodic && y_hi != PoissonBC::Periodic &&
@@ -100,30 +128,31 @@ bool FFTMPIPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
 bool FFTMPIPoissonSolver::using_gpu() const {
 #ifdef USE_FFT_POISSON
     if (serial_solver_) return serial_solver_->using_gpu();
+    return distributed_;  // GPU path for distributed
+#else
+    return false;
 #endif
-    return false;  // distributed CPU path
 }
 
-int FFTMPIPoissonSolver::solve(const ScalarField& rhs, ScalarField& p,
+// ============================================================================
+// Solve entry points
+// ============================================================================
+
+int FFTMPIPoissonSolver::solve(const ScalarField& /*rhs*/, ScalarField& /*p*/,
                                 const PoissonConfig& /*cfg*/) {
-    if (!distributed_) {
-        // Single-rank: delegate to serial FFTPoissonSolver.
-        // FFTPoissonSolver only exposes solve_device() (GPU), not a CPU
-        // solve(ScalarField&, ...) method. So on CPU single-rank we cannot
-        // delegate and must fall back to distributed path or error out.
-#ifdef USE_FFT_POISSON
-        if (serial_solver_) {
-            // serial_solver_ has solve_device() only — no CPU ScalarField path.
-            // The caller should use solve_device() for GPU or the distributed
-            // CPU path for multi-rank. Provide a clear error message.
-        }
-#endif
+    if (distributed_) {
         throw std::runtime_error(
-            "FFTMPIPoissonSolver::solve() single-rank CPU path not available: "
-            "FFTPoissonSolver only implements solve_device() (GPU). "
-            "Use solve_device() on GPU or multi-rank MPI for CPU.");
+            "FFTMPIPoissonSolver::solve() not available for distributed case. "
+            "Use solve_device() (GPU required for distributed FFT_MPI).");
     }
-    return solve_distributed_cpu(rhs, p);
+#ifdef USE_FFT_POISSON
+    // Single-rank: serial solver only has solve_device(), no CPU path
+    throw std::runtime_error(
+        "FFTMPIPoissonSolver::solve() single-rank CPU path not available. "
+        "Use solve_device() on GPU.");
+#else
+    throw std::runtime_error("FFTMPIPoissonSolver requires USE_FFT_POISSON");
+#endif
 }
 
 int FFTMPIPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
@@ -134,471 +163,580 @@ int FFTMPIPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr,
         residual_ = serial_solver_->residual();
         return result;
     }
+
+    if (distributed_) {
+        return solve_device_distributed(rhs_ptr, p_ptr);
+    }
 #else
     (void)rhs_ptr; (void)p_ptr; (void)cfg;
 #endif
-
-    // Multi-rank GPU path: would use CUDA-aware MPI + cuFFT
-    // For now, fall back to error since this needs GPU + MPI testing
-    throw std::runtime_error("FFTMPIPoissonSolver::solve_device() distributed "
-                            "GPU path not yet implemented (requires CUDA-aware MPI)");
+    throw std::runtime_error("FFTMPIPoissonSolver: no solver available");
 }
 
 // ============================================================================
-// Distributed solve implementation (CPU path)
+// GPU implementation (distributed multi-rank)
 // ============================================================================
 
-void FFTMPIPoissonSolver::initialize_distributed() {
-    compute_eigenvalues();
-    compute_tridiagonal_coeffs();
-    compute_alltoallv_params();
+#ifdef USE_FFT_POISSON
 
-    // Allocate work arrays for the distributed solve
-    // After x-FFT + z-transpose, each rank has:
-    //   - Full z (Nz_global) for a subset of kx modes
-    //   - Full y (Ny)
-    [[maybe_unused]] int n_kx_local = Nx_ / decomp_->nprocs();  // approximate
-    int work_size = Nx_ * Ny_ * Nz_global_;  // conservative upper bound
-    work_real_.resize(work_size, 0.0);
-    work_imag_.resize(work_size, 0.0);
+void FFTMPIPoissonSolver::free_gpu() {
+    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    if (cusparse_handle_) { cusparseDestroy(cusparse_handle_); cusparse_handle_ = nullptr; }
 
-    // MPI buffers
-    int max_send = Nx_ * Ny_ * Nz_local_ * 2;  // real + imag
-    int max_recv = Nx_ * Ny_ * Nz_global_ * 2;
-    send_buf_.resize(max_send, 0.0);
-    recv_buf_.resize(max_recv, 0.0);
+    auto free_managed = [](auto*& p) { if (p) { cudaFree(p); p = nullptr; } };
+    free_managed(rhs_packed_);
+    free_managed(p_packed_);
+    free_managed(hat_x_);
+    free_managed(pencil_);
+    free_managed(mode_buf_);
+    free_managed(lambda_x_);
+    free_managed(lambda_z_);
+    free_managed(tri_lower_);
+    free_managed(tri_upper_);
+    free_managed(tri_diag_base_);
+    free_managed(dyv_dev_);
+    free_managed(tri_dl_);
+    free_managed(tri_d_);
+    free_managed(tri_du_);
+    free_managed(cusparse_buffer_);
+
+    // Destroy cuFFT plans (safe to call even if not created)
+    cufftDestroy(x_r2c_); x_r2c_ = 0;
+    cufftDestroy(x_c2r_); x_c2r_ = 0;
+    cufftDestroy(z_fwd_); z_fwd_ = 0;
+    cufftDestroy(z_inv_); z_inv_ = 0;
+
+    gpu_initialized_ = false;
 }
 
-void FFTMPIPoissonSolver::compute_eigenvalues() {
+void FFTMPIPoissonSolver::initialize_gpu() {
+    if (gpu_initialized_) free_gpu();
+
+    const int Nx = Nx_, Ny = Ny_, Ng = Ng_;
+    const int Nz_local = Nz_local_, Nz_global = Nz_global_;
+    const int Nx_c = Nx_c_;
+    const int nprocs = decomp_->nprocs();
+    const int rank = decomp_->rank();
+
+    // ---- MPI transpose parameters ----
+    int kx_base = Nx_c / nprocs;
+    int kx_rem = Nx_c % nprocs;
+    my_kx_start_ = rank * kx_base + std::min(rank, kx_rem);
+    my_kx_count_ = kx_base + (rank < kx_rem ? 1 : 0);
+    n_local_modes_ = my_kx_count_ * Nz_global;
+
+    // Forward transpose: z-slabs → kx-pencils
+    fwd_send_counts_.resize(nprocs);
+    fwd_send_displs_.resize(nprocs);
+    fwd_recv_counts_.resize(nprocs);
+    fwd_recv_displs_.resize(nprocs);
+    int s_off = 0, r_off = 0;
+    for (int r = 0; r < nprocs; ++r) {
+        int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
+        int nz_from_r = decomp_->nz_for_rank(r);
+        // Send: rank r's kx range × Ny × Nz_local × 2 (real+imag)
+        fwd_send_counts_[r] = kx_count_r * Ny * Nz_local * 2;
+        fwd_send_displs_[r] = s_off;
+        s_off += fwd_send_counts_[r];
+        // Recv: my kx range × Ny × nz_from_r × 2
+        fwd_recv_counts_[r] = my_kx_count_ * Ny * nz_from_r * 2;
+        fwd_recv_displs_[r] = r_off;
+        r_off += fwd_recv_counts_[r];
+    }
+
+    // Reverse transpose: kx-pencils → z-slabs (swap send/recv roles)
+    rev_send_counts_.resize(nprocs);
+    rev_send_displs_.resize(nprocs);
+    rev_recv_counts_.resize(nprocs);
+    rev_recv_displs_.resize(nprocs);
+    s_off = r_off = 0;
+    for (int r = 0; r < nprocs; ++r) {
+        int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
+        int nz_for_r = decomp_->nz_for_rank(r);
+        rev_send_counts_[r] = my_kx_count_ * Ny * nz_for_r * 2;
+        rev_send_displs_[r] = s_off;
+        s_off += rev_send_counts_[r];
+        rev_recv_counts_[r] = kx_count_r * Ny * Nz_local * 2;
+        rev_recv_displs_[r] = r_off;
+        r_off += rev_recv_counts_[r];
+    }
+
+    int fwd_send_total = fwd_send_displs_.back() + fwd_send_counts_.back();
+    int fwd_recv_total = fwd_recv_displs_.back() + fwd_recv_counts_.back();
+    int rev_send_total = rev_send_displs_.back() + rev_send_counts_.back();
+    int rev_recv_total = rev_recv_displs_.back() + rev_recv_counts_.back();
+    int max_host = std::max({fwd_send_total, fwd_recv_total,
+                             rev_send_total, rev_recv_total});
+    send_host_.resize(max_host, 0.0);
+    recv_host_.resize(max_host, 0.0);
+
+    // ---- CUDA stream ----
+    cuda_check(cudaStreamCreate(&stream_), "cudaStreamCreate");
+
+    // ---- GPU buffer allocation (cudaMallocManaged) ----
+    size_t real_slab = static_cast<size_t>(Nx) * Ny * Nz_local;
+    size_t cx_slab = static_cast<size_t>(Nx_c) * Ny * Nz_local;
+    size_t cx_pencil = static_cast<size_t>(my_kx_count_) * Ny * Nz_global;
+    size_t cx_modes = static_cast<size_t>(n_local_modes_) * Ny;
+
+    cuda_check(cudaMallocManaged(&rhs_packed_, sizeof(double) * real_slab), "alloc rhs_packed");
+    cuda_check(cudaMallocManaged(&p_packed_, sizeof(double) * real_slab), "alloc p_packed");
+    cuda_check(cudaMallocManaged(&hat_x_, sizeof(cufftDoubleComplex) * cx_slab), "alloc hat_x");
+    cuda_check(cudaMallocManaged(&pencil_, sizeof(cufftDoubleComplex) * cx_pencil), "alloc pencil");
+    cuda_check(cudaMallocManaged(&mode_buf_, sizeof(cufftDoubleComplex) * cx_modes), "alloc mode_buf");
+
+    // ---- Eigenvalues ----
+    cuda_check(cudaMallocManaged(&lambda_x_, sizeof(double) * Nx_c), "alloc lambda_x");
+    cuda_check(cudaMallocManaged(&lambda_z_, sizeof(double) * Nz_global), "alloc lambda_z");
+
     const double dx = mesh_->dx;
     const double dz = mesh_->dz;
     const double pi = M_PI;
-
-    lambda_x_.resize(Nx_);
-    lambda_z_.resize(Nz_global_);
-
     if (space_order_ == 4) {
-        for (int kx = 0; kx < Nx_; ++kx) {
-            double theta = 2.0 * pi * kx / Nx_;
-            double c1 = std::cos(theta);
-            double c2 = std::cos(2.0 * theta);
-            double c3 = std::cos(3.0 * theta);
+        for (int kx = 0; kx < Nx_c; ++kx) {
+            double theta = 2.0 * pi * kx / Nx;
+            double c1 = std::cos(theta), c2 = std::cos(2.0*theta), c3 = std::cos(3.0*theta);
             lambda_x_[kx] = (1460.0 - 1566.0*c1 + 108.0*c2 - 2.0*c3) / (576.0 * dx * dx);
         }
-        for (int kz = 0; kz < Nz_global_; ++kz) {
-            double theta = 2.0 * pi * kz / Nz_global_;
-            double c1 = std::cos(theta);
-            double c2 = std::cos(2.0 * theta);
-            double c3 = std::cos(3.0 * theta);
+        for (int kz = 0; kz < Nz_global; ++kz) {
+            double theta = 2.0 * pi * kz / Nz_global;
+            double c1 = std::cos(theta), c2 = std::cos(2.0*theta), c3 = std::cos(3.0*theta);
             lambda_z_[kz] = (1460.0 - 1566.0*c1 + 108.0*c2 - 2.0*c3) / (576.0 * dz * dz);
         }
     } else {
-        for (int kx = 0; kx < Nx_; ++kx) {
-            lambda_x_[kx] = (2.0 - 2.0 * std::cos(2.0 * pi * kx / Nx_)) / (dx * dx);
-        }
-        for (int kz = 0; kz < Nz_global_; ++kz) {
-            lambda_z_[kz] = (2.0 - 2.0 * std::cos(2.0 * pi * kz / Nz_global_)) / (dz * dz);
-        }
+        for (int kx = 0; kx < Nx_c; ++kx)
+            lambda_x_[kx] = (2.0 - 2.0 * std::cos(2.0 * pi * kx / Nx)) / (dx * dx);
+        for (int kz = 0; kz < Nz_global; ++kz)
+            lambda_z_[kz] = (2.0 - 2.0 * std::cos(2.0 * pi * kz / Nz_global)) / (dz * dz);
     }
-}
 
-void FFTMPIPoissonSolver::compute_tridiagonal_coeffs() {
-    const int Ny = Ny_;
-    const int Ng = Ng_;
-    const double* y = mesh_->yc.data();
+    // ---- Tridiagonal coefficients (y-direction) ----
+    cuda_check(cudaMallocManaged(&tri_lower_, sizeof(double) * Ny), "alloc tri_lower");
+    cuda_check(cudaMallocManaged(&tri_upper_, sizeof(double) * Ny), "alloc tri_upper");
+    cuda_check(cudaMallocManaged(&tri_diag_base_, sizeof(double) * Ny), "alloc tri_diag_base");
 
-    tri_lower_.resize(Ny);
-    tri_upper_.resize(Ny);
-    tri_diag_.resize(Ny);
-
+    const bool stretched = mesh_->is_y_stretched();
     for (int j = 0; j < Ny; ++j) {
         const int jg = j + Ng;
-        double dy_south = y[jg] - y[jg - 1];
-        double dy_north = y[jg + 1] - y[jg];
-        double dy_center = 0.5 * (dy_south + dy_north);
-
-        double aS = 1.0 / (dy_south * dy_center);
-        double aN = 1.0 / (dy_north * dy_center);
-
+        double aS, aN;
+        if (stretched) {
+            aS = mesh_->yLap_aS[jg];
+            aN = mesh_->yLap_aN[jg];
+        } else {
+            double invDy2 = 1.0 / (mesh_->dy * mesh_->dy);
+            aS = invDy2;
+            aN = invDy2;
+        }
         if (j == 0 && bc_y_lo_ == PoissonBC::Neumann) aS = 0.0;
         if (j == Ny - 1 && bc_y_hi_ == PoissonBC::Neumann) aN = 0.0;
-
         tri_lower_[j] = aS;
         tri_upper_[j] = aN;
-        tri_diag_[j] = -(aS + aN);
-    }
-}
-
-void FFTMPIPoissonSolver::compute_alltoallv_params() {
-    int nprocs = decomp_->nprocs();
-    send_counts_.resize(nprocs);
-    send_displs_.resize(nprocs);
-    recv_counts_.resize(nprocs);
-    recv_displs_.resize(nprocs);
-
-    // Each rank sends its Nz_local z-planes for all (kx, y) to each other rank
-    // After transpose, each rank gets full z for a subset of kx modes
-    // Partition kx modes evenly across ranks
-    int kx_base = Nx_ / nprocs;
-    int kx_rem = Nx_ % nprocs;
-    int my_kx_count = kx_base + (decomp_->rank() < kx_rem ? 1 : 0);
-
-    int send_offset = 0;
-    int recv_offset = 0;
-    for (int r = 0; r < nprocs; ++r) {
-        int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
-
-        // Send TO rank r: rank r's kx modes × Ny × this rank's Nz_local
-        send_counts_[r] = kx_count_r * Ny_ * Nz_local_ * 2;
-        send_displs_[r] = send_offset;
-        send_offset += send_counts_[r];
-
-        // Recv FROM rank r: this rank's kx modes × Ny × rank r's Nz_local
-        int nz_from_r = decomp_->nz_for_rank(r);
-        recv_counts_[r] = my_kx_count * Ny_ * nz_from_r * 2;
-        recv_displs_[r] = recv_offset;
-        recv_offset += recv_counts_[r];
-    }
-}
-
-int FFTMPIPoissonSolver::solve_distributed_cpu(const ScalarField& rhs, ScalarField& p) {
-    // This implements the full distributed FFT Poisson solve on CPU.
-    // Steps:
-    //   1. Pack RHS from ghost-cell layout, subtract mean
-    //   2. Forward DFT in x (local, each rank has full x)
-    //   3. MPI_Alltoallv: redistribute by kx modes (z-slabs → kx-pencils)
-    //   4. Forward DFT in z (local, each rank now has full z for its kx modes)
-    //   5. Tridiagonal solve in y for each (kx,kz) mode
-    //   6. Inverse DFT in z
-    //   7. MPI_Alltoallv: redistribute back (kx-pencils → z-slabs)
-    //   8. Inverse DFT in x
-    //   9. Unpack solution to ghost-cell layout
-
-    const int Nx = Nx_;
-    const int Ny = Ny_;
-    const int Nz_local = Nz_local_;
-    [[maybe_unused]] const int Nz_global = Nz_global_;
-    const int Ng = Ng_;
-    const double pi = M_PI;
-
-    // Step 1: Pack RHS, compute and subtract volume-weighted mean
-    // On stretched grids, solvability requires sum(f*dyv[j])=0 (volume-weighted)
-    std::vector<double> rhs_packed(Nx * Ny * Nz_local, 0.0);
-    double local_weighted_sum = 0.0;
-    double local_volume = 0.0;
-
-    for (int k = 0; k < Nz_local; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            double dyv_j = mesh_->yf[j + Ng + 1] - mesh_->yf[j + Ng];
-            for (int i = 0; i < Nx; ++i) {
-                double val = rhs(i + Ng, j + Ng, k + Ng);
-                rhs_packed[k * Nx * Ny + j * Nx + i] = val;
-                local_weighted_sum += val * dyv_j;
-                local_volume += dyv_j;
-            }
-        }
+        tri_diag_base_[j] = -(aS + aN);
     }
 
-    // Global volume-weighted mean subtraction for solvability
-    double global_weighted_sum = local_weighted_sum;
-    double global_volume = local_volume;
-    decomp_->allreduce_sum(&global_weighted_sum, 1);
-    decomp_->allreduce_sum(&global_volume, 1);
-    double mean = global_weighted_sum / global_volume;
+    // ---- Volume weights for mean subtraction ----
+    cuda_check(cudaMallocManaged(&dyv_dev_, sizeof(double) * Ny), "alloc dyv_dev");
+    double Ly = 0.0;
+    for (int j = 0; j < Ny; ++j) {
+        dyv_dev_[j] = (!mesh_->dyv.empty()) ? mesh_->dyv[j + Ng] : mesh_->dy;
+        Ly += dyv_dev_[j];
+    }
+    // Total volume across ALL ranks (global Nz)
+    total_volume_ = static_cast<double>(Nx) * Nz_global * Ly;
 
-    for (auto& v : rhs_packed) v -= mean;
+    // ---- cuFFT plans ----
+    // x-direction: 1D R2C, batch = Ny * Nz_local
+    // Input:  rhs_packed_[(k*Ny + j)*Nx + i], i fastest
+    // Output: hat_x_[(k*Ny + j)*Nx_c + kx], kx fastest
+    {
+        int n_x[1] = {Nx};
+        int x_batch = Ny * Nz_local;
 
-    // Step 2: Forward DFT in x for each (j, k_local)
-    // rhs_hat[k][j][kx] = sum_i rhs[k][j][i] * exp(-2*pi*i*kx*i/Nx)
-    std::vector<double> hat_real(Nx * Ny * Nz_local, 0.0);
-    std::vector<double> hat_imag(Nx * Ny * Nz_local, 0.0);
+        cufftResult rc = cufftPlanMany(&x_r2c_, 1, n_x,
+            n_x, 1, Nx,       // inembed, istride, idist
+            n_x, 1, Nx_c,     // onembed, ostride, odist (Nx used as dummy inembed)
+            CUFFT_D2Z, x_batch);
+        if (rc != CUFFT_SUCCESS) throw std::runtime_error("cuFFT x_r2c plan failed");
 
-    for (int k = 0; k < Nz_local; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int kx = 0; kx < Nx; ++kx) {
-                double re = 0.0, im = 0.0;
-                for (int i = 0; i < Nx; ++i) {
-                    double angle = -2.0 * pi * kx * i / Nx;
-                    double val = rhs_packed[k * Nx * Ny + j * Nx + i];
-                    re += val * std::cos(angle);
-                    im += val * std::sin(angle);
-                }
-                int idx = k * Nx * Ny + j * Nx + kx;
-                hat_real[idx] = re;
-                hat_imag[idx] = im;
-            }
-        }
+        // Inverse x: 1D C2R
+        int on_x[1] = {Nx_c};
+        rc = cufftPlanMany(&x_c2r_, 1, n_x,
+            on_x, 1, Nx_c,    // inembed, istride, idist (complex input)
+            n_x, 1, Nx,       // onembed, ostride, odist (real output)
+            CUFFT_Z2D, x_batch);
+        if (rc != CUFFT_SUCCESS) throw std::runtime_error("cuFFT x_c2r plan failed");
+
+        if (cufftSetStream(x_r2c_, stream_) != CUFFT_SUCCESS ||
+            cufftSetStream(x_c2r_, stream_) != CUFFT_SUCCESS)
+            throw std::runtime_error("cuFFT x setStream failed");
     }
 
-#ifdef USE_MPI
-    // Step 3: MPI_Alltoallv — redistribute from z-slabs to kx-pencils
-    // Pack: for each dest rank, send their kx range × Ny × Nz_local
-    int nprocs = decomp_->nprocs();
-    int kx_base = Nx / nprocs;
-    int kx_rem = Nx % nprocs;
+    // z-direction: 1D C2C, batch = my_kx_count * Ny
+    // Input:  pencil_[(kx_l*Ny + j)*Nz_global + iz], iz fastest
+    // Output: same layout with kz instead of iz
+    {
+        int n_z[1] = {Nz_global};
+        int z_batch = my_kx_count_ * Ny;
 
-    // Pack send buffer
-    int offset = 0;
-    for (int r = 0; r < nprocs; ++r) {
-        int kx_start = r * kx_base + std::min(r, kx_rem);
-        int kx_count = kx_base + (r < kx_rem ? 1 : 0);
-        for (int k = 0; k < Nz_local; ++k) {
-            for (int j = 0; j < Ny; ++j) {
-                for (int kx = kx_start; kx < kx_start + kx_count; ++kx) {
-                    int src_idx = k * Nx * Ny + j * Nx + kx;
-                    send_buf_[offset++] = hat_real[src_idx];
-                    send_buf_[offset++] = hat_imag[src_idx];
-                }
-            }
-        }
+        cufftResult rc = cufftPlanMany(&z_fwd_, 1, n_z,
+            n_z, 1, Nz_global,
+            n_z, 1, Nz_global,
+            CUFFT_Z2Z, z_batch);
+        if (rc != CUFFT_SUCCESS) throw std::runtime_error("cuFFT z_fwd plan failed");
+
+        rc = cufftPlanMany(&z_inv_, 1, n_z,
+            n_z, 1, Nz_global,
+            n_z, 1, Nz_global,
+            CUFFT_Z2Z, z_batch);
+        if (rc != CUFFT_SUCCESS) throw std::runtime_error("cuFFT z_inv plan failed");
+
+        if (cufftSetStream(z_fwd_, stream_) != CUFFT_SUCCESS ||
+            cufftSetStream(z_inv_, stream_) != CUFFT_SUCCESS)
+            throw std::runtime_error("cuFFT z setStream failed");
     }
 
-    mpi_check(MPI_Alltoallv(send_buf_.data(), send_counts_.data(), send_displs_.data(), MPI_DOUBLE,
-                            recv_buf_.data(), recv_counts_.data(), recv_displs_.data(), MPI_DOUBLE,
-                            decomp_->comm()),
-              "MPI_Alltoallv(forward)");
+    // ---- cuSPARSE batched tridiagonal ----
+    cusparse_check(cusparseCreate(&cusparse_handle_), "cusparseCreate");
+    cusparse_check(cusparseSetStream(cusparse_handle_, stream_), "cusparseSetStream");
 
-    // Unpack: each rank now has full z for its kx range
-    int my_kx_start = decomp_->rank() * kx_base + std::min(decomp_->rank(), kx_rem);
-    int my_kx_count = kx_base + (decomp_->rank() < kx_rem ? 1 : 0);
+    cuda_check(cudaMallocManaged(&tri_dl_, sizeof(cufftDoubleComplex) * cx_modes), "alloc tri_dl");
+    cuda_check(cudaMallocManaged(&tri_d_,  sizeof(cufftDoubleComplex) * cx_modes), "alloc tri_d");
+    cuda_check(cudaMallocManaged(&tri_du_, sizeof(cufftDoubleComplex) * cx_modes), "alloc tri_du");
 
-    // pencil_real/imag[kz][j][kx_local]
-    std::vector<double> pencil_real(Nz_global * Ny * my_kx_count, 0.0);
-    std::vector<double> pencil_imag(Nz_global * Ny * my_kx_count, 0.0);
-
-    offset = 0;
-    for (int r = 0; r < nprocs; ++r) {
-        int nz_from_r = decomp_->nz_for_rank(r);
-        int kz_start = decomp_->k_global_start_for_rank(r);
-        for (int kl = 0; kl < nz_from_r; ++kl) {
-            int kz = kz_start + kl;
-            for (int j = 0; j < Ny; ++j) {
-                for (int kx_l = 0; kx_l < my_kx_count; ++kx_l) {
-                    int dst_idx = kz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                    pencil_real[dst_idx] = recv_buf_[offset++];
-                    pencil_imag[dst_idx] = recv_buf_[offset++];
-                }
-            }
-        }
-    }
-
-    // Step 4: Forward DFT in z for each (kx_local, j)
-    std::vector<double> full_real(Nz_global * Ny * my_kx_count, 0.0);
-    std::vector<double> full_imag(Nz_global * Ny * my_kx_count, 0.0);
-
-    for (int kx_l = 0; kx_l < my_kx_count; ++kx_l) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int kz = 0; kz < Nz_global; ++kz) {
-                double re = 0.0, im = 0.0;
-                for (int iz = 0; iz < Nz_global; ++iz) {
-                    double angle = -2.0 * pi * kz * iz / Nz_global;
-                    int src = iz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                    double sr = pencil_real[src];
-                    double si = pencil_imag[src];
-                    re += sr * std::cos(angle) - si * std::sin(angle);
-                    im += sr * std::sin(angle) + si * std::cos(angle);
-                }
-                int dst = kz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                full_real[dst] = re;
-                full_imag[dst] = im;
-            }
-        }
-    }
-
-    // Step 5: Tridiagonal solve in y for each (kx, kz) mode
-    std::vector<double> sol_real(Nz_global * Ny * my_kx_count, 0.0);
-    std::vector<double> sol_imag(Nz_global * Ny * my_kx_count, 0.0);
-
-    // Thomas algorithm workspace
-    std::vector<double> c_prime(Ny), d_prime_r(Ny), d_prime_i(Ny);
-
-    for (int kx_l = 0; kx_l < my_kx_count; ++kx_l) {
-        int kx = my_kx_start + kx_l;
+    // Precompute tridiagonal matrices with eigenvalue shifts
+    for (int kx_l = 0; kx_l < my_kx_count_; ++kx_l) {
+        int kx = my_kx_start_ + kx_l;
         for (int kz = 0; kz < Nz_global; ++kz) {
-            // Skip zero mode (singular)
-            if (kx == 0 && kz == 0) {
+            size_t mode = static_cast<size_t>(kx_l) * Nz_global + kz;
+            double shift = lambda_x_[kx] + lambda_z_[kz];
+            bool zero_mode = (kx == 0 && kz == 0);
+
+            for (int j = 0; j < Ny; ++j) {
+                size_t idx = mode * Ny + j;
+                if (zero_mode && j == 0) {
+                    tri_dl_[idx] = {0.0, 0.0};
+                    tri_d_[idx]  = {1.0, 0.0};
+                    tri_du_[idx] = {0.0, 0.0};
+                } else {
+                    tri_dl_[idx] = {(j > 0) ? tri_lower_[j] : 0.0, 0.0};
+                    tri_d_[idx]  = {tri_diag_base_[j] - shift, 0.0};
+                    tri_du_[idx] = {(j < Ny - 1) ? tri_upper_[j] : 0.0, 0.0};
+                }
+            }
+        }
+    }
+
+    // Query cuSPARSE buffer size
+    cusparse_check(cusparseZgtsv2StridedBatch_bufferSizeExt(
+        cusparse_handle_, Ny, tri_dl_, tri_d_, tri_du_,
+        mode_buf_, n_local_modes_, Ny, &cusparse_buffer_size_),
+        "gtsv2StridedBatch_bufferSizeExt");
+    cuda_check(cudaMalloc(&cusparse_buffer_, cusparse_buffer_size_), "alloc cusparse_buffer");
+
+    // Sync managed memory to device
+    cuda_check(cudaDeviceSynchronize(), "initialize_gpu sync");
+
+    gpu_initialized_ = true;
+    std::cout << "[FFT_MPI] GPU initialized: Nx=" << Nx << " Ny=" << Ny
+              << " Nz_local=" << Nz_local << " Nz_global=" << Nz_global
+              << " Nx_c=" << Nx_c << " my_kx=[" << my_kx_start_
+              << "," << my_kx_start_ + my_kx_count_ << ")"
+              << " n_modes=" << n_local_modes_
+              << " cuSPARSE_buf=" << cusparse_buffer_size_ << "B\n";
+}
+
+int FFTMPIPoissonSolver::solve_device_distributed(double* rhs_ptr, double* p_ptr) {
+    if (!gpu_initialized_) initialize_gpu();
+
+    const int Nx = Nx_, Ny = Ny_, Ng = Ng_;
+    const int Nz_local = Nz_local_, Nz_global = Nz_global_;
+    const int Nx_c = Nx_c_;
+    const int Nx_full = Nx + 2 * Ng;
+    const int Ny_full = Ny + 2 * Ng;
+
+    // Get device pointers for OMP-mapped rhs/p
+    int device = omp_get_default_device();
+    double* rhs_dev = static_cast<double*>(omp_get_mapped_ptr(rhs_ptr, device));
+    double* p_dev = static_cast<double*>(omp_get_mapped_ptr(p_ptr, device));
+
+    // ================================================================
+    // Step 1: Pack RHS from ghost layout + volume-weighted mean
+    // ================================================================
+    double* rhs_pk = rhs_packed_;
+    double* dyv = dyv_dev_;
+    double local_wsum = 0.0;
+
+    #pragma omp target teams distribute parallel for collapse(3) \
+        reduction(+:local_wsum) is_device_ptr(rhs_dev, rhs_pk, dyv)
+    for (int k = 0; k < Nz_local; ++k) {
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int ghost_idx = (k + Ng) * Ny_full * Nx_full
+                              + (j + Ng) * Nx_full + (i + Ng);
+                int pack_idx = (k * Ny + j) * Nx + i;
+                double val = rhs_dev[ghost_idx];
+                rhs_pk[pack_idx] = val;
+                local_wsum += val * dyv[j];
+            }
+        }
+    }
+
+    // Global mean subtraction (MPI allreduce)
+    double global_wsum = decomp_->allreduce_sum(local_wsum);
+    double mean = global_wsum / total_volume_;
+
+    int pack_total = Nx * Ny * Nz_local;
+    #pragma omp target teams distribute parallel for is_device_ptr(rhs_pk)
+    for (int idx = 0; idx < pack_total; ++idx) {
+        rhs_pk[idx] -= mean;
+    }
+
+    // ================================================================
+    // Step 2: cuFFT 1D R2C in x
+    // ================================================================
+    cuda_check(cudaDeviceSynchronize(), "OMP target sync");
+    cufftResult rc = cufftExecD2Z(x_r2c_, rhs_packed_, hat_x_);
+    if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: x R2C failed");
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
+
+    // ================================================================
+    // Step 3: Forward MPI transpose (z-slabs → kx-pencils)
+    // ================================================================
+#ifdef USE_MPI
+    {
+        const int nprocs = decomp_->nprocs();
+        int kx_base = Nx_c / nprocs;
+        int kx_rem = Nx_c % nprocs;
+
+        // Pack: for each dest rank, extract their kx range
+        // hat_x_ layout: [(k*Ny + j)*Nx_c + kx] complex
+        double* cx_host = reinterpret_cast<double*>(hat_x_);
+        // Managed memory: sync to host for packing
+        cuda_check(cudaDeviceSynchronize(), "fwd transpose host sync");
+
+        int offset = 0;
+        for (int r = 0; r < nprocs; ++r) {
+            int kx_start_r = r * kx_base + std::min(r, kx_rem);
+            int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
+            for (int k = 0; k < Nz_local; ++k) {
                 for (int j = 0; j < Ny; ++j) {
-                    int idx = kz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                    sol_real[idx] = 0.0;
-                    sol_imag[idx] = 0.0;
+                    // Complex values for this (k,j) row, kx range for rank r
+                    const double* src = cx_host + 2 * ((k * Ny + j) * Nx_c + kx_start_r);
+                    std::memcpy(&send_host_[offset], src,
+                                kx_count_r * 2 * sizeof(double));
+                    offset += kx_count_r * 2;
                 }
-                continue;
-            }
-
-            double shift = -(lambda_x_[kx] + lambda_z_[kz]);
-
-            // Forward sweep
-            {
-                double diag = tri_diag_[0] + shift;
-                c_prime[0] = tri_upper_[0] / diag;
-                int idx0 = kz * Ny * my_kx_count + 0 * my_kx_count + kx_l;
-                d_prime_r[0] = full_real[idx0] / diag;
-                d_prime_i[0] = full_imag[idx0] / diag;
-            }
-            for (int j = 1; j < Ny; ++j) {
-                double diag = tri_diag_[j] + shift - tri_lower_[j] * c_prime[j-1];
-                if (j < Ny - 1) {
-                    c_prime[j] = tri_upper_[j] / diag;
-                }
-                int idx = kz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                d_prime_r[j] = (full_real[idx] - tri_lower_[j] * d_prime_r[j-1]) / diag;
-                d_prime_i[j] = (full_imag[idx] - tri_lower_[j] * d_prime_i[j-1]) / diag;
-            }
-
-            // Back substitution
-            {
-                int idx = kz * Ny * my_kx_count + (Ny-1) * my_kx_count + kx_l;
-                sol_real[idx] = d_prime_r[Ny-1];
-                sol_imag[idx] = d_prime_i[Ny-1];
-            }
-            for (int j = Ny - 2; j >= 0; --j) {
-                int idx = kz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                int idx1 = kz * Ny * my_kx_count + (j+1) * my_kx_count + kx_l;
-                sol_real[idx] = d_prime_r[j] - c_prime[j] * sol_real[idx1];
-                sol_imag[idx] = d_prime_i[j] - c_prime[j] * sol_imag[idx1];
             }
         }
-    }
 
-    // Step 6: Inverse DFT in z
-    std::vector<double> isol_real(Nz_global * Ny * my_kx_count, 0.0);
-    std::vector<double> isol_imag(Nz_global * Ny * my_kx_count, 0.0);
+        mpi_check(MPI_Alltoallv(
+            send_host_.data(), fwd_send_counts_.data(), fwd_send_displs_.data(), MPI_DOUBLE,
+            recv_host_.data(), fwd_recv_counts_.data(), fwd_recv_displs_.data(), MPI_DOUBLE,
+            decomp_->comm()), "MPI_Alltoallv(fwd)");
 
-    double inv_Nz = 1.0 / Nz_global;
-    for (int kx_l = 0; kx_l < my_kx_count; ++kx_l) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int iz = 0; iz < Nz_global; ++iz) {
-                double re = 0.0, im = 0.0;
-                for (int kz = 0; kz < Nz_global; ++kz) {
-                    double angle = 2.0 * pi * kz * iz / Nz_global;
-                    int src = kz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                    double sr = sol_real[src];
-                    double si = sol_imag[src];
-                    re += sr * std::cos(angle) - si * std::sin(angle);
-                    im += sr * std::sin(angle) + si * std::cos(angle);
-                }
-                int dst = iz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                isol_real[dst] = re * inv_Nz;
-                isol_imag[dst] = im * inv_Nz;
-            }
-        }
-    }
-
-    // Step 7: MPI_Alltoallv — redistribute back (kx-pencils → z-slabs)
-    // Pack send buffer: for each dest rank r, send their z-planes for my kx range
-    offset = 0;
-    // Recompute recv/send for reverse direction (swap roles)
-    std::vector<int> rev_send_counts(nprocs);
-    std::vector<int> rev_send_displs(nprocs);
-    std::vector<int> rev_recv_counts(nprocs);
-    std::vector<int> rev_recv_displs(nprocs);
-
-    int s_off = 0, r_off = 0;
-    for (int r = 0; r < nprocs; ++r) {
-        int nz_for_r = decomp_->nz_for_rank(r);
-        // Send: my_kx_count modes × Ny × nz_for_r planes × 2 (real+imag)
-        rev_send_counts[r] = my_kx_count * Ny * nz_for_r * 2;
-        rev_send_displs[r] = s_off;
-        s_off += rev_send_counts[r];
-
-        // Recv: kx_count_for_r modes × Ny × Nz_local × 2
-        int kx_for_r = kx_base + (r < kx_rem ? 1 : 0);
-        rev_recv_counts[r] = kx_for_r * Ny * Nz_local * 2;
-        rev_recv_displs[r] = r_off;
-        r_off += rev_recv_counts[r];
-    }
-
-    // Pack
-    std::vector<double> rev_send(s_off, 0.0);
-    offset = 0;
-    for (int r = 0; r < nprocs; ++r) {
-        int kz_start = decomp_->k_global_start_for_rank(r);
-        int nz_for_r = decomp_->nz_for_rank(r);
-        for (int kl = 0; kl < nz_for_r; ++kl) {
-            int iz = kz_start + kl;
-            for (int j = 0; j < Ny; ++j) {
-                for (int kx_l = 0; kx_l < my_kx_count; ++kx_l) {
-                    int src = iz * Ny * my_kx_count + j * my_kx_count + kx_l;
-                    rev_send[offset++] = isol_real[src];
-                    rev_send[offset++] = isol_imag[src];
+        // Unpack: recv_host_ → pencil_ (managed memory, write on host)
+        // pencil_ layout: [(kx_l*Ny + j)*Nz_global + iz] complex
+        double* pencil_host = reinterpret_cast<double*>(pencil_);
+        offset = 0;
+        for (int r = 0; r < nprocs; ++r) {
+            int nz_from_r = decomp_->nz_for_rank(r);
+            int kz_start = decomp_->k_global_start_for_rank(r);
+            for (int kl = 0; kl < nz_from_r; ++kl) {
+                int iz = kz_start + kl;
+                for (int j = 0; j < Ny; ++j) {
+                    for (int kx_l = 0; kx_l < my_kx_count_; ++kx_l) {
+                        int dst = 2 * ((kx_l * Ny + j) * Nz_global + iz);
+                        pencil_host[dst]     = recv_host_[offset++];
+                        pencil_host[dst + 1] = recv_host_[offset++];
+                    }
                 }
             }
         }
     }
-
-    std::vector<double> rev_recv(r_off, 0.0);
-    mpi_check(MPI_Alltoallv(rev_send.data(), rev_send_counts.data(), rev_send_displs.data(), MPI_DOUBLE,
-                            rev_recv.data(), rev_recv_counts.data(), rev_recv_displs.data(), MPI_DOUBLE,
-                            decomp_->comm()),
-              "MPI_Alltoallv(reverse)");
-
-    // Unpack: rebuild hat_real/hat_imag in z-slab layout
-    std::fill(hat_real.begin(), hat_real.end(), 0.0);
-    std::fill(hat_imag.begin(), hat_imag.end(), 0.0);
-
-    offset = 0;
-    for (int r = 0; r < nprocs; ++r) {
-        int kx_start_r = r * kx_base + std::min(r, kx_rem);
-        int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
-        for (int k = 0; k < Nz_local; ++k) {
-            for (int j = 0; j < Ny; ++j) {
-                for (int kx_l = 0; kx_l < kx_count_r; ++kx_l) {
-                    int kx = kx_start_r + kx_l;
-                    int idx = k * Nx * Ny + j * Nx + kx;
-                    hat_real[idx] = rev_recv[offset++];
-                    hat_imag[idx] = rev_recv[offset++];
-                }
-            }
-        }
-    }
-
-    // Step 8: Inverse DFT in x
-    double inv_Nx = 1.0 / Nx;
-    std::vector<double> p_packed(Nx * Ny * Nz_local, 0.0);
-
-    for (int k = 0; k < Nz_local; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                double re = 0.0;
-                for (int kx = 0; kx < Nx; ++kx) {
-                    double angle = 2.0 * pi * kx * i / Nx;
-                    int idx = k * Nx * Ny + j * Nx + kx;
-                    re += hat_real[idx] * std::cos(angle) - hat_imag[idx] * std::sin(angle);
-                }
-                p_packed[k * Nx * Ny + j * Nx + i] = re * inv_Nx;
-            }
-        }
-    }
-
-    // Step 9: Unpack to ghost-cell layout
-    for (int k = 0; k < Nz_local; ++k) {
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                p(i + Ng, j + Ng, k + Ng) = p_packed[k * Nx * Ny + j * Nx + i];
-            }
-        }
-    }
-
-    // Apply Neumann BCs in y (ghost cells)
-    for (int k = 0; k < Nz_local; ++k) {
-        for (int i = 0; i < Nx; ++i) {
-            if (bc_y_lo_ == PoissonBC::Neumann) {
-                p(i + Ng, Ng - 1, k + Ng) = p(i + Ng, Ng, k + Ng);
-            }
-            if (bc_y_hi_ == PoissonBC::Neumann) {
-                p(i + Ng, Ny + Ng, k + Ng) = p(i + Ng, Ny + Ng - 1, k + Ng);
-            }
-        }
-    }
-
-#else
-    // Without MPI, this shouldn't be called (distributed_ should be false)
-    (void)rhs; (void)p;
-    throw std::runtime_error("FFTMPIPoissonSolver: distributed solve requires USE_MPI");
 #endif
+
+    // ================================================================
+    // Step 4: cuFFT 1D C2C forward in z
+    // ================================================================
+    cuda_check(cudaDeviceSynchronize(), "managed mem sync");
+    rc = cufftExecZ2Z(z_fwd_, pencil_, pencil_, CUFFT_FORWARD);
+    if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: z forward failed");
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
+
+    // ================================================================
+    // Step 5: Transpose j↔kz → cuSPARSE [mode*Ny + j] layout
+    // ================================================================
+    // pencil_[(kx_l*Ny + j)*Nz_global + kz] → mode_buf_[(kx_l*Nz_global + kz)*Ny + j]
+    {
+        cufftDoubleComplex* src = pencil_;
+        cufftDoubleComplex* dst = mode_buf_;
+        int mkc = my_kx_count_;
+        #pragma omp target teams distribute parallel for collapse(3) \
+            is_device_ptr(src, dst)
+        for (int kx_l = 0; kx_l < mkc; ++kx_l) {
+            for (int j = 0; j < Ny; ++j) {
+                for (int kz = 0; kz < Nz_global; ++kz) {
+                    int in_idx = (kx_l * Ny + j) * Nz_global + kz;
+                    int out_idx = (kx_l * Nz_global + kz) * Ny + j;
+                    dst[out_idx] = src[in_idx];
+                }
+            }
+        }
+    }
+
+    // ================================================================
+    // Step 6: cuSPARSE batched tridiagonal solve in y
+    // ================================================================
+    cuda_check(cudaDeviceSynchronize(), "transpose sync");
+
+    // Zero the (0,0) mode RHS (pinned value for singular mode)
+    if (my_kx_start_ == 0) {
+        cuda_check(cudaMemsetAsync(mode_buf_, 0, sizeof(cufftDoubleComplex), stream_),
+                   "zero mode memset");
+    }
+    cusparseStatus_t cs = cusparseZgtsv2StridedBatch(
+        cusparse_handle_, Ny,
+        tri_dl_, tri_d_, tri_du_, mode_buf_,
+        n_local_modes_, Ny, cusparse_buffer_);
+    if (cs != CUSPARSE_STATUS_SUCCESS) {
+        throw std::runtime_error("FFT_MPI: cuSPARSE tridiag failed, code=" +
+                                 std::to_string(static_cast<int>(cs)));
+    }
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
+
+    // ================================================================
+    // Step 7: Transpose back kz↔j → pencil layout
+    // ================================================================
+    // mode_buf_[(kx_l*Nz_global + kz)*Ny + j] → pencil_[(kx_l*Ny + j)*Nz_global + kz]
+    {
+        cufftDoubleComplex* src = mode_buf_;
+        cufftDoubleComplex* dst = pencil_;
+        int mkc = my_kx_count_;
+        #pragma omp target teams distribute parallel for collapse(3) \
+            is_device_ptr(src, dst)
+        for (int kx_l = 0; kx_l < mkc; ++kx_l) {
+            for (int kz = 0; kz < Nz_global; ++kz) {
+                for (int j = 0; j < Ny; ++j) {
+                    int in_idx = (kx_l * Nz_global + kz) * Ny + j;
+                    int out_idx = (kx_l * Ny + j) * Nz_global + kz;
+                    dst[out_idx] = src[in_idx];
+                }
+            }
+        }
+    }
+
+    // ================================================================
+    // Step 8: cuFFT 1D C2C inverse in z
+    // ================================================================
+    cuda_check(cudaDeviceSynchronize(), "inv transpose sync");
+    rc = cufftExecZ2Z(z_inv_, pencil_, pencil_, CUFFT_INVERSE);
+    if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: z inverse failed");
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
+
+    // ================================================================
+    // Step 9: Reverse MPI transpose (kx-pencils → z-slabs)
+    // ================================================================
+#ifdef USE_MPI
+    {
+        const int nprocs = decomp_->nprocs();
+
+        // Pack pencil_ for reverse transpose
+        double* pencil_host = reinterpret_cast<double*>(pencil_);
+        cuda_check(cudaDeviceSynchronize(), "rev transpose host sync");
+
+        int offset = 0;
+        for (int r = 0; r < nprocs; ++r) {
+            int kz_start = decomp_->k_global_start_for_rank(r);
+            int nz_for_r = decomp_->nz_for_rank(r);
+            for (int kl = 0; kl < nz_for_r; ++kl) {
+                int iz = kz_start + kl;
+                for (int j = 0; j < Ny; ++j) {
+                    for (int kx_l = 0; kx_l < my_kx_count_; ++kx_l) {
+                        int src = 2 * ((kx_l * Ny + j) * Nz_global + iz);
+                        send_host_[offset++] = pencil_host[src];
+                        send_host_[offset++] = pencil_host[src + 1];
+                    }
+                }
+            }
+        }
+
+        mpi_check(MPI_Alltoallv(
+            send_host_.data(), rev_send_counts_.data(), rev_send_displs_.data(), MPI_DOUBLE,
+            recv_host_.data(), rev_recv_counts_.data(), rev_recv_displs_.data(), MPI_DOUBLE,
+            decomp_->comm()), "MPI_Alltoallv(rev)");
+
+        // Unpack: recv_host_ → hat_x_ (managed)
+        double* cx_host = reinterpret_cast<double*>(hat_x_);
+        int kx_base = Nx_c / nprocs;
+        int kx_rem = Nx_c % nprocs;
+        offset = 0;
+        for (int r = 0; r < nprocs; ++r) {
+            int kx_start_r = r * kx_base + std::min(r, kx_rem);
+            int kx_count_r = kx_base + (r < kx_rem ? 1 : 0);
+            for (int k = 0; k < Nz_local; ++k) {
+                for (int j = 0; j < Ny; ++j) {
+                    double* dst = cx_host + 2 * ((k * Ny + j) * Nx_c + kx_start_r);
+                    std::memcpy(dst, &recv_host_[offset],
+                                kx_count_r * 2 * sizeof(double));
+                    offset += kx_count_r * 2;
+                }
+            }
+        }
+    }
+#endif
+
+    // ================================================================
+    // Step 10: cuFFT 1D C2R inverse in x
+    // ================================================================
+    cuda_check(cudaDeviceSynchronize(), "inv x sync");
+    rc = cufftExecZ2D(x_c2r_, hat_x_, p_packed_);
+    if (rc != CUFFT_SUCCESS) throw std::runtime_error("FFT_MPI: x C2R failed");
+    cuda_check(cudaStreamSynchronize(stream_), "stream sync");
+
+    // ================================================================
+    // Step 11: Unpack to ghost layout + normalize + BCs
+    // ================================================================
+    // cuFFT normalization: 1 / (Nx * Nz_global)
+    double norm = 1.0 / (static_cast<double>(Nx) * Nz_global);
+    double* p_pk = p_packed_;
+
+    #pragma omp target teams distribute parallel for collapse(3) \
+        is_device_ptr(p_dev, p_pk)
+    for (int k = 0; k < Nz_local; ++k) {
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int ghost_idx = (k + Ng) * Ny_full * Nx_full
+                              + (j + Ng) * Nx_full + (i + Ng);
+                int pack_idx = (k * Ny + j) * Nx + i;
+                p_dev[ghost_idx] = p_pk[pack_idx] * norm;
+            }
+        }
+    }
+
+    // Neumann BCs in y (ghost cells)
+    // Copy member BCs to locals for OMP target (avoid this-pointer transfer)
+    const bool neumann_lo = (bc_y_lo_ == PoissonBC::Neumann);
+    const bool neumann_hi = (bc_y_hi_ == PoissonBC::Neumann);
+    if (neumann_lo || neumann_hi) {
+        #pragma omp target teams distribute parallel for collapse(2) \
+            is_device_ptr(p_dev)
+        for (int k = 0; k < Nz_local; ++k) {
+            for (int i = 0; i < Nx; ++i) {
+                int base = (k + Ng) * Ny_full * Nx_full + (i + Ng);
+                if (neumann_lo) {
+                    p_dev[(Ng - 1) * Nx_full + base] = p_dev[Ng * Nx_full + base];
+                }
+                if (neumann_hi) {
+                    p_dev[(Ny + Ng) * Nx_full + base] = p_dev[(Ny + Ng - 1) * Nx_full + base];
+                }
+            }
+        }
+    }
 
     residual_ = 0.0;  // Direct solver
     return 1;
 }
+
+#endif // USE_FFT_POISSON
 
 } // namespace nncfd

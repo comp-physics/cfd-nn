@@ -480,7 +480,7 @@ bool test_spanwise_spectrum() {
     spec.k_z = {0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
     spec.E_uu = {1.0, 0.8, 0.5, 0.3, 0.15, 0.08, 0.04, 0.02, 0.01};
 
-    TEST_ASSERT(!spec.has_recirculation_spike(10.0, 1.0),
+    TEST_ASSERT(!spec.has_recirculation_spike(),
                 "Smooth spectrum should have no recirculation spike");
     TEST_ASSERT(!spec.has_aliasing_pileup(),
                 "Smooth spectrum should have no aliasing pileup");

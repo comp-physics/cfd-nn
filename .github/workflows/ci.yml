@@ -99,7 +99,7 @@ jobs:
                  -DUSE_MPI=ON -DBUILD_TESTS=ON
         make -j$(nproc) test_decomposition test_halo_exchange test_mpi_channel \
              test_mpi_rank_invariance test_mpi_energy_allreduce test_mpi_halo_step \
-             test_mpi_ibm_3d
+             test_mpi_ibm_3d test_mpi_poisson
 
     - name: Run MPI tests (single-rank)
       run: |
@@ -118,6 +118,8 @@ jobs:
         ./test_mpi_halo_step
         echo "--- MPIIBMTest3D (1 rank) ---"
         ./test_mpi_ibm_3d
+        echo "--- MPIPoissonTest (1 rank) ---"
+        ./test_mpi_poisson
 
     - name: Run MPI tests (2 ranks)
       run: |
@@ -136,6 +138,8 @@ jobs:
         mpirun --oversubscribe -n 2 ./test_mpi_halo_step
         echo "--- MPIIBMTest3D (2 ranks) ---"
         mpirun --oversubscribe -n 2 ./test_mpi_ibm_3d
+        echo "--- MPIPoissonTest (2 ranks) ---"
+        mpirun --oversubscribe -n 2 ./test_mpi_poisson
 
     - name: Run MPI tests (4 ranks)
       run: |
@@ -154,3 +158,5 @@ jobs:
         mpirun --oversubscribe -n 4 ./test_mpi_halo_step
         echo "--- MPIIBMTest3D (4 ranks) ---"
         mpirun --oversubscribe -n 4 ./test_mpi_ibm_3d
+        echo "--- MPIPoissonTest (4 ranks) ---"
+        mpirun --oversubscribe -n 4 ./test_mpi_poisson

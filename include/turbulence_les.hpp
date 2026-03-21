@@ -15,6 +15,8 @@
 #include "turbulence_model.hpp"
 #include "velocity_gradient.hpp"
 
+#include <vector>
+
 namespace nncfd {
 
 /// Base class for LES SGS models
@@ -112,13 +114,18 @@ private:
 };
 
 /// Dynamic Smagorinsky model (Germano et al. 1991, Lilly 1992)
-/// Cs^2 computed dynamically via Germano identity with test filter
-/// For now, uses volume-averaged Cs^2 (Lilly's modification)
+/// Cs^2 computed dynamically via Germano identity with test filter at 2*delta.
+/// Uses plane-averaged Cs^2 in x-z (homogeneous directions).
+class Decomposition;  // Forward declaration
+
 class DynamicSmagorinskyModel : public LESModel {
 public:
+    ~DynamicSmagorinskyModel() override;
     std::string name() const override { return "DynamicSmagorinsky"; }
 
-    /// Override base update to compute dynamic coefficient
+    /// Set MPI decomposition for plane-averaged Cs² allreduce
+    void set_decomposition(Decomposition* decomp) { decomp_ = decomp; }
+
     void update(const Mesh& mesh, const VectorField& velocity,
                 const ScalarField& k, const ScalarField& omega,
                 ScalarField& nu_t, TensorField* tau_ij,
@@ -129,7 +136,21 @@ protected:
     void update_gpu(const TurbulenceDeviceView* dv) override;
 
 private:
-    double Cs_dyn_ = 0.17;  // Dynamic coefficient (updated each call)
+    void init_dynamic_gpu(const TurbulenceDeviceView* dv);
+    void cleanup_dynamic_gpu();
+
+    // Cell-centered velocity scratch (GPU-mapped)
+    double* u_cc_ = nullptr;
+    double* v_cc_ = nullptr;
+    double* w_cc_ = nullptr;
+    // Per-y-plane Germano sums (GPU-mapped)
+    double* LM_plane_ = nullptr;  // sum of L_ij * M_ij per plane
+    double* MM_plane_ = nullptr;  // sum of M_ij * M_ij per plane
+    double* Cs2_plane_ = nullptr; // resulting Cs^2(y)
+    int Ny_ = 0;
+    int cell_total_ = 0;
+    bool dyn_gpu_ready_ = false;
+    Decomposition* decomp_ = nullptr;  // For MPI allreduce of plane sums
 };
 
 } // namespace nncfd

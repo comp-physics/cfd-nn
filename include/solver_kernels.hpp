@@ -442,16 +442,17 @@ inline void diffusive_u_face_kernel_staggered(
     const double nu_left = nu_ptr[j * nu_stride + (i-1)];
     const double nu_right = nu_ptr[j * nu_stride + i];
 
-    // Face-averaged viscosity for d2u/dx2 term (east/west faces of u-control-volume)
-    const double nu_e = 0.5 * (nu_right + (i+1 < nu_stride ? nu_ptr[j * nu_stride + (i+1)] : nu_right));
-    const double nu_w = 0.5 * (nu_left + (i-2 >= 0 ? nu_ptr[j * nu_stride + (i-2)] : nu_left));
+    // Viscosity for d2u/dx2: east/west faces of u-CV align with cell centers → nu directly available
+    const double nu_e = nu_right;
+    const double nu_w = nu_left;
 
-    // Face-averaged viscosity for d2u/dy2 term (north/south faces of u-control-volume)
-    // TODO: For variable viscosity, this should use 4-point averaging at face corners,
-    // but that requires bounds checking or passing Ng to the kernel. For now, use the
-    // simpler 2-point average which is accurate for slowly-varying viscosity.
-    const double nu_n = 0.5 * (nu_left + nu_right);
-    const double nu_s = 0.5 * (nu_left + nu_right);
+    // 4-point corner-averaged viscosity for d2u/dy2 term (north/south faces of u-control-volume)
+    // u lives at (i+1/2, j), so the y-faces of its control volume are at (i+1/2, j+1/2)
+    // and (i+1/2, j-1/2), each shared by 4 cell centers
+    const double nu_n = 0.25 * (nu_ptr[j * nu_stride + (i-1)] + nu_ptr[j * nu_stride + i]
+                               + nu_ptr[(j+1) * nu_stride + (i-1)] + nu_ptr[(j+1) * nu_stride + i]);
+    const double nu_s = 0.25 * (nu_ptr[j * nu_stride + (i-1)] + nu_ptr[j * nu_stride + i]
+                               + nu_ptr[(j-1) * nu_stride + (i-1)] + nu_ptr[(j-1) * nu_stride + i]);
     
     // d2u/dx2 using u at x-faces
     const double d2u_dx2 = (nu_e * (u_ptr[j * u_stride + (i+1)] - u_ptr[u_idx])
@@ -481,16 +482,18 @@ inline void diffusive_v_face_kernel_staggered(
     const double nu_bottom = nu_ptr[(j-1) * nu_stride + i];
     const double nu_top = nu_ptr[j * nu_stride + i];
 
-    // Face-averaged viscosity for d2v/dx2 term (east/west faces of v-control-volume)
-    // TODO: For variable viscosity, this should use 4-point averaging at face corners,
-    // but that requires bounds checking or passing Ng to the kernel. For now, use the
-    // simpler 2-point average which is accurate for slowly-varying viscosity.
-    const double nu_e = 0.5 * (nu_bottom + nu_top);
-    const double nu_w = 0.5 * (nu_bottom + nu_top);
+    // 4-point corner-averaged viscosity for d2v/dx2 term (east/west faces of v-control-volume)
+    // v lives at (i, j+1/2), so the x-faces of its control volume are at (i+1/2, j+1/2)
+    // and (i-1/2, j+1/2), each shared by 4 cell centers
+    const double nu_e = 0.25 * (nu_ptr[(j-1) * nu_stride + i] + nu_ptr[j * nu_stride + i]
+                               + nu_ptr[(j-1) * nu_stride + (i+1)] + nu_ptr[j * nu_stride + (i+1)]);
+    const double nu_w = 0.25 * (nu_ptr[(j-1) * nu_stride + i] + nu_ptr[j * nu_stride + i]
+                               + nu_ptr[(j-1) * nu_stride + (i-1)] + nu_ptr[j * nu_stride + (i-1)]);
 
     // Face-averaged viscosity for d2v/dy2 term (north/south faces of v-control-volume)
-    const double nu_n = 0.5 * (nu_top + (j+1 < nu_stride ? nu_ptr[(j+1) * nu_stride + i] : nu_top));
-    const double nu_s = 0.5 * (nu_bottom + (j-2 >= 0 ? nu_ptr[(j-2) * nu_stride + i] : nu_bottom));
+    // These faces align with cell centers, so nu is directly available
+    const double nu_n = nu_ptr[j * nu_stride + i];
+    const double nu_s = nu_ptr[(j-1) * nu_stride + i];
     
     // d2v/dx2 using v at y-faces
     const double d2v_dx2 = (nu_e * (v_ptr[j * v_stride + (i+1)] - v_ptr[v_idx])
@@ -519,11 +522,9 @@ inline void diffusive_u_face_kernel_staggered_xz(
     const int u_idx = j * u_stride + i;
     const double dx2 = dx * dx;
 
-    const double nu_left = nu_ptr[j * nu_stride + (i-1)];
-    const double nu_right = nu_ptr[j * nu_stride + i];
-
-    const double nu_e = 0.5 * (nu_right + (i+1 < nu_stride ? nu_ptr[j * nu_stride + (i+1)] : nu_right));
-    const double nu_w = 0.5 * (nu_left + (i-2 >= 0 ? nu_ptr[j * nu_stride + (i-2)] : nu_left));
+    // Viscosity for d2u/dx2: east/west faces of u-CV align with cell centers → nu directly available
+    const double nu_e = nu_ptr[j * nu_stride + i];
+    const double nu_w = nu_ptr[j * nu_stride + (i-1)];
 
     const double d2u_dx2 = (nu_e * (u_ptr[j * u_stride + (i+1)] - u_ptr[u_idx])
                            - nu_w * (u_ptr[u_idx] - u_ptr[j * u_stride + (i-1)])) / dx2;
@@ -544,11 +545,11 @@ inline void diffusive_v_face_kernel_staggered_xz(
     const int v_idx = j * v_stride + i;
     const double dx2 = dx * dx;
 
-    const double nu_bottom = nu_ptr[(j-1) * nu_stride + i];
-    const double nu_top = nu_ptr[j * nu_stride + i];
-
-    const double nu_e = 0.5 * (nu_bottom + nu_top);
-    const double nu_w = 0.5 * (nu_bottom + nu_top);
+    // 4-point corner-averaged viscosity for d2v/dx2 (east/west faces of v-control-volume)
+    const double nu_e = 0.25 * (nu_ptr[(j-1) * nu_stride + i] + nu_ptr[j * nu_stride + i]
+                               + nu_ptr[(j-1) * nu_stride + (i+1)] + nu_ptr[j * nu_stride + (i+1)]);
+    const double nu_w = 0.25 * (nu_ptr[(j-1) * nu_stride + i] + nu_ptr[j * nu_stride + i]
+                               + nu_ptr[(j-1) * nu_stride + (i-1)] + nu_ptr[j * nu_stride + (i-1)]);
 
     const double d2v_dx2 = (nu_e * (v_ptr[j * v_stride + (i+1)] - v_ptr[v_idx])
                            - nu_w * (v_ptr[v_idx] - v_ptr[j * v_stride + (i-1)])) / dx2;
@@ -2209,25 +2210,33 @@ inline void diffusive_u_face_kernel_staggered_3d(
     const double dy2 = dy * dy;
     const double dz2 = dz * dz;
 
-    // Viscosity at cell centers adjacent to x-face
+    // Viscosity at cell centers adjacent to x-face (i-1,j,k) and (i,j,k)
     const double nu_left  = nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)];
     const double nu_right = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
-    const double nu_avg = 0.5 * (nu_left + nu_right);
 
-    // d2u/dx2
-    const double d2u_dx2 = nu_avg * (u_ptr[k * u_plane_stride + j * u_stride + (i+1)]
-                                   - 2.0 * u_ptr[u_idx]
-                                   + u_ptr[k * u_plane_stride + j * u_stride + (i-1)]) / dx2;
+    // d2u/dx2: east/west faces of u-CV align with cell centers → nu directly available
+    const double d2u_dx2 = (nu_right * (u_ptr[k * u_plane_stride + j * u_stride + (i+1)] - u_ptr[u_idx])
+                           - nu_left * (u_ptr[u_idx] - u_ptr[k * u_plane_stride + j * u_stride + (i-1)])) / dx2;
 
-    // d2u/dy2
-    const double d2u_dy2 = nu_avg * (u_ptr[k * u_plane_stride + (j+1) * u_stride + i]
-                                   - 2.0 * u_ptr[u_idx]
-                                   + u_ptr[k * u_plane_stride + (j-1) * u_stride + i]) / dy2;
+    // d2u/dy2: north/south faces at corners (i-1/2, j+1/2, k) → 4-point average
+    const double nu_n = 0.25 * (nu_left + nu_right
+                               + nu_ptr[k * nu_plane_stride + (j+1) * nu_stride + (i-1)]
+                               + nu_ptr[k * nu_plane_stride + (j+1) * nu_stride + i]);
+    const double nu_s = 0.25 * (nu_left + nu_right
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + (i-1)]
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + i]);
+    const double d2u_dy2 = (nu_n * (u_ptr[k * u_plane_stride + (j+1) * u_stride + i] - u_ptr[u_idx])
+                           - nu_s * (u_ptr[u_idx] - u_ptr[k * u_plane_stride + (j-1) * u_stride + i])) / dy2;
 
-    // d2u/dz2
-    const double d2u_dz2 = nu_avg * (u_ptr[(k+1) * u_plane_stride + j * u_stride + i]
-                                   - 2.0 * u_ptr[u_idx]
-                                   + u_ptr[(k-1) * u_plane_stride + j * u_stride + i]) / dz2;
+    // d2u/dz2: front/back faces at corners (i-1/2, j, k+1/2) → 4-point average
+    const double nu_f = 0.25 * (nu_left + nu_right
+                               + nu_ptr[(k+1) * nu_plane_stride + j * nu_stride + (i-1)]
+                               + nu_ptr[(k+1) * nu_plane_stride + j * nu_stride + i]);
+    const double nu_b = 0.25 * (nu_left + nu_right
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + (i-1)]
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i]);
+    const double d2u_dz2 = (nu_f * (u_ptr[(k+1) * u_plane_stride + j * u_stride + i] - u_ptr[u_idx])
+                           - nu_b * (u_ptr[u_idx] - u_ptr[(k-1) * u_plane_stride + j * u_stride + i])) / dz2;
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_u_ptr[diff_idx] = d2u_dx2 + d2u_dy2 + d2u_dz2;
@@ -2248,25 +2257,33 @@ inline void diffusive_v_face_kernel_staggered_3d(
     const double dy2 = dy * dy;
     const double dz2 = dz * dz;
 
-    // Viscosity at cell centers adjacent to y-face
+    // Viscosity at cell centers adjacent to y-face (i,j-1,k) and (i,j,k)
     const double nu_bottom = nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + i];
     const double nu_top    = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
-    const double nu_avg = 0.5 * (nu_bottom + nu_top);
 
-    // d2v/dx2
-    const double d2v_dx2 = nu_avg * (v_ptr[k * v_plane_stride + j * v_stride + (i+1)]
-                                   - 2.0 * v_ptr[v_idx]
-                                   + v_ptr[k * v_plane_stride + j * v_stride + (i-1)]) / dx2;
+    // d2v/dx2: east/west faces at corners (i+1/2, j-1/2, k) → 4-point average
+    const double nu_e = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + (i+1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i+1)]);
+    const double nu_w = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + (i-1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)]);
+    const double d2v_dx2 = (nu_e * (v_ptr[k * v_plane_stride + j * v_stride + (i+1)] - v_ptr[v_idx])
+                           - nu_w * (v_ptr[v_idx] - v_ptr[k * v_plane_stride + j * v_stride + (i-1)])) / dx2;
 
-    // d2v/dy2
-    const double d2v_dy2 = nu_avg * (v_ptr[k * v_plane_stride + (j+1) * v_stride + i]
-                                   - 2.0 * v_ptr[v_idx]
-                                   + v_ptr[k * v_plane_stride + (j-1) * v_stride + i]) / dy2;
+    // d2v/dy2: north/south faces of v-CV align with cell centers → nu directly available
+    const double d2v_dy2 = (nu_top * (v_ptr[k * v_plane_stride + (j+1) * v_stride + i] - v_ptr[v_idx])
+                           - nu_bottom * (v_ptr[v_idx] - v_ptr[k * v_plane_stride + (j-1) * v_stride + i])) / dy2;
 
-    // d2v/dz2
-    const double d2v_dz2 = nu_avg * (v_ptr[(k+1) * v_plane_stride + j * v_stride + i]
-                                   - 2.0 * v_ptr[v_idx]
-                                   + v_ptr[(k-1) * v_plane_stride + j * v_stride + i]) / dz2;
+    // d2v/dz2: front/back faces at corners (i, j-1/2, k+1/2) → 4-point average
+    const double nu_f = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[(k+1) * nu_plane_stride + (j-1) * nu_stride + i]
+                               + nu_ptr[(k+1) * nu_plane_stride + j * nu_stride + i]);
+    const double nu_b = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[(k-1) * nu_plane_stride + (j-1) * nu_stride + i]
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i]);
+    const double d2v_dz2 = (nu_f * (v_ptr[(k+1) * v_plane_stride + j * v_stride + i] - v_ptr[v_idx])
+                           - nu_b * (v_ptr[v_idx] - v_ptr[(k-1) * v_plane_stride + j * v_stride + i])) / dz2;
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_v_ptr[diff_idx] = d2v_dx2 + d2v_dy2 + d2v_dz2;
@@ -2287,25 +2304,33 @@ inline void diffusive_w_face_kernel_staggered_3d(
     const double dy2 = dy * dy;
     const double dz2 = dz * dz;
 
-    // Viscosity at cell centers adjacent to z-face
+    // Viscosity at cell centers adjacent to z-face (i,j,k-1) and (i,j,k)
     const double nu_back  = nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i];
     const double nu_front = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
-    const double nu_avg = 0.5 * (nu_back + nu_front);
 
-    // d2w/dx2
-    const double d2w_dx2 = nu_avg * (w_ptr[k * w_plane_stride + j * w_stride + (i+1)]
-                                   - 2.0 * w_ptr[w_idx]
-                                   + w_ptr[k * w_plane_stride + j * w_stride + (i-1)]) / dx2;
+    // d2w/dx2: east/west faces at corners (i+1/2, j, k-1/2) → 4-point average
+    const double nu_e = 0.25 * (nu_back + nu_front
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + (i+1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i+1)]);
+    const double nu_w = 0.25 * (nu_back + nu_front
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + (i-1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)]);
+    const double d2w_dx2 = (nu_e * (w_ptr[k * w_plane_stride + j * w_stride + (i+1)] - w_ptr[w_idx])
+                           - nu_w * (w_ptr[w_idx] - w_ptr[k * w_plane_stride + j * w_stride + (i-1)])) / dx2;
 
-    // d2w/dy2
-    const double d2w_dy2 = nu_avg * (w_ptr[k * w_plane_stride + (j+1) * w_stride + i]
-                                   - 2.0 * w_ptr[w_idx]
-                                   + w_ptr[k * w_plane_stride + (j-1) * w_stride + i]) / dy2;
+    // d2w/dy2: north/south faces at corners (i, j+1/2, k-1/2) → 4-point average
+    const double nu_n = 0.25 * (nu_back + nu_front
+                               + nu_ptr[(k-1) * nu_plane_stride + (j+1) * nu_stride + i]
+                               + nu_ptr[k * nu_plane_stride + (j+1) * nu_stride + i]);
+    const double nu_s = 0.25 * (nu_back + nu_front
+                               + nu_ptr[(k-1) * nu_plane_stride + (j-1) * nu_stride + i]
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + i]);
+    const double d2w_dy2 = (nu_n * (w_ptr[k * w_plane_stride + (j+1) * w_stride + i] - w_ptr[w_idx])
+                           - nu_s * (w_ptr[w_idx] - w_ptr[k * w_plane_stride + (j-1) * w_stride + i])) / dy2;
 
-    // d2w/dz2
-    const double d2w_dz2 = nu_avg * (w_ptr[(k+1) * w_plane_stride + j * w_stride + i]
-                                   - 2.0 * w_ptr[w_idx]
-                                   + w_ptr[(k-1) * w_plane_stride + j * w_stride + i]) / dz2;
+    // d2w/dz2: front/back faces of w-CV align with cell centers → nu directly available
+    const double d2w_dz2 = (nu_front * (w_ptr[(k+1) * w_plane_stride + j * w_stride + i] - w_ptr[w_idx])
+                           - nu_back * (w_ptr[w_idx] - w_ptr[(k-1) * w_plane_stride + j * w_stride + i])) / dz2;
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_w_ptr[diff_idx] = d2w_dx2 + d2w_dy2 + d2w_dz2;
@@ -2330,15 +2355,20 @@ inline void diffusive_u_face_kernel_staggered_3d_xz(
 
     const double nu_left  = nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)];
     const double nu_right = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
-    const double nu_avg = 0.5 * (nu_left + nu_right);
 
-    const double d2u_dx2 = nu_avg * (u_ptr[k * u_plane_stride + j * u_stride + (i+1)]
-                                   - 2.0 * u_ptr[u_idx]
-                                   + u_ptr[k * u_plane_stride + j * u_stride + (i-1)]) / dx2;
+    // d2u/dx2: east/west faces of u-CV align with cell centers → nu directly available
+    const double d2u_dx2 = (nu_right * (u_ptr[k * u_plane_stride + j * u_stride + (i+1)] - u_ptr[u_idx])
+                           - nu_left * (u_ptr[u_idx] - u_ptr[k * u_plane_stride + j * u_stride + (i-1)])) / dx2;
 
-    const double d2u_dz2 = nu_avg * (u_ptr[(k+1) * u_plane_stride + j * u_stride + i]
-                                   - 2.0 * u_ptr[u_idx]
-                                   + u_ptr[(k-1) * u_plane_stride + j * u_stride + i]) / dz2;
+    // d2u/dz2: front/back faces at corners (i-1/2, j, k+1/2) → 4-point average
+    const double nu_f = 0.25 * (nu_left + nu_right
+                               + nu_ptr[(k+1) * nu_plane_stride + j * nu_stride + (i-1)]
+                               + nu_ptr[(k+1) * nu_plane_stride + j * nu_stride + i]);
+    const double nu_b = 0.25 * (nu_left + nu_right
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + (i-1)]
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i]);
+    const double d2u_dz2 = (nu_f * (u_ptr[(k+1) * u_plane_stride + j * u_stride + i] - u_ptr[u_idx])
+                           - nu_b * (u_ptr[u_idx] - u_ptr[(k-1) * u_plane_stride + j * u_stride + i])) / dz2;
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_u_ptr[diff_idx] = d2u_dx2 + d2u_dz2;
@@ -2361,15 +2391,26 @@ inline void diffusive_v_face_kernel_staggered_3d_xz(
 
     const double nu_bottom = nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + i];
     const double nu_top    = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
-    const double nu_avg = 0.5 * (nu_bottom + nu_top);
 
-    const double d2v_dx2 = nu_avg * (v_ptr[k * v_plane_stride + j * v_stride + (i+1)]
-                                   - 2.0 * v_ptr[v_idx]
-                                   + v_ptr[k * v_plane_stride + j * v_stride + (i-1)]) / dx2;
+    // d2v/dx2: east/west faces at corners (i+1/2, j-1/2, k) → 4-point average
+    const double nu_e = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + (i+1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i+1)]);
+    const double nu_w = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[k * nu_plane_stride + (j-1) * nu_stride + (i-1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)]);
+    const double d2v_dx2 = (nu_e * (v_ptr[k * v_plane_stride + j * v_stride + (i+1)] - v_ptr[v_idx])
+                           - nu_w * (v_ptr[v_idx] - v_ptr[k * v_plane_stride + j * v_stride + (i-1)])) / dx2;
 
-    const double d2v_dz2 = nu_avg * (v_ptr[(k+1) * v_plane_stride + j * v_stride + i]
-                                   - 2.0 * v_ptr[v_idx]
-                                   + v_ptr[(k-1) * v_plane_stride + j * v_stride + i]) / dz2;
+    // d2v/dz2: front/back faces at corners (i, j-1/2, k+1/2) → 4-point average
+    const double nu_f = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[(k+1) * nu_plane_stride + (j-1) * nu_stride + i]
+                               + nu_ptr[(k+1) * nu_plane_stride + j * nu_stride + i]);
+    const double nu_b = 0.25 * (nu_bottom + nu_top
+                               + nu_ptr[(k-1) * nu_plane_stride + (j-1) * nu_stride + i]
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i]);
+    const double d2v_dz2 = (nu_f * (v_ptr[(k+1) * v_plane_stride + j * v_stride + i] - v_ptr[v_idx])
+                           - nu_b * (v_ptr[v_idx] - v_ptr[(k-1) * v_plane_stride + j * v_stride + i])) / dz2;
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_v_ptr[diff_idx] = d2v_dx2 + d2v_dz2;
@@ -2392,15 +2433,20 @@ inline void diffusive_w_face_kernel_staggered_3d_xz(
 
     const double nu_back  = nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + i];
     const double nu_front = nu_ptr[k * nu_plane_stride + j * nu_stride + i];
-    const double nu_avg = 0.5 * (nu_back + nu_front);
 
-    const double d2w_dx2 = nu_avg * (w_ptr[k * w_plane_stride + j * w_stride + (i+1)]
-                                   - 2.0 * w_ptr[w_idx]
-                                   + w_ptr[k * w_plane_stride + j * w_stride + (i-1)]) / dx2;
+    // d2w/dx2: east/west faces at corners (i+1/2, j, k-1/2) → 4-point average
+    const double nu_e = 0.25 * (nu_back + nu_front
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + (i+1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i+1)]);
+    const double nu_w = 0.25 * (nu_back + nu_front
+                               + nu_ptr[(k-1) * nu_plane_stride + j * nu_stride + (i-1)]
+                               + nu_ptr[k * nu_plane_stride + j * nu_stride + (i-1)]);
+    const double d2w_dx2 = (nu_e * (w_ptr[k * w_plane_stride + j * w_stride + (i+1)] - w_ptr[w_idx])
+                           - nu_w * (w_ptr[w_idx] - w_ptr[k * w_plane_stride + j * w_stride + (i-1)])) / dx2;
 
-    const double d2w_dz2 = nu_avg * (w_ptr[(k+1) * w_plane_stride + j * w_stride + i]
-                                   - 2.0 * w_ptr[w_idx]
-                                   + w_ptr[(k-1) * w_plane_stride + j * w_stride + i]) / dz2;
+    // d2w/dz2: front/back faces of w-CV align with cell centers → nu directly available
+    const double d2w_dz2 = (nu_front * (w_ptr[(k+1) * w_plane_stride + j * w_stride + i] - w_ptr[w_idx])
+                           - nu_back * (w_ptr[w_idx] - w_ptr[(k-1) * w_plane_stride + j * w_stride + i])) / dz2;
 
     const int diff_idx = k * diff_plane_stride + j * diff_stride + i;
     diff_w_ptr[diff_idx] = d2w_dx2 + d2w_dz2;

@@ -168,7 +168,9 @@ int main(int argc, char** argv) {
     if (config.turb_model != TurbulenceModelType::None) {
         auto turb_model = create_turbulence_model(config.turb_model,
                                                   config.nn_weights_path,
-                                                  config.nn_scaling_path);
+                                                  config.nn_scaling_path,
+                                                  config.pope_C1,
+                                                  config.pope_C2);
         if (turb_model) {
             turb_model->set_nu(config.nu);
             solver.set_turbulence_model(std::move(turb_model));

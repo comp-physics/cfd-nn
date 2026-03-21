@@ -21,14 +21,21 @@
   "features": {
     "type": "tbnn_ling2016_2d",
     "inputs": [
-      "lambda_1",
-      "lambda_2",
-      "eta_1",
-      "eta_2",
-      "y_norm"
+      "S_norm_sq",
+      "Omega_norm_sq",
+      "tr_S_norm_sq",
+      "two_Oxy_norm_sq",
+      "y_wall_over_delta"
+    ],
+    "descriptions": [
+      "|S_norm|^2: squared Frobenius norm of tau-normalized strain tensor (tau = k / epsilon)",
+      "|Omega_norm|^2: squared Frobenius norm of tau-normalized rotation tensor",
+      "tr(S_norm^2): Sxx^2 + Syy^2 + 2*Sxy^2 (component-wise trace of squared normalized strain)",
+      "2 * Oxy_norm^2: twice the squared normalized rotation component (relates to tr(Omega^2))",
+      "Normalized wall distance: y_wall / delta"
     ],
     "normalization": "z-score",
-    "description": "5 invariants from normalized strain and rotation tensors"
+    "description": "5 invariants from tau-normalized strain and rotation tensors (tau = k / (C_mu * k * omega))"
   },
   "reference": {
     "title": "Reynolds averaged turbulence modelling using deep neural networks with embedded invariance",
