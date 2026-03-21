@@ -31,15 +31,12 @@ import math
 from pathlib import Path
 from collections import defaultdict
 
-# Defer heavy imports to allow --help without deps
-def import_deps():
-    global np, torch, nn, optim, DataLoader, TensorDataset, RandomForestRegressor
-    import numpy as np
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.ensemble import RandomForestRegressor
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.ensemble import RandomForestRegressor
 
 
 # ============================================================================
@@ -106,12 +103,17 @@ def load_mcconkey_csv(data_dir, rans_model='komegasst'):
             combined['Case'] = rans_row['Case']
             # RANS fields
             for k, v in rans_row.items():
-                if k != 'Case' and k != '':
-                    combined[k] = float(v)
+                if not k or k == 'Case' or not v:
+                    continue
+                combined[k] = float(v)
             # REF fields
             for k, v in ref_row.items():
-                if k != '' and k != 'Case':
-                    combined[k] = float(v)
+                if not k or k == 'Case' or not v:
+                    continue
+                combined[k] = float(v)
+            # Skip rows with missing REF anisotropy
+            if 'REF_b_11' not in combined:
+                continue
             all_rows.append(combined)
 
     # Group by case
@@ -123,26 +125,24 @@ def load_mcconkey_csv(data_dir, rans_model='komegasst'):
     return by_case
 
 
-def extract_features_and_labels(rows, rans_model='komegasst'):
+def extract_features_and_labels(rows, rans_model='komegasst', device='cpu'):
     """
     Extract invariant features and anisotropy labels from raw data.
+    Uses PyTorch on GPU for fast batched 3x3 matrix operations.
 
     Features (5 scalar invariants of normalized S and Omega):
-      lambda_1 = tr(S_hat^2)
-      lambda_2 = tr(Omega_hat^2)
-      lambda_3 = tr(S_hat^3)
-      lambda_4 = tr(Omega_hat^2 S_hat)
-      lambda_5 = tr(Omega_hat^2 S_hat^2)
+      lambda_1..5 = tr(S^2), tr(R^2), tr(S^3), tr(R^2 S), tr(R^2 S^2)
 
     Labels: anisotropy tensor b_ij from DNS (REF)
     """
     prefix = f'{rans_model}_'
     n = len(rows)
 
-    # Extract velocity gradients from RANS
+    # Extract raw data into numpy arrays (CPU — dict access is the bottleneck)
     gradU = np.zeros((n, 3, 3))
     k_vals = np.zeros(n)
     eps_vals = np.zeros(n)
+    anisotropy = np.zeros((n, 6))
 
     for idx, row in enumerate(rows):
         for i in range(3):
@@ -150,34 +150,6 @@ def extract_features_and_labels(rows, rans_model='komegasst'):
                 gradU[idx, i, j] = row[f'{prefix}gradU_{i+1}{j+1}']
         k_vals[idx] = max(row[f'{prefix}k'], 1e-30)
         eps_vals[idx] = max(row[f'{prefix}epsilon'], 1e-30)
-
-    # Compute S and Omega, normalize by k/epsilon
-    tau = k_vals / eps_vals  # turbulence time scale
-    S = 0.5 * (gradU + np.swapaxes(gradU, 1, 2))  # symmetric
-    Omega = 0.5 * (gradU - np.swapaxes(gradU, 1, 2))  # antisymmetric
-
-    # Normalize: S_hat = tau * S, Omega_hat = tau * Omega
-    S_hat = S * tau[:, None, None]
-    Omega_hat = Omega * tau[:, None, None]
-
-    # Compute 5 invariants
-    invariants = np.zeros((n, 5))
-    for idx in range(n):
-        Sh = S_hat[idx]
-        Oh = Omega_hat[idx]
-        Sh2 = Sh @ Sh
-        Oh2 = Oh @ Oh
-        invariants[idx, 0] = np.trace(Sh2)           # tr(S^2)
-        invariants[idx, 1] = np.trace(Oh2)           # tr(Omega^2)
-        invariants[idx, 2] = np.trace(Sh2 @ Sh)      # tr(S^3)
-        invariants[idx, 3] = np.trace(Oh2 @ Sh)      # tr(Omega^2 S)
-        invariants[idx, 4] = np.trace(Oh2 @ Sh2)     # tr(Omega^2 S^2)
-
-    # Extract anisotropy labels from DNS (REF)
-    # b_ij = a_ij / (2k) - delta_ij / 3
-    # McConkey provides REF_b_11, REF_b_12, etc. directly
-    anisotropy = np.zeros((n, 6))  # b_11, b_12, b_13, b_22, b_23, b_33
-    for idx, row in enumerate(rows):
         anisotropy[idx, 0] = row['REF_b_11']
         anisotropy[idx, 1] = row['REF_b_12']
         anisotropy[idx, 2] = row['REF_b_13']
@@ -185,56 +157,79 @@ def extract_features_and_labels(rows, rans_model='komegasst'):
         anisotropy[idx, 4] = row['REF_b_23']
         anisotropy[idx, 5] = row['REF_b_33']
 
-    # Compute tensor basis (Pope 1975, 10 tensors)
-    basis = compute_tensor_basis(S_hat, Omega_hat)
+    # Move to GPU for fast batched matrix math
+    dev = torch.device(device)
+    gU = torch.tensor(gradU, dtype=torch.float64, device=dev)
+    tau = torch.tensor(k_vals / eps_vals, dtype=torch.float64, device=dev)
 
-    return invariants, anisotropy, basis, k_vals
+    S_hat = 0.5 * (gU + gU.transpose(1, 2)) * tau[:, None, None]
+    O_hat = 0.5 * (gU - gU.transpose(1, 2)) * tau[:, None, None]
+
+    # Batched matmul helper
+    mm = torch.bmm
+    tr = lambda A: A.diagonal(dim1=1, dim2=2).sum(dim=1)
+
+    S2 = mm(S_hat, S_hat)
+    O2 = mm(O_hat, O_hat)
+
+    # 5 invariants
+    invariants = torch.zeros(n, 5, dtype=torch.float64, device=dev)
+    invariants[:, 0] = tr(S2)
+    invariants[:, 1] = tr(O2)
+    invariants[:, 2] = tr(mm(S2, S_hat))
+    invariants[:, 3] = tr(mm(O2, S_hat))
+    invariants[:, 4] = tr(mm(O2, S2))
+
+    # 10-tensor integrity basis (Pope 1975)
+    basis = compute_tensor_basis_gpu(S_hat, O_hat, S2, O2, dev)
+
+    # Back to numpy
+    return (invariants.cpu().numpy().astype(np.float64),
+            anisotropy,
+            basis.cpu().numpy().astype(np.float64),
+            k_vals)
 
 
-def compute_tensor_basis(S_hat, Omega_hat):
+def compute_tensor_basis_gpu(S, R, S2, R2, dev):
     """
-    Compute Pope (1975) 10-tensor integrity basis.
-
-    T1 = S, T2 = SR - RS, T3 = S^2 - tr(S^2)/3 I, ...
-    Returns: [N, 10, 6] (10 basis tensors, 6 symmetric components)
+    Compute Pope (1975) 10-tensor integrity basis on GPU.
+    All inputs are [N, 3, 3] torch tensors on device.
+    Returns: [N, 10, 6] tensor (6 symmetric components per basis tensor).
     """
-    n = len(S_hat)
-    I3 = np.eye(3)
-    basis = np.zeros((n, 10, 6))
+    n = S.shape[0]
+    mm = torch.bmm
+    tr = lambda A: A.diagonal(dim1=1, dim2=2).sum(dim=1)
+    I3 = torch.eye(3, dtype=S.dtype, device=dev).unsqueeze(0)  # [1,3,3]
 
-    for idx in range(n):
-        S = S_hat[idx]
-        R = Omega_hat[idx]
-        S2 = S @ S
-        R2 = R @ R
-        SR = S @ R
-        RS = R @ S
+    SR = mm(S, R)
+    RS = mm(R, S)
 
-        T = [None] * 10
-        T[0] = S
-        T[1] = SR - RS
-        T[2] = S2 - np.trace(S2) / 3.0 * I3
-        T[3] = R2 - np.trace(R2) / 3.0 * I3
-        T[4] = R @ S2 - S2 @ R
-        T[5] = R2 @ S + S @ R2 - 2.0/3.0 * np.trace(S @ R2) * I3
-        T[6] = R @ S @ R2 - R2 @ S @ R
-        T[7] = S @ R @ S2 - S2 @ R @ S
-        T[8] = R2 @ S2 + S2 @ R2 - 2.0/3.0 * np.trace(S2 @ R2) * I3
-        T[9] = R @ S2 @ R2 - R2 @ S2 @ R
+    T = [None] * 10
+    T[0] = S
+    T[1] = SR - RS
+    T[2] = S2 - tr(S2)[:, None, None] / 3.0 * I3
+    T[3] = R2 - tr(R2)[:, None, None] / 3.0 * I3
+    T[4] = mm(R, S2) - mm(S2, R)
+    T[5] = mm(R2, S) + mm(S, R2) - 2.0/3.0 * tr(mm(S, R2))[:, None, None] * I3
+    T[6] = mm(mm(R, S), R2) - mm(mm(R2, S), R)
+    T[7] = mm(mm(S, R), S2) - mm(mm(S2, R), S)
+    T[8] = mm(R2, S2) + mm(S2, R2) - 2.0/3.0 * tr(mm(S2, R2))[:, None, None] * I3
+    T[9] = mm(mm(R, S2), R2) - mm(mm(R2, S2), R)
 
-        for t in range(10):
-            # Store as 6 symmetric components: 11, 12, 13, 22, 23, 33
-            basis[idx, t, 0] = T[t][0, 0]
-            basis[idx, t, 1] = T[t][0, 1]
-            basis[idx, t, 2] = T[t][0, 2]
-            basis[idx, t, 3] = T[t][1, 1]
-            basis[idx, t, 4] = T[t][1, 2]
-            basis[idx, t, 5] = T[t][2, 2]
+    # Extract 6 symmetric components: 11, 12, 13, 22, 23, 33
+    basis = torch.zeros(n, 10, 6, dtype=S.dtype, device=dev)
+    for t in range(10):
+        basis[:, t, 0] = T[t][:, 0, 0]
+        basis[:, t, 1] = T[t][:, 0, 1]
+        basis[:, t, 2] = T[t][:, 0, 2]
+        basis[:, t, 3] = T[t][:, 1, 1]
+        basis[:, t, 4] = T[t][:, 1, 2]
+        basis[:, t, 5] = T[t][:, 2, 2]
 
     return basis
 
 
-def build_split(by_case, cases, rans_model='komegasst'):
+def build_split(by_case, cases, rans_model='komegasst', device='cpu'):
     """Build feature/label arrays for a set of cases."""
     all_rows = []
     for case in cases:
@@ -247,7 +242,7 @@ def build_split(by_case, cases, rans_model='komegasst'):
         return None, None, None, None
 
     print(f"  Extracting features from {len(all_rows):,} points ({len(cases)} cases)...")
-    return extract_features_and_labels(all_rows, rans_model)
+    return extract_features_and_labels(all_rows, rans_model, device=device)
 
 
 # ============================================================================
@@ -507,14 +502,19 @@ def train_tbrf(invariants_train, anisotropy_train, basis_train,
     n_comp = anisotropy_train.shape[1]
 
     # Solve for g_n coefficients: b_ij = sum g_n T^(n)_ij
-    # For each point, this is a least-squares problem: T @ g = b
-    print(f"    Solving for tensor basis coefficients ({len(inv_train)} points)...")
-    g_train = np.zeros((len(inv_train), n_basis))
-    for idx in range(len(inv_train)):
-        T = basis_train[idx]  # [n_basis, n_comp]
-        b = anisotropy_train[idx]  # [n_comp]
-        # Least squares: g = (T^T T)^{-1} T^T b
-        g_train[idx], _, _, _ = np.linalg.lstsq(T.T, b, rcond=None)
+    # System per point: A @ g = b, where A = T.T is [6, 10], underdetermined
+    # Min-norm solution: g = A.T @ (A @ A.T)^{-1} @ b
+    # A = basis.transpose [N,6,10], A.T = basis [N,10,6]
+    print(f"    Solving for tensor basis coefficients ({len(inv_train)} points, vectorized)...")
+    A = basis_train.transpose(0, 2, 1)  # [N, 6, 10]
+    AT = basis_train  # [N, 10, 6]
+    AAT = np.einsum('nij,nkj->nik', A, A)  # [N, 6, 6] = A @ A.T
+    # Regularize for numerical stability
+    AAT += 1e-10 * np.eye(n_comp)[None, :, :]
+    AAT_inv = np.linalg.inv(AAT)  # [N, 6, 6]
+    # g = A.T @ AAT_inv @ b
+    AAT_inv_b = np.einsum('nij,nj->ni', AAT_inv, anisotropy_train)  # [N, 6]
+    g_train = np.einsum('nij,nj->ni', AT, AAT_inv_b)  # [N, 10]
 
     # Train one RF per coefficient
     print(f"    Training {n_basis} random forests ({n_trees} trees, depth {max_depth})...")
@@ -530,11 +530,8 @@ def train_tbrf(invariants_train, anisotropy_train, basis_train,
     for n in range(n_basis):
         g_val_pred[:, n] = forests[n].predict(inv_val)
 
-    # Reconstruct b_ij
-    b_val_pred = np.zeros_like(anisotropy_val)
-    for idx in range(len(inv_val)):
-        for n in range(n_basis):
-            b_val_pred[idx] += g_val_pred[idx, n] * basis_val[idx, n]
+    # Reconstruct b_ij: b_pred[i] = sum_n g[i,n] * basis[i,n,:]
+    b_val_pred = np.einsum('nb,nbc->nc', g_val_pred, basis_val)
 
     rmse = np.sqrt(np.mean((b_val_pred - anisotropy_val) ** 2))
     print(f"    Final val RMSE(b): {rmse:.6f}")
@@ -630,7 +627,7 @@ def main():
                         help='Path to McConkey dataset')
     parser.add_argument('--output_dir', default='data/models',
                         help='Output directory for trained models')
-    parser.add_argument('--device', default='cuda' if 'torch' in dir() else 'cpu',
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu',
                         help='Device (cuda/cpu)')
     parser.add_argument('--epochs', type=int, default=300,
                         help='Max training epochs for NN models')
@@ -640,8 +637,6 @@ def main():
                         default=['mlp', 'mlp_large', 'tbnn', 'pi_tbnn', 'tbrf'],
                         help='Models to train')
     args = parser.parse_args()
-
-    import_deps()
 
     if args.device == 'cuda' and not torch.cuda.is_available():
         print("CUDA not available, falling back to CPU")
@@ -662,11 +657,11 @@ def main():
     # Build train/val/test splits
     print("\n--- Building splits ---")
     print(f"Train cases: {len(TRAIN_CASES)}")
-    inv_train, bij_train, basis_train, k_train = build_split(by_case, TRAIN_CASES, args.rans_model)
+    inv_train, bij_train, basis_train, k_train = build_split(by_case, TRAIN_CASES, args.rans_model, args.device)
     print(f"Val cases: {len(VAL_CASES)}")
-    inv_val, bij_val, basis_val, k_val = build_split(by_case, VAL_CASES, args.rans_model)
+    inv_val, bij_val, basis_val, k_val = build_split(by_case, VAL_CASES, args.rans_model, args.device)
     print(f"Test cases: {len(TEST_CASES)}")
-    inv_test, bij_test, basis_test, k_test = build_split(by_case, TEST_CASES, args.rans_model)
+    inv_test, bij_test, basis_test, k_test = build_split(by_case, TEST_CASES, args.rans_model, args.device)
 
     if inv_train is None:
         print("ERROR: No training data loaded!")

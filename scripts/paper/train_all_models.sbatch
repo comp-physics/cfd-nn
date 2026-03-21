@@ -40,7 +40,7 @@ echo "=== Training on McConkey dataset ==="
 echo ""
 
 # Run unified training script
-python3 scripts/paper/train_all_models.py \
+python3 -u scripts/paper/train_all_models.py \
     --data_dir mcconkey_data \
     --output_dir data/models \
     --device cuda
