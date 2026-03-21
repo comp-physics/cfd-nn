@@ -33,6 +33,39 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 
 ---
 
+## Future Work (Numerics / Parallelism / Workflow)
+
+### Implicit time stepping
+- Fully explicit except y-diffusion Thomas. No large-dt implicit solves (backward Euler, Crank-Nicolson).
+- Would enable much larger dt for stiff problems (RANS at high Re).
+
+### Higher-order time integration (RK4+)
+- Only Euler, RK2, RK3. No SSP-RK4, SSPRK(5,4), or multi-step methods (AB2/AB3).
+
+### Moving/deforming IBM bodies
+- Static grid, static immersed bodies only. No prescribed motion, FSI, or overset.
+
+### Multi-body IBM
+- One body per simulation. Workaround: combine via `phi = min(body1, body2)`.
+
+### CPU-only MPI
+- MPI currently requires GPU (`FFT_MPI` needs cuFFT/cuSPARSE). No CPU-only distributed solver.
+- MG Schwarz works on CPU+MPI but is 200-600x slower than FFT_MPI.
+
+### Multi-node MPI
+- Z-slab decomposition tested within a single node only. Inter-node halo exchange not validated.
+- Host-staged MPI (no CUDA-aware MPI) should work multi-node but untested.
+
+### Checkpoint/restart
+- `USE_HDF5` build flag exists but save/load simulation state is not implemented.
+- Restarting long DNS runs requires re-running from scratch.
+
+### In-situ visualization
+- No Catalyst, ADIOS, or ParaView Coprocessing integration.
+- VTK output only (post-hoc visualization).
+
+---
+
 ## Completed ✅
 
 | # | Item | Severity | Details |
@@ -82,5 +115,6 @@ Open issues from deep codebase audit + ongoing development. Completed items at b
 | **High** | 0 |
 | **Medium** | 2 |
 | **Low** | 1 |
-| **Total open** | **3** |
+| **Future work** | 8 |
+| **Total open** | **3** (+ 8 future) |
 | **Completed** | **34** |
