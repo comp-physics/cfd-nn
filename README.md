@@ -11,13 +11,15 @@ A **high-performance C++ solver** for **incompressible turbulent flow** with **p
   - Explicit time integration (Euler, RK2, RK3) with adaptive CFL-based time stepping
   - Directional CFL constraints for stretched grids
   - Multiple Poisson solvers with automatic selection (FFT, Multigrid, HYPRE)
+  - Distributed GPU FFT solver for multi-GPU (cuFFT + MPI + cuSPARSE)
   - Pressure projection for divergence-free velocity
 - **Staggered MAC grid** with second-order central finite differences
 - **DNS capability** with trip forcing, velocity filter, and turbulence diagnostics
 - **Recycling inflow BC** for spatially-developing turbulent flows (Lund et al. 1998)
+- **Multi-GPU MPI** with z-slab domain decomposition and halo exchange
 - **15 turbulence closures**: algebraic, transport, EARSM, LES SGS, and neural network models
 - **Pure C++ NN inference** - no Python/TensorFlow at runtime
-- **Immersed boundary method (IBM)** for complex geometries (cylinder, airfoil, hills, step)
+- **Immersed boundary method (IBM)** for complex geometries (cylinder, sphere, airfoil, hills, step)
 - **GPU acceleration** via OpenMP target directives for NVIDIA GPUs
 
 ## Table of Contents
@@ -207,13 +209,15 @@ For problems with all Neumann or periodic pressure boundaries (no Dirichlet BC),
 
 ## Poisson Solvers
 
-The solver provides **6 Poisson solver options** with automatic selection based on grid configuration and boundary conditions:
+The solver provides **6 Poisson solver backends** with automatic selection based on grid configuration and boundary conditions:
 
 ### Automatic Solver Selection Priority
 
 ```
 FFT (3D) → FFT2D (2D) → FFT1D (3D partial-periodic) → HYPRE → Multigrid
 ```
+
+For multi-GPU (MPI), use `FFT_MPI` which is a distributed direct solver.
 
 ### Available Solvers
 
@@ -222,9 +226,9 @@ FFT (3D) → FFT2D (2D) → FFT1D (3D partial-periodic) → HYPRE → Multigrid
 | **FFT** | O(N log N) | 3D channel flows | Periodic x AND z |
 | **FFT2D** | O(N log N) | 2D channel flows | 2D mesh, periodic x |
 | **FFT1D** | O(N log N) + 2D solve | 3D duct flows | Periodic x OR z (one only), uniform y |
+| **FFT_MPI** | O(N log N) | Multi-GPU channel flows | `USE_MPI` + periodic x AND z |
 | **HYPRE PFMG** | O(N) | Stretched grids, GPU | `USE_HYPRE` build flag |
 | **Multigrid** | O(N) | General fallback, stretched grids | Always available |
-| **SOR** | O(N²) | Testing/debugging | Always available |
 
 ### Geometric Multigrid (V-Cycle)
 
@@ -258,6 +262,22 @@ For problems with periodic boundaries, FFT solvers provide spectral accuracy:
 - **FFT (3D)**: 2D FFT in x-z + batched tridiagonal solve in y (cuSPARSE)
 - **FFT2D**: 1D FFT in x + batched tridiagonal in y
 - **FFT1D**: 1D FFT in periodic direction + 2D Helmholtz solve per mode
+
+### FFT_MPI (Distributed Multi-GPU)
+
+For multi-GPU runs, the `FFT_MPI` solver provides a distributed direct Poisson solve:
+
+- cuFFT 1D R2C in x (local) → MPI_Alltoallv z-transpose → cuFFT 1D C2C in z (local) → cuSPARSE batched tridiag in y
+- All compute stays on GPU; MPI uses host-staged buffers (no CUDA-aware MPI required)
+- Machine-precision accuracy (O(1e-16))
+- 200-635x faster than MG Schwarz (additive Schwarz with multigrid) on 2×A100
+
+```bash
+# Build with MPI support
+CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_MPI=ON
+# Select FFT_MPI solver
+./channel --config channel.cfg --poisson fft_mpi
+```
 
 ### HYPRE PFMG
 
@@ -379,7 +399,7 @@ Five SGS models for Large Eddy Simulation, all GPU-accelerated via fused kernels
 | Model | Key Property |
 |-------|-------------|
 | **Smagorinsky** (`smagorinsky`) | Static Cs = 0.17, wall damping via van Driest |
-| **Dynamic Smagorinsky** (`dynamic_smagorinsky`) | Germano procedure for local Cs (placeholder: Cs = 0.17 fallback) |
+| **Dynamic Smagorinsky** (`dynamic_smagorinsky`) | Germano procedure with plane-averaged Cs², MPI-compatible |
 | **WALE** (`wale`) | Wall-adapting, vanishes naturally at walls without damping |
 | **Vreman** (`vreman`) | Based on first gradient invariant, low dissipation in laminar regions |
 | **Sigma** (`sigma`) | Uses singular values of velocity gradient tensor |
@@ -563,6 +583,7 @@ The solver uses the relationship: $\text{Re} = \frac{-dp/dx \cdot \delta^3}{3\nu
 | Parameter | CLI | Default | Description |
 |-----------|-----|---------|-------------|
 | `convective_scheme` | `--scheme` | `central` | `central`, `skew` (DNS/LES), `upwind`, or `upwind2` |
+| `implicit_y_diffusion` | - | false | Implicit Thomas algorithm for y-diffusion (RANS stability) |
 
 ### Turbulence Model
 
@@ -573,6 +594,8 @@ The solver uses the relationship: $\text{Re} = \frac{-dp/dx \cdot \delta^3}{3\nu
 | `nn_preset` | `--nn_preset` | - | NN model preset name (loads from `data/models/<NAME>/`) |
 | `nn_weights_path` | `--weights` | - | Custom NN weights directory |
 | `nn_scaling_path` | `--scaling` | - | Custom NN scaling directory |
+| `pope_C1` | `--pope_C1` | 0.1 | Pope EARSM C1 constant (only for `earsm_pope`) |
+| `pope_C2` | `--pope_C2` | 0.1 | Pope EARSM C2 constant (only for `earsm_pope`) |
 
 **Available turbulence models:**
 
@@ -671,10 +694,11 @@ Turbulent inflow BC from downstream recycle plane. See [`docs/RECYCLING_INFLOW_G
 | `fft` | 2D FFT in x-z + tridiagonal in y | 3D, periodic x AND z |
 | `fft2d` | 1D FFT in x + tridiagonal in y | 2D only (Nz=1), periodic x |
 | `fft1d` | 1D FFT + 2D Helmholtz per mode | 3D, periodic x OR z (one only) |
+| `fft_mpi` | Distributed GPU FFT (multi-GPU) | `USE_MPI`, periodic x AND z |
 | `hypre` | HYPRE PFMG GPU-accelerated | Requires `USE_HYPRE` build |
 | `mg` | Native geometric multigrid | Always available |
 
-**Auto-selection priority:** FFT → FFT2D → FFT1D → HYPRE → MG
+**Auto-selection priority:** FFT → FFT2D → FFT1D → HYPRE → MG (single GPU), FFT_MPI (multi-GPU)
 
 #### Advanced Multigrid Settings
 
@@ -803,6 +827,24 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 - Disabled automatically for recycling inflow (BCs change each step) and semi-coarsening
 - Can be disabled via `poisson_use_vcycle_graph = false` or `disable_vcycle_graph()` API
 
+### Multi-GPU (MPI)
+
+The solver supports multi-GPU parallelism via MPI z-slab domain decomposition:
+
+```bash
+# Build with MPI + GPU
+CC=nvc CXX=nvc++ cmake .. -DUSE_GPU_OFFLOAD=ON -DUSE_MPI=ON -DGPU_CC=80
+
+# Run on 2 GPUs
+mpirun -n 2 ./channel --config channel.cfg --poisson fft_mpi
+```
+
+- **Z-slab decomposition**: Each MPI rank owns a contiguous z-slab with halo exchange
+- **Automatic GPU assignment**: Each rank binds to its local GPU (`rank % num_devices`)
+- **Distributed FFT Poisson solver** (`FFT_MPI`): Direct solve via cuFFT + MPI transpose + cuSPARSE
+- **MPI-compatible turbulence**: Dynamic Smagorinsky LM/MM plane averages use allreduce
+- **MPI-compatible recycling**: Recycle plane assembled via `MPI_Allgather`
+
 ### GPU-Specific Notes
 
 - **`gpu_only_mode`**: When enabled, avoids CPU fallbacks and full-field host reads for maximum performance. Diagnostics that require CPU-side data are skipped.
@@ -813,7 +855,7 @@ On NVIDIA GPUs with NVHPC compiler, the multigrid V-cycle is captured as a **CUD
 
 ## Validation
 
-~100 tests across 6 labels, organized into Tier 1 (CI, every push) and Tier 2 (SLURM, manual). See [`docs/VALIDATION.md`](docs/VALIDATION.md) for full results and [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) for how to run and extend the suite.
+~140 tests across 6 labels, organized into Tier 1 (CI, every push) and Tier 2 (SLURM, manual). CI runs CPU (Debug + Release), MPI (1/2/4 ranks), and GPU (multi-arch build on H200/H100/A100/L40S + GPU+MPI with 2 GPUs). See [`docs/VALIDATION.md`](docs/VALIDATION.md) for full results and [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) for how to run and extend the suite.
 
 ### Analytical Benchmarks
 
@@ -907,9 +949,10 @@ python scripts/train_tbnn_mcconkey.py \
 | [`docs/DNS_CHANNEL_GUIDE.md`](docs/DNS_CHANNEL_GUIDE.md) | DNS channel flow: grid requirements, trip forcing, directional CFL, velocity filter, diagnostics, troubleshooting |
 | [`docs/RECYCLING_INFLOW_GUIDE.md`](docs/RECYCLING_INFLOW_GUIDE.md) | Recycling inflow BC: theory, configuration, GPU implementation, testing |
 | [`docs/POISSON_SOLVER_GUIDE.md`](docs/POISSON_SOLVER_GUIDE.md) | All Poisson solvers: FFT, MG (semi-coarsening, CUDA Graph), HYPRE, selection guide |
-| [`docs/VALIDATION.md`](docs/VALIDATION.md) | Validation results: all 79 tests, RANS models, DNS, operator correctness, GPU parity |
+| [`docs/VALIDATION.md`](docs/VALIDATION.md) | Validation results: ~140 tests, RANS models, DNS, operator correctness, GPU parity |
 | [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) | Testing: how to run, test harness API, adding tests, GPU testing, CI architecture |
 | [`docs/HYPRE_POISSON_SOLVER.md`](docs/HYPRE_POISSON_SOLVER.md) | HYPRE PFMG GPU solver details |
+| [`docs/LES_IBM_GPU_GUIDE.md`](docs/LES_IBM_GPU_GUIDE.md) | LES SGS models + IBM: GPU implementation, benchmarks |
 | [`docs/TRAINING_GUIDE.md`](docs/TRAINING_GUIDE.md) | Training neural network turbulence models |
 
 ---
