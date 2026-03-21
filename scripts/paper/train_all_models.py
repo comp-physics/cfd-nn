@@ -338,9 +338,9 @@ def standardize(X, mean=None, std=None):
 
 def train_tbnn(invariants_train, anisotropy_train, basis_train,
                invariants_val, anisotropy_val, basis_val,
-               hidden=[64, 64, 64], n_basis=10, lr=1e-3, epochs=200,
+               hidden=[64, 64, 64], n_basis=10, lr=1e-3, epochs=1000,
                batch_size=256, device='cpu', physics_informed=False,
-               pi_beta=10.0):
+               pi_beta=0.1, pi_warmup=100):
     """Train a TBNN (or PI-TBNN) model."""
     # Standardize inputs
     inv_train, inv_mean, inv_std = standardize(invariants_train)
@@ -359,10 +359,11 @@ def train_tbnn(invariants_train, anisotropy_train, basis_train,
                       n_basis=n_basis).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=20, factor=0.5)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=200, T_mult=2, eta_min=1e-6)
 
     if physics_informed:
-        pi_loss_fn = PITBNNLoss(alpha=0.01, beta=pi_beta)
+        pi_loss_fn = PITBNNLoss(alpha=1e-6, beta=pi_beta)
 
     dataset = TensorDataset(inv_t, bij_t, basis_t)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -374,11 +375,16 @@ def train_tbnn(invariants_train, anisotropy_train, basis_train,
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
+
+        # PI-TBNN: linear warmup of realizability penalty
+        if physics_informed:
+            warmup_scale = min(1.0, epoch / pi_warmup)
+            pi_loss_fn.beta = pi_beta * warmup_scale
+
         for batch_inv, batch_bij, batch_basis in loader:
             g = model(batch_inv)  # [B, n_basis]
 
             # Reconstruct b_ij = sum g_n T^(n)_ij
-            # g: [B, n_basis], basis: [B, n_basis, 6]
             b_pred = (g.unsqueeze(2) * batch_basis).sum(dim=1)  # [B, 6]
 
             if physics_informed:
@@ -392,15 +398,14 @@ def train_tbnn(invariants_train, anisotropy_train, basis_train,
             epoch_loss += loss.item() * len(batch_inv)
 
         epoch_loss /= len(inv_t)
+        scheduler.step()
 
-        # Validation
+        # Validation (always use pure MSE for fair comparison)
         model.eval()
         with torch.no_grad():
             g_val = model(inv_v)
             b_val_pred = (g_val.unsqueeze(2) * basis_v).sum(dim=1)
             val_loss = nn.functional.mse_loss(b_val_pred, bij_v).item()
-
-        scheduler.step(val_loss)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -409,11 +414,14 @@ def train_tbnn(invariants_train, anisotropy_train, basis_train,
         else:
             patience_counter += 1
 
-        if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"    Epoch {epoch+1:4d}/{epochs}: train_loss={epoch_loss:.6f}, "
-                  f"val_loss={val_loss:.6f}, best={best_val_loss:.6f}")
+        if (epoch + 1) % 100 == 0 or epoch == 0:
+            lr_now = optimizer.param_groups[0]['lr']
+            extra = f", beta={pi_loss_fn.beta:.3f}" if physics_informed else ""
+            print(f"    Epoch {epoch+1:4d}/{epochs}: train={epoch_loss:.6f}, "
+                  f"val={val_loss:.6f}, best={best_val_loss:.6f}, "
+                  f"lr={lr_now:.2e}{extra}")
 
-        if patience_counter >= 50:
+        if patience_counter >= 150:
             print(f"    Early stopping at epoch {epoch+1}")
             break
 
@@ -426,14 +434,14 @@ def train_tbnn(invariants_train, anisotropy_train, basis_train,
         b_val_pred = (g_val.unsqueeze(2) * basis_v).sum(dim=1)
         rmse = torch.sqrt(nn.functional.mse_loss(b_val_pred, bij_v)).item()
 
-    print(f"    Final val RMSE(b): {rmse:.6f}")
+    print(f"    Final val RMSE(b): {rmse:.6f} (stopped at epoch {min(epoch+1, epochs)})")
 
     return model, inv_mean, inv_std, rmse
 
 
 def train_mlp_nut(invariants_train, anisotropy_train, k_train,
                   invariants_val, anisotropy_val, k_val,
-                  hidden=[32, 32], lr=1e-3, epochs=200,
+                  hidden=[32, 32], lr=1e-3, epochs=1000,
                   batch_size=256, device='cpu'):
     """Train MLP for scalar eddy viscosity (simplified: predict |b| magnitude)."""
     # Target: magnitude of anisotropy as proxy for nu_t
@@ -451,13 +459,15 @@ def train_mlp_nut(invariants_train, anisotropy_train, k_train,
 
     model = MLPModel(n_in=invariants_train.shape[1], hidden=hidden, n_out=1).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=20, factor=0.5)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=200, T_mult=2, eta_min=1e-6)
 
     dataset = TensorDataset(inv_t, tgt_t)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     best_val_loss = float('inf')
     best_state = None
+    patience_counter = 0
 
     for epoch in range(epochs):
         model.train()
@@ -468,20 +478,29 @@ def train_mlp_nut(invariants_train, anisotropy_train, k_train,
             loss.backward()
             optimizer.step()
 
+        scheduler.step()
+
         model.eval()
         with torch.no_grad():
             val_pred = model(inv_v)
             val_loss = nn.functional.mse_loss(val_pred, tgt_v).item()
 
-        scheduler.step(val_loss)
-
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
 
-        if (epoch + 1) % 50 == 0 or epoch == 0:
+        if (epoch + 1) % 100 == 0 or epoch == 0:
             rmse = math.sqrt(val_loss)
-            print(f"    Epoch {epoch+1:4d}/{epochs}: val_RMSE={rmse:.6f}")
+            lr_now = optimizer.param_groups[0]['lr']
+            print(f"    Epoch {epoch+1:4d}/{epochs}: val_RMSE={rmse:.6f}, "
+                  f"best={math.sqrt(best_val_loss):.6f}, lr={lr_now:.2e}")
+
+        if patience_counter >= 150:
+            print(f"    Early stopping at epoch {epoch+1}")
+            break
 
     model.load_state_dict(best_state)
     model.eval()
@@ -629,7 +648,7 @@ def main():
                         help='Output directory for trained models')
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu',
                         help='Device (cuda/cpu)')
-    parser.add_argument('--epochs', type=int, default=300,
+    parser.add_argument('--epochs', type=int, default=1000,
                         help='Max training epochs for NN models')
     parser.add_argument('--rans_model', default='komegasst',
                         help='RANS baseline model in dataset')
@@ -716,22 +735,41 @@ def main():
                              {'architecture': {'layers': [5, 64, 64, 64, 10]}})
         results['tbnn'] = {'rmse': rmse, 'time': time.time() - t0}
 
-    # ---- PI-TBNN ----
+    # ---- PI-TBNN sweep ----
     if 'pi_tbnn' in args.models:
-        print("\n" + "=" * 60)
-        print("  Training PI-TBNN (5→64→64→64→10, realizability loss)")
-        print("=" * 60)
-        t0 = time.time()
-        model, mean, std, rmse = train_tbnn(
-            inv_train, bij_train, basis_train, inv_val, bij_val, basis_val,
-            hidden=[64, 64, 64], n_basis=10, lr=1e-3, epochs=args.epochs,
-            device=args.device, physics_informed=True, pi_beta=10.0)
-        export_pytorch_model(model, mean, std,
+        pi_betas = [0.001, 0.01, 0.1, 1.0]
+        best_pi_rmse = float('inf')
+        best_pi_beta = None
+        pi_sweep_results = {}
+
+        for beta in pi_betas:
+            print("\n" + "=" * 60)
+            print(f"  Training PI-TBNN (beta={beta})")
+            print("=" * 60)
+            t0 = time.time()
+            model, mean, std, rmse = train_tbnn(
+                inv_train, bij_train, basis_train, inv_val, bij_val, basis_val,
+                hidden=[64, 64, 64], n_basis=10, lr=1e-3, epochs=args.epochs,
+                device=args.device, physics_informed=True,
+                pi_beta=beta, pi_warmup=100)
+            elapsed = time.time() - t0
+            pi_sweep_results[beta] = {'rmse': rmse, 'time': elapsed}
+
+            if rmse < best_pi_rmse:
+                best_pi_rmse = rmse
+                best_pi_beta = beta
+                best_pi_model = model
+                best_pi_mean = mean
+                best_pi_std = std
+
+        # Export best
+        export_pytorch_model(best_pi_model, best_pi_mean, best_pi_std,
                              f'{args.output_dir}/pi_tbnn_paper', 'nn_tbnn',
                              {'architecture': {'layers': [5, 64, 64, 64, 10]},
                               'physics_informed': True,
-                              'realizability_beta': 10.0})
-        results['pi_tbnn'] = {'rmse': rmse, 'time': time.time() - t0}
+                              'realizability_beta': best_pi_beta})
+        results['pi_tbnn'] = {'rmse': best_pi_rmse, 'time': sum(r['time'] for r in pi_sweep_results.values()),
+                              'best_beta': best_pi_beta, 'sweep': {str(k): v for k, v in pi_sweep_results.items()}}
 
     # ---- TBRF ----
     if 'tbrf' in args.models:

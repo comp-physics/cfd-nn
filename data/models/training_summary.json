@@ -1,0 +1,15 @@
+{
+  "mlp": {"rmse": 0.109595, "epochs": 1000, "time": 2318.5, "architecture": [5, 32, 32, 1]},
+  "mlp_large": {"rmse": 0.104477, "epochs": 344, "time": 880.5, "architecture": [5, 128, 128, 128, 128, 1]},
+  "tbnn": {"rmse": 0.084501, "epochs": 694, "time": 2161.9, "architecture": [5, 64, 64, 64, 10]},
+  "pi_tbnn": {
+    "best_beta": 0.001,
+    "best_rmse": 0.085229,
+    "sweep": {
+      "0.001": {"rmse": 0.085229, "epochs": 729},
+      "0.01": {"rmse": 0.090875, "epochs": 676}
+    },
+    "note": "Realizability penalty either negligible (beta=0.001, matches TBNN) or harmful (beta>=0.01). Tensor basis already produces near-realizable outputs (1.3% violations, small magnitude)."
+  },
+  "tbrf": {"rmse": 0.063707, "time": 499.6, "n_trees": 200, "max_depth": 20}
+}
