@@ -10,15 +10,19 @@ Determine whether NN-based turbulence closures on coarse grids can match the acc
 
 **Reference:** Moser, Kim & Mansour (1999) DNS — downloadable via `scripts/download_reference_data.sh`
 
-**BCs:** Periodic x/z, no-slip y → **FFT Poisson** (fast)
+**BCs:** Periodic x/z, no-slip y, stretched grid → **FFT Poisson** (fast)
+
+**Domain:** [0, 2pi] x [-1, 1] x [0, pi]
 
 **Why this case:** Cleanest comparison. Every model should "work" — the question is accuracy vs cost.
 
-### Case 2: Periodic Hills (Re = 5,600)
+### Case 2: Periodic Hills (Re_H = 5,600)
 
 **Reference:** Breuer et al. DNS/LES — available in McConkey dataset
 
 **BCs:** Periodic x/z, no-slip y + IBM hill → **FFT Poisson** (fast)
+
+**Domain:** [0, 9H] x [0, 3.035H] x [0, 4.5H]
 
 **Why this case:** Separation and reattachment. Simple RANS models fail here. Tests whether NN closures generalize to complex physics.
 
@@ -65,8 +69,8 @@ For each QoI, compute:
 | `baseline` | Algebraic | No | `--model baseline` | None needed |
 | `sst` | Transport (2-eq) | No | `--model sst` | None needed |
 | `earsm_pope` | Transport + EARSM | **Yes** | `--model earsm_pope` | None needed |
-| `nn_mlp` | NN scalar nu_t | No | `--model nn_mlp --nn_preset mlp_channel_caseholdout` | Channel + PHLL |
-| `nn_tbnn` | NN anisotropy | **Yes** | `--model nn_tbnn --nn_preset tbnn_channel_caseholdout` | Channel + PHLL |
+| `nn_mlp` | NN scalar nu_t | No | `--model nn_mlp --nn_preset mlp_*_caseholdout` | Channel + PHLL |
+| `nn_tbnn` | NN anisotropy | **Yes** | `--model nn_tbnn --nn_preset tbnn_*_caseholdout` | Channel + PHLL |
 
 **Key comparisons:**
 - `baseline` vs `sst`: Does transport equation help?
@@ -76,51 +80,114 @@ For each QoI, compute:
 
 ## Grid Resolution Ladder
 
-### Channel flow grids (2D):
+### Channel flow grids (3D):
 
-| Grid | Nx × Ny | Total cells | y+ at wall | Role |
-|------|---------|-------------|------------|------|
-| **A (fine)** | 128 × 256 | 32,768 | ~0.7 | Reference-quality RANS |
-| **B (medium)** | 64 × 128 | 8,192 | ~1.4 | Standard RANS |
-| **C (coarse)** | 32 × 64 | 2,048 | ~2.8 | Can NN compensate? |
+| Grid | Nx x Ny x Nz | Total cells | Role |
+|------|-------------|-------------|------|
+| **D (extra-fine)** | 256 x 192 x 256 | 12,582,912 | Over-resolved reference |
+| **A (fine)** | 128 x 96 x 128 | 1,572,864 | Reference-quality RANS |
+| **B (medium)** | 64 x 64 x 64 | 262,144 | Standard RANS |
+| **C (coarse)** | 32 x 32 x 32 | 32,768 | Can NN compensate? |
 
-### Periodic hills grids (2D):
+### Periodic hills grids (3D):
 
-| Grid | Nx × Ny | Total cells | Role |
-|------|---------|-------------|------|
-| **A (fine)** | 256 × 128 | 32,768 | Reference-quality RANS |
-| **B (medium)** | 128 × 64 | 8,192 | Standard RANS |
-| **C (coarse)** | 64 × 32 | 2,048 | Can NN compensate? |
+| Grid | Nx x Ny x Nz | Total cells | Role |
+|------|-------------|-------------|------|
+| **D (extra-fine)** | 256 x 128 x 128 | 4,194,304 | Over-resolved reference |
+| **A (fine)** | 128 x 64 x 64 | 524,288 | Reference-quality RANS |
+| **B (medium)** | 64 x 32 x 32 | 65,536 | Standard RANS |
+| **C (coarse)** | 32 x 16 x 16 | 8,192 | Can NN compensate? |
 
 ## Full Experiment Matrix
 
-### Channel flow: 5 models × 3 grids = 15 runs
+### Channel flow: 5 models x 4 grids = 20 runs
 
-| | Grid A (128×256) | Grid B (64×128) | Grid C (32×64) |
-|---|---|---|---|
-| baseline | run | run | run |
-| sst | run | run | run |
-| earsm_pope | run | run | run |
-| nn_mlp | run | run | run |
-| nn_tbnn | run | run | run |
+| | Grid D (256x192x256) | Grid A (128x96x128) | Grid B (64x64x64) | Grid C (32x32x32) |
+|---|---|---|---|---|
+| baseline | run | run | run | run |
+| sst | run | run | run | run |
+| earsm_pope | run | run | run | run |
+| nn_mlp | run | run | run | run |
+| nn_tbnn | run | run | run | run |
 
-### Periodic hills: 5 models × 3 grids = 15 runs
+### Periodic hills: 5 models x 4 grids = 20 runs
 
 Same matrix with PHLL-trained NN presets.
 
-### Total: 30 runs (manageable on a single GPU in a few hours)
+### Total: 40 runs on H200 GPU
+
+## SLURM Configuration
+
+- **Partition:** gpu-h200
+- **Account:** gts-sbryngelson3
+- **QOS:** embers
+- **GPUs:** 1 per job
+- **Max concurrent:** 40 jobs
+
+### Time limits per grid level:
+
+| Grid | Time limit | max_steps |
+|------|-----------|-----------|
+| D | 6 hours | 50,000 |
+| A | 3 hours | 30,000 |
+| B | 1 hour | 20,000 |
+| C | 30 min | 10,000 |
+
+## Runner Infrastructure
+
+### Config files: `examples/paper_experiments/`
+
+8 config files (case x grid), model specified at runtime via `--model` CLI:
+- `channel_{D,A,B,C}.cfg`
+- `hills_{D,A,B,C}.cfg`
+
+### Submission scripts: `scripts/paper/`
+
+| Script | What it does |
+|--------|-------------|
+| `submit_channel.sh` | Builds solver + submits 20 channel jobs |
+| `submit_hills.sh` | Builds solver + submits 20 hills jobs |
+| `submit_all.sh` | Submits all 40 jobs |
+| `collect_results.sh` | Parses outputs into `results/paper/experiment_results.csv` |
+
+### Output structure:
+
+```
+results/paper/
+  channel/
+    baseline_D/  baseline_A/  baseline_B/  baseline_C/
+    sst_D/       sst_A/       sst_B/       sst_C/
+    ...
+  hills/
+    baseline_D/  ...
+  experiment_results.csv
+```
+
+### Usage:
+
+```bash
+# Submit everything
+./scripts/paper/submit_all.sh
+
+# Or submit one case at a time
+./scripts/paper/submit_channel.sh
+./scripts/paper/submit_hills.sh
+
+# After jobs finish, collect results
+./scripts/paper/collect_results.sh
+```
 
 ## Timing Methodology
 
 For each run, record:
 1. **Wall-clock per step** (ms) — from `TimingStats::print_summary()`
 2. **Steps to converge** — until QoIs stabilize within tolerance
-3. **Total wall-clock** — steps × cost/step
+3. **Total wall-clock** — steps x cost/step
 4. **Component breakdown** — convection, diffusion, Poisson, turbulence model
 
-All runs on **same GPU, same compiler flags, same binary.** Only config changes.
+All runs on **same GPU (H200), same compiler flags (nvc++ Release), same binary.** Only config changes.
 
-Use `--warmup_iter 20` to exclude GPU init from timing.
+Use `--warmup_steps 50` to exclude GPU init from timing.
 
 ## Paper Figures
 
@@ -163,6 +230,8 @@ simulation_mode = steady
 tol = 1e-8
 stretch_y = true
 stretch_beta = 2.0
+verbose = false
+perf_mode = true
 ```
 
 FFT Poisson solver auto-selected for both cases (periodic x/z).
