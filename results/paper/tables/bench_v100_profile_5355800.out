@@ -1,0 +1,614 @@
+---------------------------------------
+Begin Slurm Prolog: Mar-22-2026 14:44:24
+Job ID:    5355800
+User ID:   sbryngelson3
+Account:   gts-sbryngelson3
+Job name:  bench-v100-profile
+Partition: gpu-v100
+QOS:       inferno
+---------------------------------------
+GPU: Tesla V100-PCIE-16GB
+NVCOMPILER_ACC_TIME=1
+--- 256^3, 50 steps ---
+=== Channel Flow Solver ===
+
+Computing Re from nu and dp_dx: Re = 1.06032e+07 (nu = 1.773050e-04, dp_dx = -1.000000e+00)
+Computing Re from nu and dp_dx: Re = 1.06032e+07 (nu = 1.773050e-04, dp_dx = -1.000000e+00)
+=== Configuration ===
+Mesh: 256 x 256 x 256 (3D)
+Domain: [0, 6] x [-1, 1] x [0, 3]
+Stretched y: no, z: no
+Physical: Re = 1.06032e+07 (actual: 1.06032e+07), nu = 0.000177305
+dp/dx: -1
+Time integrator: SSP-RK3 (3rd order) + Projection
+Poisson solver: Auto
+Advection scheme: Central (2nd-order)
+Spatial order: O2
+dt: 2e-05, max_steps: 50, tol: 1e-08
+Turbulence model: None (laminar)
+=====================
+Running in 3D mode (spanwise-periodic channel)
+
+Expected centerline velocity (Poiseuille): 2820
+Expected bulk velocity: 1880
+
+Mesh: 256 x 256 x 256 cells (3D)
+dx = 0.0234375, dy = 0.0078125, dz = 0.0117188
+
+[MG] Chebyshev Gershgorin bounds: L0=2.200, L1=2.200, L2=2.200, L3=2.200, L4=2.200, L5=2.200
+CUPTI ERROR: cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL) returned: CUPTI_ERROR_INVALID_DEVICE, 
+	 at ../../src-cupti/prof_cuda_cupti.c:338.
+[FFTPoissonSolver] cuFFT work area: 135266304 bytes (locked)
+[FFTPoissonSolver] cuSPARSE buffer: 1082130432 bytes
+[FFTPoissonSolver] Precomputed tridiagonal matrices
+[FFTPoissonSolver] Initialized with cuFFT (Nx=256, Ny=256, Nz=256) [cuSPARSE tridiag]
+[FFT1DPoissonSolver] Initialized (periodic_dir=0, N=256, modes=129, batch=65536)
+[Poisson] selected=FFT reason=auto: periodic(x,z) + uniform(dx,dz) + 3D dims=256x256x256
+
+=== Solver Configuration ===
+Mesh: 256 x 256 x 256 (3D)
+Poisson solver: FFT (2D-FFT in x-z + tridiagonal in y)
+Selection reason: auto: periodic(x,z) + uniform(dx,dz) + 3D
+Velocity BCs: x=periodic, y=wall, z=periodic
+Turbulence: None (laminar)
+Convective scheme: Central, space_order=2
+Build features: GPU, FFT
+GPU-only mode: ENABLED (CPU fallbacks disabled)
+============================
+
+
+=== Running in STEADY mode ===
+Convergence tolerance: 1e-08
+Max iterations: 50
+
+Will output 10 VTK snapshots (every 5 iterations)
+    Iter       Residual        Max |u|
+    Iter      1 / 50  (  2%)  residual = 2.000e-05
+Wrote snapshot 1: output/channel_1.vtk
+    Iter      5 / 50  ( 10%)  residual = 3.289e-02
+Wrote snapshot 2: output/channel_2.vtk
+    Iter     10 / 50  ( 20%)  residual = 3.322e-02
+Wrote snapshot 3: output/channel_3.vtk
+    Iter     15 / 50  ( 30%)  residual = 3.324e-02
+Wrote snapshot 4: output/channel_4.vtk
+    Iter     20 / 50  ( 40%)  residual = 3.299e-02
+Wrote snapshot 5: output/channel_5.vtk
+    Iter     25 / 50  ( 50%)  residual = 3.308e-02
+Wrote snapshot 6: output/channel_6.vtk
+    Iter     30 / 50  ( 60%)  residual = 3.299e-02
+Wrote snapshot 7: output/channel_7.vtk
+    Iter     35 / 50  ( 70%)  residual = 3.299e-02
+Wrote snapshot 8: output/channel_8.vtk
+    Iter     40 / 50  ( 80%)  residual = 3.292e-02
+Wrote snapshot 9: output/channel_9.vtk
+    Iter     45 / 50  ( 90%)  residual = 3.291e-02
+Wrote snapshot 10: output/channel_10.vtk
+    Iter     50 / 50  (100%)  residual = 3.284e-02
+Final VTK output: output/channel_final.vtk
+Total VTK snapshots: 11 (10 during + 1 final)
+
+=== Results ===
+Final residual: 3.284e-02
+Iterations/Steps: 51
+Converged: NO
+Bulk velocity: 281.988438
+Wall shear stress: 12.727492
+Friction velocity u_tau: 3.567561
+Re_tau: 20121.040387
+
+=== Comparison with Poiseuille Solution ===
+           y    u_numerical   u_analytical          error
+     -0.9961     280.402100      21.988216   2.584139e+02
+     -0.9883     281.998672      65.706469   2.162922e+02
+     -0.9805     282.000944     109.080484   1.729205e+02
+     -0.9727     282.000946     152.110260   1.298907e+02
+     -0.9648     282.000946     194.795798   8.720515e+01
+     -0.9570     282.000946     237.137099   4.486385e+01
+     -0.9492     282.000946     279.134160   2.866786e+00
+     -0.9414     282.000946     320.786984   3.878604e+01
+     -0.9336     282.000946     362.095570   8.009462e+01
+     -0.9258     282.000946     403.059917   1.210590e+02
+     -0.9180     282.000946     443.680026   1.616791e+02
+     -0.9102     282.000946     483.955897   2.019550e+02
+     -0.9023     282.000946     523.887529   2.418866e+02
+     -0.8945     282.000946     563.474924   2.814740e+02
+     -0.8867     282.000946     602.718080   3.207171e+02
+     -0.8789     282.000946     641.616998   3.596161e+02
+     -0.8711     282.000946     680.171678   3.981707e+02
+     -0.8633     282.000946     718.382120   4.363812e+02
+     -0.8555     282.000946     756.248323   4.742474e+02
+     -0.8477     282.000946     793.770288   5.117693e+02
+     -0.8398     282.000946     830.948015   5.489471e+02
+     -0.8320     282.000946     867.781504   5.857806e+02
+     -0.8242     282.000946     904.270754   6.222698e+02
+     -0.8164     282.000946     940.415767   6.584148e+02
+     -0.8086     282.000946     976.216541   6.942156e+02
+     -0.8008     282.000946    1011.673076   7.296721e+02
+     -0.7930     282.000946    1046.785374   7.647844e+02
+     -0.7852     282.000946    1081.553434   7.995525e+02
+     -0.7773     282.000946    1115.977255   8.339763e+02
+     -0.7695     282.000946    1150.056838   8.680559e+02
+     -0.7617     282.000946    1183.792183   9.017912e+02
+     -0.7539     282.000946    1217.183289   9.351823e+02
+     -0.7461     282.000946    1250.230158   9.682292e+02
+     -0.7383     282.000946    1282.932788   1.000932e+03
+     -0.7305     282.000946    1315.291180   1.033290e+03
+     -0.7227     282.000946    1347.305334   1.065304e+03
+     -0.7148     282.000946    1378.975249   1.096974e+03
+     -0.7070     282.000946    1410.300926   1.128300e+03
+     -0.6992     282.000946    1441.282366   1.159281e+03
+     -0.6914     282.000946    1471.919566   1.189919e+03
+     -0.6836     282.000946    1502.212529   1.220212e+03
+     -0.6758     282.000946    1532.161254   1.250160e+03
+     -0.6680     282.000946    1561.765740   1.279765e+03
+     -0.6602     282.000946    1591.025988   1.309025e+03
+     -0.6523     282.000946    1619.941998   1.337941e+03
+     -0.6445     282.000946    1648.513769   1.366513e+03
+     -0.6367     282.000946    1676.741303   1.394740e+03
+     -0.6289     282.000946    1704.624598   1.422624e+03
+     -0.6211     282.000946    1732.163655   1.450163e+03
+     -0.6133     282.000946    1759.358474   1.477358e+03
+     -0.6055     282.000946    1786.209054   1.504208e+03
+     -0.5977     282.000946    1812.715397   1.530714e+03
+     -0.5898     282.000946    1838.877501   1.556877e+03
+     -0.5820     282.000946    1864.695367   1.582694e+03
+     -0.5742     282.000946    1890.168995   1.608168e+03
+     -0.5664     282.000946    1915.298384   1.633297e+03
+     -0.5586     282.000946    1940.083535   1.658083e+03
+     -0.5508     282.000946    1964.524448   1.682524e+03
+     -0.5430     282.000946    1988.621123   1.706620e+03
+     -0.5352     282.000946    2012.373560   1.730373e+03
+     -0.5273     282.000946    2035.781758   1.753781e+03
+     -0.5195     282.000946    2058.845719   1.776845e+03
+     -0.5117     282.000946    2081.565441   1.799564e+03
+     -0.5039     282.000946    2103.940924   1.821940e+03
+     -0.4961     282.000946    2125.972170   1.843971e+03
+     -0.4883     282.000946    2147.659177   1.865658e+03
+     -0.4805     282.000946    2169.001947   1.887001e+03
+     -0.4727     282.000946    2190.000478   1.908000e+03
+     -0.4648     282.000946    2210.654770   1.928654e+03
+     -0.4570     282.000946    2230.964825   1.948964e+03
+     -0.4492     282.000946    2250.930641   1.968930e+03
+     -0.4414     282.000946    2270.552219   1.988551e+03
+     -0.4336     282.000946    2289.829559   2.007829e+03
+     -0.4258     282.000946    2308.762661   2.026762e+03
+     -0.4180     282.000946    2327.351524   2.045351e+03
+     -0.4102     282.000946    2345.596150   2.063595e+03
+     -0.4023     282.000946    2363.496537   2.081496e+03
+     -0.3945     282.000946    2381.052685   2.099052e+03
+     -0.3867     282.000946    2398.264596   2.116264e+03
+     -0.3789     282.000946    2415.132268   2.133131e+03
+     -0.3711     282.000946    2431.655703   2.149655e+03
+     -0.3633     282.000946    2447.834899   2.165834e+03
+     -0.3555     282.000946    2463.669856   2.181669e+03
+     -0.3477     282.000946    2479.160576   2.197160e+03
+     -0.3398     282.000946    2494.307057   2.212306e+03
+     -0.3320     282.000946    2509.109300   2.227108e+03
+     -0.3242     282.000946    2523.567305   2.241566e+03
+     -0.3164     282.000946    2537.681072   2.255680e+03
+     -0.3086     282.000946    2551.450601   2.269450e+03
+     -0.3008     282.000946    2564.875891   2.282875e+03
+     -0.2930     282.000946    2577.956943   2.295956e+03
+     -0.2852     282.000946    2590.693757   2.308693e+03
+     -0.2773     282.000946    2603.086332   2.321085e+03
+     -0.2695     282.000946    2615.134670   2.333134e+03
+     -0.2617     282.000946    2626.838769   2.344838e+03
+     -0.2539     282.000946    2638.198630   2.356198e+03
+     -0.2461     282.000946    2649.214253   2.367213e+03
+     -0.2383     282.000946    2659.885637   2.377885e+03
+     -0.2305     282.000946    2670.212784   2.388212e+03
+     -0.2227     282.000946    2680.195692   2.398195e+03
+     -0.2148     282.000946    2689.834362   2.407833e+03
+     -0.2070     282.000946    2699.128794   2.417128e+03
+     -0.1992     282.000946    2708.078987   2.426078e+03
+     -0.1914     282.000946    2716.684943   2.434684e+03
+     -0.1836     282.000946    2724.946660   2.442946e+03
+     -0.1758     282.000946    2732.864138   2.450863e+03
+     -0.1680     282.000946    2740.437379   2.458436e+03
+     -0.1602     282.000946    2747.666382   2.465665e+03
+     -0.1523     282.000946    2754.551146   2.472550e+03
+     -0.1445     282.000946    2761.091672   2.479091e+03
+     -0.1367     282.000946    2767.287960   2.485287e+03
+     -0.1289     282.000946    2773.140009   2.491139e+03
+     -0.1211     282.000946    2778.647821   2.496647e+03
+     -0.1133     282.000946    2783.811394   2.501810e+03
+     -0.1055     282.000946    2788.630729   2.506630e+03
+     -0.0977     282.000946    2793.105826   2.511105e+03
+     -0.0898     282.000946    2797.236684   2.515236e+03
+     -0.0820     282.000946    2801.023305   2.519022e+03
+     -0.0742     282.000946    2804.465687   2.522465e+03
+     -0.0664     282.000946    2807.563831   2.525563e+03
+     -0.0586     282.000946    2810.317736   2.528317e+03
+     -0.0508     282.000946    2812.727404   2.530726e+03
+     -0.0430     282.000946    2814.792833   2.532792e+03
+     -0.0352     282.000946    2816.514024   2.534513e+03
+     -0.0273     282.000946    2817.890977   2.535890e+03
+     -0.0195     282.000946    2818.923692   2.536923e+03
+     -0.0117     282.000946    2819.612168   2.537611e+03
+     -0.0039     282.000946    2819.956406   2.537955e+03
+      0.0039     282.000946    2819.956406   2.537955e+03
+      0.0117     282.000946    2819.612168   2.537611e+03
+      0.0195     282.000946    2818.923692   2.536923e+03
+      0.0273     282.000946    2817.890977   2.535890e+03
+      0.0352     282.000946    2816.514024   2.534513e+03
+      0.0430     282.000946    2814.792833   2.532792e+03
+      0.0508     282.000946    2812.727404   2.530726e+03
+      0.0586     282.000946    2810.317736   2.528317e+03
+      0.0664     282.000946    2807.563831   2.525563e+03
+      0.0742     282.000946    2804.465687   2.522465e+03
+      0.0820     282.000946    2801.023305   2.519022e+03
+      0.0898     282.000946    2797.236684   2.515236e+03
+      0.0977     282.000946    2793.105826   2.511105e+03
+      0.1055     282.000946    2788.630729   2.506630e+03
+      0.1133     282.000946    2783.811394   2.501810e+03
+      0.1211     282.000946    2778.647821   2.496647e+03
+      0.1289     282.000946    2773.140009   2.491139e+03
+      0.1367     282.000946    2767.287960   2.485287e+03
+      0.1445     282.000946    2761.091672   2.479091e+03
+      0.1523     282.000946    2754.551146   2.472550e+03
+      0.1602     282.000946    2747.666382   2.465665e+03
+      0.1680     282.000946    2740.437379   2.458436e+03
+      0.1758     282.000946    2732.864138   2.450863e+03
+      0.1836     282.000946    2724.946660   2.442946e+03
+      0.1914     282.000946    2716.684943   2.434684e+03
+      0.1992     282.000946    2708.078987   2.426078e+03
+      0.2070     282.000946    2699.128794   2.417128e+03
+      0.2148     282.000946    2689.834362   2.407833e+03
+      0.2227     282.000946    2680.195692   2.398195e+03
+      0.2305     282.000946    2670.212784   2.388212e+03
+      0.2383     282.000946    2659.885637   2.377885e+03
+      0.2461     282.000946    2649.214253   2.367213e+03
+      0.2539     282.000946    2638.198630   2.356198e+03
+      0.2617     282.000946    2626.838769   2.344838e+03
+      0.2695     282.000946    2615.134670   2.333134e+03
+      0.2773     282.000946    2603.086332   2.321085e+03
+      0.2852     282.000946    2590.693757   2.308693e+03
+      0.2930     282.000946    2577.956943   2.295956e+03
+      0.3008     282.000946    2564.875891   2.282875e+03
+      0.3086     282.000946    2551.450601   2.269450e+03
+      0.3164     282.000946    2537.681072   2.255680e+03
+      0.3242     282.000946    2523.567305   2.241566e+03
+      0.3320     282.000946    2509.109300   2.227108e+03
+      0.3398     282.000946    2494.307057   2.212306e+03
+      0.3477     282.000946    2479.160576   2.197160e+03
+      0.3555     282.000946    2463.669856   2.181669e+03
+      0.3633     282.000946    2447.834899   2.165834e+03
+      0.3711     282.000946    2431.655703   2.149655e+03
+      0.3789     282.000946    2415.132268   2.133131e+03
+      0.3867     282.000946    2398.264596   2.116264e+03
+      0.3945     282.000946    2381.052685   2.099052e+03
+      0.4023     282.000946    2363.496537   2.081496e+03
+      0.4102     282.000946    2345.596150   2.063595e+03
+      0.4180     282.000946    2327.351524   2.045351e+03
+      0.4258     282.000946    2308.762661   2.026762e+03
+      0.4336     282.000946    2289.829559   2.007829e+03
+      0.4414     282.000946    2270.552219   1.988551e+03
+      0.4492     282.000946    2250.930641   1.968930e+03
+      0.4570     282.000946    2230.964825   1.948964e+03
+      0.4648     282.000946    2210.654770   1.928654e+03
+      0.4727     282.000946    2190.000478   1.908000e+03
+      0.4805     282.000946    2169.001947   1.887001e+03
+      0.4883     282.000946    2147.659177   1.865658e+03
+      0.4961     282.000946    2125.972170   1.843971e+03
+      0.5039     282.000946    2103.940924   1.821940e+03
+      0.5117     282.000946    2081.565441   1.799564e+03
+      0.5195     282.000946    2058.845719   1.776845e+03
+      0.5273     282.000946    2035.781758   1.753781e+03
+      0.5352     282.000946    2012.373560   1.730373e+03
+      0.5430     282.000946    1988.621123   1.706620e+03
+      0.5508     282.000946    1964.524448   1.682524e+03
+      0.5586     282.000946    1940.083535   1.658083e+03
+      0.5664     282.000946    1915.298384   1.633297e+03
+      0.5742     282.000946    1890.168995   1.608168e+03
+      0.5820     282.000946    1864.695367   1.582694e+03
+      0.5898     282.000946    1838.877501   1.556877e+03
+      0.5977     282.000946    1812.715397   1.530714e+03
+      0.6055     282.000946    1786.209054   1.504208e+03
+      0.6133     282.000946    1759.358474   1.477358e+03
+      0.6211     282.000946    1732.163655   1.450163e+03
+      0.6289     282.000946    1704.624598   1.422624e+03
+      0.6367     282.000946    1676.741303   1.394740e+03
+      0.6445     282.000946    1648.513769   1.366513e+03
+      0.6523     282.000946    1619.941998   1.337941e+03
+      0.6602     282.000946    1591.025988   1.309025e+03
+      0.6680     282.000946    1561.765740   1.279765e+03
+      0.6758     282.000946    1532.161254   1.250160e+03
+      0.6836     282.000946    1502.212529   1.220212e+03
+      0.6914     282.000946    1471.919566   1.189919e+03
+      0.6992     282.000946    1441.282366   1.159281e+03
+      0.7070     282.000946    1410.300926   1.128300e+03
+      0.7148     282.000946    1378.975249   1.096974e+03
+      0.7227     282.000946    1347.305334   1.065304e+03
+      0.7305     282.000946    1315.291180   1.033290e+03
+      0.7383     282.000946    1282.932788   1.000932e+03
+      0.7461     282.000946    1250.230158   9.682292e+02
+      0.7539     282.000946    1217.183289   9.351823e+02
+      0.7617     282.000946    1183.792183   9.017912e+02
+      0.7695     282.000946    1150.056838   8.680559e+02
+      0.7773     282.000946    1115.977255   8.339763e+02
+      0.7852     282.000946    1081.553434   7.995525e+02
+      0.7930     282.000946    1046.785374   7.647844e+02
+      0.8008     282.000946    1011.673076   7.296721e+02
+      0.8086     282.000946     976.216541   6.942156e+02
+      0.8164     282.000946     940.415767   6.584148e+02
+      0.8242     282.000946     904.270754   6.222698e+02
+      0.8320     282.000946     867.781504   5.857806e+02
+      0.8398     282.000946     830.948015   5.489471e+02
+      0.8477     282.000946     793.770288   5.117693e+02
+      0.8555     282.000946     756.248323   4.742474e+02
+      0.8633     282.000946     718.382120   4.363812e+02
+      0.8711     282.000946     680.171678   3.981707e+02
+      0.8789     282.000946     641.616998   3.596161e+02
+      0.8867     282.000946     602.718080   3.207171e+02
+      0.8945     282.000946     563.474924   2.814740e+02
+      0.9023     282.000946     523.887529   2.418866e+02
+      0.9102     282.000946     483.955897   2.019550e+02
+      0.9180     282.000946     443.680026   1.616791e+02
+      0.9258     282.000946     403.059917   1.210590e+02
+      0.9336     282.000946     362.095570   8.009462e+01
+      0.9414     282.000946     320.786984   3.878604e+01
+      0.9492     282.000946     279.134160   2.866786e+00
+      0.9570     282.000946     237.137099   4.486385e+01
+      0.9648     282.000946     194.795798   8.720515e+01
+      0.9727     282.000946     152.110260   1.298907e+02
+      0.9805     282.000944     109.080484   1.729205e+02
+      0.9883     281.998672      65.706469   2.162922e+02
+      0.9961     280.402100      21.988216   2.584139e+02
+
+Relative L2 error: 8.767815e-01
+
+*** WARNING: L2 error = 8.767815e+01% ***
+
+=== Timing Summary ===
+Category                            Total (s)     Calls       Avg (ms)
+----------------------------------------------------------------------
+nu_eff_computation                      0.011        50          0.224
+residual_computation                    0.062        50          1.236
+solver_step                             7.100        50        141.997
+----------------------------------------------------------------------
+
+Accelerator Kernel Timing data
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/poisson_solver_multigrid.cpp
+  _ZN5nncfd22MultigridPoissonSolver22initialize_gpu_buffersEv  NVIDIA  devicenum=0
+    time(us): 0
+    4248: data region reached 18 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/poisson_solver_multigrid.cpp
+  _ZN5nncfd22MultigridPoissonSolverD1Ev  NVIDIA  devicenum=0
+    time(us): 0
+    4291: data region reached 18 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN76_INTERNAL_54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f985nncfd78_GLOBAL__N__54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f9819gpu_max_du_residualEPKdS3_iiiiiib  NVIDIA  devicenum=0
+    time(us): 741
+    86: data region reached 100 times
+        86: data copyin transfers: 50
+             device time(us): total=165 max=4 min=3 avg=3
+        100: data copyout transfers: 50
+             device time(us): total=576 max=17 min=8 avg=11
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN76_INTERNAL_54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f985nncfd78_GLOBAL__N__54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f9819gpu_max_dv_residualEPKdS3_iiiiiib  NVIDIA  devicenum=0
+    time(us): 785
+    116: data region reached 100 times
+        116: data copyin transfers: 50
+             device time(us): total=207 max=5 min=4 avg=4
+        129: data copyout transfers: 50
+             device time(us): total=578 max=17 min=8 avg=11
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN76_INTERNAL_54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f985nncfd78_GLOBAL__N__54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f9819gpu_max_dw_residualEPKdS3_iiiiii  NVIDIA  devicenum=0
+    time(us): 821
+    144: data region reached 100 times
+        144: data copyin transfers: 50
+             device time(us): total=207 max=5 min=4 avg=4
+        157: data copyout transfers: 50
+             device time(us): total=614 max=16 min=8 avg=12
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN76_INTERNAL_54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f985nncfd78_GLOBAL__N__54__storage_scratch1_6_sbryngelson3_cfd_nn_src_solver_cpp_1ce63f9817gpu_check_nan_infEPKdm  NVIDIA  devicenum=0
+    time(us): 1,034
+    219: data region reached 126 times
+        219: data copyin transfers: 63
+             device time(us): total=275 max=14 min=4 avg=4
+        224: data copyout transfers: 63
+             device time(us): total=759 max=15 min=8 avg=12
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN5nncfd10RANSSolverD1Ev  NVIDIA  devicenum=0
+    time(us): 144,933
+    588: data region reached 36 times
+        588: data copyout transfers: 5
+             device time(us): total=144,933 max=29,138 min=28,844 avg=28,986
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN5nncfd10RANSSolver4stepEv  NVIDIA  devicenum=0
+    time(us): 0
+    1354: data region reached 100 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZNK5nncfd10RANSSolver13bulk_velocityEv  NVIDIA  devicenum=0
+    time(us): 105
+    3018: data region reached 2 times
+        3018: data copyin transfers: 4
+             device time(us): total=54 max=22 min=8 avg=13
+        3025: data copyin transfers: 2
+             device time(us): total=25 max=17 min=8 avg=12
+        3025: data copyout transfers: 2
+             device time(us): total=26 max=14 min=12 avg=13
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZNK5nncfd10RANSSolver17wall_shear_stressEv  NVIDIA  devicenum=0
+    time(us): 213
+    3069: data region reached 6 times
+        3069: data copyin transfers: 12
+             device time(us): total=96 max=20 min=3 avg=8
+        3075: data copyin transfers: 6
+             device time(us): total=52 max=13 min=4 avg=8
+        3075: data copyout transfers: 6
+             device time(us): total=65 max=19 min=9 avg=10
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN5nncfd10RANSSolver22initialize_gpu_buffersEv  NVIDIA  devicenum=0
+    time(us): 723,135
+    3877: data region reached 5 times
+        3877: data copyin transfers: 21
+             device time(us): total=606,651 max=29,035 min=28,801 avg=28,888
+    3886: data region reached 3 times
+        3886: data copyin transfers: 7
+             device time(us): total=115,951 max=28,999 min=10 avg=16,564
+        3891: data copyin transfers: 2
+             device time(us): total=26 max=19 min=7 avg=13
+        3891: data copyout transfers: 1
+             device time(us): total=19 max=19 min=19 avg=19
+    3891: data region reached 2 times
+        3891: data copyin transfers: 3
+             device time(us): total=26 max=14 min=5 avg=8
+        3894: data copyin transfers: 2
+             device time(us): total=24 max=16 min=8 avg=12
+        3894: data copyout transfers: 1
+             device time(us): total=12 max=12 min=12 avg=12
+    3894: data region reached 2 times
+        3894: data copyin transfers: 3
+             device time(us): total=25 max=13 min=5 avg=8
+        3897: data copyin transfers: 2
+             device time(us): total=24 max=16 min=8 avg=12
+        3897: data copyout transfers: 1
+             device time(us): total=11 max=11 min=11 avg=11
+    3897: data region reached 2 times
+        3897: data copyin transfers: 3
+             device time(us): total=26 max=14 min=5 avg=8
+        3902: data copyin transfers: 2
+             device time(us): total=22 max=15 min=7 avg=11
+        3902: data copyout transfers: 1
+             device time(us): total=10 max=10 min=10 avg=10
+    3903: data region reached 2 times
+        3903: data copyin transfers: 3
+             device time(us): total=25 max=13 min=5 avg=8
+        3905: data copyin transfers: 2
+             device time(us): total=29 max=19 min=10 avg=14
+        3905: data copyout transfers: 1
+             device time(us): total=11 max=11 min=11 avg=11
+    3905: data region reached 2 times
+        3905: data copyin transfers: 3
+             device time(us): total=24 max=13 min=5 avg=8
+        3907: data copyin transfers: 2
+             device time(us): total=20 max=14 min=6 avg=10
+        3907: data copyout transfers: 1
+             device time(us): total=10 max=10 min=10 avg=10
+    3908: data region reached 2 times
+        3908: data copyin transfers: 3
+             device time(us): total=24 max=13 min=5 avg=8
+        3912: data copyin transfers: 2
+             device time(us): total=21 max=15 min=6 avg=10
+        3912: data copyout transfers: 1
+             device time(us): total=11 max=11 min=11 avg=11
+    3912: data region reached 2 times
+        3912: data copyin transfers: 3
+             device time(us): total=24 max=12 min=4 avg=8
+        3915: data copyin transfers: 2
+             device time(us): total=25 max=17 min=8 avg=12
+        3915: data copyout transfers: 1
+             device time(us): total=10 max=10 min=10 avg=10
+    3915: data region reached 2 times
+        3915: data copyin transfers: 3
+             device time(us): total=26 max=14 min=5 avg=8
+        3921: data copyin transfers: 2
+             device time(us): total=25 max=17 min=8 avg=12
+        3921: data copyout transfers: 1
+             device time(us): total=11 max=11 min=11 avg=11
+    3928: data region reached 1 time
+        3928: data copyin transfers: 1
+             device time(us): total=7 max=7 min=7 avg=7
+    3931: data region reached 1 time
+        3931: data copyin transfers: 1
+             device time(us): total=5 max=5 min=5 avg=5
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN5nncfd10RANSSolver11sync_to_gpuEv  NVIDIA  devicenum=0
+    time(us): 144,529
+    4052: update directive reached 4 times
+        4052: data copyin transfers: 4
+             device time(us): total=115,622 max=28,959 min=28,841 avg=28,905
+    4055: update directive reached 1 time
+        4055: data copyin transfers: 1
+             device time(us): total=28,907 max=28,907 min=28,907 avg=28,907
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZNK5nncfd10RANSSolver12write_fieldsERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  NVIDIA  devicenum=0
+    time(us): 144,659
+    4185: update directive reached 4 times
+        4185: data copyout transfers: 4
+             device time(us): total=115,680 max=29,057 min=28,721 avg=28,920
+    4188: update directive reached 1 time
+        4188: data copyout transfers: 1
+             device time(us): total=28,979 max=28,979 min=28,979 avg=28,979
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver.cpp
+  _ZN5nncfd10RANSSolver22sync_solution_from_gpuEv  NVIDIA  devicenum=0
+    time(us): 1,592,664
+    4185: update directive reached 44 times
+        4185: data copyout transfers: 44
+             device time(us): total=1,273,991 max=29,155 min=28,692 avg=28,954
+    4188: update directive reached 11 times
+        4188: data copyout transfers: 11
+             device time(us): total=318,673 max=29,030 min=28,924 avg=28,970
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_operators.cpp
+  _ZN5nncfd10RANSSolver17apply_velocity_bcEv  NVIDIA  devicenum=0
+    time(us): 0
+    100: data region reached 702 times
+    115: data region reached 702 times
+    131: data region reached 702 times
+    147: data region reached 702 times
+    163: data region reached 702 times
+    307: data region reached 702 times
+    337: data region reached 702 times
+    365: data region reached 702 times
+    414: data region reached 702 times
+    468: data region reached 702 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_operators.cpp
+  _ZN5nncfd10RANSSolver23compute_convective_termERKNS_11VectorFieldERS1_  NVIDIA  devicenum=0
+    time(us): 0
+    735: data region reached 300 times
+    749: data region reached 300 times
+    763: data region reached 300 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_operators.cpp
+  _ZN5nncfd10RANSSolver22compute_diffusive_termERKNS_11VectorFieldERKNS_11ScalarFieldERS1_  NVIDIA  devicenum=0
+    time(us): 0
+    946: data region reached 300 times
+    974: data region reached 300 times
+    1002: data region reached 300 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_operators.cpp
+  _ZN5nncfd10RANSSolver18compute_divergenceENS_13VelocityWhichERNS_11ScalarFieldE  NVIDIA  devicenum=0
+    time(us): 0
+    1181: data region reached 300 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_operators.cpp
+  _ZN5nncfd10RANSSolver16correct_velocityEv  NVIDIA  devicenum=0
+    time(us): 0
+    1335: data region reached 300 times
+    1352: data region reached 300 times
+    1406: data region reached 300 times
+    1457: data region reached 300 times
+    1474: data region reached 300 times
+    1492: data region reached 300 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_time.cpp
+  _ZN5nncfd10RANSSolver13euler_substepERNS_11VectorFieldES2_d  NVIDIA  devicenum=0
+    time(us): 0
+    494: data region reached 100 times
+    506: data region reached 100 times
+    517: data region reached 100 times
+    530: data region reached 100 times
+    550: data region reached 100 times
+    575: data region reached 200 times
+    587: data region reached 200 times
+    598: data region reached 200 times
+    611: data region reached 200 times
+    631: data region reached 200 times
+/storage/scratch1/6/sbryngelson3/cfd-nn/src/solver_time.cpp
+  _ZN5nncfd10RANSSolver16project_velocityERNS_11VectorFieldEd  NVIDIA  devicenum=0
+    time(us): 4,739
+    845: data region reached 300 times
+        845: data copyin transfers: 300
+             device time(us): total=1,456 max=19 min=3 avg=4
+        853: data copyout transfers: 300
+             device time(us): total=3,283 max=18 min=8 avg=10
+    853: data region reached 300 times
+---------------------------------------
+Begin Slurm Epilog: Mar-22-2026 14:46:20
+Job ID:        5355800
+User ID:       sbryngelson3
+Account:       gts-sbryngelson3
+Job name:      bench-v100-profile
+Resources:     cpu=12,gres/gpu:v100=1,mem=48G,node=1
+Rsrc Used:     cput=00:23:12,vmem=0,walltime=00:01:56,mem=13011472K,energy_used=0
+Partition:     gpu-v100
+QOS:           inferno
+Nodes:         atl1-1-01-003-34-0
+---------------------------------------

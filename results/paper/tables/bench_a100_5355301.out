@@ -1,0 +1,50 @@
+---------------------------------------
+Begin Slurm Prolog: Mar-22-2026 14:12:32
+Job ID:    5355301
+User ID:   sbryngelson3
+Account:   gts-sbryngelson3
+Job name:  bench-a100-cales
+Partition: gpu-a100
+QOS:       embers
+---------------------------------------
+============================================
+  A100 Benchmark — CaLES Comparison
+  GPU: NVIDIA A100 80GB PCIe, 81920 MiB
+============================================
+
+CaLES (Xiao et al. 2024): 1x A100-64GB
+  DNS explicit: 1.50 ns/step/point (512x384x1440, 283M cells)
+  WRLES:        1.80 ns/step/point (same grid)
+
+Building for A100 (CC=80)...
+-- Configuring done (26.9s)
+-- Generating done (2.6s)
+-- Build files have been written to: /storage/scratch1/6/sbryngelson3/cfd-nn/build_a100_bench
+[ 94%] Building CXX object CMakeFiles/channel.dir/app/main_channel.cpp.o
+[100%] Linking CXX executable channel
+[100%] Built target channel
+--- 128x128x128 = 2097152 cells ---
+  7.62 ms/step, 275 Mcells/s, 3.64 ns/point
+--- 256x256x256 = 16777216 cells ---
+  42.35 ms/step, 396 Mcells/s, 2.52 ns/point
+--- 512x256x144 = 18874368 cells ---
+  47.16 ms/step, 400 Mcells/s, 2.50 ns/point
+--- 384x256x256 = 25165824 cells ---
+  62.87 ms/step, 400 Mcells/s, 2.50 ns/point
+--- 512x256x256 = 33554432 cells ---
+  85.59 ms/step, 392 Mcells/s, 2.55 ns/point
+--- 512x384x256 = 50331648 cells ---
+  135.41 ms/step, 372 Mcells/s, 2.69 ns/point
+--- 512x384x384 = 75497472 cells ---
+---------------------------------------
+Begin Slurm Epilog: Mar-22-2026 14:31:38
+Job ID:        5355301
+User ID:       sbryngelson3
+Account:       gts-sbryngelson3
+Job name:      bench-a100-cales
+Resources:     cpu=8,gres/gpu:a100=1,mem=32G,node=1
+Rsrc Used:     cput=02:32:48,vmem=0,walltime=00:19:06,mem=33519800K,energy_used=0
+Partition:     gpu-a100
+QOS:           embers
+Nodes:         atl1-1-01-006-3-0
+---------------------------------------
