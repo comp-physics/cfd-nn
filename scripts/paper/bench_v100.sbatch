@@ -24,20 +24,17 @@ echo "  GPU: $GPU"
 echo "============================================"
 echo ""
 
-# Build if needed
-if [ ! -f build_bench/channel ]; then
-    echo "Building solver..."
-    mkdir -p build_bench && cd build_bench
+# Build for V100 (CC=70) in separate directory
+BUILD_DIR=build_v100
+if [ ! -f $BUILD_DIR/channel ]; then
+    echo "Building solver for V100 (CC=70)..."
+    mkdir -p $BUILD_DIR && cd $BUILD_DIR
     cmake .. -DCMAKE_CXX_COMPILER=nvc++ -DUSE_GPU_OFFLOAD=ON -DCMAKE_BUILD_TYPE=Release -DGPU_CC=70 2>&1 | tail -3
     make -j$(nproc) channel 2>&1 | tail -3
     cd ..
 fi
 
-SOLVER=build_bench/channel
-if [ ! -f "$SOLVER" ]; then
-    # Try repo root
-    SOLVER=./channel
-fi
+SOLVER=$BUILD_DIR/channel
 
 echo "Solver: $SOLVER"
 echo ""
