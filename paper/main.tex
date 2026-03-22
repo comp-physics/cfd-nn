@@ -39,10 +39,10 @@ We systematically compare five data-driven turbulence closure architectures---mu
 All models are trained on the same dataset \citep{McConkey2021} with the same case-holdout protocol and evaluated both \emph{a priori} (offline prediction accuracy) and \emph{a posteriori} (coupled CFD accuracy and wall-clock cost).
 We provide a detailed computational anatomy of each closure, showing exactly which operations---matrix multiplies, activation functions, tree traversals, transport equation solves---dominate the cost.
 On a \todo{GPU type} GPU, the TBNN achieves \todo{X}\% lower prediction error than $k$-$\omega$ SST at \todo{Y}\% additional computational cost per time step, while the smaller MLP adds only \todo{Z}\% overhead.
-The TBRF yields the highest offline accuracy (validation RMSE of 0.064 vs.\ 0.085 for TBNN) but is \todo{N}$\times$ more expensive in the solver due to branch-heavy tree traversals and poor GPU cache utilization.
-Physics-informed realizability penalties on the TBNN provide no benefit: the tensor basis architecture already constrains outputs to be near-realizable, and increasing the penalty weight degrades accuracy.
-\todo{Add key a posteriori finding.}
-These results provide practitioners with quantitative guidance for selecting turbulence closures that balance predictive accuracy against computational budget.
+The TBRF yields the highest offline accuracy (validation RMSE of 0.064 vs.\ 0.085 for TBNN) but is impractical for GPU deployment due to branch-heavy tree traversals and poor cache utilization.
+A key finding is that model rankings reverse between validation and test sets: the TBNN achieves the best validation accuracy but the worst test-set generalization (RMSE degrades $4.6\times$, with catastrophic failure on an unseen curved backward-facing step geometry), while the physics-informed PI-TBNN---previously thought to offer no benefit---degrades only $1.18\times$.
+The realizability penalty acts as a regularizer that prevents overfitting to training geometries, yielding $2.7\times$ better test accuracy than the unconstrained TBNN at identical computational cost.
+These results demonstrate that validation accuracy alone is a misleading metric for turbulence closure selection and provide practitioners with quantitative guidance for balancing predictive accuracy, generalization, and computational budget.
 \end{abstract}
 
 \input{sections/introduction}

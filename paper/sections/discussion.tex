@@ -10,26 +10,47 @@ The results in Sections~\ref{sec:apriori}--\ref{sec:cost} suggest a practical de
 
     \item \textbf{MLP (small)}: A reasonable first step toward data-driven closures when the user wants modest accuracy improvement without dramatic cost increase. At 24--50\% overhead, the MLP is affordable for most applications, though its scalar output limits its ability to capture Reynolds stress anisotropy.
 
-    \item \textbf{TBNN}: The recommended choice when prediction of anisotropic Reynolds stresses is important (separated flows, secondary motions, streamline curvature). The 187--657\% overhead is substantial but may be justified when accuracy in these regimes is critical.
+    \item \textbf{PI-TBNN}: The recommended choice when the target geometry may differ from the training set---the common case in engineering practice. Despite 42\% worse validation accuracy than the unconstrained TBNN, the PI-TBNN's test RMSE (0.142) is $2.7\times$ better, with particularly strong robustness on the unseen CBFS geometry (CBFS/PH ratio of $1.55\times$ vs.\ $6.05\times$ for TBNN). The computational cost is identical to the TBNN.
 
-    \item \textbf{TBRF}: Not recommended for online use. The TBRF should be viewed as an offline accuracy ceiling---useful for understanding the limits of the feature space and tensor basis representation, but impractical for deployment in a CFD solver due to its poor GPU characteristics.
+    \item \textbf{TBNN}: Should be used with caution. While it achieves the best validation accuracy among neural networks (RMSE 0.085), it exhibits catastrophic overfitting on unseen geometries (test RMSE 0.389). Only recommended when the deployment geometry closely matches the training data.
+
+    \item \textbf{TBRF}: Not recommended for online use but valuable as an offline reference. The TBRF achieves the best test RMSE (0.125) with good generalization ($1.97\times$ degradation), confirming that the accuracy gap between neural networks and tree ensembles persists on unseen geometries. The ensemble averaging provides natural regularization analogous to the PI-TBNN's penalty.
 \end{itemize}
 
-\todo{Refine these recommendations based on a posteriori results. The Pareto plot (Section~\ref{sec:pareto}) will make the tradeoff quantitative.}
+\subsection{PI-TBNN: realizability as regularization}
 
-\subsection{Why PI-TBNN does not help}
+The realizability penalty in the PI-TBNN tells two very different stories depending on whether one examines validation or test performance (Section~\ref{sec:pi_sweep} and~\ref{sec:generalization}).
+On the validation set, the penalty appears harmful: PI-TBNN's RMSE (0.120) is 42\% worse than the unconstrained TBNN (0.085).
+On the test set, the conclusion reverses: PI-TBNN (0.142) is $2.7\times$ better than TBNN (0.389).
 
-The negative result on physics-informed realizability penalties (Section~\ref{sec:pi_sweep}) deserves further discussion.
+This dramatic reversal reveals that the realizability penalty acts primarily as a \emph{regularizer}, not as a physics constraint.
 The TBNN architecture already embeds significant physical structure:
 \begin{itemize}
     \item \textbf{Galilean invariance}: The input features (5 invariants of $\Shat$ and $\Omhat$) are frame-indifferent by construction.
-    \item \textbf{Symmetry and zero trace}: The tensor basis contraction $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$ guarantees that the output is symmetric and traceless, because each $T^{(n)}$ has these properties.
-    \item \textbf{Near-realizability}: The subspace spanned by the 10 tensor basis functions naturally constrains the output to a region that is mostly realizable. Only 1.3\% of validation points exhibit mild violations.
+    \item \textbf{Symmetry and zero trace}: The tensor basis contraction $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$ guarantees symmetric, traceless output.
+    \item \textbf{Near-realizability}: Only 1.3\% of TBNN validation predictions violate realizability bounds.
 \end{itemize}
 
-Adding a realizability penalty to the loss function introduces a competing gradient signal that pushes the network toward the boundary of the realizable region, even when the data itself does not strongly violate these constraints.
-At $\beta = 0.01$, this gradient noise is large enough to degrade the data-fitting objective by 7.6\%.
-This is consistent with the broader trend in the field toward architectural constraints (tensor basis, symmetry groups) rather than loss-based soft penalties for encoding physics \citep{Wu2018}.
+Given that realizability violations are already rare, the penalty's main effect is to constrain the network's effective capacity.
+By penalizing outputs near the boundary of the realizable region, it prevents the coefficient functions $g^{(n)}(\lambda_1,\ldots,\lambda_5)$ from developing sharp, geometry-specific features that fit the training data but do not transfer.
+The result is a smoother mapping from invariants to tensor coefficients---higher bias but dramatically lower variance.
+
+This reinterpretation has practical implications.
+The earlier conclusion of \citet{Wu2018}---that loss-based physics penalties are redundant given architectural constraints---holds for in-distribution accuracy but is misleading for generalization.
+When the deployment domain differs from training (as is typical in engineering practice), the PI-TBNN's regularization effect is valuable precisely because the penalty is ``redundant'' for the training data: it constrains the network without distorting the loss landscape in regions where data is available.
+
+\subsection{TBNN overfitting to training geometries}
+
+The TBNN's catastrophic test-set degradation ($4.6\times$ increase in RMSE) is concentrated on the CBFS geometry, where it achieves an RMSE of 0.457 compared to 0.076 on PH $\alpha=1.2$ (Table~\ref{tab:apriori_percase}).
+The PH case interpolates between training geometries ($\alpha=0.5$, $0.8$, $1.0$, $1.5$), while the CBFS introduces a qualitatively different separation mechanism (sharp backward-facing step with streamline curvature).
+
+The component-wise analysis (Table~\ref{tab:component_rmse}) reveals that the overfitting is concentrated in the normal stress components ($b_{11}$, $b_{22}$), which show $5$--$7\times$ degradation from validation to test.
+The shear stress $b_{12}$, while also degraded, fares better ($4.5\times$).
+This pattern is consistent with the TBNN learning geometry-specific normal stress magnitudes---which vary strongly between flow configurations---rather than the universal relationship between strain/rotation invariants and stress anisotropy.
+
+The TBNN has only 9,354 parameters (identical to the PI-TBNN), so the overfitting is not driven by excessive model capacity in the traditional sense.
+Rather, the unconstrained loss function allows the network to exploit correlations between invariant features and geometry-specific stress magnitudes that happen to be present in the training set but do not generalize.
+The PI-TBNN's realizability penalty disrupts exactly these spurious correlations.
 
 \subsection{TBRF: offline ceiling, online impractical}
 
@@ -41,7 +62,10 @@ The TBRF achieves the highest offline accuracy (RMSE = 0.064 vs.\ 0.085 for TBNN
 \end{itemize}
 
 These are not implementation limitations that can be overcome with better engineering; they reflect a fundamental mismatch between the random forest algorithm and GPU hardware.
-The TBRF's value lies in establishing an accuracy ceiling for the (5-invariant, 10-basis) feature representation: the TBNN's 0.085 RMSE is within 33\% of the best achievable accuracy in this feature space, suggesting that the neural network's function approximation is not the primary bottleneck---rather, the feature space itself limits accuracy.
+The TBRF's value extends beyond establishing a validation accuracy ceiling.
+On the test set, the TBRF achieves the best RMSE (0.125) among all models, with a val-to-test degradation ratio of $1.97\times$---far better than the TBNN ($4.60\times$) though not as robust as the PI-TBNN ($1.18\times$).
+The ensemble averaging inherent in random forests provides natural regularization, analogous to the PI-TBNN's realizability penalty but through a different mechanism (model averaging vs.\ capacity constraint).
+This suggests that the TBRF's offline accuracy advantage over neural networks is partly an accuracy advantage and partly a generalization advantage---it fits the training data better \emph{and} transfers better to new geometries.
 
 \subsection{CPU vs.\ GPU cost differences}
 
@@ -60,7 +84,7 @@ Several limitations of this study should be noted:
 \begin{itemize}
     \item \textbf{Training data dependence}: All NN models are trained on $k$-$\omega$ SST fields from the McConkey dataset. Performance may differ with other RANS baselines ($k$-$\varepsilon$, Spalart--Allmaras) or different training data sources.
 
-    \item \textbf{Generalization}: The test set includes only two cases (periodic hills at a new angle, curved backward-facing step). Performance on dramatically different geometries (3D bluff bodies, internal flows, free shear layers) is not evaluated.
+    \item \textbf{Generalization}: The test set includes only two cases (periodic hills at $\alpha=1.2$ and CBFS at $\Rey=13{,}700$). While these reveal significant overfitting (Section~\ref{sec:generalization}), performance on dramatically different geometries (3D bluff bodies, internal flows, free shear layers) is not evaluated. The TBNN's catastrophic CBFS failure may or may not be representative of its behavior on other unseen geometries.
 
     \item \textbf{Single solver}: All cost measurements are from one solver implementation. Different solvers (spectral element, finite volume, unstructured) may show different relative overheads due to different baseline costs.
 

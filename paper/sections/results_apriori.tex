@@ -8,18 +8,17 @@ The TBNN and TBRF models predict the full $6$-component anisotropy tensor $b_{ij
 
 \begin{table}[htbp]
 \centering
-\caption{A priori accuracy: validation and test set RMSE. TBNN/PI-TBNN/TBRF RMSE is computed over all 6 anisotropy components; MLP RMSE is for the scalar target. Best tensor-predicting model in bold.}
+\caption{A priori accuracy: validation and test set RMSE. TBNN/PI-TBNN/TBRF RMSE is computed over all 6 anisotropy components; MLP RMSE is for the scalar target. Best tensor-predicting model on each metric in bold. The test set comprises periodic hills at $\alpha=1.2$ (interpolation within the training geometry class) and curved backward-facing step at $\Rey=13{,}700$ (unseen geometry).}
 \label{tab:apriori_rmse}
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrr}
 \toprule
-Model & Val RMSE & Test RMSE & Epochs & Parameters & Weights \\
+Model & Val RMSE & Test RMSE & PH $\alpha{=}1.2$ & CBFS & Degradation & Epochs \\
 \midrule
-TBRF (200 trees) & \textbf{0.0637} & \todo{TBD} & n/a   & $\sim$55M nodes & \SI{3.3}{GB} \\
-TBRF (10 trees)  & 0.0650           & \todo{TBD} & n/a   & $\sim$2.8M nodes & \SI{56}{MB} \\
-TBNN             & 0.0845           & \todo{TBD} & 694   & 9{,}354  & \SI{196}{KB} \\
-PI-TBNN ($\beta=0.001$) & 0.0852    & \todo{TBD} & 729   & 9{,}354  & \SI{196}{KB} \\
-MLP-Large        & 0.1045           & \todo{TBD} & 344   & 50{,}049 & \SI{896}{KB} \\
-MLP              & 0.1096           & \todo{TBD} & 1{,}000 & 1{,}249  & \SI{56}{KB} \\
+TBRF (200 trees) & \textbf{0.0637} & \textbf{0.1253} & \textbf{0.0585} & \textbf{0.1435} & $1.97\times$ & n/a \\
+PI-TBNN          & 0.1203          & 0.1418          & 0.0999          & 0.1553          & $1.18\times$ & 729 \\
+MLP-Large        & 0.1045          & 0.1772          & 0.0797          & 0.2034          & $1.70\times$ & 344 \\
+MLP              & 0.1096          & 0.1843          & 0.0886          & 0.2106          & $1.68\times$ & 1{,}000 \\
+TBNN             & 0.0845          & 0.3889          & 0.0755          & 0.4573          & $4.60\times$ & 694 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -27,11 +26,77 @@ MLP              & 0.1096           & \todo{TBD} & 1{,}000 & 1{,}249  & \SI{56}{
 Among tensor-predicting models, the TBRF (200 trees) achieves the lowest validation RMSE (0.064), followed by the TBNN (0.085, 33\% higher).
 The 10-tree compact TBRF captures 96\% of the full forest's accuracy improvement over TBNN, suggesting diminishing returns beyond $\sim$10 trees.
 
-\todo{Add test set RMSE for all models. Add per-case breakdown (PH $\alpha=1.2$ vs CBFS $\Rey=13700$) to test generalization to new geometries.}
+The most striking result in Table~\ref{tab:apriori_rmse} is the \emph{reversal} of model rankings between validation and test sets.
+The TBNN achieves the best validation RMSE among neural networks (0.085) but the worst test RMSE (0.389)---a $4.6\times$ degradation.
+In contrast, the PI-TBNN degrades only $1.18\times$ (0.120 $\to$ 0.142), and the TBRF degrades $1.97\times$ (0.064 $\to$ 0.125).
+This reversal is driven almost entirely by the CBFS case (unseen geometry): the TBNN's CBFS RMSE is 0.457, compared to 0.076 on PH $\alpha=1.2$ (an interpolation case within the periodic hills geometry class).
+
+\subsubsection{Per-case breakdown}
+
+Table~\ref{tab:apriori_percase} decomposes the test set RMSE by case.
+All models perform well on PH $\alpha=1.2$, which interpolates between training cases at $\alpha=0.5$, $0.8$, $1.0$, and $1.5$.
+The CBFS geometry, however, introduces a recirculation region with qualitatively different separation and reattachment physics, exposing each model's ability to extrapolate.
+
+\begin{table}[htbp]
+\centering
+\caption{Per-case test set RMSE for tensor-predicting models. PH $\alpha=1.2$ is an interpolation case; CBFS $\Rey=13{,}700$ is an unseen geometry. The CBFS/PH ratio quantifies how much worse each model performs on the new geometry.}
+\label{tab:apriori_percase}
+\begin{tabular}{lrrr}
+\toprule
+Model & PH $\alpha{=}1.2$ & CBFS $\Rey{=}13{,}700$ & CBFS/PH ratio \\
+\midrule
+TBRF     & 0.0585 & 0.1435 & $2.45\times$ \\
+PI-TBNN  & 0.0999 & 0.1553 & $1.55\times$ \\
+TBNN     & 0.0755 & 0.4573 & $6.05\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The TBNN's CBFS/PH ratio of $6.05\times$ indicates catastrophic overfitting to the training geometries.
+The PI-TBNN, despite sharing the same architecture and parameter count, achieves a CBFS/PH ratio of only $1.55\times$---the most geometry-robust neural network model.
+The TBRF's $2.45\times$ ratio reflects the ensemble averaging inherent in random forests, which provides natural regularization against overfitting.
+
+\subsection{Generalization and overfitting}
+\label{sec:generalization}
+
+The validation-to-test degradation patterns in Table~\ref{tab:apriori_rmse} reveal a fundamental accuracy--generalization tradeoff.
+Figure~\ref{fig:val_test_gap} summarizes this tradeoff: the TBNN sits in the high-accuracy, poor-generalization corner, while the PI-TBNN sacrifices validation accuracy for dramatically better test-set robustness.
+
+The TBNN's overfitting is component-specific.
+On the validation set, the TBNN's component-wise RMSE values are uniformly low (e.g., $b_{12}$: 0.053, $b_{11}$: 0.147).
+On the CBFS test case, $b_{11}$ RMSE explodes to 0.806 ($5.5\times$ degradation) and $b_{22}$ to 0.580 ($6.8\times$), while $b_{12}$ degrades more modestly to 0.279 ($5.3\times$).
+This suggests the TBNN has memorized geometry-specific normal stress magnitudes without learning the underlying physics governing separation and reattachment.
+
+The PI-TBNN's regularization mechanism is noteworthy.
+On the validation set, the realizability penalty appears to hurt accuracy ($+42\%$ RMSE vs TBNN).
+However, this penalty constrains the network weights to produce outputs near the realizability boundary, limiting the effective capacity of the network and preventing it from fitting geometry-specific artifacts in the training data.
+The result is a network that generalizes far better: PI-TBNN's CBFS RMSE (0.155) is $2.9\times$ better than the TBNN's (0.457).
+This is a classic bias--variance tradeoff: the PI-TBNN accepts higher bias (worse validation fit) for dramatically lower variance (better generalization).
 
 \subsection{Component-wise accuracy}
 
-\todo{Add component-wise RMSE breakdown ($b_{11}$, $b_{12}$, $b_{13}$, $b_{22}$, $b_{23}$, $b_{33}$) for each tensor-predicting model. This reveals which stress components each model predicts well/poorly.}
+Table~\ref{tab:component_rmse} reports the component-wise RMSE on validation and test sets for all tensor-predicting models.
+
+\begin{table}[htbp]
+\centering
+\caption{Component-wise RMSE on the test set for tensor-predicting models. Values in parentheses are the validation set RMSE for comparison. Components $b_{13}$ and $b_{23}$ are near-zero in the 2D-mean flows and are omitted.}
+\label{tab:component_rmse}
+\begin{tabular}{lrrr}
+\toprule
+Component & TBRF & TBNN & PI-TBNN \\
+\midrule
+$b_{11}$ & 0.167 (0.108) & 0.684 (0.147) & 0.203 (0.220) \\
+$b_{12}$ & 0.071 (0.043) & 0.238 (0.053) & 0.074 (0.053) \\
+$b_{22}$ & 0.129 (0.066) & 0.492 (0.085) & 0.172 (0.136) \\
+$b_{33}$ & 0.211 (0.078) & 0.373 (0.104) & 0.211 (0.128) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several patterns emerge.
+First, the shear stress component $b_{12}$ is predicted most accurately by all models, both on validation and test sets, consistent with its direct connection to the mean velocity gradient via the Boussinesq hypothesis.
+Second, the TBNN's test-set degradation is concentrated in the normal stress components ($b_{11}$, $b_{22}$, $b_{33}$), where it shows $4$--$7\times$ degradation from validation to test.
+Third, the PI-TBNN's $b_{12}$ test RMSE (0.074) is comparable to the TBRF (0.071) and far better than the TBNN (0.238), demonstrating that the realizability penalty preserves shear stress accuracy while preventing normal stress overfitting.
 
 \subsection{Scatter plots}
 
@@ -66,8 +131,9 @@ The unconstrained TBNN already produces near-realizable outputs.
 Post-hoc analysis of TBNN predictions on the validation set shows that only 1.29\% of points (309 out of 23{,}967) violate the $b_{ii} \geq -1/3$ bound, and only 0.004\% violate $b_{ii} \leq 2/3$.
 The worst violation is $b_{ii} = -0.45$ versus the limit of $-0.33$, and the total realizability penalty magnitude is 0.25\% of the MSE loss.
 
-This negative result is consistent with the findings of \citet{Wu2018}: the tensor basis architecture already embeds sufficient physical constraints (Galilean invariance, symmetry, zero trace) that additional loss-based penalties are redundant.
-Increasing $\beta$ to 0.01 actively harms accuracy by adding gradient noise from the penalty term, which competes with the data-fitting objective.
+Based on validation accuracy alone, the penalty appears harmful---consistent with the findings of \citet{Wu2018} that loss-based penalties are redundant given architectural constraints.
+However, the test set results (Table~\ref{tab:apriori_rmse}) dramatically reverse this conclusion: the PI-TBNN's test RMSE (0.142) is $2.7\times$ better than the TBNN's (0.389), despite its higher validation RMSE.
+The realizability penalty acts as a regularizer that constrains the network's effective capacity, preventing overfitting to geometry-specific features in the training data (see Section~\ref{sec:generalization} for detailed analysis).
 
 \subsection{TBRF tree count sweep}
 
