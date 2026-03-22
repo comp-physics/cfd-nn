@@ -605,7 +605,7 @@ def export_pytorch_model(model, inv_mean, inv_std, output_dir, model_type,
 
 
 def export_rf_model(forests, inv_mean, inv_std, output_dir):
-    """Export random forest to a format loadable by C++."""
+    """Export random forest as pickle (full) and compact flat files (for C++)."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -613,7 +613,7 @@ def export_rf_model(forests, inv_mean, inv_std, output_dir):
     np.savetxt(output_dir / 'input_means.txt', inv_mean, fmt='%.10e')
     np.savetxt(output_dir / 'input_stds.txt', inv_std, fmt='%.10e')
 
-    # Save RF as pickle (for Python) and as tree export (for C++)
+    # Save full pickle (for Python reuse)
     import pickle
     with open(output_dir / 'forests.pkl', 'wb') as f:
         pickle.dump(forests, f)
@@ -634,6 +634,100 @@ def export_rf_model(forests, inv_mean, inv_std, output_dir):
         json.dump(meta, f, indent=2)
 
     print(f"    Exported to {output_dir}/")
+
+
+def export_rf_compact(forests, inv_mean, inv_std, output_dir, n_trees):
+    """Export a compact TBRF with n_trees per basis coefficient.
+
+    Writes flat binary files for C++ inference:
+      - trees.bin: packed tree nodes (children_left, children_right,
+                   feature, threshold, value) as int32/float32
+      - tree_offsets.txt: start index of each tree in the flat array
+      - input_means.txt, input_stds.txt: normalization
+      - metadata.json: model info
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    np.savetxt(output_dir / 'input_means.txt', inv_mean, fmt='%.10e')
+    np.savetxt(output_dir / 'input_stds.txt', inv_std, fmt='%.10e')
+
+    n_basis = len(forests)
+
+    # Flatten all trees into packed arrays
+    all_children_left = []
+    all_children_right = []
+    all_feature = []
+    all_threshold = []
+    all_value = []
+    tree_offsets = []  # (basis_idx, tree_idx, start_node, n_nodes)
+    node_offset = 0
+
+    for basis_idx in range(n_basis):
+        for tree_idx in range(n_trees):
+            tree = forests[basis_idx].estimators_[tree_idx].tree_
+            n = tree.node_count
+
+            # Remap children indices to global offset
+            cl = tree.children_left.copy()
+            cr = tree.children_right.copy()
+            # -1 (leaf sentinel) stays -1; others get offset
+            mask = cl >= 0
+            cl[mask] += node_offset
+            mask = cr >= 0
+            cr[mask] += node_offset
+
+            all_children_left.append(cl.astype(np.int32))
+            all_children_right.append(cr.astype(np.int32))
+            all_feature.append(tree.feature.astype(np.int32))
+            all_threshold.append(tree.threshold.astype(np.float32))
+            all_value.append(tree.value[:, 0, 0].astype(np.float32))
+
+            tree_offsets.append((basis_idx, tree_idx, node_offset, n))
+            node_offset += n
+
+    # Concatenate and write binary
+    cl_flat = np.concatenate(all_children_left)
+    cr_flat = np.concatenate(all_children_right)
+    feat_flat = np.concatenate(all_feature)
+    thresh_flat = np.concatenate(all_threshold)
+    val_flat = np.concatenate(all_value)
+
+    # Pack as single binary: [cl, cr, feat, thresh, value] each node_offset elements
+    # Header: total_nodes (int32), n_basis (int32), n_trees (int32)
+    total_nodes = node_offset
+    header = np.array([total_nodes, n_basis, n_trees], dtype=np.int32)
+
+    with open(output_dir / 'trees.bin', 'wb') as f:
+        header.tofile(f)
+        cl_flat.tofile(f)
+        cr_flat.tofile(f)
+        feat_flat.tofile(f)
+        thresh_flat.tofile(f)
+        val_flat.tofile(f)
+
+    # Write offsets as text (human-readable)
+    with open(output_dir / 'tree_offsets.txt', 'w') as f:
+        f.write("# basis_idx tree_idx start_node n_nodes\n")
+        for b, t, s, n in tree_offsets:
+            f.write(f"{b} {t} {s} {n}\n")
+
+    size_mb = os.path.getsize(output_dir / 'trees.bin') / 1e6
+    meta = {
+        'name': f'tbrf_{n_trees}t_mcconkey',
+        'type': 'nn_tbrf',
+        'description': f'Compact TBRF ({n_trees} trees) for C++ inference',
+        'n_basis': n_basis,
+        'n_trees': n_trees,
+        'max_depth': forests[0].max_depth,
+        'total_nodes': total_nodes,
+        'binary_size_mb': round(size_mb, 1),
+        'format': 'trees.bin: header(3xi32) + children_left(i32) + children_right(i32) + feature(i32) + threshold(f32) + value(f32)',
+    }
+    with open(output_dir / 'metadata.json', 'w') as f:
+        json.dump(meta, f, indent=2)
+
+    print(f"    Exported {n_trees}-tree TBRF: {total_nodes:,} nodes, {size_mb:.1f} MB -> {output_dir}/")
 
 
 # ============================================================================
@@ -782,6 +876,11 @@ def main():
             n_trees=200, max_depth=20)
         export_rf_model(forests, mean, std, f'{args.output_dir}/tbrf_paper')
         results['tbrf'] = {'rmse': rmse, 'time': time.time() - t0}
+
+        # Export compact variants for C++ solver experiments
+        for nt in [1, 5, 10]:
+            export_rf_compact(forests, mean, std,
+                              f'{args.output_dir}/tbrf_{nt}t_paper', n_trees=nt)
 
     # ---- Summary ----
     print("\n" + "=" * 60)

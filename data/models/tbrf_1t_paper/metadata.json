@@ -1,0 +1,11 @@
+{
+  "name": "tbrf_1t_mcconkey",
+  "type": "nn_tbrf",
+  "description": "Compact TBRF (1 trees) for C++ inference",
+  "n_basis": 10,
+  "n_trees": 1,
+  "max_depth": 20,
+  "total_nodes": 282902,
+  "binary_size_mb": 5.7,
+  "format": "trees.bin: header(3xi32) + children_left(i32) + children_right(i32) + feature(i32) + threshold(f32) + value(f32)"
+}
