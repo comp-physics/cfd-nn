@@ -63,14 +63,16 @@ __global__ void kernel_pack_and_partial_sum(
     double local_sum = 0.0;
 
     if (idx < n_total) {
-        // Decode linear index to (i, k, j) in FFT order
-        // Layout: [(i*Nz + k)][j] with j fastest
+        // Decode by OUTPUT (FFT) layout: j fastest, then k, then i
+        // This makes consecutive threads write consecutive packed addresses (coalesced writes)
         int j = idx % Ny;
         size_t mode = idx / Ny;
         int k = mode % Nz;
         int i = mode / Nz;
 
-        // Source index with ghosts: [k+Ng][j+Ng][i+Ng]
+        // Source from field layout with ghosts: [k+Ng][j+Ng][i+Ng]
+        // This read is scattered (consecutive threads differ in j, stride = Nx_full)
+        // but L2 cache absorbs scattered reads better than scattered writes
         size_t src_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
                          (j + Ng) * Nx_full + (i + Ng);
 
@@ -122,12 +124,11 @@ __global__ void kernel_subtract_mean(
     }
 }
 
-// Kernel: Unpack solution + apply all BCs in single pass
+// Kernel: Unpack solution from FFT layout to field layout (interior only)
+// Threads indexed by OUTPUT layout for coalesced writes.
 // Input layout:  packed[(i*Nz + k)*Ny + j]  (cuFFT interleaved batches)
-// Output layout: p_ptr[k+Ng][j+Ng][i+Ng]    (ghost cells, field ordering)
-// Also fills: x-ghosts (periodic), y-ghosts (Neumann), z-ghosts (periodic)
-// Supports Ng >= 1 ghost layers
-__global__ void kernel_unpack_and_bc(
+// Output layout: p_ptr[(k+Ng)*Ny_full*Nx_full + (j+Ng)*Nx_full + (i+Ng)]
+__global__ void kernel_unpack_transpose(
     const double* __restrict__ packed,
     double* __restrict__ p_ptr,
     int Nx, int Ny, int Nz, int Ng, int Nx_full, int Ny_full,
@@ -137,69 +138,100 @@ __global__ void kernel_unpack_and_bc(
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < n_total) {
-        // Decode linear index to (i, k, j) in FFT order
-        int j = idx % Ny;
-        size_t mode = idx / Ny;
-        int k = mode % Nz;
-        int i = mode / Nz;
+        // Decode by OUTPUT layout: i fastest, then j, then k
+        // This makes consecutive threads write consecutive i-addresses (coalesced)
+        int i = idx % Nx;
+        int j = (idx / Nx) % Ny;
+        int k = idx / (Nx * Ny);
 
-        double val = packed[idx] * norm;
+        // Read from packed FFT layout: [(i*Nz + k)*Ny + j]
+        size_t src_idx = (static_cast<size_t>(i) * Nz + k) * Ny + j;
+        double val = packed[src_idx] * norm;
 
-        // Destination with ghosts: [k+Ng][j+Ng][i+Ng]
+        // Write to field layout with ghosts — coalesced in i
         size_t dst_idx = static_cast<size_t>(k + Ng) * Nx_full * Ny_full +
                          (j + Ng) * Nx_full + (i + Ng);
         p_ptr[dst_idx] = val;
+    }
+}
 
-        // Fill ALL Ng x-ghost layers (periodic) - threads at boundary i values
-        // x_lo ghosts: threads at i = [0, Ng-1] fill ghost[g] from interior[Nx-(Ng-g)]
-        if (i < Ng) {
-            // This thread fills x_lo ghost layer 'i' from interior at Nx-Ng+i
-            int src_i = Nx - Ng + i;
-            size_t src_mode = static_cast<size_t>(src_i) * Nz + k;
-            double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + i] = src_val;
-        }
-        // x_hi ghosts: threads at i = [Nx-Ng, Nx-1] fill ghost[Ng+Nx+g] from interior[Ng+g]
-        if (i >= Nx - Ng) {
-            // This thread fills x_hi ghost layer 'g' where g = i - (Nx - Ng)
-            int g = i - (Nx - Ng);
-            int src_i = g;  // interior index g
-            size_t src_mode = static_cast<size_t>(src_i) * Nz + k;
-            double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[(k + Ng) * Nx_full * Ny_full + (j + Ng) * Nx_full + (Ng + Nx + g)] = src_val;
-        }
+// Kernel: Fill ghost cells (BCs) after unpack — separate for clarity and no divergence
+// x: periodic, y: Neumann (dp/dy=0), z: periodic
+__global__ void kernel_fill_ghosts(
+    double* __restrict__ p_ptr,
+    int Nx, int Ny, int Nz, int Ng, int Nx_full, int Ny_full)
+{
+    // Total ghost cells to fill: 2*Ng slabs per direction
+    // x-ghosts: Ng * Ny * Nz * 2 sides
+    // y-ghosts: Nx * Ng * Nz * 2 sides
+    // z-ghosts: Nx * Ny * Ng * 2 sides
+    // We handle each direction in sequence with simple loops
 
-        // Fill ALL Ng y-ghost layers (Neumann: dp/dy=0) - threads at boundary j values
-        // y_lo ghosts: all ghost layers copy from first interior row (j=0)
-        if (j < Ng) {
-            // Ghost layer j copies from interior j=0
-            size_t src_mode_j0 = static_cast<size_t>(i) * Nz + k;
-            double src_val = packed[src_mode_j0 * Ny + 0] * norm;  // j=0 interior
-            p_ptr[(k + Ng) * Nx_full * Ny_full + j * Nx_full + (i + Ng)] = src_val;
-        }
-        // y_hi ghosts: all ghost layers copy from last interior row (j=Ny-1)
-        if (j >= Ny - Ng) {
-            int g = j - (Ny - Ng);
-            size_t src_mode_jN = static_cast<size_t>(i) * Nz + k;
-            double src_val = packed[src_mode_jN * Ny + (Ny - 1)] * norm;  // j=Ny-1 interior
-            p_ptr[(k + Ng) * Nx_full * Ny_full + (Ng + Ny + g) * Nx_full + (i + Ng)] = src_val;
-        }
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t Ny_Nz = static_cast<size_t>(Ny) * Nz;
+    const size_t Nx_Nz = static_cast<size_t>(Nx) * Nz;
+    const size_t Nx_Ny = static_cast<size_t>(Nx) * Ny;
+    const size_t Nf = static_cast<size_t>(Nx_full);
+    const size_t plane = Nf * Ny_full;
 
-        // Fill ALL Ng z-ghost layers (periodic) - threads at boundary k values
-        // z_lo ghosts: threads at k = [0, Ng-1] fill ghost[g] from interior[Nz-(Ng-g)]
-        if (k < Ng) {
-            int src_k = Nz - Ng + k;
-            size_t src_mode = static_cast<size_t>(i) * Nz + src_k;
-            double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[k * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
+    // X-periodic ghosts: Ng*Ny*Nz cells per side
+    const size_t x_total = static_cast<size_t>(Ng) * Ny * Nz * 2;
+    if (idx < x_total) {
+        size_t half = static_cast<size_t>(Ng) * Ny * Nz;
+        bool is_lo = (idx < half);
+        size_t lidx = is_lo ? idx : (idx - half);
+        int g = lidx % Ng;
+        int j = (lidx / Ng) % Ny;
+        int k = lidx / (Ng * Ny);
+        size_t base = static_cast<size_t>(k + Ng) * plane + (j + Ng) * Nf;
+        if (is_lo) {
+            // x_lo ghost[g] = interior[Nx - Ng + g]
+            p_ptr[base + g] = p_ptr[base + (Nx - Ng + g + Ng)];
+        } else {
+            // x_hi ghost[Ng+Nx+g] = interior[g]
+            p_ptr[base + (Ng + Nx + g)] = p_ptr[base + (g + Ng)];
         }
-        // z_hi ghosts: threads at k = [Nz-Ng, Nz-1] fill ghost[Ng+Nz+g] from interior[g]
-        if (k >= Nz - Ng) {
-            int g = k - (Nz - Ng);
-            int src_k = g;
-            size_t src_mode = static_cast<size_t>(i) * Nz + src_k;
-            double src_val = packed[src_mode * Ny + j] * norm;
-            p_ptr[(Ng + Nz + g) * Nx_full * Ny_full + (j + Ng) * Nx_full + (i + Ng)] = src_val;
+        return;
+    }
+    idx -= x_total;
+
+    // Y-Neumann ghosts: Ng*Nx*Nz cells per side
+    const size_t y_total = static_cast<size_t>(Ng) * Nx * Nz * 2;
+    if (idx < y_total) {
+        size_t half = static_cast<size_t>(Ng) * Nx * Nz;
+        bool is_lo = (idx < half);
+        size_t lidx = is_lo ? idx : (idx - half);
+        int g = lidx % Ng;
+        int i = (lidx / Ng) % Nx;
+        int k = lidx / (Ng * Nx);
+        size_t k_off = static_cast<size_t>(k + Ng) * plane;
+        if (is_lo) {
+            // y_lo ghost[g] = interior[j=Ng] (Neumann: dp/dy=0)
+            p_ptr[k_off + g * Nf + (i + Ng)] = p_ptr[k_off + Ng * Nf + (i + Ng)];
+        } else {
+            // y_hi ghost[Ng+Ny+g] = interior[j=Ng+Ny-1]
+            p_ptr[k_off + (Ng + Ny + g) * Nf + (i + Ng)] = p_ptr[k_off + (Ng + Ny - 1) * Nf + (i + Ng)];
+        }
+        return;
+    }
+    idx -= y_total;
+
+    // Z-periodic ghosts: Ng*Nx*Ny cells per side
+    const size_t z_total = static_cast<size_t>(Ng) * Nx * Ny * 2;
+    if (idx < z_total) {
+        size_t half = static_cast<size_t>(Ng) * Nx * Ny;
+        bool is_lo = (idx < half);
+        size_t lidx = is_lo ? idx : (idx - half);
+        int g = lidx % Ng;
+        int i = (lidx / Ng) % Nx;
+        int j = lidx / (Ng * Nx);
+        size_t jrow = static_cast<size_t>(j + Ng) * Nf + (i + Ng);
+        if (is_lo) {
+            // z_lo ghost[g] = interior[Nz - Ng + g]
+            p_ptr[g * plane + jrow] = p_ptr[(Nz - Ng + g + Ng) * plane + jrow];
+        } else {
+            // z_hi ghost[Ng+Nz+g] = interior[g]
+            p_ptr[(Ng + Nz + g) * plane + jrow] = p_ptr[(g + Ng) * plane + jrow];
         }
     }
 }
@@ -951,10 +983,16 @@ void FFTPoissonSolver::launch_unpack_and_bc(double* p_dev) {
     const int block_size = 256;
     const int num_blocks = (n_total + block_size - 1) / block_size;
 
-    // Launch unpack + BC kernel on stream_
-    kernel_unpack_and_bc<<<num_blocks, block_size, 0, stream_>>>(
+    // Launch transpose kernel (output-coalesced: threads indexed by field layout)
+    kernel_unpack_transpose<<<num_blocks, block_size, 0, stream_>>>(
         p_packed_, p_dev,
         Nx, Ny, Nz, Ng, Nx_full, Ny_full, norm);
+
+    // Launch ghost fill kernel (separate for no branch divergence)
+    const size_t n_ghosts = static_cast<size_t>(Ng) * (Ny * Nz + Nx * Nz + Nx * Ny) * 2;
+    const int ghost_blocks = (n_ghosts + block_size - 1) / block_size;
+    kernel_fill_ghosts<<<ghost_blocks, block_size, 0, stream_>>>(
+        p_dev, Nx, Ny, Nz, Ng, Nx_full, Ny_full);
 }
 
 int FFTPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const PoissonConfig& cfg) {
