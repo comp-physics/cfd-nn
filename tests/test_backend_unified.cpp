@@ -14,6 +14,7 @@
 #include "solver.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
+#include "turbulence_nn_tbrf.hpp"
 #include "test_harness.hpp"
 #include <iostream>
 #include <iomanip>
@@ -245,6 +246,63 @@ void test_turbulence_nn(bool gpu_available) {
         }
         record("TurbulenceNNTBNN", pass);
 #endif
+    }
+
+    // Test MLP-Large (same architecture as MLP, just bigger — uses Pope invariants)
+    std::string mlp_large_path = resolve_model_dir("data/models/mlp_large_paper");
+    if (mlp_large_path.empty()) {
+        record("TurbulenceNNMLP_Large", true, true);
+    } else {
+#ifdef USE_GPU_OFFLOAD
+        record("TurbulenceNNMLP_Large (GPU: via solver)", true, true);
+#else
+        TurbulenceNNMLP model_large;
+        model_large.set_nu(0.001);
+        model_large.load(mlp_large_path, mlp_large_path);
+        model_large.update(mesh, vel, k, omega, nu_t);
+        bool pass = true;
+        for (int j = mesh.j_begin(); j < mesh.j_end() && pass; ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end() && pass; ++i)
+                if (!std::isfinite(nu_t(i, j)) || nu_t(i, j) < 0) pass = false;
+        record("TurbulenceNNMLP_Large", pass);
+#endif
+    }
+
+    // Test PI-TBNN (same architecture as TBNN, different training)
+    std::string pi_tbnn_path = resolve_model_dir("data/models/pi_tbnn_paper");
+    if (pi_tbnn_path.empty()) {
+        record("TurbulencePI_TBNN", true, true);
+    } else {
+#ifdef USE_GPU_OFFLOAD
+        record("TurbulencePI_TBNN (GPU: via solver)", true, true);
+#else
+        TurbulenceNNTBNN pi_model;
+        pi_model.set_nu(0.001);
+        pi_model.load(pi_tbnn_path, pi_tbnn_path);
+        pi_model.update(mesh, vel, k, omega, nu_t);
+        bool pass = true;
+        for (int j = mesh.j_begin(); j < mesh.j_end() && pass; ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end() && pass; ++i)
+                if (!std::isfinite(nu_t(i, j))) pass = false;
+        record("TurbulencePI_TBNN", pass);
+#endif
+    }
+
+    // Test TBRF (1-tree compact variant)
+    std::string tbrf_path = resolve_model_dir("data/models/tbrf_1t_paper");
+    if (tbrf_path.empty()) {
+        record("TurbulenceNNTBRF", true, true);
+    } else {
+        // TBRF runs on CPU (tree traversal) — no GPU skip needed
+        TurbulenceNNTBRF tbrf_model;
+        tbrf_model.set_nu(0.001);
+        tbrf_model.load(tbrf_path);
+        tbrf_model.update(mesh, vel, k, omega, nu_t);
+        bool pass = true;
+        for (int j = mesh.j_begin(); j < mesh.j_end() && pass; ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end() && pass; ++i)
+                if (!std::isfinite(nu_t(i, j))) pass = false;
+        record("TurbulenceNNTBRF", pass);
     }
 }
 
