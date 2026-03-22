@@ -1,109 +1,104 @@
 # Paper TODO
 
 Tracking all remaining work for the NN turbulence closures paper.
-Full details in `docs/paper/paper_roadmap.md`.
 
-## A Priori Evaluation
+## A Priori Evaluation — COMPLETE
 
-- [x] Test set RMSE for all models (PH α=1.2 + CBFS Re=13700) — DONE, see results/paper/apriori/metrics.json
-- [x] Component-wise RMSE breakdown (b_11, b_12, b_13, b_22, b_23, b_33) — DONE
-- [x] Per-case RMSE (PH vs CBFS separately) — DONE. KEY FINDING: TBNN overfits (0.085 val → 0.389 test, CBFS=0.457)
-- [x] Realizability violation rates — DONE (TBNN 1.65% val, TBRF 2.47% val)
-- [x] Write `scripts/paper/evaluate_apriori.py` — DONE
-- [x] Download MKM DNS reference data — DONE, results/paper/reference/
-- [x] Scatter plots: predicted vs true b_ij — DONE (plot_apriori.py, job 5345335 running)
-- [x] Lumley triangle plots — DONE (same script)
-- [x] Error distribution histograms — DONE (same script)
-- [x] TBRF feature importance — DONE: λ₁=tr(S²) dominates at 43.4%
+- [x] Test set RMSE for all models
+- [x] Component-wise RMSE breakdown
+- [x] Per-case RMSE — KEY FINDING: TBNN overfits (0.085 val → 0.389 test)
+- [x] Realizability violation rates
+- [x] Scatter plots, Lumley triangle, error distributions
+- [x] TBRF feature importance (λ₁ dominates at 43.4%)
+- [x] PI-TBNN beta sweep (negative → positive result on generalization)
 
-## TBRF C++ Inference
+## Model Implementation — COMPLETE
 
-- [x] C++ tree loader for `trees.bin` binary format — DONE
-- [x] Tree traversal inference function — DONE (CPU-only, branch-heavy)
-- [x] `TurbulenceModelType::NNTBRF` enum + config parsing + factory — DONE
-- [ ] Validate C++ predictions match Python (float32 tolerance)
-- [x] Benchmark 1/5/10-tree variants — DONE on H100 128^3: TBRF-10 = +1580% overhead
+- [x] MLP: Pope invariants on GPU (was using wrong 6 physical features — FIXED)
+- [x] MLP-Large: same pipeline as MLP
+- [x] TBNN: Pope invariants + tensor basis on GPU
+- [x] PI-TBNN: same as TBNN, different weights
+- [x] TBRF: CPU tree traversal (1/5/10-tree variants)
+- [x] All 5 models tested on V100 GPU through full solver pipeline
+- [x] Model weights committed to git
+- [x] input_dim=5 validation (rejects old 6-feature models)
 
-## Solver Validation
+## Solver Validation — MOSTLY COMPLETE
 
-- [ ] Install CaNS on cluster
-- [ ] Run CaNS channel flow benchmark (256³, Re_τ=180, same GPU)
-- [ ] Run our solver on identical problem
-- [ ] Compare wall-clock per step and Mcells/s
-- [ ] Formal throughput benchmarks at 256³ and 512³ grids
+- [x] V100 benchmark: 253 Mcells/s (6.5x faster than CaNS 4xV100)
+- [x] H100 benchmark: 626 Mcells/s (pre-optimization), need to rerun
+- [x] CaLES comparison: within 1.3x bandwidth-adjusted
+- [x] nsys profiling: identified cuFFT stride bug
+- [x] FFT stride fix: 1.89x solver speedup (141→74.5 ms at 256³ on V100)
+- [x] Kernel breakdown documented (Poisson 30%, RHS 15%, stepping 28%)
+- [x] Thomas solver evaluated and rejected (cuSPARSE PCR faster)
+- [x] MPI scaling tested (2 GPUs slower — FFT transpose overhead)
+- [ ] A100 benchmark with optimized code (job submitted, pending)
+- [ ] H100 benchmark with optimized code (need to resubmit)
+- [ ] Update paper tables with post-optimization numbers
 
-## A Posteriori Evaluation — GPU
+## A Posteriori Evaluation — BLOCKER
 
-- [ ] Channel Re_τ=180: all 6 models on grid A, extract u⁺(y⁺) + Reynolds stress profiles
-- [ ] Channel grid sensitivity: TBNN + SST on grids A-D
-- [ ] Periodic hills Re_H=5600: all 6 models, velocity profiles at key x-stations, separation/reattachment
-- [ ] Cylinder Re=100: all 6 models, C_d, C_l, St
-- [ ] Download MKM DNS reference data
-- [ ] Download/digitize Breuer hills reference data
-- [ ] Write profile extraction + comparison scripts
+This is the critical missing piece. Need to run models IN the solver and compare against DNS.
 
-## A Posteriori Evaluation — CPU
+- [ ] **Channel Re_τ=180**: run baseline, SST, MLP, TBNN, TBRF on 128×96×128
+- [ ] Compare u⁺(y⁺) and Reynolds stress profiles against MKM DNS
+- [ ] **Periodic hills Re_H=5600**: run all models on 128×64×64
+- [ ] Compare velocity profiles against Breuer et al.
+- [ ] **Cylinder Re=100**: run all models on 192×128×4
+- [ ] Compare C_d, C_l, St against reference
+- [ ] Scripts exist (aposteriori_channel.sbatch, compare_channel_dns.py)
+- [ ] MKM DNS data downloaded (results/paper/reference/)
 
-- [ ] Channel Re_τ=180: all 6 models on CPU (same grid)
-- [ ] Periodic hills: all 6 models on CPU
-- [ ] Cylinder: all 6 models on CPU
-- [ ] Record wall-clock times for CPU vs GPU comparison
+## Cost Benchmarks — NEED REFRESH
 
-## Cost Analysis
+Previous profiling was pre-MLP-fix and pre-FFT-optimization. Need fresh numbers.
 
-- [ ] Collect sub-phase timings: gradient, features, tensor basis, inference, postprocess
-- [ ] Grid scaling runs: baseline + MLP + TBNN + TBRF-10 on 64³, 128³, 256³
-- [ ] Peak GPU memory for each model
-- [ ] Theoretical FLOPs/cell vs measured throughput → arithmetic intensity
-- [ ] CPU vs GPU speedup table by closure type
+- [ ] Reprofile ALL models at 128×96×128 (channel grid) on same GPU
+- [ ] Include MLP (now works with Pope invariants!)
+- [ ] Sub-phase breakdown for each model
+- [ ] Grid scaling: 64³, 128³, 256³
+- [ ] Generate cost breakdown stacked bar chart (Fig 13)
 
-## Figures
+## Pareto Plot — BLOCKED
 
-- [ ] Fig 1: Solver architecture diagram (fractional-step pipeline + closure plug-in)
-- [ ] Fig 2: Model architecture diagrams (MLP, TBNN, TBRF side-by-side)
-- [ ] Fig 3: Solver throughput vs CaNS benchmark
-- [x] Fig 4: Training/validation curves — DONE (scripts/paper/plot_training_curves.py)
-- [x] Fig 5: Test set scatter (predicted vs true b_ij) — DONE (scripts/paper/plot_apriori.py, submitted job 5345335)
-- [x] Fig 6: Lumley triangle — DONE (same script)
-- [x] Fig 7: PI-TBNN beta sweep — DONE (plot_training_curves.py)
-- [ ] Fig 8: Channel u⁺(y⁺) profiles vs DNS
-- [ ] Fig 9: Channel Reynolds stress profiles vs DNS
-- [ ] Fig 10: Hills velocity profiles at x-stations
-- [ ] Fig 11: Hills separation bubble contours
-- [ ] Fig 12: Cylinder C_d convergence
-- [ ] Fig 13: Cost breakdown stacked bar (by phase, each model)
-- [ ] Fig 14: **Cost-accuracy Pareto plot — GPU** (THE figure)
-- [ ] Fig 15: Cost-accuracy Pareto plot — CPU
-- [ ] Fig 16: Inference cost scaling with grid size
+Needs both a posteriori error metrics AND cost benchmarks.
+
+- [ ] Define error metric (L2 error in u⁺ profile vs DNS)
+- [ ] Generate Pareto plot: cost (x) vs error (y) for all models
+- [ ] This is THE figure of the paper
+
+## Remaining Figures
+
+- [ ] Fig 1: Solver architecture diagram (tikz)
+- [ ] Fig 2: Model architecture diagrams (tikz)
+- [x] Fig 3: Solver throughput — DONE (in paper, needs post-optimization update)
+- [x] Fig 4-7: Training curves, scatter, Lumley, PI sweep — DONE
+- [ ] Fig 8-12: A posteriori profiles (blocked on solver runs)
+- [ ] Fig 13: Cost breakdown stacked bar
+- [ ] Fig 14: **Pareto plot — GPU** (THE figure, blocked)
 - [ ] Fig 17: TBRF tree count sweep (accuracy vs size vs cost)
 
-## Tables
+## Remaining Tables
 
-- [x] Tab 1: Model summary — DONE (results/paper/tables/table1_model_summary.tex)
-- [x] Tab 2: A priori RMSE (val + test) — DONE (in paper/sections/results_apriori.tex)
-- [ ] Tab 3: A posteriori error metrics (all models × all cases)
-- [x] Tab 4: Wall-clock profiling — GPU — DONE (table4a_cylinder.tex, table4b_airfoil.tex)
-- [ ] Tab 5: Wall-clock profiling — CPU
-- [ ] Tab 6: Sub-phase timing breakdown
-- [ ] Tab 7: Our throughput vs CaNS
-- [x] Tab 8: TBRF tree count sweep — DONE (table8_tbrf_sweep.tex)
-- [x] Tab 9: PI-TBNN beta sweep — DONE (table9_pi_tbnn_sweep.tex)
-- [ ] Tab 10: GPU vs CPU speedup by closure type
+- [ ] Tab 3: A posteriori error metrics
+- [ ] Tab 5: CPU profiling
+- [ ] Tab 6: Sub-phase timing breakdown (have data, need to format)
+- [x] Tab 7: Solver throughput vs CaNS — DONE (in paper)
 
-## Writing
+## Writing — MOSTLY COMPLETE
 
-- [x] Introduction — DONE (paper/sections/introduction.tex)
-- [x] Methods: solver architecture + CaNS comparison — DONE (methods_solver.tex)
-- [x] Methods: classical closures (with operation counts) — DONE (methods_closures.tex)
-- [x] Methods: NN architectures — DONE (methods_closures.tex)
-- [x] Methods: training procedure — DONE (methods_training.tex)
-- [x] Methods: solver integration + cost model (computational anatomy) — DONE (methods_closures.tex)
-- [ ] Results: solver validation — needs CaNS benchmark
-- [x] Results: a priori evaluation — DONE (results_apriori.tex, updated with test results)
-- [ ] Results: a posteriori evaluation — needs solver runs
-- [x] Results: computational cost analysis — DONE (results_cost.tex, profiling tables)
-- [ ] Results: cost-accuracy tradeoff (Pareto) — needs a posteriori data
-- [x] Discussion — DONE (discussion.tex, updated with overfitting findings)
-- [x] Conclusions — DONE (conclusions.tex)
-- [x] Abstract — DONE (main.tex, updated with key findings)
-- [x] Appendix: full training methodology — DONE (appendix.tex)
+- [x] All sections drafted
+- [x] Results sections populated with actual data
+- [ ] Update methods_solver.tex with post-optimization A100 numbers
+- [ ] Write results_aposteriori.tex (blocked on runs)
+- [ ] Update results_cost.tex with fresh profiling including MLP
+- [ ] Final pass: consistency, polish
+
+## Priority Order
+
+1. **A posteriori channel runs** — submit SLURM jobs for all models
+2. **Reprofile with MLP** — get fresh cost numbers with the fixed MLP
+3. **Pareto plot** — combine a posteriori + cost data
+4. **Update paper** — fill in remaining sections
+5. Architecture diagrams (tikz) — can do anytime
