@@ -1,112 +1,102 @@
 #!/bin/bash
 #SBATCH -J aposteriori-channel
 #SBATCH -A gts-sbryngelson3
-#SBATCH -N 1
-#SBATCH --ntasks-per-node=1
-#SBATCH -p gpu-h200,gpu-h100,gpu-l40s
+#SBATCH -N 1 --ntasks-per-node=1
+#SBATCH -p gpu-h200
 #SBATCH -G 1
 #SBATCH --qos=embers
-#SBATCH -t 2:00:00
+#SBATCH -t 4:00:00
 #SBATCH -o results/paper/aposteriori/channel/slurm_%j.out
 #SBATCH -e results/paper/aposteriori/channel/slurm_%j.err
 
-# A posteriori evaluation: run channel flow Re_tau=180 with multiple
-# turbulence models and compare against MKM DNS data.
-
 set -euo pipefail
-
-ROOT_DIR="/storage/scratch1/6/sbryngelson3/cfd-nn"
-BUILD_DIR="$ROOT_DIR/build_paper"
-CONFIG="$ROOT_DIR/examples/paper_experiments/channel_A.cfg"
-RESULTS_BASE="$ROOT_DIR/results/paper/aposteriori/channel"
-
-module reset
-module load nvhpc
-
+cd /storage/scratch1/6/sbryngelson3/cfd-nn
+module load nvhpc/24.5
 export OMP_TARGET_OFFLOAD=MANDATORY
 
-cd "$ROOT_DIR"
+GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+echo "============================================"
+echo "  A Posteriori Channel Flow (H200)"
+echo "  GPU: $GPU"
+echo "  $(date)"
+echo "============================================"
 
-echo "=== A POSTERIORI CHANNEL EVALUATION ==="
-echo "Host: $(hostname)"
-echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo unknown)"
-echo "Start: $(date -Iseconds)"
-echo ""
-
-# Build if needed
-if [ ! -f "$BUILD_DIR/channel" ]; then
-    echo "Building solver in $BUILD_DIR ..."
-    mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
-    cmake "$ROOT_DIR" \
-        -DCMAKE_CXX_COMPILER=nvc++ \
-        -DUSE_GPU_OFFLOAD=ON \
-        -DGPU_CC=90 \
-        -DCMAKE_BUILD_TYPE=Release
-    make -j"$(nproc)" channel
-    cd "$ROOT_DIR"
-    echo "Build complete."
-    echo ""
+# Build for H200 (CC=90)
+BUILD_DIR=build_h200
+if [ ! -f $BUILD_DIR/channel ]; then
+    echo "Building..."
+    mkdir -p $BUILD_DIR && cd $BUILD_DIR
+    cmake .. -DCMAKE_CXX_COMPILER=nvc++ -DUSE_GPU_OFFLOAD=ON \
+             -DCMAKE_BUILD_TYPE=Release -DGPU_CC=90 2>&1 | tail -3
+    make -j$(nproc) channel 2>&1 | tail -3
+    cd ..
 fi
+SOLVER=$BUILD_DIR/channel
 
-# ============================================================================
-# Model definitions: (name, --model flag, extra CLI args)
-# ============================================================================
-MODELS=(
-    "none"
-    "sst"
-    "earsm_pope"
-    "nn_mlp"
-    "nn_tbnn"
-)
+RESULTS=results/paper/aposteriori/channel
+mkdir -p $RESULTS
 
-declare -A MODEL_FLAGS
-MODEL_FLAGS[none]="--model none"
-MODEL_FLAGS[sst]="--model sst"
-MODEL_FLAGS[earsm_pope]="--model earsm_pope"
-MODEL_FLAGS[nn_mlp]="--model nn_mlp --nn_preset mlp_paper"
-MODEL_FLAGS[nn_tbnn]="--model nn_tbnn --nn_preset tbnn_paper"
+# Base config (no turb model — each model adds its own)
+BASE_CFG=/tmp/channel_base.cfg
+cat > $BASE_CFG << 'CFGEOF'
+Nx = 128
+Ny = 96
+Nz = 128
+x_min = 0.0
+x_max = 6.283185
+y_min = -1.0
+y_max = 1.0
+z_min = 0.0
+z_max = 3.141593
+nu = 0.005556
+dp_dx = -1.0
+convective_scheme = skew
+time_integrator = rk3
+adaptive_dt = true
+CFL_max = 0.5
+stretch_y = true
+stretch_beta = 2.0
+simulation_mode = steady
+tol = 1e-8
+max_steps = 15000
+verbose = false
+output_freq = 1000
+write_fields = true
+num_snapshots = 5
+postprocess = true
+warmup_steps = 50
+CFGEOF
 
-# ============================================================================
-# Run each model sequentially
-# ============================================================================
-total=${#MODELS[@]}
-count=0
+# Run each model with its own config file
+for LABEL in baseline sst mlp tbnn tbrf1t; do
+    OUTDIR=$RESULTS/$LABEL
+    mkdir -p $OUTDIR
+    CFG=/tmp/channel_${LABEL}.cfg
+    cp $BASE_CFG $CFG
 
-for model in "${MODELS[@]}"; do
-    count=$((count + 1))
-    outdir="$RESULTS_BASE/$model"
-    mkdir -p "$outdir"
-
-    flags="${MODEL_FLAGS[$model]}"
-
-    echo "============================================================"
-    echo "[$count/$total] Running model: $model"
-    echo "  Output: $outdir"
-    echo "  Flags: $flags"
-    echo "  Time: $(date -Iseconds)"
-    echo "============================================================"
-
-    "$BUILD_DIR/channel" \
-        --config "$CONFIG" \
-        $flags \
-        --scheme skew \
-        --integrator rk3 \
-        --output "$outdir/" \
-        --warmup_steps 50 \
-        2>&1 | tee "$outdir/run.log"
-
-    exit_code=${PIPESTATUS[0]}
-    if [ $exit_code -ne 0 ]; then
-        echo "WARNING: model $model exited with code $exit_code"
-    fi
+    case $LABEL in
+        baseline) echo "turb_model = none" >> $CFG ;;
+        sst)      echo "turb_model = sst" >> $CFG ;;
+        mlp)      echo "turb_model = nn_mlp" >> $CFG
+                  echo "nn_preset = mlp_paper" >> $CFG ;;
+        tbnn)     echo "turb_model = nn_tbnn" >> $CFG
+                  echo "nn_preset = tbnn_paper" >> $CFG ;;
+        tbrf1t)   echo "turb_model = nn_tbrf" >> $CFG
+                  echo "nn_preset = tbrf_1t_paper" >> $CFG ;;
+    esac
 
     echo ""
-    echo "Model $model completed at $(date -Iseconds)"
-    echo ""
+    echo "============================================"
+    echo "  $LABEL — $(date)"
+    echo "============================================"
+
+    $SOLVER --config $CFG --output $OUTDIR/ 2>&1 | tee $OUTDIR/run.log
+
+    echo "  Exit: ${PIPESTATUS[0]}"
+    echo "  Done: $(date)"
 done
 
-echo "============================================================"
-echo "All models completed at $(date -Iseconds)"
-echo "Results in: $RESULTS_BASE"
-echo "============================================================"
+echo ""
+echo "============================================"
+echo "  All complete — $(date)"
+echo "============================================"
