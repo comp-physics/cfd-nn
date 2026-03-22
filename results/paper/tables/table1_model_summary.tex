@@ -1,0 +1,36 @@
+\begin{table}[htbp]
+\centering
+\caption{Summary of turbulence closure models.}
+\label{tab:model_summary}
+\begin{tabular}{llrrrr}
+\toprule
+\textbf{Model} & \textbf{Architecture} & \textbf{Parameters} & \textbf{FLOPs/cell} & \textbf{Weight Size} & \textbf{Deployable} \\
+\midrule
+Baseline (mixing length) & Algebraic & 0 & \textasciitilde{}2 & 0 & Yes \\
+k-omega & 2-eq transport & 0 & \textasciitilde{}50 & 0 & Yes \\
+SST k-omega & 2-eq transport & 0 & \textasciitilde{}80 & 0 & Yes \\
+GEP & Algebraic & 0 & \textasciitilde{}40 & 0 & Yes \\
+EARSM-WJ & SST + tensor algebra & 0 & \textasciitilde{}120 & 0 & Yes \\
+EARSM-GS & SST + tensor algebra & 0 & \textasciitilde{}120 & 0 & Yes \\
+EARSM-Pope & SST + tensor algebra & 0 & \textasciitilde{}120 & 0 & Yes \\
+MLP & 5$\to$32$\to$32$\to$1 (Tanh) & 1,249 & 1,249 & 56 KB & Yes \\
+MLP-Large & 5$\to$128$^4\to$1 (Tanh) & 50,049 & 50,049 & 896 KB & Yes \\
+TBNN & 5$\to$64$^3\to$10 (Tanh) & 9,354 & 10,254 & 196 KB & Yes \\
+PI-TBNN & 5$\to$64$^3\to$10 (Tanh) & 9,354 & 10,254 & 196 KB & Yes \\
+TBRF (1 tree) & 10 forests $\times$ 1 tree & 282,902 nodes & \textasciitilde{}2,200 & 5.7 MB & Experimental \\
+TBRF (5 trees) & 10 forests $\times$ 5 trees & 1,432,612 nodes & \textasciitilde{}10,200 & 29 MB & Experimental \\
+TBRF (10 trees) & 10 forests $\times$ 10 trees & 2,797,130 nodes & \textasciitilde{}20,200 & 56 MB & Experimental \\
+TBRF (200 trees) & 10 forests $\times$ 200 trees & 55,051,026 nodes & \textasciitilde{}400,200 & 3.3 GB & No \\
+\bottomrule
+\end{tabular}
+\vspace{2pt}
+\begin{minipage}{\linewidth}
+\footnotesize
+\textit{FLOPs/cell for NN includes feature computation (\textasciitilde{}900 FLOPs for invariants + tensor basis for TBNN/TBRF).}
+\\
+\textit{TBRF FLOPs estimated as: 900 (features) + n_coefficients x n_trees x avg_depth x 2 (comparison + branch).}
+\\
+\textit{For MLP, FLOPs = weights count (each weight = 1 multiply + 1 add) + activations.}
+\\
+\end{minipage}
+\end{table}

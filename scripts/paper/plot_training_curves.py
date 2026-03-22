@@ -26,6 +26,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Shared plot style
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from plot_style import apply_style, COLORS, single_col_fig, save_fig, SINGLE_COL, GOLDEN
+apply_style()
+
 # ---------------------------------------------------------------------------
 # Paths (relative to repo root)
 # ---------------------------------------------------------------------------

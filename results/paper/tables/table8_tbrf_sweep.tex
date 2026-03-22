@@ -1,0 +1,18 @@
+\begin{table}[htbp]
+\centering
+\caption{TBRF tree count sweep: accuracy vs.~model size.}
+\label{tab:tbrf_sweep}
+\begin{tabular}{rrrrr}
+\toprule
+\textbf{Trees/coeff} & \textbf{Total Nodes} & \textbf{Binary Size} & \textbf{Val RMSE(b)} & \textbf{vs TBNN} \\
+\midrule
+1 & 282,902 & 5.7 MB & 0.0778 & -7.9\% \\
+5 & 1,432,612 & 28.7 MB & 0.0678 & -19.8\% \\
+10 & 2,797,130 & 55.9 MB & 0.0650 & -23.1\% \\
+20 & 5,698,348 & 114.0 MB & 0.0651 & -23.0\% \\
+50 & 13,958,032 & 279.2 MB & 0.0642 & -24.0\% \\
+100 & 27,859,152 & 557.2 MB & 0.0639 & -24.4\% \\
+200 & 55,051,026 & 1,101 MB & 0.0637 & -24.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
