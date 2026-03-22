@@ -14,6 +14,7 @@ enum class TurbulenceModelType {
     GEP,            ///< Gene Expression Programming algebraic model (Weatheritt-Sandberg 2016)
     NNMLP,          ///< Neural network scalar eddy viscosity
     NNTBNN,         ///< TBNN-style anisotropy model
+    NNTBRF,         ///< TBRF (Tensor Basis Random Forest) anisotropy model
     // Transport equation models
     SSTKOmega,      ///< SST k-ω transport with linear Boussinesq closure
     KOmega,         ///< Standard k-ω (Wilcox 1988)

@@ -13,6 +13,7 @@
 #include "turbulence_gep.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_nn_tbnn.hpp"
+#include "turbulence_nn_tbrf.hpp"
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
 #include "turbulence_les.hpp"
@@ -518,7 +519,15 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             }
             return model;
         }
-        
+
+        case TurbulenceModelType::NNTBRF: {
+            auto model = std::make_unique<TurbulenceNNTBRF>();
+            if (!weights_path.empty()) {
+                model->load(weights_path);
+            }
+            return model;
+        }
+
         // Transport equation models
         case TurbulenceModelType::SSTKOmega: {
             return std::make_unique<SSTKOmegaTransport>();

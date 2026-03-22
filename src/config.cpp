@@ -204,6 +204,8 @@ void Config::load(const std::string& filename) {
         turb_model = TurbulenceModelType::NNMLP;
     } else if (model_str == "nn_tbnn") {
         turb_model = TurbulenceModelType::NNTBNN;
+    } else if (model_str == "nn_tbrf") {
+        turb_model = TurbulenceModelType::NNTBRF;
     } else if (model_str == "sst" || model_str == "sst_komega") {
         turb_model = TurbulenceModelType::SSTKOmega;
     } else if (model_str == "komega" || model_str == "k-omega") {
@@ -451,6 +453,8 @@ void Config::parse_args(int argc, char** argv) {
                 turb_model = TurbulenceModelType::NNMLP;
             } else if (model == "nn_tbnn") {
                 turb_model = TurbulenceModelType::NNTBNN;
+            } else if (model == "nn_tbrf") {
+                turb_model = TurbulenceModelType::NNTBRF;
             } else if (model == "sst" || model == "sst_komega") {
                 turb_model = TurbulenceModelType::SSTKOmega;
             } else if (model == "komega" || model == "k-omega") {
@@ -596,7 +600,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "  --recycle_target_bulk_u V  Target bulk velocity (-1 = from IC)\n"
                       << "\n"
                       << "  --model M         Turbulence model:\n"
-                      << "                      none, baseline, gep, nn_mlp, nn_tbnn\n"
+                      << "                      none, baseline, gep, nn_mlp, nn_tbnn, nn_tbrf\n"
                       << "                      sst, komega (transport models)\n"
                       << "                      earsm_wj, earsm_gs, earsm_pope (EARSM)\n"
                       << "  --nn_preset NAME  Use preset model from data/models/<NAME>\n"
@@ -643,8 +647,9 @@ void Config::finalize() {
     }
     
     // Validate NN model configuration - require explicit model selection
-    const bool using_nn = 
-        (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN);
+    const bool using_nn =
+        (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN ||
+         turb_model == TurbulenceModelType::NNTBRF);
     
     if (using_nn) {
         const bool has_preset = !nn_preset.empty();
@@ -1086,6 +1091,7 @@ void Config::print() const {
         case TurbulenceModelType::GEP: std::cout << "GEP (Weatheritt-Sandberg)"; break;
         case TurbulenceModelType::NNMLP: std::cout << "NN-MLP"; break;
         case TurbulenceModelType::NNTBNN: std::cout << "NN-TBNN"; break;
+        case TurbulenceModelType::NNTBRF: std::cout << "NN-TBRF"; break;
         case TurbulenceModelType::SSTKOmega: std::cout << "SST k-omega"; break;
         case TurbulenceModelType::KOmega: std::cout << "k-omega (Wilcox)"; break;
         case TurbulenceModelType::EARSM_WJ: std::cout << "SST + Wallin-Johansson EARSM"; break;
@@ -1099,7 +1105,8 @@ void Config::print() const {
     }
     std::cout << "\n";
     
-    if (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN) {
+    if (turb_model == TurbulenceModelType::NNMLP || turb_model == TurbulenceModelType::NNTBNN ||
+        turb_model == TurbulenceModelType::NNTBRF) {
         if (!nn_preset.empty()) {
             std::cout << "NN preset: " << nn_preset << "\n";
         }
