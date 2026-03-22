@@ -41,7 +41,7 @@ void TurbulenceNNTBNN::initialize_gpu_buffers(const Mesh& mesh) {
     // Fail fast if no GPU device available (GPU build requires GPU)
     gpu::verify_device_available();
     
-    const int n_cells = mesh.Nx * mesh.Ny;
+    const int n_cells = mesh.Nx * mesh.Ny * mesh.Nz;
     sync_weights_to_gpu();  // Upload MLP weights if not already done
     allocate_gpu_buffers(n_cells);
     gpu_ready_ = (mlp_.is_on_gpu() && buffers_on_gpu_);  // Set gpu_ready after successful allocation
@@ -104,8 +104,8 @@ void TurbulenceNNTBNN::allocate_gpu_buffers(int n_cells) {
 
 void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
 #ifdef USE_GPU_OFFLOAD
-    int n_interior = mesh.Nx * mesh.Ny;
-    int n_total = (mesh.Nx + 2) * (mesh.Ny + 2);
+    int n_interior = mesh.Nx * mesh.Ny * mesh.Nz;
+    int n_total = mesh.total_cells();
     
     if (n_interior == cached_n_cells_ && n_total == cached_total_cells_ && !u_flat_.empty()) {
         return;  // Already allocated
@@ -263,7 +263,7 @@ void TurbulenceNNTBNN::ensure_initialized(const Mesh& mesh) {
         feature_computer_ = FeatureComputer(mesh);
         feature_computer_.set_reference(nu_, delta_, u_ref_);
         
-        int n_interior = mesh.Nx * mesh.Ny;
+        int n_interior = mesh.Nx * mesh.Ny * mesh.Nz;
         features_.resize(n_interior);
         basis_.resize(n_interior);
         
@@ -321,9 +321,11 @@ void TurbulenceNNTBNN::update_full_gpu(
     
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
-    const int n_cells = Nx * Ny;
-    const int n_total = (Nx + 2) * (Ny + 2);
-    const int stride = Nx + 2;
+    const int Nz = mesh.Nz;
+    const int n_cells = Nx * Ny * Nz;
+    const int n_total = mesh.total_cells();
+    const int stride = mesh.total_Nx();
+    const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
     const double dx = mesh.dx;
     const double dy = mesh.dy;
     const double inv_2dx = 1.0 / (2.0 * dx);
@@ -353,21 +355,23 @@ void TurbulenceNNTBNN::update_full_gpu(
     // ========== Step 1: Flatten input data ==========
     {
         TIMED_SCOPE("nn_tbnn_flatten_inputs");
-        
+
         // Flatten velocity (with ghost cells)
         const auto& u_data = velocity.u_data();
         const auto& v_data = velocity.v_data();
         std::copy(u_data.begin(), u_data.end(), u_flat_.begin());
         std::copy(v_data.begin(), v_data.end(), v_flat_.begin());
-        
-        // Flatten k, omega, wall_distance (interior only)
+
+        // Flatten k, omega, wall_distance (interior only, all z-planes)
         int idx = 0;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                k_flat_[idx] = k_in(i, j);
-                omega_flat_[idx] = omega_in(i, j);
-                wall_dist_flat_[idx] = mesh.wall_distance(i, j);
-                ++idx;
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    k_flat_[idx] = k_in(i, j, k);
+                    omega_flat_[idx] = omega_in(i, j, k);
+                    wall_dist_flat_[idx] = mesh.wall_distance(i, j, k);
+                    ++idx;
+                }
             }
         }
     }
@@ -417,19 +421,22 @@ void TurbulenceNNTBNN::update_full_gpu(
             // Workspace layout within work_ptr (all already on device)
             const int FEATURE_DIM = 5;
             const int NUM_BASIS = 4;
-            
-            // Convert flat index to (i, j) - interior coordinates
+
+            // Convert flat index to (i, j, k) - interior coordinates
             int i = cell_idx % Nx;
-            int j = cell_idx / Nx;
-            
+            int j = (cell_idx / Nx) % Ny;
+            int kz = cell_idx / (Nx * Ny);
+
             // Full mesh indices (with ghost cells)
             int ii = i + 1;
             int jj = j + 1;
-            int idx_ip = jj * stride + (ii + 1);
-            int idx_im = jj * stride + (ii - 1);
-            int idx_jp = (jj + 1) * stride + ii;
-            int idx_jm = (jj - 1) * stride + ii;
-            
+            int kk = kz + 1;
+            int base = kk * plane_stride;
+            int idx_ip = base + jj * stride + (ii + 1);
+            int idx_im = base + jj * stride + (ii - 1);
+            int idx_jp = base + (jj + 1) * stride + ii;
+            int idx_jm = base + (jj - 1) * stride + ii;
+
             // ========== Step 1: Compute velocity gradients ==========
             double dudx_v = (u_ptr[idx_ip] - u_ptr[idx_im]) * inv_2dx;
             double dudy_v = (u_ptr[idx_jp] - u_ptr[idx_jm]) * inv_2dy;
@@ -618,17 +625,19 @@ void TurbulenceNNTBNN::update_full_gpu(
     // ========== Step 5: Unflatten results ==========
     {
         TIMED_SCOPE("nn_tbnn_unflatten");
-        
+
         int idx = 0;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                nu_t(i, j) = nu_t_flat_[idx];
-                if (tau_ij) {
-                    tau_ij->xx(i, j) = tau_xx_flat_[idx];
-                    tau_ij->xy(i, j) = tau_xy_flat_[idx];
-                    tau_ij->yy(i, j) = tau_yy_flat_[idx];
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    nu_t(i, j, k) = nu_t_flat_[idx];
+                    if (tau_ij) {
+                        tau_ij->xx(i, j, k) = tau_xx_flat_[idx];
+                        tau_ij->xy(i, j, k) = tau_xy_flat_[idx];
+                        tau_ij->yy(i, j, k) = tau_yy_flat_[idx];
+                    }
+                    ++idx;
                 }
-                ++idx;
             }
         }
     }
@@ -685,7 +694,8 @@ void TurbulenceNNTBNN::update(
     
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
-    [[maybe_unused]] const int n_cells = Nx * Ny;
+    const int Nz = mesh.Nz;
+    [[maybe_unused]] const int n_cells = Nx * Ny * Nz;
     [[maybe_unused]] const int Ng = mesh.Nghost;
     
 #ifdef USE_GPU_OFFLOAD
@@ -711,48 +721,57 @@ void TurbulenceNNTBNN::update(
         
         // Ensure GPU buffers are allocated
         allocate_gpu_buffers(n_cells);
-        
-        const int total_cells = mesh.total_cells();  // (Nx+2Ng)*(Ny+2Ng) - was incorrectly using Nx twice
+
+        const int total_cells = mesh.total_cells();
         const int u_total = velocity.u_total_size();
         const int v_total = velocity.v_total_size();
+        const int w_total = velocity.w_total_size();
         const int cell_stride = mesh.total_Nx();
+        const int cell_plane_stride = mesh.total_Nx() * mesh.total_Ny();
         const int u_stride = velocity.u_stride();
+        const int u_plane_stride = velocity.u_plane_stride();
         const int v_stride = velocity.v_stride();
-        
+        const int v_plane_stride = velocity.v_plane_stride();
+        const int w_stride = velocity.w_stride();
+        const int w_plane_stride = velocity.w_plane_stride();
+
         // Step 1: Compute gradients on GPU
         {
             TIMED_SCOPE("nn_tbnn_gradients_gpu");
             gpu_kernels::compute_gradients_from_mac_gpu(
-                device_view->u_face, device_view->v_face,
+                device_view->u_face, device_view->v_face, device_view->w_face,
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
-                Nx, Ny, Ng,
-                mesh.dx, mesh.dy,
+                Nx, Ny, Nz, Ng,
+                mesh.dx, mesh.dy, mesh.dz,
                 u_stride, v_stride, cell_stride,
-                u_total, v_total, total_cells,
+                u_plane_stride, v_plane_stride,
+                w_stride, w_plane_stride, cell_plane_stride,
+                u_total, v_total, w_total, total_cells,
                 device_view->dyc,
                 device_view->dyc_size
             );
         }
-        
+
         // Step 2: Compute TBNN features + basis on GPU
         {
             TIMED_SCOPE("nn_tbnn_features_gpu");
-            double* feat_ptr = features_flat_.data();  // n_cells * 5
-            double* basis_ptr = basis_flat_.data();    // n_cells * 12
-            
+            double* feat_ptr = features_flat_.data();
+            double* basis_ptr = basis_flat_.data();
+
             gpu_kernels::compute_tbnn_features_gpu(
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
                 device_view->k, device_view->omega,
                 device_view->wall_distance,
                 feat_ptr, basis_ptr,
-                Nx, Ny, Ng,
-                cell_stride, total_cells,
+                Nx, Ny, Nz, Ng,
+                cell_stride, cell_plane_stride,
+                total_cells,
                 nu_, delta_
             );
         }
-        
+
         // Step 3: Run NN inference on GPU
         {
             TIMED_SCOPE("nn_tbnn_inference_gpu");
@@ -761,7 +780,7 @@ void TurbulenceNNTBNN::update(
             double* work_ptr = workspace_.data();
             mlp_.forward_batch_gpu(feat_ptr, out_ptr, n_cells, work_ptr);
         }
-        
+
         // Step 4: Postprocess on GPU (anisotropy -> nu_t)
         {
             TIMED_SCOPE("nn_tbnn_postprocess_gpu");
@@ -772,20 +791,20 @@ void TurbulenceNNTBNN::update(
             double* dudy_ptr = device_view->dudy;
             double* dvdx_ptr = device_view->dvdx;
             double* dvdy_ptr = device_view->dvdy;
-            
-            // IMPORTANT: write results to device-mapped buffers (host pointers are not valid on device)
+
             double* nu_t_ptr = device_view->nu_t;
             double* tau_xx_ptr = device_view->tau_xx;
             double* tau_xy_ptr = device_view->tau_xy;
             double* tau_yy_ptr = device_view->tau_yy;
-            
+
             gpu_kernels::postprocess_nn_outputs_gpu(
                 out_ptr, basis_ptr,
                 k_ptr, dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
                 nu_t_ptr,
                 tau_xx_ptr, tau_xy_ptr, tau_yy_ptr,
-                Nx, Ny, Ng,
-                cell_stride, total_cells,
+                Nx, Ny, Nz, Ng,
+                cell_stride, cell_plane_stride,
+                total_cells,
                 mlp_.output_dim(),
                 nu_
             );

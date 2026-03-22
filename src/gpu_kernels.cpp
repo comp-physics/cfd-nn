@@ -17,18 +17,25 @@ namespace gpu_kernels {
 void compute_gradients_from_mac_gpu(
     const double* u_face,
     const double* v_face,
+    const double* w_face,
     double* dudx_cell,
     double* dudy_cell,
     double* dvdx_cell,
     double* dvdy_cell,
-    int Nx, int Ny,
+    int Nx, int Ny, int Nz,
     int Ng,
-    double dx, double dy,
+    double dx, double dy, double dz,
     int u_stride,
     int v_stride,
     int cell_stride,
+    int u_plane_stride,
+    int v_plane_stride,
+    int w_stride,
+    int w_plane_stride,
+    int cell_plane_stride,
     int u_total_size,
     int v_total_size,
+    int w_total_size,
     int cell_total_size,
     const double* dyc,
     int dyc_size)
@@ -37,97 +44,85 @@ void compute_gradients_from_mac_gpu(
 
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
+    [[maybe_unused]] const double inv_2dz = (Nz > 1) ? 1.0 / (2.0 * dz) : 0.0;
     const bool use_stretched = (dyc != nullptr && dyc_size > 0);
+    const int n_cells_3d = Nx * Ny * Nz;
+
+    // Suppress unused-variable warnings for parameters only used in map clauses
+    (void)w_face; (void)w_total_size; (void)w_stride; (void)w_plane_stride;
 
 #ifdef USE_GPU_OFFLOAD
     if (use_stretched) {
-        // GPU path with non-uniform y-spacing: dyc already on GPU via solver mapping
-        #pragma omp target teams distribute parallel for collapse(2) \
+        #pragma omp target teams distribute parallel for \
             map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
                          dudx_cell[0:cell_total_size], dudy_cell[0:cell_total_size], \
                          dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size], \
                          dyc[0:dyc_size])
-        for (int jj = 0; jj < Ny; ++jj) {
-            for (int ii = 0; ii < Nx; ++ii) {
-                const int i = ii + Ng;
-                const int j = jj + Ng;
-                const int idx_cell = j * cell_stride + i;
+        for (int idx = 0; idx < n_cells_3d; ++idx) {
+            const int ii = idx % Nx;
+            const int jj = (idx / Nx) % Ny;
+            const int kk = idx / (Nx * Ny);
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int k = kk + Ng;
+            const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
 
-                const int u_idx_ip = j * u_stride + (i + 1);
-                const int u_idx_im = j * u_stride + (i - 1);
-                const int u_idx_jp = (j + 1) * u_stride + i;
-                const int u_idx_jm = (j - 1) * u_stride + i;
-                const int v_idx_ip = j * v_stride + (i + 1);
-                const int v_idx_im = j * v_stride + (i - 1);
-                const int v_idx_jp = (j + 1) * v_stride + i;
-                const int v_idx_jm = (j - 1) * v_stride + i;
+            const int u_base = k * u_plane_stride;
+            const int v_base = k * v_plane_stride;
 
-                // Non-uniform y: span from center j-1 to center j+1 = dyc[j] + dyc[j+1]
-                double inv_dy_span = 1.0 / (dyc[j] + dyc[j + 1]);
+            dudx_cell[idx_cell] = (u_face[u_base + j * u_stride + (i + 1)] - u_face[u_base + j * u_stride + (i - 1)]) * inv_2dx;
+            dvdx_cell[idx_cell] = (v_face[v_base + j * v_stride + (i + 1)] - v_face[v_base + j * v_stride + (i - 1)]) * inv_2dx;
 
-                dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
-                dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_dy_span;
-                dvdx_cell[idx_cell] = (v_face[v_idx_ip] - v_face[v_idx_im]) * inv_2dx;
-                dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_dy_span;
-            }
+            double inv_dy_span = 1.0 / (dyc[j] + dyc[j + 1]);
+            dudy_cell[idx_cell] = (u_face[u_base + (j + 1) * u_stride + i] - u_face[u_base + (j - 1) * u_stride + i]) * inv_dy_span;
+            dvdy_cell[idx_cell] = (v_face[v_base + (j + 1) * v_stride + i] - v_face[v_base + (j - 1) * v_stride + i]) * inv_dy_span;
         }
     } else {
-        // GPU path with uniform y-spacing
-        #pragma omp target teams distribute parallel for collapse(2) \
+        #pragma omp target teams distribute parallel for \
             map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
                          dudx_cell[0:cell_total_size], dudy_cell[0:cell_total_size], \
                          dvdx_cell[0:cell_total_size], dvdy_cell[0:cell_total_size])
-        for (int jj = 0; jj < Ny; ++jj) {
-            for (int ii = 0; ii < Nx; ++ii) {
-                const int i = ii + Ng;
-                const int j = jj + Ng;
-                const int idx_cell = j * cell_stride + i;
+        for (int idx = 0; idx < n_cells_3d; ++idx) {
+            const int ii = idx % Nx;
+            const int jj = (idx / Nx) % Ny;
+            const int kk = idx / (Nx * Ny);
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int k = kk + Ng;
+            const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
 
-                const int u_idx_ip = j * u_stride + (i + 1);
-                const int u_idx_im = j * u_stride + (i - 1);
-                const int u_idx_jp = (j + 1) * u_stride + i;
-                const int u_idx_jm = (j - 1) * u_stride + i;
-                const int v_idx_ip = j * v_stride + (i + 1);
-                const int v_idx_im = j * v_stride + (i - 1);
-                const int v_idx_jp = (j + 1) * v_stride + i;
-                const int v_idx_jm = (j - 1) * v_stride + i;
+            const int u_base = k * u_plane_stride;
+            const int v_base = k * v_plane_stride;
 
-                dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
-                dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_2dy;
-                dvdx_cell[idx_cell] = (v_face[v_idx_ip] - v_face[v_idx_im]) * inv_2dx;
-                dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_2dy;
-            }
+            dudx_cell[idx_cell] = (u_face[u_base + j * u_stride + (i + 1)] - u_face[u_base + j * u_stride + (i - 1)]) * inv_2dx;
+            dudy_cell[idx_cell] = (u_face[u_base + (j + 1) * u_stride + i] - u_face[u_base + (j - 1) * u_stride + i]) * inv_2dy;
+            dvdx_cell[idx_cell] = (v_face[v_base + j * v_stride + (i + 1)] - v_face[v_base + j * v_stride + (i - 1)]) * inv_2dx;
+            dvdy_cell[idx_cell] = (v_face[v_base + (j + 1) * v_stride + i] - v_face[v_base + (j - 1) * v_stride + i]) * inv_2dy;
         }
     }
 #else
-    // CPU path: same logic without GPU offloading
     (void)u_total_size; (void)v_total_size; (void)cell_total_size;
-    for (int jj = 0; jj < Ny; ++jj) {
-        for (int ii = 0; ii < Nx; ++ii) {
-            const int i = ii + Ng;
-            const int j = jj + Ng;
-            const int idx_cell = j * cell_stride + i;
+    for (int idx = 0; idx < n_cells_3d; ++idx) {
+        const int ii = idx % Nx;
+        const int jj = (idx / Nx) % Ny;
+        const int kk = idx / (Nx * Ny);
+        const int i = ii + Ng;
+        const int j = jj + Ng;
+        const int k = kk + Ng;
+        const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
 
-            const int u_idx_ip = j * u_stride + (i + 1);
-            const int u_idx_im = j * u_stride + (i - 1);
-            const int u_idx_jp = (j + 1) * u_stride + i;
-            const int u_idx_jm = (j - 1) * u_stride + i;
-            const int v_idx_ip = j * v_stride + (i + 1);
-            const int v_idx_im = j * v_stride + (i - 1);
-            const int v_idx_jp = (j + 1) * v_stride + i;
-            const int v_idx_jm = (j - 1) * v_stride + i;
+        const int u_base = k * u_plane_stride;
+        const int v_base = k * v_plane_stride;
 
-            // y-derivative: use local spacing if stretched, else uniform
-            double inv_dy_local = inv_2dy;
-            if (use_stretched) {
-                inv_dy_local = 1.0 / (dyc[j] + dyc[j + 1]);
-            }
-
-            dudx_cell[idx_cell] = (u_face[u_idx_ip] - u_face[u_idx_im]) * inv_2dx;
-            dudy_cell[idx_cell] = (u_face[u_idx_jp] - u_face[u_idx_jm]) * inv_dy_local;
-            dvdx_cell[idx_cell] = (v_face[v_idx_ip] - v_face[v_idx_im]) * inv_2dx;
-            dvdy_cell[idx_cell] = (v_face[v_idx_jp] - v_face[v_idx_jm]) * inv_dy_local;
+        double inv_dy_local = inv_2dy;
+        if (use_stretched) {
+            inv_dy_local = 1.0 / (dyc[j] + dyc[j + 1]);
         }
+
+        dudx_cell[idx_cell] = (u_face[u_base + j * u_stride + (i + 1)] - u_face[u_base + j * u_stride + (i - 1)]) * inv_2dx;
+        dudy_cell[idx_cell] = (u_face[u_base + (j + 1) * u_stride + i] - u_face[u_base + (j - 1) * u_stride + i]) * inv_dy_local;
+        dvdx_cell[idx_cell] = (v_face[v_base + j * v_stride + (i + 1)] - v_face[v_base + j * v_stride + (i - 1)]) * inv_2dx;
+        dvdy_cell[idx_cell] = (v_face[v_base + (j + 1) * v_stride + i] - v_face[v_base + (j - 1) * v_stride + i]) * inv_dy_local;
     }
 #endif
 }
@@ -141,65 +136,138 @@ void compute_mlp_scalar_features_gpu(
     const double* k, const double* omega,
     const double* wall_distance,
     const double* u_face, const double* v_face,
+    const double* w_face,
     double* features,
-    int Nx, int Ny, int Ng,
-    int cell_stride, int u_stride, int v_stride,
-    int total_cells, int u_total, int v_total,
+    int Nx, int Ny, int Nz, int Ng,
+    int cell_stride, int cell_plane_stride,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int total_cells, int u_total, int v_total, int w_total,
+    double dx, double dy, double dz,
     double nu, double delta, double u_ref)
 {
     NVTX_SCOPE_TURB("kernel:mlp_features");
 
+    const int n_cells = Nx * Ny * Nz;
+    const bool is3D = (Nz > 1 && w_face != nullptr);
+    [[maybe_unused]] const double inv_2dx = 1.0 / (2.0 * dx);
+    [[maybe_unused]] const double inv_2dy = 1.0 / (2.0 * dy);
+    [[maybe_unused]] const double inv_2dz = is3D ? 1.0 / (2.0 * dz) : 0.0;
+    [[maybe_unused]] const double inv_dz = is3D ? 1.0 / dz : 0.0;
+
 #ifdef USE_GPU_OFFLOAD
-    // CRITICAL: map(present:...) indicates these arrays are already mapped by caller
-    #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: dudx[0:total_cells], dudy[0:total_cells], \
-                     dvdx[0:total_cells], dvdy[0:total_cells], \
-                     k[0:total_cells], omega[0:total_cells], \
-                     wall_distance[0:total_cells], \
-                     u_face[0:u_total], v_face[0:v_total], \
-                     features[0:(Nx*Ny*6)])
-    for (int jj = 0; jj < Ny; ++jj) {
-        for (int ii = 0; ii < Nx; ++ii) {
+    if (is3D) {
+        #pragma omp target teams distribute parallel for \
+            map(present: dudx[0:total_cells], dudy[0:total_cells], \
+                         dvdx[0:total_cells], dvdy[0:total_cells], \
+                         k[0:total_cells], omega[0:total_cells], \
+                         wall_distance[0:total_cells], \
+                         u_face[0:u_total], v_face[0:v_total], \
+                         w_face[0:w_total], \
+                         features[0:(n_cells*6)])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int ii = idx % Nx;
+            const int jj = (idx / Nx) % Ny;
+            const int kk = idx / (Nx * Ny);
             const int i = ii + Ng;
             const int j = jj + Ng;
-            const int idx_cell = j * cell_stride + i;
-            const int idx_out = jj * Nx + ii;  // Interior cell index for output
-            
-            // Get gradients
+            const int kp = kk + Ng;
+            const int idx_cell = kp * cell_plane_stride + j * cell_stride + i;
+
+            // Get 2D gradients (already computed by gradient kernel)
             double dudx_v = dudx[idx_cell];
             double dudy_v = dudy[idx_cell];
             double dvdx_v = dvdx[idx_cell];
             double dvdy_v = dvdy[idx_cell];
-            
-            // Strain and rotation magnitudes
+
+            // Compute z-gradients inline from staggered velocity fields
+            const int u_base_kp = (kp + 1) * u_plane_stride + j * u_stride + i;
+            const int u_base_km = (kp - 1) * u_plane_stride + j * u_stride + i;
+            double dudz_v = (u_face[u_base_kp] - u_face[u_base_km]) * inv_2dz;
+
+            const int v_base_kp = (kp + 1) * v_plane_stride + j * v_stride + i;
+            const int v_base_km = (kp - 1) * v_plane_stride + j * v_stride + i;
+            double dvdz_v = (v_face[v_base_kp] - v_face[v_base_km]) * inv_2dz;
+
+            const int w_base = kp * w_plane_stride + j * w_stride;
+            double dwdx_v = (w_face[w_base + (i + 1)] - w_face[w_base + (i - 1)]) * inv_2dx;
+            // dwdy: central difference of w in y (w lives at z-faces)
+            double dwdy_v = (w_face[kp * w_plane_stride + (j + 1) * w_stride + i] -
+                             w_face[kp * w_plane_stride + (j - 1) * w_stride + i]) * inv_2dy;
+            // dwdz: forward diff (staggered in z)
+            double dwdz_v = (w_face[(kp + 1) * w_plane_stride + j * w_stride + i] -
+                             w_face[kp * w_plane_stride + j * w_stride + i]) * inv_dz;
+
+            // Full 3D strain rate tensor
+            double Sxx = dudx_v;
+            double Syy = dvdy_v;
+            double Szz = dwdz_v;
+            double Sxy = 0.5 * (dudy_v + dvdx_v);
+            double Sxz = 0.5 * (dudz_v + dwdx_v);
+            double Syz = 0.5 * (dvdz_v + dwdy_v);
+            double Oxy = 0.5 * (dudy_v - dvdx_v);
+            double Oxz = 0.5 * (dudz_v - dwdx_v);
+            double Oyz = 0.5 * (dvdz_v - dwdy_v);
+
+            double S_mag = sqrt(Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0*(Sxy*Sxy + Sxz*Sxz + Syz*Syz));
+            double Omega_mag = sqrt(2.0 * (Oxy*Oxy + Oxz*Oxz + Oyz*Oyz));
+
+            // Velocity magnitude (from staggered grid)
+            const int u_base_k = kp * u_plane_stride;
+            double u_avg = 0.5 * (u_face[u_base_k + j * u_stride + i] + u_face[u_base_k + j * u_stride + (i+1)]);
+            const int v_base_k = kp * v_plane_stride;
+            double v_avg = 0.5 * (v_face[v_base_k + j * v_stride + i] + v_face[v_base_k + (j+1) * v_stride + i]);
+            double w_avg = 0.5 * (w_face[kp * w_plane_stride + j * w_stride + i] +
+                                  w_face[(kp + 1) * w_plane_stride + j * w_stride + i]);
+            double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
+
+            double y_wall = wall_distance[idx_cell];
+
+            int feat_base = idx * 6;
+            features[feat_base + 0] = S_mag * delta / (u_ref + 1e-10);
+            features[feat_base + 1] = Omega_mag * delta / (u_ref + 1e-10);
+            features[feat_base + 2] = y_wall / delta;
+            features[feat_base + 3] = Omega_mag / (S_mag + 1e-10);
+            features[feat_base + 4] = S_mag * delta * delta / (nu + 1e-10);
+            features[feat_base + 5] = u_mag / (u_ref + 1e-10);
+        }
+    } else {
+        // 2D path (Nz == 1)
+        #pragma omp target teams distribute parallel for \
+            map(present: dudx[0:total_cells], dudy[0:total_cells], \
+                         dvdx[0:total_cells], dvdy[0:total_cells], \
+                         k[0:total_cells], omega[0:total_cells], \
+                         wall_distance[0:total_cells], \
+                         u_face[0:u_total], v_face[0:v_total], \
+                         features[0:(n_cells*6)])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int ii = idx % Nx;
+            const int jj = idx / Nx;
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int idx_cell = j * cell_stride + i;
+
+            double dudx_v = dudx[idx_cell];
+            double dudy_v = dudy[idx_cell];
+            double dvdx_v = dvdx[idx_cell];
+            double dvdy_v = dvdy[idx_cell];
+
             double Sxx = dudx_v;
             double Syy = dvdy_v;
             double Sxy = 0.5 * (dudy_v + dvdx_v);
             double Oxy = 0.5 * (dudy_v - dvdx_v);
-            
-            // Frobenius norm (matches CPU VelocityGradient::S_mag())
+
             double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
             double Omega_mag = sqrt(2.0 * Oxy * Oxy);
 
-            // Note: k and omega are mapped but not used in current feature set
-            // (reserved for future features like turbulent time scale)
-
-            // Velocity magnitude (from staggered grid)
             double u_avg = 0.5 * (u_face[j * u_stride + i] + u_face[j * u_stride + (i+1)]);
             double v_avg = 0.5 * (v_face[j * v_stride + i] + v_face[(j+1) * v_stride + i]);
             double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
-            
-            // Wall distance (cell-centered; same indexing space as gradients)
+
             double y_wall = wall_distance[idx_cell];
-            
-            // Features (6 values):
-            // 0: Normalized strain rate magnitude
-            // 1: Normalized rotation rate magnitude  
-            // 2: Normalized wall distance
-            // 3: Strain-rotation ratio
-            // 4: Local Reynolds number
-            // 5: Normalized velocity magnitude
-            int feat_base = idx_out * 6;
+
+            int feat_base = idx * 6;
             features[feat_base + 0] = S_mag * delta / (u_ref + 1e-10);
             features[feat_base + 1] = Omega_mag * delta / (u_ref + 1e-10);
             features[feat_base + 2] = y_wall / delta;
@@ -211,10 +279,14 @@ void compute_mlp_scalar_features_gpu(
 #else
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
     (void)k; (void)omega; (void)wall_distance;
-    (void)u_face; (void)v_face; (void)features;
-    (void)Nx; (void)Ny; (void)Ng;
-    (void)cell_stride; (void)u_stride; (void)v_stride;
-    (void)total_cells; (void)u_total; (void)v_total;
+    (void)u_face; (void)v_face; (void)w_face; (void)features;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng;
+    (void)cell_stride; (void)cell_plane_stride;
+    (void)u_stride; (void)u_plane_stride;
+    (void)v_stride; (void)v_plane_stride;
+    (void)w_stride; (void)w_plane_stride;
+    (void)total_cells; (void)u_total; (void)v_total; (void)w_total;
+    (void)dx; (void)dy; (void)dz;
     (void)nu; (void)delta; (void)u_ref;
 #endif
 }
@@ -225,42 +297,45 @@ void compute_mlp_scalar_features_gpu(
 void postprocess_mlp_outputs_gpu(
     const double* nn_outputs,
     double* nu_t_field,
-    int Nx, int Ny, int Ng,
+    int Nx, int Ny, int Nz, int Ng,
     int stride,
+    int plane_stride,
+    int total_field_size,
     double nu_t_max)
 {
     NVTX_SCOPE_NN("kernel:postprocess_mlp");
 
+    const int n_cells = Nx * Ny * Nz;
+
 #ifdef USE_GPU_OFFLOAD
-    const int total_field_size = stride * (Ny + 2*Ng);
-    
-    // CRITICAL: map(present:...) indicates these arrays are already mapped
-    #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: nn_outputs[0:(Nx*Ny)], nu_t_field[0:total_field_size])
-    for (int jj = 0; jj < Ny; ++jj) {
-        for (int ii = 0; ii < Nx; ++ii) {
-            const int i = ii + Ng;
-            const int j = jj + Ng;
-            const int idx_in = jj * Nx + ii;
-            const int idx_out = j * stride + i;
-            
-            // Get NN prediction
-            double nu_t_val = nn_outputs[idx_in];
-            
-            // Apply realizability and clipping
-            if (nu_t_val != nu_t_val || nu_t_val < 0.0) {  // NaN or negative
-                nu_t_val = 0.0;
-            }
-            if (nu_t_val > nu_t_max) {
-                nu_t_val = nu_t_max;
-            }
-            
-            nu_t_field[idx_out] = nu_t_val;
+    #pragma omp target teams distribute parallel for \
+        map(present: nn_outputs[0:n_cells], nu_t_field[0:total_field_size])
+    for (int idx = 0; idx < n_cells; ++idx) {
+        const int ii = idx % Nx;
+        const int jj = (idx / Nx) % Ny;
+        const int kk = idx / (Nx * Ny);
+        const int i = ii + Ng;
+        const int j = jj + Ng;
+        const int k = kk + Ng;
+        const int idx_out = k * plane_stride + j * stride + i;
+
+        // Get NN prediction
+        double nu_t_val = nn_outputs[idx];
+
+        // Apply realizability and clipping
+        if (nu_t_val != nu_t_val || nu_t_val < 0.0) {  // NaN or negative
+            nu_t_val = 0.0;
         }
+        if (nu_t_val > nu_t_max) {
+            nu_t_val = nu_t_max;
+        }
+
+        nu_t_field[idx_out] = nu_t_val;
     }
 #else
     (void)nn_outputs; (void)nu_t_field;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride; (void)nu_t_max;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng;
+    (void)stride; (void)plane_stride; (void)total_field_size; (void)nu_t_max;
 #endif
 }
 
@@ -274,114 +349,111 @@ void compute_tbnn_features_gpu(
     const double* wall_distance,
     double* features,
     double* basis,
-    int Nx, int Ny, int Ng,
-    int cell_stride, int total_cells,
+    int Nx, int Ny, int Nz, int Ng,
+    int cell_stride, int cell_plane_stride,
+    int total_cells,
     double nu, double delta)
 {
     NVTX_SCOPE_TURB("kernel:tbnn_features");
 
+    const int n_cells = Nx * Ny * Nz;
+
 #ifdef USE_GPU_OFFLOAD
     const double C_mu = 0.09;
-    
-    // CRITICAL: map(present:...) indicates these arrays are already mapped by solver/turbulence model
-    #pragma omp target teams distribute parallel for collapse(2) \
+
+    #pragma omp target teams distribute parallel for \
         map(present: dudx[0:total_cells], dudy[0:total_cells], \
                      dvdx[0:total_cells], dvdy[0:total_cells], \
                      k[0:total_cells], omega[0:total_cells], \
                      wall_distance[0:total_cells], \
-                     features[0:(Nx*Ny*5)], basis[0:(Nx*Ny*12)])
-    for (int jj = 0; jj < Ny; ++jj) {
-        for (int ii = 0; ii < Nx; ++ii) {
-            const int i = ii + Ng;
-            const int j = jj + Ng;
-            const int idx_cell = j * cell_stride + i;
-            const int idx_out = jj * Nx + ii;  // Interior cell index for output
-            
-            // Get gradients
-            double dudx_v = dudx[idx_cell];
-            double dudy_v = dudy[idx_cell];
-            double dvdx_v = dvdx[idx_cell];
-            double dvdy_v = dvdy[idx_cell];
-        
+                     features[0:(n_cells*5)], basis[0:(n_cells*12)])
+    for (int idx = 0; idx < n_cells; ++idx) {
+        const int ii = idx % Nx;
+        const int jj = (idx / Nx) % Ny;
+        const int kk = idx / (Nx * Ny);
+        const int i = ii + Ng;
+        const int j = jj + Ng;
+        const int kp = kk + Ng;
+        const int idx_cell = kp * cell_plane_stride + j * cell_stride + i;
+
+        // Get gradients (computed by gradient kernel for all z-planes)
+        double dudx_v = dudx[idx_cell];
+        double dudy_v = dudy[idx_cell];
+        double dvdx_v = dvdx[idx_cell];
+        double dvdy_v = dvdy[idx_cell];
+
         // Strain rate tensor components: S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
         double Sxx = dudx_v;
         double Syy = dvdy_v;
         double Sxy = 0.5 * (dudy_v + dvdx_v);
-        
+
         // Rotation tensor: Omega_ij = 0.5 * (du_i/dx_j - du_j/dx_i)
         double Oxy = 0.5 * (dudy_v - dvdx_v);
-        
-        // Magnitudes (Frobenius norm - matches CPU VelocityGradient)
+
+        // Magnitudes (Frobenius norm)
         double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
         double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-        
+
         // Get k, omega, epsilon
         double k_val = k[idx_cell];
         double omega_val = omega[idx_cell];
         double eps = C_mu * k_val * omega_val;
-        
-        // Safe values
+
         double k_safe = (k_val > numerics::K_FLOOR) ? k_val : numerics::K_FLOOR;
         double eps_safe = (eps > numerics::EPS_FLOOR) ? eps : numerics::EPS_FLOOR;
-        
-        // Time scale for normalization
         double tau = k_safe / eps_safe;
-        
-        // Normalized strain and rotation
+
         double S_norm = S_mag * tau;
         double Omega_norm = Omega_mag * tau;
-        
-        // Normalized tensor components
+
         double Sxx_n = Sxx * tau;
         double Syy_n = Syy * tau;
         double Sxy_n = Sxy * tau;
         double Oxy_n = Oxy * tau;
-        
-        // ==================== Features (5 values) ====================
-        int feat_base = idx_out * 5;
-        features[feat_base + 0] = S_norm * S_norm;           // ~tr(S_norm^2)
-        features[feat_base + 1] = Omega_norm * Omega_norm;   // ~tr(Omega_norm^2)
-        features[feat_base + 2] = Sxx_n*Sxx_n + Syy_n*Syy_n + 2.0*Sxy_n*Sxy_n;  // tr(S^2)
-        features[feat_base + 3] = 2.0 * Oxy_n * Oxy_n;       // tr(Omega^2)
-        features[feat_base + 4] = wall_distance[idx_cell] / delta; // Normalized wall distance
-        
-        // ==================== Tensor Basis (4 tensors × 3 components) ====================
-        int basis_base = idx_out * 12;
-        
+
+        // Features (5 values)
+        int feat_base = idx * 5;
+        features[feat_base + 0] = S_norm * S_norm;
+        features[feat_base + 1] = Omega_norm * Omega_norm;
+        features[feat_base + 2] = Sxx_n*Sxx_n + Syy_n*Syy_n + 2.0*Sxy_n*Sxy_n;
+        features[feat_base + 3] = 2.0 * Oxy_n * Oxy_n;
+        features[feat_base + 4] = wall_distance[idx_cell] / delta;
+
+        // Tensor Basis (4 tensors x 3 components)
+        int basis_base = idx * 12;
+
         // T^(1) = S (normalized)
-        basis[basis_base + 0] = Sxx_n;  // T1_xx
-        basis[basis_base + 1] = Sxy_n;  // T1_xy
-        basis[basis_base + 2] = Syy_n;  // T1_yy
-        
-        // T^(2) = S*Omega - Omega*S (commutator)
-        // [S, Omega] = [[-2*Sxy*Oxy, (Sxx-Syy)*Oxy], [(Sxx-Syy)*Oxy, 2*Sxy*Oxy]]
-        basis[basis_base + 3] = -2.0 * Sxy_n * Oxy_n;        // T2_xx
-        basis[basis_base + 4] = (Sxx_n - Syy_n) * Oxy_n;     // T2_xy
-        basis[basis_base + 5] = 2.0 * Sxy_n * Oxy_n;         // T2_yy
-        
-        // T^(3) = S^2 - (1/2)*tr(S^2)*I (deviatoric part of S^2)
+        basis[basis_base + 0] = Sxx_n;
+        basis[basis_base + 1] = Sxy_n;
+        basis[basis_base + 2] = Syy_n;
+
+        // T^(2) = [S, Omega]
+        basis[basis_base + 3] = -2.0 * Sxy_n * Oxy_n;
+        basis[basis_base + 4] = (Sxx_n - Syy_n) * Oxy_n;
+        basis[basis_base + 5] = 2.0 * Sxy_n * Oxy_n;
+
+        // T^(3) = S^2 - (1/2)*tr(S^2)*I
         double S2xx = Sxx_n*Sxx_n + Sxy_n*Sxy_n;
         double S2yy = Sxy_n*Sxy_n + Syy_n*Syy_n;
         double S2xy = Sxy_n * (Sxx_n + Syy_n);
         double trS2 = S2xx + S2yy;
-        basis[basis_base + 6] = S2xx - 0.5 * trS2;           // T3_xx
-        basis[basis_base + 7] = S2xy;                         // T3_xy
-        basis[basis_base + 8] = S2yy - 0.5 * trS2;           // T3_yy
-        
+        basis[basis_base + 6] = S2xx - 0.5 * trS2;
+        basis[basis_base + 7] = S2xy;
+        basis[basis_base + 8] = S2yy - 0.5 * trS2;
+
         // T^(4) = 0 in 2D (Omega^2 is proportional to identity)
-        basis[basis_base + 9]  = 0.0;   // T4_xx
-        basis[basis_base + 10] = 0.0;   // T4_xy
-        basis[basis_base + 11] = 0.0;   // T4_yy
-        }
+        basis[basis_base + 9]  = 0.0;
+        basis[basis_base + 10] = 0.0;
+        basis[basis_base + 11] = 0.0;
     }
-    
-    (void)nu;  // Not used in current implementation
+
+    (void)nu;
 #else
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
     (void)k; (void)omega; (void)wall_distance;
     (void)features; (void)basis;
-    (void)Nx; (void)Ny; (void)Ng;
-    (void)cell_stride; (void)total_cells;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng;
+    (void)cell_stride; (void)cell_plane_stride; (void)total_cells;
     (void)nu; (void)delta;
 #endif
 }
@@ -397,162 +469,150 @@ void postprocess_nn_outputs_gpu(
     const double* dvdx, const double* dvdy,
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_yy,
-    int Nx, int Ny, int Ng,
-    int cell_stride, int total_cells,
+    int Nx, int Ny, int Nz, int Ng,
+    int cell_stride, int cell_plane_stride,
+    int total_cells,
     int output_dim,
     double nu_ref)
 {
     NVTX_SCOPE_NN("kernel:postprocess_nn");
 
+    const int n_cells = Nx * Ny * Nz;
+
 #ifdef USE_GPU_OFFLOAD
     const int NUM_BASIS = 4;
     const bool compute_tau = (tau_xx != nullptr);
-    
-    // CRITICAL: map(present:...) indicates these arrays are already mapped by turbulence model
-    // nn_outputs/basis are interior-only (Nx*Ny), k/gradients/nu_t/tau are ghosted (total_cells)
+
     if (!compute_tau) {
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: nn_outputs[0:(Nx*Ny*output_dim)], basis[0:(Nx*Ny*12)], \
+        #pragma omp target teams distribute parallel for \
+            map(present: nn_outputs[0:(n_cells*output_dim)], basis[0:(n_cells*12)], \
                          k[0:total_cells], dudx[0:total_cells], dudy[0:total_cells], \
                          dvdx[0:total_cells], dvdy[0:total_cells], nu_t[0:total_cells])
-        for (int jj = 0; jj < Ny; ++jj) {
-            for (int ii = 0; ii < Nx; ++ii) {
-                const int i = ii + Ng;
-                const int j = jj + Ng;
-                const int idx_cell = j * cell_stride + i;   // ghosted field index
-                const int idx_out  = jj * Nx + ii;          // interior index for nn/basis
-                
-                // Extract G coefficients from NN output
-                double G[NUM_BASIS] = {0.0, 0.0, 0.0, 0.0};
-                const int out_base = idx_out * output_dim;
-                for (int n = 0; n < NUM_BASIS && n < output_dim; ++n) {
-                    G[n] = nn_outputs[out_base + n];
-                }
-                
-                // Get basis tensors
-                const int basis_base = idx_out * 12;
-                
-                // Construct anisotropy tensor: b_ij = sum_n G_n * T^n_ij
-                double b_xx = 0.0, b_xy = 0.0, b_yy = 0.0;
-                for (int n = 0; n < NUM_BASIS; ++n) {
-                    b_xx += G[n] * basis[basis_base + n*3 + 0];
-                    b_xy += G[n] * basis[basis_base + n*3 + 1];
-                    b_yy += G[n] * basis[basis_base + n*3 + 2];
-                }
-                
-                // Compute equivalent eddy viscosity
-                const double k_val = k[idx_cell];
-                const double dudy_v = dudy[idx_cell];
-                const double dvdx_v = dvdx[idx_cell];
-                const double Sxy = 0.5 * (dudy_v + dvdx_v);
-                
-                double nu_t_val = 0.0;
-                if (fabs(Sxy) > 1e-10) {
-                    nu_t_val = fabs(-b_xy * k_val / Sxy);
-                } else {
-                    // Fallback: use strain magnitude (Frobenius norm)
-                    const double dudx_v = dudx[idx_cell];
-                    const double dvdy_v = dvdy[idx_cell];
-                    const double Sxx = dudx_v;
-                    const double Syy = dvdy_v;
-                    const double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
-                    if (S_mag > 1e-10) {
-                        const double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                        nu_t_val = k_val * b_mag / S_mag;
-                    }
-                }
-                
-                // Clip to reasonable bounds
-                const double max_nu_t = 10.0 * nu_ref;
-                nu_t_val = (nu_t_val > 0.0) ? nu_t_val : 0.0;
-                nu_t_val = (nu_t_val < max_nu_t) ? nu_t_val : max_nu_t;
-                
-                // Check for NaN/Inf
-                if (nu_t_val != nu_t_val || nu_t_val > 1e30) {
-                    nu_t_val = 0.0;
-                }
-                
-                nu_t[idx_cell] = nu_t_val;
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int ii = idx % Nx;
+            const int jj = (idx / Nx) % Ny;
+            const int kk = idx / (Nx * Ny);
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int kp = kk + Ng;
+            const int idx_cell = kp * cell_plane_stride + j * cell_stride + i;
+
+            // Extract G coefficients from NN output
+            double G[NUM_BASIS] = {0.0, 0.0, 0.0, 0.0};
+            const int out_base = idx * output_dim;
+            for (int n = 0; n < NUM_BASIS && n < output_dim; ++n) {
+                G[n] = nn_outputs[out_base + n];
             }
+
+            const int basis_base = idx * 12;
+
+            double b_xx = 0.0, b_xy = 0.0, b_yy = 0.0;
+            for (int n = 0; n < NUM_BASIS; ++n) {
+                b_xx += G[n] * basis[basis_base + n*3 + 0];
+                b_xy += G[n] * basis[basis_base + n*3 + 1];
+                b_yy += G[n] * basis[basis_base + n*3 + 2];
+            }
+
+            const double k_val = k[idx_cell];
+            const double dudy_v = dudy[idx_cell];
+            const double dvdx_v = dvdx[idx_cell];
+            const double Sxy = 0.5 * (dudy_v + dvdx_v);
+
+            double nu_t_val = 0.0;
+            if (fabs(Sxy) > 1e-10) {
+                nu_t_val = fabs(-b_xy * k_val / Sxy);
+            } else {
+                const double dudx_v = dudx[idx_cell];
+                const double dvdy_v = dvdy[idx_cell];
+                const double Sxx = dudx_v;
+                const double Syy = dvdy_v;
+                const double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+                if (S_mag > 1e-10) {
+                    const double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                    nu_t_val = k_val * b_mag / S_mag;
+                }
+            }
+
+            const double max_nu_t = 10.0 * nu_ref;
+            nu_t_val = (nu_t_val > 0.0) ? nu_t_val : 0.0;
+            nu_t_val = (nu_t_val < max_nu_t) ? nu_t_val : max_nu_t;
+            if (nu_t_val != nu_t_val || nu_t_val > 1e30) {
+                nu_t_val = 0.0;
+            }
+
+            nu_t[idx_cell] = nu_t_val;
         }
     } else {
-        #pragma omp target teams distribute parallel for collapse(2) \
-            map(present: nn_outputs[0:(Nx*Ny*output_dim)], basis[0:(Nx*Ny*12)], \
+        #pragma omp target teams distribute parallel for \
+            map(present: nn_outputs[0:(n_cells*output_dim)], basis[0:(n_cells*12)], \
                          k[0:total_cells], dudx[0:total_cells], dudy[0:total_cells], \
                          dvdx[0:total_cells], dvdy[0:total_cells], nu_t[0:total_cells], \
                          tau_xx[0:total_cells], tau_xy[0:total_cells], tau_yy[0:total_cells])
-        for (int jj = 0; jj < Ny; ++jj) {
-            for (int ii = 0; ii < Nx; ++ii) {
-                const int i = ii + Ng;
-                const int j = jj + Ng;
-                const int idx_cell = j * cell_stride + i;
-                const int idx_out  = jj * Nx + ii;
-                
-                // Extract G coefficients from NN output
-                double G[NUM_BASIS] = {0.0, 0.0, 0.0, 0.0};
-                const int out_base = idx_out * output_dim;
-                for (int n = 0; n < NUM_BASIS && n < output_dim; ++n) {
-                    G[n] = nn_outputs[out_base + n];
-                }
-                
-                // Get basis tensors
-                const int basis_base = idx_out * 12;
-                
-                // Construct anisotropy tensor: b_ij = sum_n G_n * T^n_ij
-                double b_xx = 0.0, b_xy = 0.0, b_yy = 0.0;
-                for (int n = 0; n < NUM_BASIS; ++n) {
-                    b_xx += G[n] * basis[basis_base + n*3 + 0];
-                    b_xy += G[n] * basis[basis_base + n*3 + 1];
-                    b_yy += G[n] * basis[basis_base + n*3 + 2];
-                }
-                
-                // Compute Reynolds stresses
-                const double k_val = k[idx_cell];
-                const double k_safe = (k_val > 0.0) ? k_val : 0.0;
-                tau_xx[idx_cell] = 2.0 * k_safe * (b_xx + 1.0/3.0);
-                tau_xy[idx_cell] = 2.0 * k_safe * b_xy;
-                tau_yy[idx_cell] = 2.0 * k_safe * (b_yy + 1.0/3.0);
-                
-                // Compute equivalent eddy viscosity
-                const double dudy_v = dudy[idx_cell];
-                const double dvdx_v = dvdx[idx_cell];
-                const double Sxy = 0.5 * (dudy_v + dvdx_v);
-                
-                double nu_t_val = 0.0;
-                if (fabs(Sxy) > 1e-10) {
-                    nu_t_val = fabs(-b_xy * k_val / Sxy);
-                } else {
-                    // Fallback: use strain magnitude (Frobenius norm)
-                    const double dudx_v = dudx[idx_cell];
-                    const double dvdy_v = dvdy[idx_cell];
-                    const double Sxx = dudx_v;
-                    const double Syy = dvdy_v;
-                    const double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
-                    if (S_mag > 1e-10) {
-                        const double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
-                        nu_t_val = k_val * b_mag / S_mag;
-                    }
-                }
-                
-                // Clip to reasonable bounds
-                const double max_nu_t = 10.0 * nu_ref;
-                nu_t_val = (nu_t_val > 0.0) ? nu_t_val : 0.0;
-                nu_t_val = (nu_t_val < max_nu_t) ? nu_t_val : max_nu_t;
-                
-                // Check for NaN/Inf
-                if (nu_t_val != nu_t_val || nu_t_val > 1e30) {
-                    nu_t_val = 0.0;
-                }
-                
-                nu_t[idx_cell] = nu_t_val;
+        for (int idx = 0; idx < n_cells; ++idx) {
+            const int ii = idx % Nx;
+            const int jj = (idx / Nx) % Ny;
+            const int kk = idx / (Nx * Ny);
+            const int i = ii + Ng;
+            const int j = jj + Ng;
+            const int kp = kk + Ng;
+            const int idx_cell = kp * cell_plane_stride + j * cell_stride + i;
+
+            double G[NUM_BASIS] = {0.0, 0.0, 0.0, 0.0};
+            const int out_base = idx * output_dim;
+            for (int n = 0; n < NUM_BASIS && n < output_dim; ++n) {
+                G[n] = nn_outputs[out_base + n];
             }
+
+            const int basis_base = idx * 12;
+
+            double b_xx = 0.0, b_xy = 0.0, b_yy = 0.0;
+            for (int n = 0; n < NUM_BASIS; ++n) {
+                b_xx += G[n] * basis[basis_base + n*3 + 0];
+                b_xy += G[n] * basis[basis_base + n*3 + 1];
+                b_yy += G[n] * basis[basis_base + n*3 + 2];
+            }
+
+            const double k_val = k[idx_cell];
+            const double k_safe = (k_val > 0.0) ? k_val : 0.0;
+            tau_xx[idx_cell] = 2.0 * k_safe * (b_xx + 1.0/3.0);
+            tau_xy[idx_cell] = 2.0 * k_safe * b_xy;
+            tau_yy[idx_cell] = 2.0 * k_safe * (b_yy + 1.0/3.0);
+
+            const double dudy_v = dudy[idx_cell];
+            const double dvdx_v = dvdx[idx_cell];
+            const double Sxy = 0.5 * (dudy_v + dvdx_v);
+
+            double nu_t_val = 0.0;
+            if (fabs(Sxy) > 1e-10) {
+                nu_t_val = fabs(-b_xy * k_val / Sxy);
+            } else {
+                const double dudx_v = dudx[idx_cell];
+                const double dvdy_v = dvdy[idx_cell];
+                const double Sxx = dudx_v;
+                const double Syy = dvdy_v;
+                const double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+                if (S_mag > 1e-10) {
+                    const double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                    nu_t_val = k_val * b_mag / S_mag;
+                }
+            }
+
+            const double max_nu_t = 10.0 * nu_ref;
+            nu_t_val = (nu_t_val > 0.0) ? nu_t_val : 0.0;
+            nu_t_val = (nu_t_val < max_nu_t) ? nu_t_val : max_nu_t;
+            if (nu_t_val != nu_t_val || nu_t_val > 1e30) {
+                nu_t_val = 0.0;
+            }
+
+            nu_t[idx_cell] = nu_t_val;
         }
     }
 #else
     (void)nn_outputs; (void)basis; (void)k;
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
     (void)nu_t; (void)tau_xx; (void)tau_xy; (void)tau_yy;
-    (void)Nx; (void)Ny; (void)Ng; (void)cell_stride; (void)total_cells;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng;
+    (void)cell_stride; (void)cell_plane_stride; (void)total_cells;
     (void)output_dim; (void)nu_ref;
 #endif
 }

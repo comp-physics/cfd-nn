@@ -28,20 +28,27 @@ namespace gpu_kernels {
 //   etc.
 // ============================================================================
 void compute_gradients_from_mac_gpu(
-    const double* u_face,        // u at x-faces: (Ny+2Ng) × (Nx+2Ng+1)
-    const double* v_face,        // v at y-faces: (Ny+2Ng+1) × (Nx+2Ng)
-    double* dudx_cell,           // Output: cell-centered (Ny+2Ng) × (Nx+2Ng)
+    const double* u_face,        // u at x-faces
+    const double* v_face,        // v at y-faces
+    const double* w_face,        // w at z-faces (nullptr for 2D)
+    double* dudx_cell,           // Output: cell-centered gradients
     double* dudy_cell,
     double* dvdx_cell,
     double* dvdy_cell,
-    int Nx, int Ny,              // Interior dimensions
+    int Nx, int Ny, int Nz,      // Interior dimensions
     int Ng,                      // Ghost cells
-    double dx, double dy,        // Grid spacing
+    double dx, double dy, double dz, // Grid spacing
     int u_stride,                // u row stride = Nx+2Ng+1
     int v_stride,                // v row stride = Nx+2Ng
     int cell_stride,             // cell row stride = Nx+2Ng
+    int u_plane_stride,          // u plane stride (for 3D)
+    int v_plane_stride,          // v plane stride (for 3D)
+    int w_stride,                // w row stride (for 3D)
+    int w_plane_stride,          // w plane stride (for 3D)
+    int cell_plane_stride,       // cell plane stride (for 3D)
     int u_total_size,            // Total u array size
     int v_total_size,            // Total v array size
+    int w_total_size,            // Total w array size
     int cell_total_size,         // Total cell array size
     const double* dyc = nullptr, // Center-to-center y-spacing for stretched grids
     int dyc_size = 0             // Size of dyc array (for map clause)
@@ -58,11 +65,16 @@ void compute_mlp_scalar_features_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     const double* wall_distance,
-    const double* u_face, const double* v_face,  // For |u| computation
+    const double* u_face, const double* v_face,
+    const double* w_face,                  // w at z-faces (nullptr for 2D)
     double* features,                      // Output: n_cells * 6
-    int Nx, int Ny, int Ng,
-    int cell_stride, int u_stride, int v_stride,
-    int total_cells, int u_total, int v_total,
+    int Nx, int Ny, int Nz, int Ng,
+    int cell_stride, int cell_plane_stride,
+    int u_stride, int u_plane_stride,
+    int v_stride, int v_plane_stride,
+    int w_stride, int w_plane_stride,
+    int total_cells, int u_total, int v_total, int w_total,
+    double dx, double dy, double dz,
     double nu, double delta, double u_ref
 );
 
@@ -77,10 +89,11 @@ void compute_tbnn_features_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     const double* wall_distance,
-    double* features,                      // Output: Nx*Ny * 5
-    double* basis,                         // Output: Nx*Ny * 12 (4 basis tensors, 3 components each)
-    int Nx, int Ny, int Ng,
-    int cell_stride, int total_cells,
+    double* features,                      // Output: Nx*Ny*Nz * 5
+    double* basis,                         // Output: Nx*Ny*Nz * 12 (4 basis tensors, 3 components each)
+    int Nx, int Ny, int Nz, int Ng,
+    int cell_stride, int cell_plane_stride,
+    int total_cells,
     double nu, double delta
 );
 
@@ -92,9 +105,11 @@ void compute_tbnn_features_gpu(
 // ============================================================================
 void postprocess_mlp_outputs_gpu(
     const double* nn_outputs,              // Input: n_cells * 1 (interior only)
-    double* nu_t_field,                    // Output: (Nx+2Ng)*(Ny+2Ng) with ghosts
-    int Nx, int Ny, int Ng,
+    double* nu_t_field,                    // Output: full field with ghosts
+    int Nx, int Ny, int Nz, int Ng,
     int stride,                            // Row stride = Nx+2Ng
+    int plane_stride,                      // Plane stride for 3D
+    int total_field_size,                  // Total field array size
     double nu_t_max                        // Maximum eddy viscosity
 );
 
@@ -105,15 +120,16 @@ void postprocess_mlp_outputs_gpu(
 // Output: nu_t (with ghosts), optionally tau_ij (with ghosts)
 // ============================================================================
 void postprocess_nn_outputs_gpu(
-    const double* nn_outputs,              // Input: Nx*Ny * output_dim (interior only)
-    const double* basis,                   // Input: Nx*Ny * 12 (interior only)
+    const double* nn_outputs,              // Input: Nx*Ny*Nz * output_dim (interior only)
+    const double* basis,                   // Input: Nx*Ny*Nz * 12 (interior only)
     const double* k,                       // Input: total_cells (with ghosts)
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     double* nu_t,                          // Output: total_cells (with ghosts)
     double* tau_xx, double* tau_xy, double* tau_yy,  // Optional output (can be nullptr)
-    int Nx, int Ny, int Ng,
-    int cell_stride, int total_cells,
+    int Nx, int Ny, int Nz, int Ng,
+    int cell_stride, int cell_plane_stride,
+    int total_cells,
     int output_dim,
     double nu_ref                          // Reference viscosity for clipping
 );

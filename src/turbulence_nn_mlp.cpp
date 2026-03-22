@@ -38,7 +38,7 @@ void TurbulenceNNMLP::initialize_gpu_buffers(const Mesh& mesh) {
     // Fail fast if no GPU device available (GPU build requires GPU)
     gpu::verify_device_available();
     
-    const int n_cells = mesh.Nx * mesh.Ny;
+    const int n_cells = mesh.Nx * mesh.Ny * mesh.Nz;
     sync_weights_to_gpu();  // Upload MLP weights if not already done
     allocate_gpu_buffers(n_cells);
     gpu_ready_ = (mlp_.is_on_gpu() && buffers_on_gpu_);  // Set gpu_ready after successful allocation
@@ -64,7 +64,7 @@ void TurbulenceNNMLP::allocate_gpu_buffers(int n_cells) {
     int feature_dim = mlp_.input_dim();
     int output_dim = mlp_.output_dim();
     size_t workspace_size = mlp_.workspace_size(n_cells);
-    
+
     // Allocate CPU buffers
     features_flat_.resize(n_cells * feature_dim);
     outputs_flat_.resize(n_cells * output_dim);
@@ -130,7 +130,7 @@ void TurbulenceNNMLP::ensure_initialized(const Mesh& mesh) {
         feature_computer_.set_reference(nu_, delta_, u_ref_);
 
         // Allocate work buffers
-        int n_interior = mesh.Nx * mesh.Ny;
+        int n_interior = mesh.Nx * mesh.Ny * mesh.Nz;
         features_.resize(n_interior);
 
         initialized_ = true;
@@ -155,8 +155,9 @@ void TurbulenceNNMLP::update(
     
     const int Nx = mesh.Nx;
     const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
     [[maybe_unused]] const int Ng = mesh.Nghost;
-    [[maybe_unused]] const int n_cells = Nx * Ny;
+    [[maybe_unused]] const int n_cells = Nx * Ny * Nz;
     
 #ifdef USE_GPU_OFFLOAD
     // GPU path: require device_view and gpu_ready (host fallback forbidden)
@@ -174,33 +175,41 @@ void TurbulenceNNMLP::update(
     }
     
     {  // GPU pipeline scope
-    
+
     // Ensure GPU buffers are allocated
     allocate_gpu_buffers(n_cells);
-        
-        const int total_cells = (Nx + 2*Ng) * (Ny + 2*Ng);
+
+        const int total_cells = mesh.total_cells();
         const int u_total = velocity.u_total_size();
         const int v_total = velocity.v_total_size();
-        const int cell_stride = Nx + 2*Ng;
-        const int u_stride = Nx + 2*Ng + 1;
-        const int v_stride = Nx + 2*Ng;
-        
+        const int w_total = velocity.w_total_size();
+        const int cell_stride = mesh.total_Nx();
+        const int cell_plane_stride = mesh.total_Nx() * mesh.total_Ny();
+        const int u_stride = velocity.u_stride();
+        const int u_plane_stride = velocity.u_plane_stride();
+        const int v_stride = velocity.v_stride();
+        const int v_plane_stride = velocity.v_plane_stride();
+        const int w_stride = velocity.w_stride();
+        const int w_plane_stride = velocity.w_plane_stride();
+
         // Step 1: Compute gradients on GPU (using solver-owned buffers)
         {
             TIMED_SCOPE("nn_mlp_gradients_gpu");
             gpu_kernels::compute_gradients_from_mac_gpu(
-                device_view->u_face, device_view->v_face,
+                device_view->u_face, device_view->v_face, device_view->w_face,
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
-                Nx, Ny, Ng,
-                mesh.dx, mesh.dy,
+                Nx, Ny, Nz, Ng,
+                mesh.dx, mesh.dy, mesh.dz,
                 u_stride, v_stride, cell_stride,
-                u_total, v_total, total_cells,
+                u_plane_stride, v_plane_stride,
+                w_stride, w_plane_stride, cell_plane_stride,
+                u_total, v_total, w_total, total_cells,
                 device_view->dyc,
                 device_view->dyc_size
             );
         }
-        
+
         // Step 2: Compute features on GPU
         {
             TIMED_SCOPE("nn_mlp_features_gpu");
@@ -211,14 +220,19 @@ void TurbulenceNNMLP::update(
                 device_view->k, device_view->omega,
                 device_view->wall_distance,
                 device_view->u_face, device_view->v_face,
-                feat_ptr,  // Output: n_cells * 6 (already on GPU)
-                Nx, Ny, Ng,
-                cell_stride, u_stride, v_stride,
-                total_cells, u_total, v_total,
+                device_view->w_face,
+                feat_ptr,
+                Nx, Ny, Nz, Ng,
+                cell_stride, cell_plane_stride,
+                u_stride, u_plane_stride,
+                v_stride, v_plane_stride,
+                w_stride, w_plane_stride,
+                total_cells, u_total, v_total, w_total,
+                mesh.dx, mesh.dy, mesh.dz,
                 nu_, delta_, u_ref_
             );
         }
-        
+
         // Step 3: Run NN inference on GPU
         {
             TIMED_SCOPE("nn_mlp_inference_gpu");
@@ -227,17 +241,19 @@ void TurbulenceNNMLP::update(
             double* work_ptr = workspace_.data();
             mlp_.forward_batch_gpu(feat_ptr, out_ptr, n_cells, work_ptr);
         }
-        
+
         // Step 4: Postprocess outputs and write to nu_t field on GPU
         {
             TIMED_SCOPE("nn_mlp_postprocess_gpu");
             double* out_ptr = outputs_flat_.data();
-            
+
             gpu_kernels::postprocess_mlp_outputs_gpu(
-                out_ptr,             // NN outputs (n_cells * 1)
-                device_view->nu_t,   // nu_t field on device (with ghosts)
-                Nx, Ny, Ng,
+                out_ptr,
+                device_view->nu_t,
+                Nx, Ny, Nz, Ng,
                 cell_stride,
+                cell_plane_stride,
+                total_cells,
                 nu_t_max_
             );
         }

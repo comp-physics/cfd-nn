@@ -157,19 +157,20 @@ void TurbulenceGEP::update(const Mesh& mesh,
         const int Ny = mesh.Ny;
         const int Ng = mesh.Nghost;
         const int cell_stride = mesh.total_Nx();
-        const size_t cell_total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
-        const size_t u_total_size = (size_t)mesh.total_Ny() * (mesh.total_Nx() + 1);
-        const size_t v_total_size = (size_t)(mesh.total_Ny() + 1) * mesh.total_Nx();
-        
+        const int cell_total_size = device_view->cell_total;
         // First compute gradients on GPU
         gpu_kernels::compute_gradients_from_mac_gpu(
-            device_view->u_face, device_view->v_face,
+            device_view->u_face, device_view->v_face, device_view->w_face,
             device_view->dudx, device_view->dudy,
             device_view->dvdx, device_view->dvdy,
-            Nx, Ny, Ng,
-            mesh.dx, mesh.dy,
+            Nx, Ny, device_view->Nz, Ng,
+            mesh.dx, mesh.dy, mesh.dz,
             device_view->u_stride, device_view->v_stride, cell_stride,
-            u_total_size, v_total_size, cell_total_size,
+            device_view->u_plane_stride, device_view->v_plane_stride,
+            device_view->w_stride, device_view->w_plane_stride,
+            device_view->cell_plane_stride,
+            device_view->u_total, device_view->v_total, device_view->w_total,
+            device_view->cell_total,
             device_view->dyc,
             device_view->dyc_size
         );
