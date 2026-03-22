@@ -613,6 +613,7 @@ add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS med
     add_nncfd_test(test_les_tgv TEST_NAME_SUFFIX LESTGVTest LABELS medium)
     add_nncfd_test(test_vtk_output TEST_NAME_SUFFIX VTKOutputTest LABELS fast)
     add_nncfd_test(test_backend_unified LABELS fast)
+    add_nncfd_test(test_nn_models TEST_NAME_SUFFIX NNModelsTest LABELS fast)
     add_nncfd_test(test_residual_consistency LABELS fast)
     add_nncfd_test(test_mesh_edge_cases LABELS fast)
     add_nncfd_test(test_error_recovery LABELS fast)
