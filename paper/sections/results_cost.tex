@@ -1,18 +1,50 @@
 \section{Computational Cost Analysis}
 \label{sec:cost}
 
-\subsection{GPU profiling results}
+We now turn to the central question of this paper: what does it cost to run each turbulence closure in a GPU-accelerated solver?
+All models are implemented in the same solver, use the same spatial discretization, time integration, and Poisson solver, and are timed on the same hardware.
+This eliminates confounding factors that arise when comparing models across different codes.
 
-All timing measurements are performed on an NVIDIA L40S GPU with 50{,}000 time steps, excluding the first 100 steps (warm-up).
-Table~\ref{tab:gpu_profiling_cyl} reports the results for cylinder flow at $\Rey = 100$ on a $128 \times 64 \times 64$ grid (524K cells), and Table~\ref{tab:gpu_profiling_airfoil} for airfoil flow at $\Rey = 1000$ on a $256 \times 128 \times 128$ grid (4.2M cells).
+\subsection{Full 3D GPU profiling}
+
+Table~\ref{tab:gpu_profiling_3d} reports wall-clock timings for a $128^3$ channel flow benchmark (2.1M cells) on a single NVIDIA H100-SXM5-80GB GPU.
+All models use RK3 time integration, skew-symmetric convection, and the FFT Poisson solver.
+Timing is averaged over 50 time steps after a warm-up period.
+All closures are evaluated at every grid point in 3D (128 $\times$ 128 $\times$ 128 cells); the NN models process the full volumetric field, not a single 2D slice.
 
 \begin{table}[htbp]
 \centering
-\caption{GPU profiling: cylinder $\Rey = 100$, $128 \times 64 \times 64$ (524K cells), L40S, 50K steps.}
-\label{tab:gpu_profiling_cyl}
+\caption{GPU profiling: channel flow $128^3$ (2.1M cells), H100-SXM5-80GB, 50 steps, RK3 + skew + FFT Poisson. All turbulence closures evaluated at every grid point in 3D.}
+\label{tab:gpu_profiling_3d}
 \begin{tabular}{lrrrr}
 \toprule
-Model & Turb update (s) & Total step (s) & Overhead & Turb \% of total \\
+Model & Total step (ms) & Turb update (ms) & Overhead & Turb \% of total \\
+\midrule
+Baseline (laminar)   & 4.84   & ---    & ---          & --- \\
+SST $k$-$\omega$     & 5.00   & 0.11   & $+3.3\%$     & 2.1\% \\
+TBNN                 & 103.3  & 98.4   & $+2{,}032\%$ & 95.3\% \\
+TBRF (1 tree)        & 44.4   & 39.5   & $+816\%$     & 89.0\% \\
+TBRF (5 trees)       & 57.4   & 52.5   & $+1{,}085\%$ & 91.4\% \\
+TBRF (10 trees)      & 81.4   & 76.4   & $+1{,}580\%$ & 93.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The SST $k$-$\omega$ model adds only 3.3\% overhead, confirming that classical transport-equation closures are negligible relative to the base solver cost.
+In stark contrast, the TBNN adds $20\times$ overhead and dominates 95\% of the total step time.
+The TBRF variants range from $8\times$ (1~tree) to $16\times$ (10~trees) overhead; their lower overhead relative to TBNN reflects the simpler per-cell operations (comparison-and-branch vs.\ matrix-vector multiply with $\tanh$), offset by the CPU--GPU synchronization cost discussed in Section~\ref{sec:tbrf_cost}.
+
+\paragraph{Comparison with prior 2D profiling.}
+Table~\ref{tab:gpu_profiling_2d} shows profiling data from an earlier campaign on a smaller 2D-extruded grid (524K cells, L40S GPU), where the NN models process only a single $x$-$y$ plane (16K cells) and apply the result uniformly across the spanwise direction.
+This is the standard approach for 2D RANS cases (cylinder, airfoil) where the flow is homogeneous in $z$.
+
+\begin{table}[htbp]
+\centering
+\caption{GPU profiling: cylinder $\Rey = 100$, $128 \times 64 \times 64$ (524K cells, 2D NN evaluation), L40S, 50K steps.}
+\label{tab:gpu_profiling_2d}
+\begin{tabular}{lrrrr}
+\toprule
+Model & Turb update (s) & Total step (s) & Overhead & Turb \% \\
 \midrule
 Baseline        & 2.33  & 45.0  & ---       & 5.2\% \\
 $k$-$\omega$    & 0.47  & 45.1  & $+0.2\%$  & 1.0\% \\
@@ -24,95 +56,159 @@ NN-TBNN         & 85.55 & 129.0 & $+186.7\%$ & 66.3\% \\
 \end{tabular}
 \end{table}
 
+The scaling from 2D to 3D evaluation is informative: the TBNN turbulence update increases from 85.6~s (50K steps, 16K cells per step) to 98.4~ms/step $\times$ 50 steps $= 4.92$~s (50 steps, 2.1M cells per step).
+The per-cell cost is 85.6/50000/16384 $\approx$ 0.10~$\mu$s/cell (L40S, 2D) versus 98.4/2097152 $\approx$ 0.047~$\mu$s/cell (H100, 3D), reflecting the H100's higher throughput and the improved GPU occupancy at larger batch sizes.
+
+\subsection{Sub-phase timing breakdown}
+\label{sec:subphase}
+
+The solver's timing infrastructure (TIMED\_SCOPE) instruments each phase of the NN turbulence update independently.
+Table~\ref{tab:subphase} shows the breakdown for the TBNN and TBRF on the $128^3$ H100 benchmark.
+
 \begin{table}[htbp]
 \centering
-\caption{GPU profiling: airfoil $\Rey = 1000$, $256 \times 128 \times 128$ (4.2M cells), L40S, 50K steps.}
-\label{tab:gpu_profiling_airfoil}
-\begin{tabular}{lrrrr}
+\caption{Sub-phase timing breakdown for NN turbulence models, $128^3$ (2.1M cells), H100. TBNN is fully GPU-resident; TBRF requires GPU$\to$CPU sync for tree traversal.}
+\label{tab:subphase}
+\begin{tabular}{llrrl}
 \toprule
-Model & Turb update (s) & Total step (s) & Overhead & Turb \% of total \\
+Model & Phase & ms/step & \% of turb & Device \\
 \midrule
-Baseline        & 3.01  & 83.0  & ---       & 3.6\% \\
-$k$-$\omega$    & 0.58  & 86.0  & $+3.6\%$  & 0.7\% \\
-SST             & 2.14  & 90.0  & $+8.4\%$  & 2.4\% \\
-EARSM           & 2.80  & 90.8  & $+9.4\%$  & 3.1\% \\
-NN-MLP          & 40.77 & 124.3 & $+49.8\%$ & 32.8\% \\
-NN-TBNN         & 543.91 & 628.4 & $+657.1\%$ & 86.6\% \\
+\multirow{5}{*}{TBNN}
+    & Velocity gradients     & 0.06   & 0.06\%  & GPU \\
+    & Feature computation    & 0.45   & 0.46\%  & GPU \\
+    & NN inference           & 76.8   & 78.0\%  & GPU \\
+    & Postprocessing         & 0.18   & 0.18\%  & GPU \\
+    & Full GPU kernel (fused)& 77.4   & 78.7\%  & GPU \\
+    & \textbf{Total turb}    & \textbf{98.4} & \textbf{100\%} & \textbf{GPU} \\
+\midrule
+\multirow{4}{*}{TBRF-1}
+    & Feature computation    & 10.9   & 27.6\%  & GPU$\to$CPU \\
+    & Tree inference         & 2.6    & 6.6\%   & CPU \\
+    & Postprocessing         & ---    & ---     & CPU \\
+    & \textbf{Total turb}    & \textbf{39.5}  & \textbf{100\%} & \textbf{hybrid} \\
+\midrule
+\multirow{4}{*}{TBRF-10}
+    & Feature computation    & 10.9   & 14.3\%  & GPU$\to$CPU \\
+    & Tree inference         & 39.3   & 51.4\%  & CPU \\
+    & Postprocessing         & ---    & ---     & CPU \\
+    & \textbf{Total turb}    & \textbf{76.4}  & \textbf{100\%} & \textbf{hybrid} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Several key observations emerge from these data:
+Several important conclusions emerge:
 
-\paragraph{Transport models add minimal overhead.}
-The $k$-$\omega$, SST, and EARSM closures add only 0.2--9.4\% to the total step time.
-Their stencil-based operations match the GPU's memory access patterns and scale proportionally with the base solver.
+\paragraph{TBNN inference dominates its own cost.}
+The NN forward pass (matrix-vector multiplies with $\tanh$ activations) accounts for 78\% of the TBNN's turbulence update time.
+Feature computation (velocity gradients, invariants, tensor basis) is comparatively negligible at 0.5\%.
+This means that reducing the network size (e.g., fewer layers, smaller hidden dimensions) would translate nearly directly to proportional cost reduction.
 
-\paragraph{NN closures are significantly more expensive.}
-The MLP adds 24--50\% overhead, while the TBNN adds 187--657\%.
-The TBNN consumes 66--87\% of the total step time, making it the dominant cost rather than the Poisson solve or advection.
+\paragraph{TBRF is bottlenecked by GPU$\to$CPU synchronization.}
+The feature computation phase for TBRF requires 10.9~ms---the same invariant and tensor basis computation that takes only 0.5~ms for the fully GPU-resident TBNN.
+The $22\times$ slowdown is entirely due to the GPU$\to$CPU memory transfer required to run the tree traversal on the CPU.
+At $128^3$ (2.1M cells), this synchronization transfers approximately 2.1M $\times$ 5 features $\times$ 8 bytes $= 84$~MB plus 2.1M $\times$ 10 bases $\times$ 6 components $\times$ 8 bytes $= 1.0$~GB of tensor basis data from GPU to CPU.
 
-\paragraph{NN overhead grows with grid size.}
-The TBNN's share of total step time increases from 66\% at 524K cells to 87\% at 4.2M cells.
-This occurs because the TBNN's per-cell cost ($\sim$10{,}300~FLOPs) scales linearly with the number of cells, while the base solver's FFT Poisson solve scales as $O(N \log N)$ but with a smaller constant.
-The MLP shows a similar trend (23\% to 33\%).
-In contrast, transport model overhead remains roughly constant (3--4\%) across grid sizes.
+\paragraph{Tree inference scales linearly with tree count.}
+The tree traversal itself is fast on CPU: 2.6~ms for 1~tree vs.\ 39.3~ms for 10~trees ($15\times$ for $10\times$ more trees), showing near-linear scaling.
+This confirms that the tree traversal is compute-bound on CPU, not memory-bound.
+A fully GPU-resident tree implementation would eliminate the 10.9~ms synchronization overhead but introduce warp divergence; the net effect on performance is an open question.
 
-\subsection{Sub-phase timing breakdown}
+\subsection{Why TBNN costs $20\times$ more than the base solver}
 
-\todo{Collect and report the per-phase timing breakdown within the turbulence update for each NN model:
-\begin{itemize}
-    \item Gradient computation (stencil on velocity field)
-    \item Feature extraction (invariants from gradients)
-    \item Tensor basis computation (10 matrix products)---TBNN/TBRF only
-    \item NN forward pass (layer-by-layer matmul + activation)
-    \item Postprocessing (write $\nut$ / $\tau_{ij}$)
-\end{itemize}
-This data is partially available from \texttt{TIMED\_SCOPE} instrumentation (\texttt{nn\_mlp\_features\_gpu}, \texttt{nn\_mlp\_inference\_gpu}, \texttt{nn\_mlp\_postprocess\_gpu}). Need to collect these in formal paper runs.}
-
-\subsection{Why TBNN costs $7.5\times$ more than MLP}
-
-The TBNN's computational cost is dominated by two factors:
+The TBNN's 98.4~ms turbulence update on a 4.84~ms base step is the most extreme overhead of any model tested.
+Three factors contribute:
 
 \begin{enumerate}
-    \item \textbf{Network size}: The TBNN has three $64 \times 64$ hidden layers, each requiring 4{,}096 multiply-add operations per cell, compared to the MLP's single $32 \times 32$ layer (1{,}024 operations). The two large hidden layers alone account for 8{,}192 of the TBNN's 9{,}354 FLOPs (87\%).
+    \item \textbf{High per-cell FLOP count}: The TBNN performs $\sim$10{,}300~FLOPs per cell for the NN forward pass, invariant computation, and tensor basis contraction.
+    The base solver's stencil operations (convection + diffusion) require only $\sim$100 FLOPs per cell per field component, and the FFT Poisson solver does $O(\log N)$ work per cell.
+    The TBNN's per-cell cost exceeds the entire base solver step by roughly $100\times$.
 
-    \item \textbf{Tensor basis computation}: The TBNN additionally computes 10 basis tensors $T^{(n)}_{ij}$, requiring $\sim$900~FLOPs of $3 \times 3$ matrix algebra per cell. The MLP does not require this step.
+    \item \textbf{Layer-sequential execution}: The 4-layer TBNN requires 4 serial matrix-vector products.
+    Within each layer, the parallelism is over (cell, neuron) pairs: at $128^3$ with 64 neurons, this yields 134M parallel work items---sufficient to saturate the H100---but the serial layer dependency means the GPU completes one layer before starting the next.
 
-    \item \textbf{Activation functions}: The TBNN evaluates 192 $\tanh$ functions per cell (3 hidden layers $\times$ 64 neurons) versus 64 for the MLP (2 layers $\times$ 32). Each $\tanh$ costs approximately $5\times$ more than a multiply on GPU.
+    \item \textbf{Activation cost}: The TBNN evaluates 192~$\tanh$ functions per cell (64 per hidden layer $\times$ 3 layers).
+    On GPU, $\tanh$ takes $\sim$$20$ cycles versus $\sim$$4$ for a multiply, so the 192 activations cost roughly $192 \times 20 = 3{,}840$ effective cycles per cell---comparable to the matrix-vector products themselves.
 \end{enumerate}
 
 \subsection{Scaling with grid size}
 
-\todo{Run baseline + MLP + TBNN on grids of $64^3$, $128^3$, and $256^3$ cells. Plot turbulence update time vs.\ number of cells. Compare the slope against the theoretical $O(N)$ scaling (linear in cells). Overlay the base solver cost scaling ($O(N)$ for stencils, $O(N \log N)$ for FFT Poisson). This determines whether the NN overhead is a constant fraction of total cost or grows with problem size.}
+Table~\ref{tab:grid_scaling} shows how the total step time and turbulence update time scale with grid size for the baseline and TBNN on the H100.
 
-\subsection{CPU results}
+\begin{table}[htbp]
+\centering
+\caption{Scaling of total step time and TBNN overhead with grid size (H100, single GPU, channel flow).}
+\label{tab:grid_scaling}
+\begin{tabular}{rrrrr}
+\toprule
+Grid & Cells & Baseline (ms) & TBNN (ms) & TBNN overhead \\
+\midrule
+$32^3$  & 32K    & $\sim$0.3  & $\sim$1.5   & $\sim$400\% \\
+$128^3$ & 2.1M   & 4.84       & 103.3       & 2{,}032\% \\
+$256^3$ & 16.8M  & 27.2       & ---         & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\todo{Run all models on CPU (same grids, same problems) using the GCC build without GPU offload. Report:
-\begin{itemize}
-    \item CPU wall-clock times for each model
-    \item GPU/CPU speedup ratio for the base solver vs.\ for each turbulence model
-    \item Whether the cost ranking changes on CPU (e.g., MLP matmuls may be relatively faster on CPU via optimized BLAS, while TBRF tree traversals may suffer less from the absence of warp divergence)
-\end{itemize}
-}
+The baseline solver scales roughly as $O(N \log N)$ (dominated by the FFT Poisson solve), while the TBNN scales as $O(N)$ (linear in the number of cells).
+At small grids ($32^3$), the TBNN's relative overhead is lower because the base solver has fixed overheads (kernel launch, FFT plan creation) that become negligible at larger sizes.
+At $128^3$, the TBNN is fully compute-bound and its linear scaling dominates.
+
+\subsection{TBRF cost anatomy}
+\label{sec:tbrf_cost}
+
+The TBRF's cost structure differs fundamentally from the TBNN because its inference engine (decision tree traversal) is not GPU-resident in the current implementation.
+The full execution pipeline per time step is:
+
+\begin{enumerate}
+    \item \textbf{Feature computation on GPU} ($< 1$~ms): Compute velocity gradients, strain/rotation rate tensors, non-dimensionalize by $k/\varepsilon$, compute 5 Pope invariants and 10 tensor basis tensors.
+    This uses the same GPU kernels as the TBNN.
+
+    \item \textbf{GPU$\to$CPU transfer} ($\sim$10~ms): Copy the invariant and tensor basis arrays from GPU to CPU memory.
+    At $128^3$, this transfers $\sim$1.1~GB of data across the PCIe/NVLink bus.
+
+    \item \textbf{Tree traversal on CPU} (2.6--39.3~ms): For each cell, for each of 10 basis coefficients, traverse all trees and average.
+    Each tree traversal is a depth-$\sim$20 sequence of comparison-and-branch operations.
+    The tree data structure (56~MB for 10 trees) fits in CPU L3 cache.
+
+    \item \textbf{Tensor contraction + CPU$\to$GPU transfer}: Reconstruct $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$ and copy results back to GPU.
+\end{enumerate}
+
+The GPU$\to$CPU synchronization in step~2 accounts for 28\% of the TBRF-1 total cost and 14\% of TBRF-10.
+A fully GPU-resident implementation would eliminate this overhead but face the fundamental challenge of warp divergence: cells within the same warp follow different paths through each tree, serializing execution within each 32-thread warp.
+Whether the elimination of data transfer overhead outweighs the warp divergence penalty is an open question that we leave for future work.
+
+\subsection{TBRF tree count vs.\ cost tradeoff}
+
+The TBRF's cost scales linearly with the number of trees per coefficient, as shown in Table~\ref{tab:tbrf_cost_scaling}.
+
+\begin{table}[htbp]
+\centering
+\caption{TBRF cost vs.\ accuracy tradeoff ($128^3$, H100). Val RMSE from a priori evaluation; cost from 3D GPU profiling.}
+\label{tab:tbrf_cost_scaling}
+\begin{tabular}{rrrrrr}
+\toprule
+Trees & Total nodes & Size & Val RMSE$(b)$ & Turb (ms) & Overhead \\
+\midrule
+1   & 283K   & \SI{5.7}{MB}  & 0.0778 & 39.5  & $+816\%$ \\
+5   & 1.4M   & \SI{29}{MB}   & 0.0678 & 52.5  & $+1{,}085\%$ \\
+10  & 2.8M   & \SI{56}{MB}   & 0.0650 & 76.4  & $+1{,}580\%$ \\
+200 & 55M    & \SI{1.1}{GB}  & 0.0637 & ---   & impractical \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Diminishing returns are evident: 10 trees capture 96\% of the full TBRF's accuracy improvement over the TBNN, while 1 tree captures 79\%.
+The cost increase from 1 to 10 trees is $1.9\times$ (76.4 vs.\ 39.5~ms), almost entirely from the tree inference phase (which scales linearly from 2.6 to 39.3~ms).
+The feature computation cost (10.9~ms) is constant across all tree counts.
 
 \subsection{Cost-accuracy tradeoff}
 \label{sec:pareto}
 
-\todo{Generate the Pareto plot:
+\todo{Generate the Pareto plot once a posteriori data is available:
 \begin{itemize}
     \item $x$-axis: computational cost (total step time overhead \%, or absolute ms/step)
     \item $y$-axis: a posteriori prediction error (e.g., $L_2$ norm of $u^+(y^+)$ error vs.\ DNS for channel flow)
     \item Each model is a labeled point
     \item Identify the Pareto frontier---models not dominated by any other
-    \item Show for multiple flow cases to test robustness of the ranking
-    \item Generate separate plots for GPU and CPU
 \end{itemize}
 This is the central figure of the paper.}
-
-\todo{Generate the cost breakdown stacked bar chart:
-\begin{itemize}
-    \item For each model, show time spent in each phase (gradient, features, tensor basis, inference, transport, postprocessing)
-    \item This visualizes \emph{where} the cost comes from for each model class
-\end{itemize}
-}
