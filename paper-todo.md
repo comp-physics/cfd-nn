@@ -62,10 +62,10 @@ Full details in `docs/paper/paper_roadmap.md`.
 - [ ] Fig 1: Solver architecture diagram (fractional-step pipeline + closure plug-in)
 - [ ] Fig 2: Model architecture diagrams (MLP, TBNN, TBRF side-by-side)
 - [ ] Fig 3: Solver throughput vs CaNS benchmark
-- [ ] Fig 4: Training/validation curves
-- [ ] Fig 5: Test set scatter (predicted vs true b_ij)
-- [ ] Fig 6: Lumley triangle
-- [ ] Fig 7: PI-TBNN beta sweep
+- [x] Fig 4: Training/validation curves — DONE (scripts/paper/plot_training_curves.py)
+- [x] Fig 5: Test set scatter (predicted vs true b_ij) — DONE (scripts/paper/plot_apriori.py, submitted job 5345335)
+- [x] Fig 6: Lumley triangle — DONE (same script)
+- [x] Fig 7: PI-TBNN beta sweep — DONE (plot_training_curves.py)
 - [ ] Fig 8: Channel u⁺(y⁺) profiles vs DNS
 - [ ] Fig 9: Channel Reynolds stress profiles vs DNS
 - [ ] Fig 10: Hills velocity profiles at x-stations
@@ -79,31 +79,31 @@ Full details in `docs/paper/paper_roadmap.md`.
 
 ## Tables
 
-- [ ] Tab 1: Model summary (architecture, params, FLOPs/cell, size, deployability)
-- [ ] Tab 2: A priori RMSE (val + test, overall + per-component)
+- [x] Tab 1: Model summary — DONE (results/paper/tables/table1_model_summary.tex)
+- [x] Tab 2: A priori RMSE (val + test) — DONE (in paper/sections/results_apriori.tex)
 - [ ] Tab 3: A posteriori error metrics (all models × all cases)
-- [ ] Tab 4: Wall-clock profiling — GPU
+- [x] Tab 4: Wall-clock profiling — GPU — DONE (table4a_cylinder.tex, table4b_airfoil.tex)
 - [ ] Tab 5: Wall-clock profiling — CPU
 - [ ] Tab 6: Sub-phase timing breakdown
 - [ ] Tab 7: Our throughput vs CaNS
-- [ ] Tab 8: TBRF tree count sweep
-- [ ] Tab 9: PI-TBNN beta sweep
+- [x] Tab 8: TBRF tree count sweep — DONE (table8_tbrf_sweep.tex)
+- [x] Tab 9: PI-TBNN beta sweep — DONE (table9_pi_tbnn_sweep.tex)
 - [ ] Tab 10: GPU vs CPU speedup by closure type
 
 ## Writing
 
-- [ ] Introduction
-- [ ] Methods: solver architecture + CaNS comparison
-- [ ] Methods: classical closures (with operation counts)
-- [ ] Methods: NN architectures
-- [ ] Methods: training procedure
-- [ ] Methods: solver integration + cost model (computational anatomy)
-- [ ] Results: solver validation
-- [ ] Results: a priori evaluation
-- [ ] Results: a posteriori evaluation
-- [ ] Results: computational cost analysis
-- [ ] Results: cost-accuracy tradeoff (Pareto)
-- [ ] Discussion
-- [ ] Conclusions
-- [ ] Abstract
-- [ ] Appendix: full training methodology
+- [x] Introduction — DONE (paper/sections/introduction.tex)
+- [x] Methods: solver architecture + CaNS comparison — DONE (methods_solver.tex)
+- [x] Methods: classical closures (with operation counts) — DONE (methods_closures.tex)
+- [x] Methods: NN architectures — DONE (methods_closures.tex)
+- [x] Methods: training procedure — DONE (methods_training.tex)
+- [x] Methods: solver integration + cost model (computational anatomy) — DONE (methods_closures.tex)
+- [ ] Results: solver validation — needs CaNS benchmark
+- [x] Results: a priori evaluation — DONE (results_apriori.tex, updated with test results)
+- [ ] Results: a posteriori evaluation — needs solver runs
+- [x] Results: computational cost analysis — DONE (results_cost.tex, profiling tables)
+- [ ] Results: cost-accuracy tradeoff (Pareto) — needs a posteriori data
+- [x] Discussion — DONE (discussion.tex, updated with overfitting findings)
+- [x] Conclusions — DONE (conclusions.tex)
+- [x] Abstract — DONE (main.tex, updated with key findings)
+- [x] Appendix: full training methodology — DONE (appendix.tex)
