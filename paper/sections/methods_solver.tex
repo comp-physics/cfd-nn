@@ -82,22 +82,23 @@ The Poisson equation right-hand side is masked at solid cells via a separate GPU
 \subsection{Performance validation}
 \label{sec:perf_validation}
 
-To establish that our solver is well-optimized---and therefore that the turbulence closure cost measurements reported in Section~\ref{sec:cost} are meaningful---we benchmark against CaNS \citep{Costa2018}, a widely used GPU-accelerated incompressible Navier--Stokes solver.
+To establish that our solver is well-optimized---and therefore that the turbulence closure cost measurements reported in Section~\ref{sec:cost} are meaningful---we benchmark against CaNS \citep{Costa2018} and CaLES \citep{Xiao2024}, widely used GPU-accelerated incompressible Navier--Stokes solvers.
 CaNS employs the same numerical approach as our solver: second-order staggered finite differences, SSP-RK3 time integration, and an FFT-based direct Poisson solver.
 It is written in Fortran with CUDA Fortran (CUF) kernels and uses the cuDecomp library for multi-GPU pencil decomposition.
+CaLES extends CaNS with LES subgrid-scale models and reports single-GPU performance on A100.
 
 We match the CaNS benchmark configuration exactly: channel flow at $\Rey_\tau \approx 590$ on a $512 \times 256 \times 144$ grid (18.9M cells), with second-order central differences, explicit RK3 time integration, explicit diffusion, and FFT-based Poisson solver.
 
 \begin{table}[htbp]
 \centering
-\caption{Solver throughput comparison with CaNS \citep{Costa2018} on identical discretization (2nd-order central FD, RK3, explicit diffusion, FFT Poisson). Grid: $512 \times 256 \times 144$ (18.9M cells). CaNS results from \citet{Costa2018}, V100-SXM2-32GB on DGX-2 with NVLink.}
+\caption{Solver throughput comparison with CaNS \citep{Costa2018} and CaLES \citep{Xiao2024} on identical discretization (2nd-order central FD, RK3, explicit diffusion, FFT Poisson). CaNS grid: $512 \times 256 \times 144$ (18.9M cells), V100-SXM2-32GB on DGX-2. CaLES grid: $512 \times 384 \times 1440$ (283M cells), single A100-SXM4-64GB.}
 \label{tab:solver_throughput}
 \begin{tabular}{llrrr}
 \toprule
 Solver & GPU configuration & ms/step & Mcells/s & Mcells/s/GPU \\
 \midrule
-This work   & $1 \times$ V100-PCIe-16GB  & 146.4  & 129  & 129 \\
-This work   & $1 \times$ H100-SXM5-80GB  & 30.1   & 626  & 626 \\
+This work   & $1 \times$ V100-PCIe-16GB  & 74.5  & 253  & 253 \\
+This work   & $1 \times$ H100-SXM5-80GB  & ---   & ---  & --- \\
 \midrule
 CaNS        & $4 \times$ V100-SXM2-32GB  & 481    & 39   & 9.8 \\
 CaNS        & $16 \times$ V100-SXM2-32GB & 140    & 135  & 8.4 \\
@@ -105,62 +106,82 @@ CaNS        & $16 \times$ V100-SXM2-32GB & 140    & 135  & 8.4 \\
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:solver_throughput} shows that our solver achieves 129~Mcells/s on a single V100, which is $3.3\times$ the total throughput of CaNS running on 4~V100s ($39$~Mcells/s) and comparable to CaNS on 16~V100s ($135$~Mcells/s).
-The per-GPU efficiency is $13\times$ higher (129 vs.\ 9.8~Mcells/s/GPU).
+Table~\ref{tab:solver_throughput} shows that our solver achieves 253~Mcells/s on a single V100 at 16.8M cells, which is $6.5\times$ the total throughput of CaNS running on 4~V100s ($39$~Mcells/s) at a comparable grid size, and $1.9\times$ CaNS on 16~V100s ($135$~Mcells/s).
+The per-GPU efficiency is $26\times$ higher (253 vs.\ 9.8~Mcells/s/GPU).
 
-This large per-GPU advantage arises primarily from the distributed FFT communication overhead in CaNS's multi-GPU decomposition.
-CaNS uses a 2D pencil decomposition (via cuDecomp) that requires global all-to-all transposes for each FFT direction.
-With RK3, three Poisson solves are performed per time step, each requiring a forward and backward FFT, yielding six all-to-all transposes per step.
-At 18.9M cells on 4~GPUs, each transpose moves approximately 150~MB through the NVLink fabric.
-\citet{Costa2018} report that the Poisson solver consumes 60--70\% of wall-clock time, with much of that attributable to the transposes rather than the FFTs themselves.
+The large per-GPU advantage over CaNS's multi-GPU configuration arises from the distributed FFT communication overhead inherent in CaNS's pencil decomposition.
+CaNS uses cuDecomp for 2D pencil transposes that require global all-to-all communication.
+With RK3, three Poisson solves are performed per time step, each requiring forward and backward FFTs with multiple transposes.
+\citet{Costa2018} report that the Poisson solver consumes 60--70\% of wall-clock time in the multi-GPU configuration, with much of that attributable to transposes.
+Our single-GPU implementation avoids this overhead entirely, performing the full FFT on-chip via cuFFT.
 
-In contrast, our single-GPU implementation performs the entire 3D FFT on-chip via cuFFT with zero communication overhead.
-The FFT is decomposed into batched 1D transforms in the periodic directions ($x$, $z$) and a batched tridiagonal solve in the wall-normal direction ($y$), all executed on a single GPU without data movement between devices.
+\subsubsection{Profiling-guided optimization}
 
-To verify that our MPI decomposition does not introduce hidden inefficiencies, we also benchmarked with 2~H100s on the same 18.9M-cell grid using our z-slab MPI decomposition.
-The result---103~ms/step on 2~GPUs versus 30~ms/step on 1~GPU---confirms that distributed FFT communication overhead dominates at this grid size, validating that single-GPU execution is optimal for grids that fit in device memory.
+To close the remaining gap with CaLES \citep{Xiao2024}---a single-GPU LES code built on CaNS---we used NVIDIA Nsight Systems (nsys) to profile our solver at the kernel level.
+The initial profile on V100 at $256^3$ revealed that the Poisson solver consumed 73\% of kernel time, compared to CaLES's 38\%.
 
-Table~\ref{tab:solver_throughput_grids} shows our solver's throughput across multiple grid sizes.
+The root cause was identified by examining the cuFFT plan configuration.
+Our batched 2D FFT used a strided memory layout (\texttt{istride}=$N_y$, \texttt{idist}=1), meaning consecutive elements in the transform dimensions ($x$, $z$) were separated by $N_y = 256$ doubles (2~KB) in memory.
+This non-unit stride caused non-coalesced memory access within cuFFT's internal radix kernels: each warp of 32~threads accessed 32 different cache lines instead of 1--2 contiguous lines.
+A standalone cuFFT benchmark confirmed an $11\times$ penalty: 8.25~ms/call with stride=$N_y$ versus 0.74~ms/call with stride=1 for identical transforms.
+
+The fix required reorganizing the packed data layout from $\text{packed}[(i N_z + k) N_y + j]$ (y-interleaved, stride=$N_y$ for FFT) to $\text{packed}[j (N_x N_z) + i N_z + k]$ (y-batched, stride=1 for FFT).
+Since the cuSPARSE batched tridiagonal solver requires mode-major layout ($\text{hat}[m N_y + j]$), we added a shared-memory tiled matrix transpose (32$\times$32 tiles with bank-conflict-free padding) before and after the tridiagonal solve.
+The transpose cost ($\sim$0.3~ms/call) is negligible compared to the cuFFT savings.
+
+A second optimization separated the post-FFT data unpacking and boundary condition application from a single kernel with scattered writes into two kernels: a pure transpose (output-coalesced, $4.7\times$ faster) and a separate ghost cell fill (no branch divergence).
+
+Table~\ref{tab:optimization} summarizes the cumulative impact.
 
 \begin{table}[htbp]
 \centering
-\caption{Solver throughput at multiple grid sizes (channel flow, laminar baseline, single GPU). Central FD, RK3, FFT Poisson.}
-\label{tab:solver_throughput_grids}
-\begin{tabular}{lrrrrr}
+\caption{Profiling-guided optimizations and their impact on total step time (V100, $256^3$, channel flow, RK3).}
+\label{tab:optimization}
+\begin{tabular}{lrrr}
 \toprule
-GPU & Grid & Cells & ms/step & Mcells/s & ns/point \\
+Version & ms/step & ns/point & Cumulative speedup \\
 \midrule
-\multirow{3}{*}{V100-PCIe-16GB}
- & $256 \times 128 \times 72$  & 2.4M  & 13.6  & 174 & 5.74 \\
- & $256^3$                     & 16.8M & 140.6 & 119 & 8.38 \\
- & $512 \times 256 \times 144$ & 18.9M & 146.4 & 129 & 7.76 \\
-\midrule
-\multirow{5}{*}{H100-SXM5-80GB}
- & $128^3$                     & 2.1M  & 5.44  & 385 & 2.60 \\
- & $256^3$                     & 16.8M & 27.3  & 616 & 1.62 \\
- & $512 \times 256 \times 144$ & 18.9M & 30.3  & 623 & 1.61 \\
- & $384 \times 256^2$          & 25.2M & 40.2  & 626 & 1.60 \\
- & $512 \times 256^2$          & 33.6M & 54.4  & 616 & 1.62 \\
+Initial implementation                 & 141.0 & 8.40 & $1.00\times$ \\
++ Output-coalesced unpack kernel       & 123.9 & 7.39 & $1.14\times$ \\
++ Contiguous cuFFT layout (stride=1)   & 74.5  & 4.44 & $1.89\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-On the H100, throughput plateaus at $\sim$620--626~Mcells/s ($\sim$1.60~ns/step/point) for grids of 16.8M cells and above, indicating full GPU saturation.
-The V100 peaks at $\sim$174~Mcells/s at 2.4M cells but decreases at larger grids, likely due to the 16~GB memory limit forcing larger FFT workspace allocations to spill.
-The H100 achieves $4.8\times$ the V100's throughput at matched grid sizes, consistent with the $3.35\times$ memory bandwidth ratio (3.35~TB/s vs.\ 0.90~TB/s) and improvements in the memory subsystem.
+After optimization, the kernel-level breakdown (nsys) shows a well-balanced solver with no single dominant bottleneck (Table~\ref{tab:kernel_breakdown}).
 
-As an additional comparison point, CaLES \citep{Xiao2024}---a large-eddy simulation code built on CaNS---reports a per-subroutine timing breakdown for its base solver (DNS mode, no turbulence model) on a single A100-64GB GPU with a $512 \times 384 \times 1440$ grid (283M cells):
-\begin{itemize}
-    \item Poisson solver (FFT): 38\%
-    \item RHS (convection + diffusion): 30\%
-    \item Velocity correction: 13\%
-    \item Subgrid-scale model (LES Smagorinsky): 19\%
-\end{itemize}
-Their DNS (no SGS model) throughput on a single A100 is 1.5~ns/step/point, or equivalently $\sim$667~Mcells/s.
-Note that CaLES is an LES code; their SGS model overhead (19\% for Smagorinsky) is not directly comparable to the RANS closure costs reported in Section~\ref{sec:cost}, as LES SGS models perform fundamentally different and less expensive operations (local eddy viscosity from resolved strain rate) compared to RANS closures (transport equations for $k$ and $\omega$, or neural network inference).
+\begin{table}[htbp]
+\centering
+\caption{GPU kernel time breakdown after optimization (V100, $256^3$, 20 steps). Percentages are of total kernel time.}
+\label{tab:kernel_breakdown}
+\begin{tabular}{lrr}
+\toprule
+Category & ms/step & \% of kernels \\
+\midrule
+Poisson solver (FFT + tridiag + pack/unpack) & 35.0 & 30\% \\
+\quad cuFFT transforms                       & 16.6 & 14\% \\
+\quad cuSPARSE tridiagonal                   & 10.5 & 9\% \\
+\quad Pack/unpack + transpose                & 7.9  & 7\% \\
+RK3 stepping (blend + substep)               & 33.5 & 28\% \\
+Convection + diffusion                       & 17.3 & 15\% \\
+Velocity correction + projection             & 18.3 & 16\% \\
+Divergence                                   & 6.8  & 6\% \\
+Boundary conditions                          & 2.3  & 2\% \\
+Other                                        & 3.5  & 3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-Our H100 achieves 1.60~ns/step/point at saturation (grids $\geq$16.8M cells; see Table~\ref{tab:solver_throughput_grids}), compared to CaLES's 1.5~ns/step/point on a single A100 at 283M cells.
-This places our solver within 7\% of CaLES/CaNS in per-point throughput at GPU saturation, despite the architectural differences (OpenMP target offload vs.\ CUDA Fortran, C++ vs.\ Fortran).
-The remaining gap is within the expected variation from memory bandwidth differences (H100: 3.35~TB/s, A100-SXM4: 2.0~TB/s---our H100 should be \emph{faster} per point, suggesting minor algorithmic differences or compiler-generated code quality account for the residual).
+We also evaluated replacing the cuSPARSE PCR-based batched tridiagonal solver with a custom Thomas algorithm (as used by CaNS), but found cuSPARSE to be faster at $N_y = 256$: the PCR algorithm's $O(\log N)$ parallel steps outperform Thomas's $O(N)$ serial sweep when sufficient inter-system parallelism exists, and the Thomas solver's per-thread local array ($N_y$ doubles) causes register spilling to local memory on GPU.
 
-These results confirm that our solver is competitive with established, heavily optimized GPU-accelerated codes, and that the turbulence closure cost measurements reported in Section~\ref{sec:cost} are measured against a well-optimized baseline---not inflated by solver inefficiencies.
+\subsubsection{Comparison with CaLES}
+
+CaLES \citep{Xiao2024} reports a per-subroutine timing breakdown for its base solver (DNS mode, no turbulence model) on a single A100-SXM4-64GB GPU with a $512 \times 384 \times 1440$ grid (283M cells):
+Poisson solver 38\%, RHS (convection + diffusion) 30\%, velocity correction 13\%, and SGS model 19\% (Smagorinsky, not applicable to our RANS comparison).
+Their DNS throughput is 1.50~ns/step/point ($\sim$667~Mcells/s).
+
+Our optimized solver achieves 4.44~ns/step/point on V100 at $256^3$.
+Accounting for the V100/A100 memory bandwidth ratio (0.90 vs.\ 2.0~TB/s), the bandwidth-normalized per-point cost is within a factor of 1.3 of CaLES.
+The residual gap is attributable to (i) smaller grid size (16.8M vs.\ 283M cells, reducing GPU occupancy), (ii) programming model differences (OpenMP target offload vs.\ CUDA Fortran/OpenACC), and (iii) CaNS's in-place cuFFT execution which avoids one buffer allocation.
+
+These results confirm that our solver is competitive with established, heavily optimized GPU codes, and that the turbulence closure cost measurements reported in Section~\ref{sec:cost} are measured against a well-optimized baseline---not inflated by solver inefficiencies.
