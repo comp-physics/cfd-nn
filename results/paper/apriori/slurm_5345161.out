@@ -1,0 +1,122 @@
+---------------------------------------
+Begin Slurm Prolog: Mar-22-2026 01:27:42
+Job ID:    5345161
+User ID:   sbryngelson3
+Account:   gts-sbryngelson3
+Job name:  nn-paper-eval-apriori
+Partition: gpu-v100
+QOS:       embers
+---------------------------------------
+==========================================
+  A Priori Evaluation — NN Turbulence Models
+==========================================
+Host: atl1-1-02-009-35-0.pace.gatech.edu
+GPU: Tesla V100-PCIE-16GB
+
+
+[notice] A new release of pip is available: 23.2.1 -> 26.0.1
+[notice] To update, run: python3 -m pip install --upgrade pip
+torch=2.1.0a0+32f93b1, sklearn=1.2.0, numpy=1.22.2
+CUDA: True, GPU: Tesla V100-PCIE-16GB
+
+=== Evaluating all models ===
+
+======================================================================
+  A Priori Evaluation of NN Turbulence Models
+======================================================================
+Data:       mcconkey_data
+Models dir: data/models
+Device:     cuda
+Evaluating: mlp, mlp_large, tbnn, pi_tbnn, tbrf
+
+Loading RANS data from mcconkey_data/komegasst.csv...
+Loading REF data from mcconkey_data/REF.csv...
+Loading aligned RANS+REF data...
+Loaded 902,601 total points across 38 cases
+
+--- Building validation split ---
+  Extracting features from 23,967 points (2 cases)...
+
+--- Building test split ---
+  Extracting features from 51,844 points (2 cases)...
+
+Split sizes: val=23,967, test=51,844
+  test/case_1p2: 14,751 points
+  test/cbfs13700: 37,093 points
+
+--- Evaluating TBNN (5->64->64->64->10) ---
+  Val  RMSE(b): 0.084535
+  Test RMSE(b): 0.388860
+
+--- Evaluating PI-TBNN (5->64->64->64->10) ---
+  Val  RMSE(b): 0.120289
+  Test RMSE(b): 0.141795
+
+--- Evaluating TBRF (200 trees, depth 20) ---
+  Val  RMSE(b): 0.063707
+  Test RMSE(b): 0.125346
+
+--- Evaluating MLP (5->32->32->1) ---
+  Val  RMSE(|b|): 0.109537
+  Test RMSE(|b|): 0.184326
+
+--- Evaluating MLP-Large (5->128x4->1) ---
+  Val  RMSE(|b|): 0.104474
+  Test RMSE(|b|): 0.177208
+
+====================================================================================================
+  TENSOR MODELS: b_ij prediction (TBNN, PI-TBNN, TBRF)
+====================================================================================================
+  Model        Split   RMSE(b)    b_11      b_12      b_13      b_22      b_23      b_33      Viol%  
+  ---------------------------------------------------------------------------------------------------
+  tbnn         val     0.084535   0.146677  0.053048  0.021863  0.084780  0.009198  0.103916  1.29   
+  tbnn         test    0.388860   0.684402  0.238380  0.002013  0.492500  0.001049  0.373473  1.65   
+  pi_tbnn      val     0.120289   0.219873  0.052903  0.023064  0.136446  0.007714  0.128317  0.08   
+  pi_tbnn      test    0.141795   0.203003  0.073625  0.002013  0.172252  0.001049  0.210543  0.23   
+  tbrf         val     0.063707   0.107892  0.042660  0.021991  0.065831  0.008171  0.077503  2.47   
+  tbrf         test    0.125346   0.166921  0.071422  0.002013  0.129005  0.001049  0.211327  2.58   
+
+  Model        Test Case        RMSE(b)    Viol%          N
+  -------------------------------------------------------
+  tbnn         case_1p2         0.075504   1.20       14751
+  tbnn         cbfs13700        0.457251   1.83       37093
+  pi_tbnn      case_1p2         0.099928   0.05       14751
+  pi_tbnn      cbfs13700        0.155339   0.30       37093
+  tbrf         case_1p2         0.058529   0.83       14751
+  tbrf         cbfs13700        0.143518   3.27       37093
+
+============================================================
+  SCALAR MODELS: |b| magnitude prediction (MLP, MLP-Large)
+============================================================
+  Model        Split   RMSE(|b|)           N
+  ------------------------------------------
+  mlp          val     0.109537        23967
+  mlp          test    0.184326        51844
+  mlp_large    val     0.104474        23967
+  mlp_large    test    0.177208        51844
+
+  Model        Test Case        RMSE(|b|)           N
+  --------------------------------------------------
+  mlp          case_1p2         0.088616        14751
+  mlp          cbfs13700        0.210629        37093
+  mlp_large    case_1p2         0.079722        14751
+  mlp_large    cbfs13700        0.203380        37093
+
+Results saved to results/paper/apriori/metrics.json
+Total evaluation time: 87.8s
+
+==========================================
+  Evaluation Complete
+==========================================
+---------------------------------------
+Begin Slurm Epilog: Mar-22-2026 01:29:38
+Job ID:        5345161
+User ID:       sbryngelson3
+Account:       gts-sbryngelson3
+Job name:      nn-paper-eval-apriori
+Resources:     cpu=12,gres/gpu:v100=1,mem=48G,node=1
+Rsrc Used:     cput=00:23:12,vmem=0,walltime=00:01:56,mem=15192108K,energy_used=0
+Partition:     gpu-v100
+QOS:           embers
+Nodes:         atl1-1-02-009-35-0
+---------------------------------------
