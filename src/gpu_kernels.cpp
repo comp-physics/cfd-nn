@@ -130,11 +130,10 @@ void compute_gradients_from_mac_gpu(
 // ============================================================================
 // GPU Kernel: Compute scalar MLP features
 // ============================================================================
-void compute_mlp_scalar_features_gpu(
+void compute_pope_invariants_gpu(
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
-    const double* wall_distance,
     const double* u_face, const double* v_face,
     const double* w_face,
     double* features,
@@ -144,10 +143,9 @@ void compute_mlp_scalar_features_gpu(
     int v_stride, int v_plane_stride,
     int w_stride, int w_plane_stride,
     int total_cells, int u_total, int v_total, int w_total,
-    double dx, double dy, double dz,
-    double nu, double delta, double u_ref)
+    double dx, double dy, double dz)
 {
-    NVTX_SCOPE_TURB("kernel:mlp_features");
+    NVTX_SCOPE_TURB("kernel:pope_invariants");
 
     const int n_cells = Nx * Ny * Nz;
     const bool is3D = (Nz > 1 && w_face != nullptr);
@@ -155,6 +153,7 @@ void compute_mlp_scalar_features_gpu(
     [[maybe_unused]] const double inv_2dy = 1.0 / (2.0 * dy);
     [[maybe_unused]] const double inv_2dz = is3D ? 1.0 / (2.0 * dz) : 0.0;
     [[maybe_unused]] const double inv_dz = is3D ? 1.0 / dz : 0.0;
+    [[maybe_unused]] const double C_mu = 0.09;
 
 #ifdef USE_GPU_OFFLOAD
     if (is3D) {
@@ -162,10 +161,9 @@ void compute_mlp_scalar_features_gpu(
             map(present: dudx[0:total_cells], dudy[0:total_cells], \
                          dvdx[0:total_cells], dvdy[0:total_cells], \
                          k[0:total_cells], omega[0:total_cells], \
-                         wall_distance[0:total_cells], \
                          u_face[0:u_total], v_face[0:v_total], \
                          w_face[0:w_total], \
-                         features[0:(n_cells*6)])
+                         features[0:(n_cells*5)])
         for (int idx = 0; idx < n_cells; ++idx) {
             const int ii = idx % Nx;
             const int jj = (idx / Nx) % Ny;
@@ -192,55 +190,100 @@ void compute_mlp_scalar_features_gpu(
 
             const int w_base = kp * w_plane_stride + j * w_stride;
             double dwdx_v = (w_face[w_base + (i + 1)] - w_face[w_base + (i - 1)]) * inv_2dx;
-            // dwdy: central difference of w in y (w lives at z-faces)
             double dwdy_v = (w_face[kp * w_plane_stride + (j + 1) * w_stride + i] -
                              w_face[kp * w_plane_stride + (j - 1) * w_stride + i]) * inv_2dy;
-            // dwdz: forward diff (staggered in z)
             double dwdz_v = (w_face[(kp + 1) * w_plane_stride + j * w_stride + i] -
                              w_face[kp * w_plane_stride + j * w_stride + i]) * inv_dz;
 
-            // Full 3D strain rate tensor
+            // Strain rate tensor: S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
             double Sxx = dudx_v;
             double Syy = dvdy_v;
             double Szz = dwdz_v;
             double Sxy = 0.5 * (dudy_v + dvdx_v);
             double Sxz = 0.5 * (dudz_v + dwdx_v);
             double Syz = 0.5 * (dvdz_v + dwdy_v);
+
+            // Rotation tensor: Omega_ij = 0.5 * (du_i/dx_j - du_j/dx_i)
             double Oxy = 0.5 * (dudy_v - dvdx_v);
             double Oxz = 0.5 * (dudz_v - dwdx_v);
             double Oyz = 0.5 * (dvdz_v - dwdy_v);
 
-            double S_mag = sqrt(Sxx*Sxx + Syy*Syy + Szz*Szz + 2.0*(Sxy*Sxy + Sxz*Sxz + Syz*Syz));
-            double Omega_mag = sqrt(2.0 * (Oxy*Oxy + Oxz*Oxz + Oyz*Oyz));
+            // Non-dimensionalize: S_hat = tau * S, Omega_hat = tau * Omega
+            // tau = k / epsilon, epsilon = C_mu * k * omega
+            double k_val = k[idx_cell];
+            double omega_val = omega[idx_cell];
+            double eps = C_mu * k_val * omega_val;
+            double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
+            double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+            double tau = k_safe / eps_safe;
 
-            // Velocity magnitude (from staggered grid)
-            const int u_base_k = kp * u_plane_stride;
-            double u_avg = 0.5 * (u_face[u_base_k + j * u_stride + i] + u_face[u_base_k + j * u_stride + (i+1)]);
-            const int v_base_k = kp * v_plane_stride;
-            double v_avg = 0.5 * (v_face[v_base_k + j * v_stride + i] + v_face[v_base_k + (j+1) * v_stride + i]);
-            double w_avg = 0.5 * (w_face[kp * w_plane_stride + j * w_stride + i] +
-                                  w_face[(kp + 1) * w_plane_stride + j * w_stride + i]);
-            double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg + w_avg*w_avg);
+            // S_hat components
+            double Sh11 = Sxx * tau, Sh22 = Syy * tau, Sh33 = Szz * tau;
+            double Sh12 = Sxy * tau, Sh13 = Sxz * tau, Sh23 = Syz * tau;
+            // Omega_hat components (antisymmetric: Oh_ij = -Oh_ji, diag=0)
+            double Oh12 = Oxy * tau, Oh13 = Oxz * tau, Oh23 = Oyz * tau;
 
-            double y_wall = wall_distance[idx_cell];
+            // lambda_1 = tr(S_hat^2)
+            double lam1 = Sh11*Sh11 + Sh22*Sh22 + Sh33*Sh33
+                        + 2.0*(Sh12*Sh12 + Sh13*Sh13 + Sh23*Sh23);
 
-            int feat_base = idx * 6;
-            features[feat_base + 0] = S_mag * delta / (u_ref + 1e-10);
-            features[feat_base + 1] = Omega_mag * delta / (u_ref + 1e-10);
-            features[feat_base + 2] = y_wall / delta;
-            features[feat_base + 3] = Omega_mag / (S_mag + 1e-10);
-            features[feat_base + 4] = S_mag * delta * delta / (nu + 1e-10);
-            features[feat_base + 5] = u_mag / (u_ref + 1e-10);
+            // lambda_2 = tr(Omega_hat^2)  (Omega antisymmetric => tr(O^2) = -2*sum(Oij^2))
+            double lam2 = -2.0*(Oh12*Oh12 + Oh13*Oh13 + Oh23*Oh23);
+
+            // lambda_3 = tr(S_hat^3)
+            // (S^3)_ii = sum_j,k S_ij S_jk S_ki
+            double S3_11 = Sh11*Sh11*Sh11 + Sh11*Sh12*Sh12 + Sh11*Sh13*Sh13
+                         + Sh12*Sh12*Sh11 + Sh12*Sh22*Sh12 + Sh12*Sh23*Sh13
+                         + Sh13*Sh13*Sh11 + Sh13*Sh23*Sh12 + Sh13*Sh33*Sh13;
+            double S3_22 = Sh12*Sh11*Sh12 + Sh12*Sh12*Sh22 + Sh12*Sh13*Sh23
+                         + Sh22*Sh12*Sh12 + Sh22*Sh22*Sh22 + Sh22*Sh23*Sh23
+                         + Sh23*Sh13*Sh12 + Sh23*Sh23*Sh22 + Sh23*Sh33*Sh23;
+            double S3_33 = Sh13*Sh11*Sh13 + Sh13*Sh12*Sh23 + Sh13*Sh13*Sh33
+                         + Sh23*Sh12*Sh13 + Sh23*Sh22*Sh23 + Sh23*Sh23*Sh33
+                         + Sh33*Sh13*Sh13 + Sh33*Sh23*Sh23 + Sh33*Sh33*Sh33;
+            double lam3 = S3_11 + S3_22 + S3_33;
+
+            // lambda_4 = tr(Omega_hat^2 * S_hat)
+            // O^2 is symmetric: (O^2)_ij = sum_k O_ik O_kj
+            // O_ij antisymmetric: O_11=O_22=O_33=0, O_21=-O_12, O_31=-O_13, O_32=-O_23
+            double O2_11 = -(Oh12*Oh12 + Oh13*Oh13);
+            double O2_22 = -(Oh12*Oh12 + Oh23*Oh23);
+            double O2_33 = -(Oh13*Oh13 + Oh23*Oh23);
+            double O2_12 = -(Oh13*Oh23);  // O_1k*O_k2 = O_13*O_32 = -Oh13*Oh23
+            double O2_13 = Oh12*Oh23;     // O_1k*O_k3 = O_12*O_23 = Oh12*Oh23
+            double O2_23 = -(Oh12*Oh13);  // O_2k*O_k3 = O_21*O_13 = -Oh12*Oh13
+            // tr(O^2 * S) = sum_i (O^2 * S)_ii = sum_i,j O2_ij * S_ji
+            double lam4 = O2_11*Sh11 + O2_12*Sh12 + O2_13*Sh13
+                        + O2_12*Sh12 + O2_22*Sh22 + O2_23*Sh23
+                        + O2_13*Sh13 + O2_23*Sh23 + O2_33*Sh33;
+
+            // lambda_5 = tr(Omega_hat^2 * S_hat^2)
+            // S^2 is symmetric: (S^2)_ij = sum_k S_ik S_kj
+            double S2_11 = Sh11*Sh11 + Sh12*Sh12 + Sh13*Sh13;
+            double S2_22 = Sh12*Sh12 + Sh22*Sh22 + Sh23*Sh23;
+            double S2_33 = Sh13*Sh13 + Sh23*Sh23 + Sh33*Sh33;
+            double S2_12 = Sh11*Sh12 + Sh12*Sh22 + Sh13*Sh23;
+            double S2_13 = Sh11*Sh13 + Sh12*Sh23 + Sh13*Sh33;
+            double S2_23 = Sh12*Sh13 + Sh22*Sh23 + Sh23*Sh33;
+            // tr(O^2 * S^2) = sum_i,j O2_ij * S2_ji
+            double lam5 = O2_11*S2_11 + O2_12*S2_12 + O2_13*S2_13
+                        + O2_12*S2_12 + O2_22*S2_22 + O2_23*S2_23
+                        + O2_13*S2_13 + O2_23*S2_23 + O2_33*S2_33;
+
+            int feat_base = idx * 5;
+            features[feat_base + 0] = lam1;
+            features[feat_base + 1] = lam2;
+            features[feat_base + 2] = lam3;
+            features[feat_base + 3] = lam4;
+            features[feat_base + 4] = lam5;
         }
     } else {
-        // 2D path (Nz == 1)
+        // 2D path (Nz == 1): same as TBNN 2D invariant computation
         #pragma omp target teams distribute parallel for \
             map(present: dudx[0:total_cells], dudy[0:total_cells], \
                          dvdx[0:total_cells], dvdy[0:total_cells], \
                          k[0:total_cells], omega[0:total_cells], \
-                         wall_distance[0:total_cells], \
-                         u_face[0:u_total], v_face[0:v_total], \
-                         features[0:(n_cells*6)])
+                         features[0:(n_cells*5)])
         for (int idx = 0; idx < n_cells; ++idx) {
             const int ii = idx % Nx;
             const int jj = idx / Nx;
@@ -258,27 +301,53 @@ void compute_mlp_scalar_features_gpu(
             double Sxy = 0.5 * (dudy_v + dvdx_v);
             double Oxy = 0.5 * (dudy_v - dvdx_v);
 
-            double S_mag = sqrt(Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
-            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
+            // Non-dimensionalize
+            double k_val = k[idx_cell];
+            double omega_val = omega[idx_cell];
+            double eps = C_mu * k_val * omega_val;
+            double k_safe = (k_val > 1e-10) ? k_val : 1e-10;
+            double eps_safe = (eps > 1e-20) ? eps : 1e-20;
+            double tau = k_safe / eps_safe;
 
-            double u_avg = 0.5 * (u_face[j * u_stride + i] + u_face[j * u_stride + (i+1)]);
-            double v_avg = 0.5 * (v_face[j * v_stride + i] + v_face[(j+1) * v_stride + i]);
-            double u_mag = sqrt(u_avg*u_avg + v_avg*v_avg);
+            double Sh11 = Sxx * tau, Sh22 = Syy * tau;
+            double Sh12 = Sxy * tau;
+            double Oh12 = Oxy * tau;
 
-            double y_wall = wall_distance[idx_cell];
+            // lambda_1 = tr(S_hat^2) (2D: Szz=0, Sxz=Syz=0)
+            double lam1 = Sh11*Sh11 + Sh22*Sh22 + 2.0*Sh12*Sh12;
 
-            int feat_base = idx * 6;
-            features[feat_base + 0] = S_mag * delta / (u_ref + 1e-10);
-            features[feat_base + 1] = Omega_mag * delta / (u_ref + 1e-10);
-            features[feat_base + 2] = y_wall / delta;
-            features[feat_base + 3] = Omega_mag / (S_mag + 1e-10);
-            features[feat_base + 4] = S_mag * delta * delta / (nu + 1e-10);
-            features[feat_base + 5] = u_mag / (u_ref + 1e-10);
+            // lambda_2 = tr(Omega_hat^2) (2D: only Oxy nonzero)
+            double lam2 = -2.0*Oh12*Oh12;
+
+            // lambda_3 = tr(S_hat^3) (2D: S33=0)
+            // In 2D: tr(S^3) = S11^3 + 3*S11*S12^2 + 3*S22*S12^2 + S22^3
+            //       = S11*(S11^2+S12^2) + S12*(S11*S12+S12*S22) + ...
+            // Compute directly:
+            double S3_11 = Sh11*Sh11*Sh11 + Sh12*Sh12*Sh11 + Sh11*Sh12*Sh12 + Sh12*Sh22*Sh12;
+            double S3_22 = Sh12*Sh11*Sh12 + Sh22*Sh12*Sh12 + Sh12*Sh12*Sh22 + Sh22*Sh22*Sh22;
+            double lam3 = S3_11 + S3_22;
+
+            // lambda_4 = tr(Omega_hat^2 * S_hat) (2D)
+            // O^2 in 2D: O2_11 = -Oh12^2, O2_22 = -Oh12^2, O2_12 = 0
+            double O2_diag = -Oh12*Oh12;
+            double lam4 = O2_diag * Sh11 + O2_diag * Sh22;
+
+            // lambda_5 = tr(Omega_hat^2 * S_hat^2) (2D)
+            double S2_11 = Sh11*Sh11 + Sh12*Sh12;
+            double S2_22 = Sh12*Sh12 + Sh22*Sh22;
+            double lam5 = O2_diag * S2_11 + O2_diag * S2_22;
+
+            int feat_base = idx * 5;
+            features[feat_base + 0] = lam1;
+            features[feat_base + 1] = lam2;
+            features[feat_base + 2] = lam3;
+            features[feat_base + 3] = lam4;
+            features[feat_base + 4] = lam5;
         }
     }
 #else
     (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
-    (void)k; (void)omega; (void)wall_distance;
+    (void)k; (void)omega;
     (void)u_face; (void)v_face; (void)w_face; (void)features;
     (void)Nx; (void)Ny; (void)Nz; (void)Ng;
     (void)cell_stride; (void)cell_plane_stride;
@@ -287,7 +356,6 @@ void compute_mlp_scalar_features_gpu(
     (void)w_stride; (void)w_plane_stride;
     (void)total_cells; (void)u_total; (void)v_total; (void)w_total;
     (void)dx; (void)dy; (void)dz;
-    (void)nu; (void)delta; (void)u_ref;
 #endif
 }
 

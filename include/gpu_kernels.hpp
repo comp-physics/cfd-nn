@@ -55,27 +55,28 @@ void compute_gradients_from_mac_gpu(
 );
 
 // ============================================================================
-// GPU Kernel: Compute scalar MLP features for all cells
+// GPU Kernel: Compute 5 Pope invariants for MLP (same inputs as TBNN)
 // ============================================================================
-// Input: gradients (dudx, dudy, dvdx, dvdy), k, omega, wall_distance
-// Output: features (6 per cell): [S_norm, Omega_norm, y_norm, Omega/S, Re_local, |u|_norm]
+// Input: gradients (dudx, dudy, dvdx, dvdy), k, omega
+//        Plus staggered velocity fields for z-gradients in 3D
+// Output: features (5 per cell): [tr(S_hat^2), tr(Omega_hat^2),
+//         tr(S_hat^3), tr(Omega_hat^2*S_hat), tr(Omega_hat^2*S_hat^2)]
+// S_hat = (k/epsilon) * S_ij, Omega_hat = (k/epsilon) * Omega_ij
 // ============================================================================
-void compute_mlp_scalar_features_gpu(
+void compute_pope_invariants_gpu(
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
-    const double* wall_distance,
     const double* u_face, const double* v_face,
     const double* w_face,                  // w at z-faces (nullptr for 2D)
-    double* features,                      // Output: n_cells * 6
+    double* features,                      // Output: n_cells * 5
     int Nx, int Ny, int Nz, int Ng,
     int cell_stride, int cell_plane_stride,
     int u_stride, int u_plane_stride,
     int v_stride, int v_plane_stride,
     int w_stride, int w_plane_stride,
     int total_cells, int u_total, int v_total, int w_total,
-    double dx, double dy, double dz,
-    double nu, double delta, double u_ref
+    double dx, double dy, double dz
 );
 
 // ============================================================================

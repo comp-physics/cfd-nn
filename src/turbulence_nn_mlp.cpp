@@ -169,7 +169,6 @@ void TurbulenceNNMLP::update(
     if (!device_view->u_face || !device_view->v_face ||
         !device_view->k || !device_view->omega ||
         !device_view->dudx || !device_view->dudy || !device_view->dvdx || !device_view->dvdy ||
-        !device_view->wall_distance ||
         !device_view->nu_t) {
         throw std::runtime_error("NN-MLP GPU pipeline: device_view missing required buffers");
     }
@@ -210,15 +209,14 @@ void TurbulenceNNMLP::update(
             );
         }
 
-        // Step 2: Compute features on GPU
+        // Step 2: Compute Pope invariants on GPU (5 features, same as TBNN)
         {
             TIMED_SCOPE("nn_mlp_features_gpu");
             double* feat_ptr = features_flat_.data();
-            gpu_kernels::compute_mlp_scalar_features_gpu(
+            gpu_kernels::compute_pope_invariants_gpu(
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
                 device_view->k, device_view->omega,
-                device_view->wall_distance,
                 device_view->u_face, device_view->v_face,
                 device_view->w_face,
                 feat_ptr,
@@ -228,8 +226,7 @@ void TurbulenceNNMLP::update(
                 v_stride, v_plane_stride,
                 w_stride, w_plane_stride,
                 total_cells, u_total, v_total, w_total,
-                mesh.dx, mesh.dy, mesh.dz,
-                nu_, delta_, u_ref_
+                mesh.dx, mesh.dy, mesh.dz
             );
         }
 
