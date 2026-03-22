@@ -1,0 +1,31 @@
+---------------------------------------
+Begin Slurm Prolog: Mar-22-2026 02:50:31
+Job ID:    5346108
+User ID:   sbryngelson3
+Account:   gts-sbryngelson3
+Job name:  cans-bench-4xv100
+Partition: gpu-v100
+QOS:       embers
+---------------------------------------
+============================================
+  4x V100 MPI Benchmark (2 nodes x 2 GPUs)
+  GPU: Tesla V100-PCIE-16GB
+  Nodes: atl1-1-01-003-33-0,atl1-1-01-003-34-0
+============================================
+
+--- 512x256x144 = 18874368 cells ---
+  1 GPU(s):
+    146.21 ms/step, 129.1 Mcells/s (129.1/GPU)
+  2 GPU(s):
+---------------------------------------
+Begin Slurm Epilog: Mar-22-2026 02:53:05
+Job ID:        5346108
+User ID:       sbryngelson3
+Account:       gts-sbryngelson3
+Job name:      cans-bench-4xv100
+Resources:     cpu=48,gres/gpu:v100=4,mem=192G,node=2
+Rsrc Used:     cput=02:03:12,vmem=0,walltime=00:02:34,mem=21693336K,energy_used=0
+Partition:     gpu-v100
+QOS:           embers
+Nodes:         atl1-1-01-003-33-0,atl1-1-01-003-34-0
+---------------------------------------
