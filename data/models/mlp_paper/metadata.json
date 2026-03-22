@@ -1,0 +1,18 @@
+{
+  "name": "nn_mlp_mcconkey",
+  "type": "nn_mlp",
+  "description": "nn_mlp trained on McConkey et al. (2021) dataset",
+  "training": {
+    "dataset": "McConkey et al. (2021)",
+    "split": "TBKAN-2025 case-holdout protocol",
+    "rans_baseline": "k-omega SST"
+  },
+  "architecture": {
+    "layers": [
+      5,
+      32,
+      32,
+      1
+    ]
+  }
+}
