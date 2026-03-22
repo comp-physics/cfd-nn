@@ -11,10 +11,10 @@ Full details in `docs/paper/paper_roadmap.md`.
 - [x] Realizability violation rates — DONE (TBNN 1.65% val, TBRF 2.47% val)
 - [x] Write `scripts/paper/evaluate_apriori.py` — DONE
 - [x] Download MKM DNS reference data — DONE, results/paper/reference/
-- [ ] Scatter plots: predicted vs true b_ij on test set
-- [ ] Lumley triangle plots for each model
-- [ ] Error distribution histograms
-- [ ] TBRF feature importance analysis
+- [x] Scatter plots: predicted vs true b_ij — DONE (plot_apriori.py, job 5345335 running)
+- [x] Lumley triangle plots — DONE (same script)
+- [x] Error distribution histograms — DONE (same script)
+- [x] TBRF feature importance — DONE: λ₁=tr(S²) dominates at 43.4%
 
 ## TBRF C++ Inference
 
