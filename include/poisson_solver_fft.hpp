@@ -101,6 +101,7 @@ private:
     double* p_packed_ = nullptr;        // Packed solution without ghosts (Nx*Ny*Nz)
     cufftDoubleComplex* rhs_hat_ = nullptr;  // FFT of RHS (Nx*(Nz/2+1)*Ny)
     cufftDoubleComplex* p_hat_ = nullptr;    // FFT of solution (Nx*(Nz/2+1)*Ny)
+    cufftDoubleComplex* transpose_tmp_ = nullptr;  // Temp buffer for complex transpose
 
     // Precomputed eigenvalues for x and z directions
     double* lambda_x_ = nullptr;  // Eigenvalues for x (size Nx)
