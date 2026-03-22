@@ -736,6 +736,7 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
                 selected_solver_ = PoissonSolverType::MG;
             }
         }
+        // FFT2D is handled separately — don't demote it based on 3D FFT BC checks
     }
 
     if (fft1d_poisson_solver_) {
@@ -759,9 +760,8 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
         }
     }
 
-    // FFT2D requires periodic x AND 2D mesh AND non-periodic y
-    bool periodic_y = (p_y_lo == PoissonBC::Periodic && p_y_hi == PoissonBC::Periodic);
-    bool fft2d_compatible = periodic_x && !periodic_y && mesh_->is2D();
+    // FFT2D requires periodic x AND 2D mesh (y can be wall or periodic)
+    bool fft2d_compatible = periodic_x && mesh_->is2D();
 
     if (fft2d_poisson_solver_) {
         if (fft2d_compatible) {

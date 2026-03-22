@@ -11,17 +11,10 @@
 
 namespace nncfd {
 
-/// 2D FFT Poisson solver for 2D meshes with periodic x, wall-bounded y
-/// Uses 1D FFT in x + cuSPARSE batched tridiagonal solve in y
-/// Optimal for 2D channel flows
-///
-/// Algorithm:
-/// 1. Pack RHS from ghost layout to contiguous x-lines
-/// 2. Subtract mean (for Neumann-Neumann singularity)
-/// 3. 1D R2C FFT along x (batched over y)
-/// 4. Batched tridiagonal solve: (d²/dy² - λ_x[m])*p_hat = rhs_hat
-/// 5. 1D C2R IFFT
-/// 6. Unpack solution to ghost layout with BCs
+/// 2D FFT Poisson solver for 2D meshes with periodic x
+/// Two modes:
+///   Wall-bounded y: 1D FFT in x + cuSPARSE batched tridiagonal in y
+///   Periodic y:     1D FFT in x + 1D FFT in y + eigenvalue division (no tridiag)
 class FFT2DPoissonSolver {
 public:
     explicit FFT2DPoissonSolver(const Mesh& mesh);
@@ -85,7 +78,13 @@ private:
     // Precomputed eigenvalues for x direction
     double* lambda_x_ = nullptr;  // [N_modes]
 
-    // Y-direction stencil coefficients
+    // Fully-periodic mode: y-eigenvalues and C2C FFT plan
+    bool fully_periodic_ = false;
+    double* lambda_y_ = nullptr;  // [Ny] — only for periodic y
+    cufftHandle fft_y_fwd_ = 0;   // C2C forward in y
+    cufftHandle fft_y_inv_ = 0;   // C2C inverse in y
+
+    // Y-direction stencil coefficients (wall-bounded y only)
     double* tri_lower_ = nullptr;     // [Ny] - lower diagonal (a_j)
     double* tri_upper_ = nullptr;     // [Ny] - upper diagonal (c_j)
     double* tri_diag_base_ = nullptr; // [Ny] - base diagonal (before eigenvalue shift)

@@ -54,6 +54,8 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
         throw std::runtime_error("FFT2DPoissonSolver: x must be periodic");
     }
 
+    fully_periodic_ = (y_lo == PoissonBC::Periodic && y_hi == PoissonBC::Periodic);
+
     // Check if BCs actually changed
     bool bc_changed = (bc_y_lo_ != y_lo || bc_y_hi_ != y_hi);
 
@@ -61,8 +63,14 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     bc_y_hi_ = y_hi;
 
 #ifdef USE_GPU_OFFLOAD
+    // Initialize y-FFT for fully periodic if not already done
+    if (fully_periodic_ && lambda_y_ == nullptr) {
+        initialize_eigenvalues();  // Creates y-eigenvalues and C2C plans
+        std::cout << "[FFT2DPoissonSolver] Precomputed y-direction coefficients (periodic)\n";
+    }
+
     // Recompute tridiagonal matrices if BCs changed and already initialized
-    if (bc_changed && tri_lower_ != nullptr) {
+    if (!fully_periodic_ && bc_changed && tri_lower_ != nullptr) {
         // Update y-direction base coefficients with new BCs
         const double invDy2 = 1.0 / (dy_ * dy_);
         for (int j = 0; j < Ny_; ++j) {
@@ -126,7 +134,7 @@ bool FFT2DPoissonSolver::is_suitable(PoissonBC x_lo, PoissonBC x_hi,
     if (!is_2d) return false;
     if (!uniform_x) return false;
     if (x_lo != PoissonBC::Periodic || x_hi != PoissonBC::Periodic) return false;
-    if (y_lo == PoissonBC::Periodic || y_hi == PoissonBC::Periodic) return false;
+    // Accept both wall-bounded y (Neumann/Dirichlet → tridiag) and periodic y (→ FFT)
     return true;
 }
 
@@ -184,13 +192,48 @@ void FFT2DPoissonSolver::initialize_fft() {
 
 void FFT2DPoissonSolver::initialize_eigenvalues() {
     // Discrete eigenvalues: lambda[m] = (2 - 2*cos(2*pi*m/Nx)) / dx^2
-    const double h2 = dx_ * dx_;
+    const double h2x = dx_ * dx_;
 
     cudaMallocManaged(&lambda_x_, N_modes_ * sizeof(double));
     for (int m = 0; m < N_modes_; ++m) {
         double theta = 2.0 * M_PI * m / Nx_;
-        lambda_x_[m] = (2.0 - 2.0 * std::cos(theta)) / h2;
+        lambda_x_[m] = (2.0 - 2.0 * std::cos(theta)) / h2x;
     }
+
+    // Y-eigenvalues for fully periodic case
+    if (fully_periodic_) {
+        const double h2y = dy_ * dy_;
+        cudaMallocManaged(&lambda_y_, Ny_ * sizeof(double));
+        for (int n = 0; n < Ny_; ++n) {
+            double theta = 2.0 * M_PI * n / Ny_;
+            lambda_y_[n] = (2.0 - 2.0 * std::cos(theta)) / h2y;
+        }
+
+        // Create C2C FFT plans for y-direction (batched over x-modes)
+        int rank = 1;
+        int ny[1] = { Ny_ };
+        // Input/output layout: rhs_hat[mode * Ny + j] — j is contiguous for each mode
+        cufftResult result = cufftPlanMany(&fft_y_fwd_, rank, ny,
+                                            ny, 1, Ny_,   // istride=1, idist=Ny
+                                            ny, 1, Ny_,   // ostride=1, odist=Ny
+                                            CUFFT_Z2Z, N_modes_);
+        if (result != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create cuFFT C2C plan for y-direction");
+        }
+        cufftSetStream(fft_y_fwd_, stream_);
+
+        result = cufftPlanMany(&fft_y_inv_, rank, ny,
+                               ny, 1, Ny_,
+                               ny, 1, Ny_,
+                               CUFFT_Z2Z, N_modes_);
+        if (result != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create cuFFT C2C inverse plan for y-direction");
+        }
+        cufftSetStream(fft_y_inv_, stream_);
+
+        std::cout << "[FFT2DPoissonSolver] Fully periodic: y-eigenvalues + C2C plans created\n";
+    }
+
     cudaDeviceSynchronize();
 }
 
@@ -338,6 +381,9 @@ void FFT2DPoissonSolver::cleanup() {
     if (out_pack_) cudaFree(out_pack_);
     if (rhs_hat_) cudaFree(rhs_hat_);
     if (lambda_x_) cudaFree(lambda_x_);
+    if (lambda_y_) cudaFree(lambda_y_);
+    if (fft_y_fwd_) cufftDestroy(fft_y_fwd_);
+    if (fft_y_inv_) cufftDestroy(fft_y_inv_);
 
     if (tri_dl_) cudaFree(tri_dl_);
     if (tri_d_) cudaFree(tri_d_);
@@ -424,26 +470,66 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     }
     cudaStreamSynchronize(stream_);
 
-    // 4. Fix zero mode (mode=0, j=0): set x[0] to 0 (pinned value for singularity)
+    // 4. Fix zero mode: set rhs_hat_[0] to 0 (pinned value for singularity)
     cudaMemsetAsync(rhs_hat_, 0, sizeof(cufftDoubleComplex), stream_);
 
-    // 5. cuSPARSE batched tridiagonal solve (in-place in rhs_hat_)
-    // Solves: (d²/dy² - λ[m]) p_hat = rhs_hat for each mode m
-    cusparseStatus_t status = cusparseZgtsv2StridedBatch(
-        cusparse_handle_,
-        Ny_,             // m: system size
-        tri_dl_,         // dl: lower diagonal
-        tri_d_,          // d: main diagonal
-        tri_du_,         // du: upper diagonal
-        rhs_hat_,        // x: RHS/solution (in-place)
-        N_modes_,        // batchCount
-        Ny_,             // batchStride
-        cusparse_buffer_
-    );
+    // 5. Solve in y-direction
+    if (fully_periodic_) {
+        // Fully periodic: FFT in y, divide by eigenvalues, inverse FFT in y
+        // Forward C2C FFT in y (batched over x-modes)
+        cufftResult y_result = cufftExecZ2Z(fft_y_fwd_, rhs_hat_, rhs_hat_, CUFFT_FORWARD);
+        if (y_result != CUFFT_SUCCESS) {
+            std::cerr << "[FFT2D] y-direction C2C forward failed\n";
+            return -1;
+        }
 
-    if (status != CUSPARSE_STATUS_SUCCESS) {
-        std::cerr << "[FFT2D] cuSPARSE gtsv2StridedBatch failed: " << status << "\n";
-        return -1;
+        // Divide by -(lambda_x[m] + lambda_y[n]) for each (m, n)
+        // Layout: rhs_hat[m * Ny + n]
+        const double* lx = lambda_x_;
+        const double* ly = lambda_y_;
+        const int n_modes = N_modes_;
+        const int ny = Ny_;
+        const double y_norm = 1.0 / Ny_;  // y-FFT normalization
+        #pragma omp target teams distribute parallel for collapse(2) \
+            is_device_ptr(rhs_hat_, lx, ly)
+        for (int m = 0; m < n_modes; ++m) {
+            for (int n = 0; n < ny; ++n) {
+                double denom = lx[m] + ly[n];
+                size_t idx = (size_t)m * ny + n;
+                if (denom > 1e-30) {
+                    rhs_hat_[idx].x = -rhs_hat_[idx].x / denom * y_norm;
+                    rhs_hat_[idx].y = -rhs_hat_[idx].y / denom * y_norm;
+                } else {
+                    rhs_hat_[idx].x = 0.0;
+                    rhs_hat_[idx].y = 0.0;
+                }
+            }
+        }
+
+        // Inverse C2C FFT in y
+        y_result = cufftExecZ2Z(fft_y_inv_, rhs_hat_, rhs_hat_, CUFFT_INVERSE);
+        if (y_result != CUFFT_SUCCESS) {
+            std::cerr << "[FFT2D] y-direction C2C inverse failed\n";
+            return -1;
+        }
+    } else {
+        // Wall-bounded y: cuSPARSE batched tridiagonal solve (in-place in rhs_hat_)
+        cusparseStatus_t status = cusparseZgtsv2StridedBatch(
+            cusparse_handle_,
+            Ny_,             // m: system size
+            tri_dl_,         // dl: lower diagonal
+            tri_d_,          // d: main diagonal
+            tri_du_,         // du: upper diagonal
+            rhs_hat_,        // x: RHS/solution (in-place)
+            N_modes_,        // batchCount
+            Ny_,             // batchStride
+            cusparse_buffer_
+        );
+
+        if (status != CUSPARSE_STATUS_SUCCESS) {
+            std::cerr << "[FFT2D] cuSPARSE gtsv2StridedBatch failed: " << status << "\n";
+            return -1;
+        }
     }
 
     // 6. Inverse FFT: complex -> real
@@ -456,8 +542,9 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
 
     // 7. Unpack to ghost layout with normalization and BC application
     // NOTE: Use 2D indexing to match solver's 2D path (no k component)
-    int bc_y_lo_int = (bc_y_lo_ == PoissonBC::Neumann) ? 1 : 0;
-    int bc_y_hi_int = (bc_y_hi_ == PoissonBC::Neumann) ? 1 : 0;
+    // BC encoding: 0=Dirichlet, 1=Neumann, 2=Periodic
+    int bc_y_lo_int = (bc_y_lo_ == PoissonBC::Periodic) ? 2 : (bc_y_lo_ == PoissonBC::Neumann) ? 1 : 0;
+    int bc_y_hi_int = (bc_y_hi_ == PoissonBC::Periodic) ? 2 : (bc_y_hi_ == PoissonBC::Neumann) ? 1 : 0;
 
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: p_ptr[0:plane_size]) is_device_ptr(unpacked)
@@ -483,16 +570,22 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
                 p_ptr[(j + Ng) * Nx_full + (Nx + Ng)] = src_val;
             }
 
-            // y-ghosts (Neumann: copy, Dirichlet: negate) - 2D indexing
+            // y-ghosts - 2D indexing
             if (j == 0) {
-                if (bc_y_lo_int == 1) {  // Neumann
+                if (bc_y_lo_int == 2) {  // Periodic
+                    double src_val = unpacked[(Ny - 1) * Nx + i] * norm;
+                    p_ptr[0 * Nx_full + (i + Ng)] = src_val;
+                } else if (bc_y_lo_int == 1) {  // Neumann
                     p_ptr[0 * Nx_full + (i + Ng)] = val;
                 } else {  // Dirichlet
                     p_ptr[0 * Nx_full + (i + Ng)] = -val;
                 }
             }
             if (j == Ny - 1) {
-                if (bc_y_hi_int == 1) {  // Neumann
+                if (bc_y_hi_int == 2) {  // Periodic
+                    double src_val = unpacked[0 * Nx + i] * norm;
+                    p_ptr[(Ny + Ng) * Nx_full + (i + Ng)] = src_val;
+                } else if (bc_y_hi_int == 1) {  // Neumann
                     p_ptr[(Ny + Ng) * Nx_full + (i + Ng)] = val;
                 } else {  // Dirichlet
                     p_ptr[(Ny + Ng) * Nx_full + (i + Ng)] = -val;
