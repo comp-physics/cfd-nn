@@ -1,0 +1,53 @@
+---------------------------------------
+Begin Slurm Prolog: Mar-22-2026 02:22:17
+Job ID:    5345704
+User ID:   sbryngelson3
+Account:   gts-sbryngelson3
+Job name:  cans-bench-v100
+Partition: gpu-v100
+QOS:       embers
+---------------------------------------
+============================================
+  Solver Benchmark — CaNS Comparison
+  GPU: Tesla V100-PCIE-16GB
+============================================
+
+Building solver for V100 (CC=70)...
+-- Configuring done (28.3s)
+-- Generating done (1.5s)
+-- Build files have been written to: /storage/scratch1/6/sbryngelson3/cfd-nn/build_v100
+[ 94%] Building CXX object CMakeFiles/channel.dir/app/main_channel.cpp.o
+[100%] Linking CXX executable channel
+[100%] Built target channel
+Solver: build_v100/channel
+
+--- Grid 256x128x72 = 2359296 cells ---
+  13.551 ms/step, 174.1 Mcells/s
+
+--- Grid 256x256x256 = 16777216 cells ---
+  140.573 ms/step, 119.3 Mcells/s
+
+--- Grid 512x256x144 = 18874368 cells ---
+  146.431 ms/step, 128.9 Mcells/s
+
+============================================
+  CaNS Reference (Costa et al. 2021)
+  V100 (DGX-2), 512x256x144, Re_tau=590
+============================================
+  4x V100:  481 ms/step =  39 Mcells/s
+  8x V100:  251 ms/step =  75 Mcells/s
+  16x V100: 140 ms/step = 135 Mcells/s
+
+Both solvers: 2nd-order central FD, RK3, explicit diffusion, FFT Poisson
+---------------------------------------
+Begin Slurm Epilog: Mar-22-2026 02:32:06
+Job ID:        5345704
+User ID:       sbryngelson3
+Account:       gts-sbryngelson3
+Job name:      cans-bench-v100
+Resources:     cpu=12,gres/gpu:v100=1,mem=48G,node=1
+Rsrc Used:     cput=01:57:36,vmem=0,walltime=00:09:48,mem=14774644K,energy_used=0
+Partition:     gpu-v100
+QOS:           embers
+Nodes:         atl1-1-02-009-35-0
+---------------------------------------
