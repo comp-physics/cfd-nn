@@ -104,36 +104,34 @@ bool run_model_through_solver(
 
 } // anonymous namespace
 
+void test_model(const char* name, TurbulenceModelType type, const char* preset) {
+    std::string path = resolve_model_dir(preset);
+    if (path.empty()) {
+        record(name, true, true);  // skip if weights not found
+        return;
+    }
+    bool pass = run_model_through_solver(name, type, path);
+    record(name, pass);
+}
+
 int main() {
     using nncfd::test::harness::run_sections;
 
-    struct ModelCase {
-        std::string name;
-        TurbulenceModelType type;
-        std::string preset_dir;  // directory name under data/models/
-    };
-
-    std::vector<ModelCase> models = {
-        {"NN-MLP",      TurbulenceModelType::NNMLP,   "mlp_paper"},
-        {"NN-MLP-Large",TurbulenceModelType::NNMLP,   "mlp_large_paper"},
-        {"NN-TBNN",     TurbulenceModelType::NNTBNN,  "tbnn_paper"},
-        {"NN-PI-TBNN",  TurbulenceModelType::NNTBNN,  "pi_tbnn_paper"},
-        {"NN-TBRF-1t",  TurbulenceModelType::NNTBRF,  "tbrf_1t_paper"},
-    };
-
-    std::vector<std::pair<std::string, std::function<void()>>> sections;
-
-    for (const auto& m : models) {
-        sections.push_back({m.name, [&m]() {
-            std::string path = resolve_model_dir(m.preset_dir);
-            if (path.empty()) {
-                record(m.name, true, true);  // skip if weights not found
-                return;
-            }
-            bool pass = run_model_through_solver(m.name, m.type, path);
-            record(m.name, pass);
-        }});
-    }
-
-    return run_sections("NNModels", sections);
+    return run_sections("NNModels", {
+        {"NN-MLP", []() {
+            test_model("NN-MLP", TurbulenceModelType::NNMLP, "mlp_paper");
+        }},
+        {"NN-MLP-Large", []() {
+            test_model("NN-MLP-Large", TurbulenceModelType::NNMLP, "mlp_large_paper");
+        }},
+        {"NN-TBNN", []() {
+            test_model("NN-TBNN", TurbulenceModelType::NNTBNN, "tbnn_paper");
+        }},
+        {"NN-PI-TBNN", []() {
+            test_model("NN-PI-TBNN", TurbulenceModelType::NNTBNN, "pi_tbnn_paper");
+        }},
+        {"NN-TBRF-1t", []() {
+            test_model("NN-TBRF-1t", TurbulenceModelType::NNTBRF, "tbrf_1t_paper");
+        }},
+    });
 }
