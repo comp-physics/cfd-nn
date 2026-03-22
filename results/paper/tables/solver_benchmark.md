@@ -53,3 +53,14 @@ Tesla V100-PCIE-16GB, single GPU. Same discretization as CaNS:
 Our single V100 achieves 129 Mcells/s — 3.3× faster than CaNS on 4 V100s.
 Per-GPU efficiency: 13× higher (129 vs 9.8 Mcells/s/GPU).
 Note: CaNS uses 32GB V100s on DGX-2 (NVLink); ours is 16GB PCIe.
+
+## H100 MPI Scaling (512×256×144 = 18.9M cells)
+
+| GPUs | ms/step | Mcells/s total | Mcells/s/GPU |
+|------|---------|----------------|-------------|
+| 1× H100 | 30.1 | 626 | 626 |
+| 2× H100 | 103.1 | 183 | 91.5 |
+
+2 GPUs is 3.4× slower than 1 GPU — distributed FFT transpose
+overhead dominates at this grid size. Single-GPU is optimal for
+grids that fit in GPU memory.
