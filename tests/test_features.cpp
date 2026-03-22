@@ -383,14 +383,15 @@ void test_gradient_computation_backend() {
 
     // Compute on GPU
     gpu_kernels::compute_gradients_from_mac_gpu(
-        u_ptr, v_ptr,
+        u_ptr, v_ptr, nullptr,
         dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
-        mesh.Nx, mesh.Ny, mesh.Nghost,
-        mesh.dx, mesh.dy,
-        vel.u_stride(),        // u_stride
-        vel.v_stride(),        // v_stride
-        mesh.total_Nx(),       // cell_stride
-        u_total, v_total, total_cells
+        mesh.Nx, mesh.Ny, mesh.Nz, mesh.Nghost,
+        mesh.dx, mesh.dy, mesh.dz,
+        vel.u_stride(), vel.v_stride(), mesh.total_Nx(),
+        vel.u_plane_stride(), vel.v_plane_stride(),
+        vel.w_stride(), vel.w_plane_stride(),
+        mesh.total_Nx() * mesh.total_Ny(),
+        u_total, v_total, 0, total_cells
     );
 
     // Download results
