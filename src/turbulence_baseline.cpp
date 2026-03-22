@@ -364,6 +364,7 @@ void MixingLengthModel::update(
 
     // Host execution using unified kernel
     const int stride = mesh.total_Nx();
+    const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
     const int Nx = mesh.Nx;
     const int Ng = mesh.Nghost;
 
@@ -375,13 +376,16 @@ void MixingLengthModel::update(
     double* nu_t_ptr = nu_t.data().data();
 
     // Cache wall distances in member variable (computed once, reused each call)
-    const int total_cells = mesh.total_Nx() * mesh.total_Ny();
-    if (y_wall_flat_.empty() || static_cast<int>(y_wall_flat_.size()) != total_cells) {
-        y_wall_flat_.resize(total_cells, 0.0);
-        for (int j = 0; j < mesh.total_Ny(); ++j) {
-            for (int i = 0; i < mesh.total_Nx(); ++i) {
-                const int idx = j * stride + i;
-                y_wall_flat_[idx] = mesh.wall_distance(i, j);
+    // Use 3D buffer to match gradient/nu_t 3D indexing
+    const int total_cells_3d = mesh.total_cells();
+    if (y_wall_flat_.empty() || static_cast<int>(y_wall_flat_.size()) != total_cells_3d) {
+        y_wall_flat_.resize(total_cells_3d, 0.0);
+        for (int k = 0; k < mesh.total_Nz(); ++k) {
+            for (int j = 0; j < mesh.total_Ny(); ++j) {
+                for (int i = 0; i < mesh.total_Nx(); ++i) {
+                    const int idx = k * plane_stride + j * stride + i;
+                    y_wall_flat_[idx] = mesh.wall_distance(i, j);
+                }
             }
         }
     }
@@ -394,11 +398,14 @@ void MixingLengthModel::update(
     const double delta_local = delta_;
 
     // Single pass using unified kernel
+    // All fields (gradients, wall_dist, nu_t) use 3D indexing
+    // Read from interior z-plane at k=Ng
+    const int k_offset = mesh.Nghost * plane_stride;
     const int n_cells = Nx * mesh.Ny;
     for (int idx = 0; idx < n_cells; ++idx) {
         const int i = idx % Nx + Ng;
         const int j = idx / Nx + Ng;
-        const int cell_idx = j * stride + i;
+        const int cell_idx = k_offset + j * stride + i;
 
         mixing_length_cell_kernel(
             cell_idx, u_tau, nu_local,

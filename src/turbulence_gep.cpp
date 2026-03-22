@@ -227,22 +227,26 @@ void TurbulenceGEP::update(const Mesh& mesh,
     const double* dvdy_ptr = dvdy_field.data().data();
     double* nu_t_ptr = nu_t.data().data();
 
-    // Create local buffer for wall distance (needed for unified kernel)
-    const size_t total_cells = (size_t)mesh.total_Nx() * mesh.total_Ny();
-    std::vector<double> wall_dist_buf(total_cells, 0.0);
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            const int cell_idx = j * cell_stride + i;
-            wall_dist_buf[cell_idx] = mesh.wall_distance(i, j);
+    // Gradient and nu_t fields use 3D indexing; wall distance is y-only
+    // Create 3D wall distance buffer so the unified kernel can use 3D cell_idx
+    const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
+    const size_t total_cells_3d = (size_t)mesh.total_cells();
+    std::vector<double> wall_dist_buf(total_cells_3d, 0.0);
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                const int idx = k * plane_stride + j * cell_stride + i;
+                wall_dist_buf[idx] = mesh.wall_distance(i, j);
+            }
         }
     }
     const double* wall_dist_ptr = wall_dist_buf.data();
 
+    const int k_offset = mesh.Nghost * plane_stride;
     for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
         for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            const int cell_idx = j * cell_stride + i;
+            const int cell_idx = k_offset + j * cell_stride + i;
 
-            // Call unified kernel (same code path as GPU)
             gep_cell_kernel(cell_idx, variant_val, nu_, kappa, A_plus,
                             dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
                             wall_dist_ptr, nu_t_ptr);
