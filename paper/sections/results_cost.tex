@@ -1,0 +1,118 @@
+\section{Computational Cost Analysis}
+\label{sec:cost}
+
+\subsection{GPU profiling results}
+
+All timing measurements are performed on an NVIDIA L40S GPU with 50{,}000 time steps, excluding the first 100 steps (warm-up).
+Table~\ref{tab:gpu_profiling_cyl} reports the results for cylinder flow at $\Rey = 100$ on a $128 \times 64 \times 64$ grid (524K cells), and Table~\ref{tab:gpu_profiling_airfoil} for airfoil flow at $\Rey = 1000$ on a $256 \times 128 \times 128$ grid (4.2M cells).
+
+\begin{table}[htbp]
+\centering
+\caption{GPU profiling: cylinder $\Rey = 100$, $128 \times 64 \times 64$ (524K cells), L40S, 50K steps.}
+\label{tab:gpu_profiling_cyl}
+\begin{tabular}{lrrrr}
+\toprule
+Model & Turb update (s) & Total step (s) & Overhead & Turb \% of total \\
+\midrule
+Baseline        & 2.33  & 45.0  & ---       & 5.2\% \\
+$k$-$\omega$    & 0.47  & 45.1  & $+0.2\%$  & 1.0\% \\
+SST             & 1.26  & 46.9  & $+4.2\%$  & 2.7\% \\
+EARSM           & 1.46  & 47.1  & $+4.7\%$  & 3.1\% \\
+NN-MLP          & 12.78 & 55.6  & $+23.6\%$ & 23.0\% \\
+NN-TBNN         & 85.55 & 129.0 & $+186.7\%$ & 66.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{GPU profiling: airfoil $\Rey = 1000$, $256 \times 128 \times 128$ (4.2M cells), L40S, 50K steps.}
+\label{tab:gpu_profiling_airfoil}
+\begin{tabular}{lrrrr}
+\toprule
+Model & Turb update (s) & Total step (s) & Overhead & Turb \% of total \\
+\midrule
+Baseline        & 3.01  & 83.0  & ---       & 3.6\% \\
+$k$-$\omega$    & 0.58  & 86.0  & $+3.6\%$  & 0.7\% \\
+SST             & 2.14  & 90.0  & $+8.4\%$  & 2.4\% \\
+EARSM           & 2.80  & 90.8  & $+9.4\%$  & 3.1\% \\
+NN-MLP          & 40.77 & 124.3 & $+49.8\%$ & 32.8\% \\
+NN-TBNN         & 543.91 & 628.4 & $+657.1\%$ & 86.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several key observations emerge from these data:
+
+\paragraph{Transport models add minimal overhead.}
+The $k$-$\omega$, SST, and EARSM closures add only 0.2--9.4\% to the total step time.
+Their stencil-based operations match the GPU's memory access patterns and scale proportionally with the base solver.
+
+\paragraph{NN closures are significantly more expensive.}
+The MLP adds 24--50\% overhead, while the TBNN adds 187--657\%.
+The TBNN consumes 66--87\% of the total step time, making it the dominant cost rather than the Poisson solve or advection.
+
+\paragraph{NN overhead grows with grid size.}
+The TBNN's share of total step time increases from 66\% at 524K cells to 87\% at 4.2M cells.
+This occurs because the TBNN's per-cell cost ($\sim$10{,}300~FLOPs) scales linearly with the number of cells, while the base solver's FFT Poisson solve scales as $O(N \log N)$ but with a smaller constant.
+The MLP shows a similar trend (23\% to 33\%).
+In contrast, transport model overhead remains roughly constant (3--4\%) across grid sizes.
+
+\subsection{Sub-phase timing breakdown}
+
+\todo{Collect and report the per-phase timing breakdown within the turbulence update for each NN model:
+\begin{itemize}
+    \item Gradient computation (stencil on velocity field)
+    \item Feature extraction (invariants from gradients)
+    \item Tensor basis computation (10 matrix products)---TBNN/TBRF only
+    \item NN forward pass (layer-by-layer matmul + activation)
+    \item Postprocessing (write $\nut$ / $\tau_{ij}$)
+\end{itemize}
+This data is partially available from \texttt{TIMED\_SCOPE} instrumentation (\texttt{nn\_mlp\_features\_gpu}, \texttt{nn\_mlp\_inference\_gpu}, \texttt{nn\_mlp\_postprocess\_gpu}). Need to collect these in formal paper runs.}
+
+\subsection{Why TBNN costs $7.5\times$ more than MLP}
+
+The TBNN's computational cost is dominated by two factors:
+
+\begin{enumerate}
+    \item \textbf{Network size}: The TBNN has three $64 \times 64$ hidden layers, each requiring 4{,}096 multiply-add operations per cell, compared to the MLP's single $32 \times 32$ layer (1{,}024 operations). The two large hidden layers alone account for 8{,}192 of the TBNN's 9{,}354 FLOPs (87\%).
+
+    \item \textbf{Tensor basis computation}: The TBNN additionally computes 10 basis tensors $T^{(n)}_{ij}$, requiring $\sim$900~FLOPs of $3 \times 3$ matrix algebra per cell. The MLP does not require this step.
+
+    \item \textbf{Activation functions}: The TBNN evaluates 192 $\tanh$ functions per cell (3 hidden layers $\times$ 64 neurons) versus 64 for the MLP (2 layers $\times$ 32). Each $\tanh$ costs approximately $5\times$ more than a multiply on GPU.
+\end{enumerate}
+
+\subsection{Scaling with grid size}
+
+\todo{Run baseline + MLP + TBNN on grids of $64^3$, $128^3$, and $256^3$ cells. Plot turbulence update time vs.\ number of cells. Compare the slope against the theoretical $O(N)$ scaling (linear in cells). Overlay the base solver cost scaling ($O(N)$ for stencils, $O(N \log N)$ for FFT Poisson). This determines whether the NN overhead is a constant fraction of total cost or grows with problem size.}
+
+\subsection{CPU results}
+
+\todo{Run all models on CPU (same grids, same problems) using the GCC build without GPU offload. Report:
+\begin{itemize}
+    \item CPU wall-clock times for each model
+    \item GPU/CPU speedup ratio for the base solver vs.\ for each turbulence model
+    \item Whether the cost ranking changes on CPU (e.g., MLP matmuls may be relatively faster on CPU via optimized BLAS, while TBRF tree traversals may suffer less from the absence of warp divergence)
+\end{itemize}
+}
+
+\subsection{Cost-accuracy tradeoff}
+\label{sec:pareto}
+
+\todo{Generate the Pareto plot:
+\begin{itemize}
+    \item $x$-axis: computational cost (total step time overhead \%, or absolute ms/step)
+    \item $y$-axis: a posteriori prediction error (e.g., $L_2$ norm of $u^+(y^+)$ error vs.\ DNS for channel flow)
+    \item Each model is a labeled point
+    \item Identify the Pareto frontier---models not dominated by any other
+    \item Show for multiple flow cases to test robustness of the ranking
+    \item Generate separate plots for GPU and CPU
+\end{itemize}
+This is the central figure of the paper.}
+
+\todo{Generate the cost breakdown stacked bar chart:
+\begin{itemize}
+    \item For each model, show time spent in each phase (gradient, features, tensor basis, inference, transport, postprocessing)
+    \item This visualizes \emph{where} the cost comes from for each model class
+\end{itemize}
+}

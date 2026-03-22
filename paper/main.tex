@@ -1,0 +1,64 @@
+\documentclass[11pt]{article}
+
+% --- Standard packages ---
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{natbib}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{siunitx}
+\usepackage{multirow}
+\usepackage{bm}
+
+% --- Custom commands ---
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\Rey}{\mathrm{Re}}
+\newcommand{\Reytau}{\Rey_\tau}
+\newcommand{\bhat}{\hat{b}}
+\newcommand{\Shat}{\hat{S}}
+\newcommand{\Omhat}{\hat{\Omega}}
+\newcommand{\nueff}{\nu_\mathrm{eff}}
+\newcommand{\nusgs}{\nu_\mathrm{sgs}}
+\newcommand{\nut}{\nu_t}
+
+\title{Cost-Accuracy Tradeoffs for Neural Network Turbulence Closures\\in GPU-Accelerated Incompressible Flow Solvers}
+
+\author{TBD}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We systematically compare five data-driven turbulence closure architectures---multilayer perceptron (MLP), large MLP, tensor basis neural network (TBNN), physics-informed TBNN (PI-TBNN), and tensor basis random forest (TBRF)---against classical RANS models in a GPU-accelerated incompressible Navier--Stokes solver.
+All models are trained on the same dataset \citep{McConkey2021} with the same case-holdout protocol and evaluated both \emph{a priori} (offline prediction accuracy) and \emph{a posteriori} (coupled CFD accuracy and wall-clock cost).
+We provide a detailed computational anatomy of each closure, showing exactly which operations---matrix multiplies, activation functions, tree traversals, transport equation solves---dominate the cost.
+On a \todo{GPU type} GPU, the TBNN achieves \todo{X}\% lower prediction error than $k$-$\omega$ SST at \todo{Y}\% additional computational cost per time step, while the smaller MLP adds only \todo{Z}\% overhead.
+The TBRF yields the highest offline accuracy (validation RMSE of 0.064 vs.\ 0.085 for TBNN) but is \todo{N}$\times$ more expensive in the solver due to branch-heavy tree traversals and poor GPU cache utilization.
+Physics-informed realizability penalties on the TBNN provide no benefit: the tensor basis architecture already constrains outputs to be near-realizable, and increasing the penalty weight degrades accuracy.
+\todo{Add key a posteriori finding.}
+These results provide practitioners with quantitative guidance for selecting turbulence closures that balance predictive accuracy against computational budget.
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/methods_solver}
+\input{sections/methods_closures}
+\input{sections/methods_training}
+\input{sections/results_apriori}
+\input{sections/results_aposteriori}
+\input{sections/results_cost}
+\input{sections/discussion}
+\input{sections/conclusions}
+
+\appendix
+\input{sections/appendix}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

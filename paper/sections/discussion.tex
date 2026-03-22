@@ -1,0 +1,76 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{When to use each model class}
+
+The results in Sections~\ref{sec:apriori}--\ref{sec:cost} suggest a practical decision framework for selecting a turbulence closure:
+
+\begin{itemize}
+    \item \textbf{Algebraic / transport models} ($k$-$\omega$ SST, EARSM): For applications where computational budget is the primary constraint---design optimization requiring thousands of evaluations, parametric sweeps, or real-time simulation. These models add less than 10\% overhead on GPU and remain the most robust choice for attached or mildly separated flows.
+
+    \item \textbf{MLP (small)}: A reasonable first step toward data-driven closures when the user wants modest accuracy improvement without dramatic cost increase. At 24--50\% overhead, the MLP is affordable for most applications, though its scalar output limits its ability to capture Reynolds stress anisotropy.
+
+    \item \textbf{TBNN}: The recommended choice when prediction of anisotropic Reynolds stresses is important (separated flows, secondary motions, streamline curvature). The 187--657\% overhead is substantial but may be justified when accuracy in these regimes is critical.
+
+    \item \textbf{TBRF}: Not recommended for online use. The TBRF should be viewed as an offline accuracy ceiling---useful for understanding the limits of the feature space and tensor basis representation, but impractical for deployment in a CFD solver due to its poor GPU characteristics.
+\end{itemize}
+
+\todo{Refine these recommendations based on a posteriori results. The Pareto plot (Section~\ref{sec:pareto}) will make the tradeoff quantitative.}
+
+\subsection{Why PI-TBNN does not help}
+
+The negative result on physics-informed realizability penalties (Section~\ref{sec:pi_sweep}) deserves further discussion.
+The TBNN architecture already embeds significant physical structure:
+\begin{itemize}
+    \item \textbf{Galilean invariance}: The input features (5 invariants of $\Shat$ and $\Omhat$) are frame-indifferent by construction.
+    \item \textbf{Symmetry and zero trace}: The tensor basis contraction $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$ guarantees that the output is symmetric and traceless, because each $T^{(n)}$ has these properties.
+    \item \textbf{Near-realizability}: The subspace spanned by the 10 tensor basis functions naturally constrains the output to a region that is mostly realizable. Only 1.3\% of validation points exhibit mild violations.
+\end{itemize}
+
+Adding a realizability penalty to the loss function introduces a competing gradient signal that pushes the network toward the boundary of the realizable region, even when the data itself does not strongly violate these constraints.
+At $\beta = 0.01$, this gradient noise is large enough to degrade the data-fitting objective by 7.6\%.
+This is consistent with the broader trend in the field toward architectural constraints (tensor basis, symmetry groups) rather than loss-based soft penalties for encoding physics \citep{Wu2018}.
+
+\subsection{TBRF: offline ceiling, online impractical}
+
+The TBRF achieves the highest offline accuracy (RMSE = 0.064 vs.\ 0.085 for TBNN, a 24.6\% improvement) but represents a fundamentally different computational paradigm:
+\begin{itemize}
+    \item Decision tree traversals involve \emph{data-dependent branching}: different cells follow different paths through the tree, causing warp divergence on GPU.
+    \item Tree node data (feature indices, thresholds, child pointers) is scattered in memory with no spatial locality, causing cache misses.
+    \item The 10-tree model requires \SI{56}{MB} of tree data, exceeding GPU L2 cache capacity.
+\end{itemize}
+
+These are not implementation limitations that can be overcome with better engineering; they reflect a fundamental mismatch between the random forest algorithm and GPU hardware.
+The TBRF's value lies in establishing an accuracy ceiling for the (5-invariant, 10-basis) feature representation: the TBNN's 0.085 RMSE is within 33\% of the best achievable accuracy in this feature space, suggesting that the neural network's function approximation is not the primary bottleneck---rather, the feature space itself limits accuracy.
+
+\subsection{CPU vs.\ GPU cost differences}
+
+\todo{Discuss how the cost ranking changes between GPU and CPU:
+\begin{itemize}
+    \item On CPU, matrix multiplies benefit from optimized BLAS libraries, potentially making MLP/TBNN relatively cheaper.
+    \item On CPU, tree traversals do not suffer from warp divergence, potentially making TBRF relatively less expensive.
+    \item The GPU/CPU speedup ratio may differ across model types: stencil-based models may show higher speedup than NN models.
+\end{itemize}
+}
+
+\subsection{Limitations}
+
+Several limitations of this study should be noted:
+
+\begin{itemize}
+    \item \textbf{Training data dependence}: All NN models are trained on $k$-$\omega$ SST fields from the McConkey dataset. Performance may differ with other RANS baselines ($k$-$\varepsilon$, Spalart--Allmaras) or different training data sources.
+
+    \item \textbf{Generalization}: The test set includes only two cases (periodic hills at a new angle, curved backward-facing step). Performance on dramatically different geometries (3D bluff bodies, internal flows, free shear layers) is not evaluated.
+
+    \item \textbf{Single solver}: All cost measurements are from one solver implementation. Different solvers (spectral element, finite volume, unstructured) may show different relative overheads due to different baseline costs.
+
+    \item \textbf{Inference optimization}: Our NN inference uses explicit matrix-vector products. Optimized inference engines (TensorRT, ONNX Runtime) could potentially reduce NN overhead, though the qualitative ordering is unlikely to change.
+
+    \item \textbf{No online training}: We evaluate only fixed-weight, offline-trained models. Online or adaptive training approaches may offer different cost-accuracy tradeoffs.
+
+    \item \textbf{Single GPU type}: Primary results are on the L40S. The relative cost may differ on other GPU architectures (different L2 cache sizes, different FLOP/bandwidth ratios). \todo{Add results on H100/H200 in supplement.}
+\end{itemize}
+
+\subsection{Comparison to prior work}
+
+\todo{Discuss how our a priori accuracy compares to reported values in \citet{Ling2016} and \citet{Kaandorp2020}. Note differences in dataset, split protocol, and architecture. Discuss whether the cost ranking changes in the a posteriori setting vs.\ a priori accuracy ordering.}

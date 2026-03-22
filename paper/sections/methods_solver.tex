@@ -1,0 +1,103 @@
+\section{Solver Architecture}
+\label{sec:solver}
+
+\subsection{Governing equations}
+
+We solve the incompressible Navier--Stokes equations,
+\begin{align}
+    \nabla \cdot \bm{u} &= 0, \label{eq:continuity} \\
+    \frac{\partial \bm{u}}{\partial t} + (\bm{u} \cdot \nabla)\bm{u} &= -\nabla p + \nu \nabla^2 \bm{u} + \bm{f}, \label{eq:momentum}
+\end{align}
+where $\bm{u}$ is the velocity field, $p$ the kinematic pressure, $\nu$ the kinematic viscosity, and $\bm{f}$ a body force (e.g., a mean pressure gradient driving channel flow).
+When a turbulence closure is active, the molecular viscosity $\nu$ is replaced by an effective viscosity $\nueff = \nu + \nut$, where $\nut$ is the eddy viscosity predicted by the closure model.
+For anisotropic closures (EARSM, TBNN, TBRF), the Reynolds stress divergence is added directly as a source term rather than through an eddy viscosity.
+
+\subsection{Fractional-step projection method}
+
+Time integration follows the fractional-step (pressure-projection) method:
+\begin{enumerate}
+    \item \textbf{Turbulence update}: Advance the turbulence model to compute updated $\nut$ (or anisotropic stress tensor $\tau_{ij}$).
+    \item \textbf{Predictor}: Compute an intermediate velocity $\bm{u}^*$ by advancing the momentum equation without the pressure gradient:
+    \begin{equation}
+        \bm{u}^* = \bm{u}^n + \Delta t \left( -\bm{C}(\bm{u}^n) + \bm{D}(\bm{u}^n) + \bm{f} \right),
+    \end{equation}
+    where $\bm{C}$ and $\bm{D}$ denote the convective and diffusive operators, respectively.
+    Convection uses the skew-symmetric form for improved energy conservation.
+    \item \textbf{Pressure Poisson}: Solve
+    \begin{equation}
+        \nabla^2 p' = \frac{1}{\Delta t} \nabla \cdot \bm{u}^*
+    \end{equation}
+    for the pressure correction $p'$.
+    \item \textbf{Velocity correction}: Project to a divergence-free field:
+    \begin{equation}
+        \bm{u}^{n+1} = \bm{u}^* - \Delta t \, \nabla p'.
+    \end{equation}
+\end{enumerate}
+This sequence is embedded within a strong stability preserving Runge--Kutta (SSP-RK3) time integrator, with steps 2--4 repeated at each stage with appropriate SSP weights.
+Adaptive time stepping enforces directional CFL constraints: a relaxed $\mathrm{CFL}_{xz}$ for the streamwise and spanwise directions (where grid spacing is uniform) and a strict $\mathrm{CFL}_{\max}$ for the wall-normal direction (where the stretched grid produces small $\Delta y$ near walls).
+
+\subsection{Staggered MAC grid}
+
+Spatial discretization uses a staggered marker-and-cell (MAC) grid with second-order central differences.
+Velocity components are stored at cell faces ($u$ at $x$-faces, $v$ at $y$-faces, $w$ at $z$-faces) and pressure at cell centers.
+This arrangement guarantees pressure--velocity coupling without checkerboard oscillations and ensures that the discrete divergence and gradient operators compose to the exact discrete Laplacian:
+\begin{equation}
+    D \cdot G = L,
+\end{equation}
+a property critical for the projection method to enforce the incompressibility constraint~\eqref{eq:continuity} to machine precision.
+For stretched grids in the wall-normal direction, this compatibility is maintained through precomputed metric arrays ($\Delta y_v$, $\Delta y_c$, $y_{\mathrm{Lap},*}$) that encode the non-uniform spacing in the discrete operators.
+
+\subsection{GPU acceleration}
+
+The solver achieves GPU acceleration through OpenMP target offload directives, maintaining a single source code path for both CPU and GPU execution.
+All field data (velocity, pressure, turbulence quantities) is persistently mapped to GPU memory at initialization and remains on device throughout the simulation.
+GPU--CPU data transfer occurs only during I/O operations (writing output files) and at initialization/finalization.
+
+Key design decisions for GPU performance include:
+\begin{itemize}
+    \item \textbf{Single code path}: Arithmetic kernels contain no \texttt{\#ifdef} guards---the OpenMP target pragmas are silently ignored in CPU builds, ensuring identical numerical behavior on both platforms.
+    \item \textbf{Free-function kernels}: GPU compute kernels are implemented as free functions rather than class methods to avoid implicit transfer of the \texttt{this} pointer (an nvc++ compiler requirement).
+    \item \textbf{Persistent device memory}: The \texttt{OmpDeviceBuffer} wrapper manages GPU allocations with RAII semantics. Data is mapped once and remains on device.
+    \item \textbf{Reduction-based diagnostics}: Scalar diagnostics (kinetic energy, maximum velocity, divergence $L_\infty$ norm) are computed via GPU reductions without transferring full fields to the host.
+\end{itemize}
+
+The solver is compiled with the NVHPC compiler (nvc++) for GPU builds and GCC for CPU-only builds.
+
+\subsection{Poisson solver}
+
+The pressure Poisson equation is solved using a fast Fourier transform (FFT) approach via the cuFFT library.
+For directions with periodic boundary conditions, standard FFTs are applied; for directions with Dirichlet or Neumann conditions, discrete cosine/sine transforms are used.
+The FFT approach reduces the 3D Poisson problem to a set of independent tridiagonal systems in the wall-normal direction, which are solved directly.
+For stretched grids, the tridiagonal coefficients incorporate the mesh metric arrays to maintain $D \cdot G = L$ consistency, and the right-hand side uses volume-weighted mean subtraction to satisfy solvability.
+
+The FFT Poisson solver achieves 22--32$\times$ speedup over the geometric multigrid alternative on GPU for stretched grids, making it the preferred backend for all production runs.
+
+\subsection{Immersed boundary method}
+
+Complex geometries (cylinder, airfoil, periodic hills) are handled via an immersed boundary method (IBM) using direct forcing.
+At initialization, signed distance functions define the solid boundary, and weight arrays are precomputed: $w = 0$ inside the solid, $w = 1$ in the fluid, with a smooth transition in the forcing region.
+During each time step, the IBM applies element-wise multiplication of the velocity field by these weight arrays---a trivially parallel operation that adds less than 0.3\% overhead on GPU.
+The Poisson equation right-hand side is masked at solid cells via a separate GPU kernel, avoiding any CPU--GPU synchronization.
+
+\subsection{Performance validation}
+
+\todo{Run formal benchmark against CaNS \citep{Costa2018} on identical problem (channel flow, $256^3$ grid, same GPU).}
+
+Preliminary throughput measurements on an NVIDIA L40S GPU are shown in Table~\ref{tab:solver_throughput}.
+
+\begin{table}[htbp]
+\centering
+\caption{Solver throughput on NVIDIA L40S (laminar baseline, no turbulence model).}
+\label{tab:solver_throughput}
+\begin{tabular}{llrr}
+\toprule
+Flow case & Grid & ms/step & Mcells/s \\
+\midrule
+Cylinder $\Rey = 100$   & $128 \times 64 \times 64$ (524K)   & 0.90 & 583 \\
+Airfoil $\Rey = 1000$   & $256 \times 128 \times 128$ (4.2M) & 1.66 & 2{,}527 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The throughput of \SI{2.5}{Gcells/s} at 4.2M cells is competitive with published numbers from established GPU-accelerated incompressible solvers such as CaNS \citep{Costa2018}, which reports \SIrange{500}{800}{Mcells/s} on an A100 for channel flow at moderate grids.
+\todo{Replace with head-to-head comparison on the same GPU and grid.}

@@ -1,0 +1,161 @@
+\section{Training Methodology}
+\label{sec:appendix_training}
+
+This appendix provides the complete training specification for reproducibility.
+
+\subsection{Common hyperparameters}
+
+Table~\ref{tab:hyperparams} lists all hyperparameters shared across neural network models.
+
+\begin{table}[htbp]
+\centering
+\caption{Training hyperparameters (all neural networks).}
+\label{tab:hyperparams}
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Optimizer                & Adam \citep{Kingma2015} \\
+Initial learning rate    & $10^{-3}$ \\
+Adam $\beta_1, \beta_2$  & 0.9, 0.999 \\
+Adam $\epsilon$          & $10^{-8}$ \\
+LR schedule              & Cosine annealing with warm restarts \\
+Cosine $T_0$             & 200 epochs \\
+Cosine $T_{\mathrm{mult}}$ & 2 \\
+Cosine $\eta_{\min}$     & $10^{-6}$ \\
+Batch size               & 256 \\
+Max epochs               & 1{,}000 \\
+Early stopping patience  & 150 epochs \\
+Early stopping criterion & Validation MSE \\
+Best model selection     & Lowest validation MSE across all epochs \\
+Loss function            & MSE \\
+Regularization           & None \\
+Data precision (training)    & float32 \\
+Data precision (features)    & float64 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Model architectures}
+
+\begin{table}[htbp]
+\centering
+\caption{Neural network architecture details.}
+\label{tab:architectures}
+\begin{tabular}{lllrrl}
+\toprule
+Model & Layers & Activation & Parameters & Output & Target \\
+\midrule
+MLP       & $5 \to 32 \to 32 \to 1$         & Tanh / Linear & 1{,}249  & Scalar   & $|b|$ \\
+MLP-Large & $5 \to 128 \to 128 \to 128 \to 128 \to 1$ & Tanh / Linear & 50{,}049 & Scalar   & $|b|$ \\
+TBNN      & $5 \to 64 \to 64 \to 64 \to 10$ & Tanh / Linear & 9{,}354  & 10 coeff.\ & $b_{ij}$ \\
+PI-TBNN   & Same as TBNN                     & Tanh / Linear & 9{,}354  & 10 coeff.\ & $b_{ij}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{TBRF hyperparameters}
+
+\begin{table}[htbp]
+\centering
+\caption{TBRF (scikit-learn \texttt{RandomForestRegressor}) hyperparameters.}
+\label{tab:tbrf_hyperparams}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Trees per coefficient    & 200 \\
+Number of coefficients   & 10 (Pope basis) \\
+Total trees              & 2{,}000 \\
+Max depth                & 20 \\
+Min samples split        & 2 (default) \\
+Min samples leaf         & 1 (default) \\
+Max features             & $\sqrt{n_{\mathrm{features}}}$ (default) \\
+Bootstrap                & True \\
+Random state             & 42 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training results}
+
+\begin{table}[htbp]
+\centering
+\caption{Training outcomes for all models.}
+\label{tab:training_results}
+\begin{tabular}{lrrrl}
+\toprule
+Model & Val RMSE & Epochs run & Stopped by & Training time \\
+\midrule
+TBRF (200 trees)         & 0.0637 & n/a   & n/a         & $\sim$500 s (4 CPU cores) \\
+TBNN                     & 0.0845 & 694   & Early stop  & \todo{TBD} \\
+PI-TBNN ($\beta=0.001$)  & 0.0852 & 729   & Early stop  & \todo{TBD} \\
+PI-TBNN ($\beta=0.01$)   & 0.0909 & 676   & Early stop  & \todo{TBD} \\
+MLP-Large                & 0.1045 & 344   & Early stop  & \todo{TBD} \\
+MLP                      & 0.1096 & 1{,}000 & Max epochs & \todo{TBD} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Software and hardware}
+
+\begin{table}[htbp]
+\centering
+\caption{Software versions used for training.}
+\label{tab:software}
+\begin{tabular}{ll}
+\toprule
+Package & Version \\
+\midrule
+Python     & 3.x (NVIDIA PyTorch container) \\
+PyTorch    & 2.1.0a0+32f93b1 \\
+NumPy      & 1.22.2 \\
+scikit-learn & 1.2.0 \\
+pandas     & 1.5.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Training was performed on an NVIDIA L40S GPU at the Georgia Tech PACE cluster.
+No fixed random seed was used for PyTorch (weight initialization and data shuffling are non-deterministic).
+Feature extraction used float64 precision; training used float32.
+
+\subsection{Weight export format}
+
+Neural network weights are exported as human-readable text files with 10-digit scientific notation:
+\begin{verbatim}
+data/models/<model>_paper/
+  layer0_W.txt    # [out_features, in_features]
+  layer0_b.txt    # [out_features]
+  layer1_W.txt
+  ...
+  input_means.txt # Z-score means [5]
+  input_stds.txt  # Z-score stds [5]
+  metadata.json   # Architecture info
+\end{verbatim}
+
+TBRF compact variants are exported as flat binary files with a 12-byte header (\texttt{total\_nodes}, \texttt{n\_basis}, \texttt{n\_trees} as int32) followed by five arrays (\texttt{children\_left}, \texttt{children\_right}, \texttt{feature}, \texttt{threshold}, \texttt{value}).
+
+\section{Tensor Basis Functions}
+\label{sec:appendix_basis}
+
+The 10-tensor Pope integrity basis \citep{Pope1975} is computed from the non-dimensionalized strain rate $\Shat$ and rotation rate $\Omhat$:
+\begin{align}
+    T^{(1)} &= \Shat \\
+    T^{(2)} &= \Shat\Omhat - \Omhat\Shat \\
+    T^{(3)} &= \Shat^2 - \tfrac{1}{3}\mathrm{tr}(\Shat^2)I \\
+    T^{(4)} &= \Omhat^2 - \tfrac{1}{3}\mathrm{tr}(\Omhat^2)I \\
+    T^{(5)} &= \Omhat\Shat^2 - \Shat^2\Omhat \\
+    T^{(6)} &= \Omhat^2\Shat + \Shat\Omhat^2 - \tfrac{2}{3}\mathrm{tr}(\Shat\Omhat^2)I \\
+    T^{(7)} &= \Omhat\Shat\Omhat^2 - \Omhat^2\Shat\Omhat \\
+    T^{(8)} &= \Shat\Omhat\Shat^2 - \Shat^2\Omhat\Shat \\
+    T^{(9)} &= \Omhat^2\Shat^2 + \Shat^2\Omhat^2 - \tfrac{2}{3}\mathrm{tr}(\Shat^2\Omhat^2)I \\
+    T^{(10)} &= \Omhat\Shat^2\Omhat^2 - \Omhat^2\Shat^2\Omhat
+\end{align}
+Each tensor is symmetric and traceless.
+In the solver, only the 6 independent components $(11, 12, 13, 22, 23, 33)$ are stored and computed.
+
+\section{Complete Profiling Tables}
+\label{sec:appendix_profiling}
+
+\todo{Add complete profiling tables for all GPU types (L40S, H100, H200), all flow cases, all models, including sub-phase breakdown.}

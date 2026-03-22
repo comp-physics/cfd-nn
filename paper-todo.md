@@ -5,14 +5,16 @@ Full details in `docs/paper/paper_roadmap.md`.
 
 ## A Priori Evaluation
 
-- [ ] Test set RMSE for all models (PH α=1.2 + CBFS Re=13700)
-- [ ] Component-wise RMSE breakdown (b_11, b_12, b_13, b_22, b_23, b_33)
-- [ ] Per-case RMSE (PH vs CBFS separately — interpolation vs new geometry)
+- [x] Test set RMSE for all models (PH α=1.2 + CBFS Re=13700) — DONE, see results/paper/apriori/metrics.json
+- [x] Component-wise RMSE breakdown (b_11, b_12, b_13, b_22, b_23, b_33) — DONE
+- [x] Per-case RMSE (PH vs CBFS separately) — DONE. KEY FINDING: TBNN overfits (0.085 val → 0.389 test, CBFS=0.457)
+- [x] Realizability violation rates — DONE (TBNN 1.65% val, TBRF 2.47% val)
+- [x] Write `scripts/paper/evaluate_apriori.py` — DONE
+- [x] Download MKM DNS reference data — DONE, results/paper/reference/
 - [ ] Scatter plots: predicted vs true b_ij on test set
 - [ ] Lumley triangle plots for each model
 - [ ] Error distribution histograms
 - [ ] TBRF feature importance analysis
-- [ ] Write `scripts/paper/evaluate_apriori.py`
 
 ## TBRF C++ Inference
 

@@ -1,0 +1,66 @@
+\section{Introduction}
+\label{sec:introduction}
+
+\subsection{RANS closure hierarchy}
+
+Reynolds-averaged Navier--Stokes (RANS) simulations remain the workhorse of industrial computational fluid dynamics, enabling predictions of turbulent flows at a fraction of the cost of direct numerical simulation (DNS) or large-eddy simulation (LES).
+The accuracy of RANS simulations hinges on the turbulence closure model, which approximates the Reynolds stress tensor $\overline{u'_i u'_j}$ that arises from the averaging process.
+Closure models span a broad hierarchy of complexity and cost:
+\begin{itemize}
+    \item \textbf{Algebraic (zero-equation) models} compute the eddy viscosity from local mean-flow quantities---typically a mixing length and a velocity gradient---with $O(1)$ floating-point operations per cell.
+    \item \textbf{One- and two-equation transport models} solve additional partial differential equations for turbulence quantities such as the turbulent kinetic energy $k$ and the specific dissipation rate $\omega$ \citep{Wilcox1988,Menter1994}. The $k$-$\omega$ SST model \citep{Menter1994} is the de facto standard in engineering practice, using blending functions to combine near-wall and free-stream formulations.
+    \item \textbf{Explicit algebraic Reynolds stress models} (EARSM) augment transport models with tensor algebra to predict anisotropic Reynolds stresses without solving the full Reynolds stress transport equations.
+    \item \textbf{Genetically evolved models} such as GEP \citep{Weatheritt2016} use symbolic regression to discover algebraic stress--strain relations from DNS data.
+\end{itemize}
+Moving up this hierarchy generally improves accuracy for complex flows (separation, secondary motions, streamline curvature) at the expense of additional computational cost and implementation complexity.
+
+\subsection{Data-driven closures: promise and challenges}
+
+The past decade has seen a surge of interest in replacing or augmenting classical closures with machine-learned models trained on high-fidelity data.
+\citet{Ling2016} introduced the tensor basis neural network (TBNN), which embeds Galilean invariance into the network architecture by predicting coefficients of the Pope integrity basis \citep{Pope1975}.
+\citet{Kaandorp2020} proposed the tensor basis random forest (TBRF), which achieves higher offline accuracy by using ensemble methods with the same invariant features and tensor basis.
+\citet{Wu2018} explored physics-informed approaches that enforce realizability constraints on the predicted Reynolds stress tensor.
+
+These data-driven closures have demonstrated improved \emph{a priori} accuracy on held-out datasets, particularly for flows with strong anisotropy, separation, and secondary motions where linear eddy viscosity models fail.
+However, several challenges remain:
+\begin{itemize}
+    \item \textbf{A priori vs.\ a posteriori performance}: offline accuracy on held-out data does not guarantee improved predictions when the model is coupled into a CFD solver. The feedback loop between the closure and the mean-flow equations can amplify small errors.
+    \item \textbf{Computational cost}: neural network inference involves matrix multiplies and nonlinear activation functions that differ fundamentally from the stencil-based operations of classical closures. The cost implications on modern GPU hardware are rarely quantified.
+    \item \textbf{Generalization}: models trained on specific flow configurations may not transfer to geometries or Reynolds numbers outside the training distribution.
+\end{itemize}
+
+\subsection{The gap: cost is never measured}
+
+Most existing evaluations of data-driven turbulence closures focus exclusively on prediction accuracy, either \emph{a priori} (offline, on held-out data) or, less commonly, \emph{a posteriori} (coupled into a solver).
+A smaller body of work performs \emph{a posteriori} evaluation but rarely compares multiple architectures head-to-head in the same solver with the same training data.
+Crucially, the \emph{computational cost} of neural network closures relative to classical models is almost never reported, and a detailed breakdown of \emph{where} the cost comes from---feature computation, matrix multiplies, activation functions, memory traffic---is entirely absent from the literature.
+
+This omission matters because the cost--accuracy tradeoff is the fundamental decision a practitioner faces when selecting a turbulence model.
+A model that is 10\% more accurate but 10$\times$ more expensive may be impractical for design optimization studies requiring thousands of solver evaluations.
+Conversely, a model that adds only 5\% overhead while providing meaningfully better predictions for separated flows could be immediately useful.
+
+\subsection{Contributions}
+
+This work provides a systematic, apples-to-apples comparison of data-driven and classical turbulence closures, spanning the full spectrum from zero-equation algebraic models to random forests. Our specific contributions are:
+
+\begin{enumerate}
+    \item \textbf{Unified evaluation framework}: Five neural network / machine learning architectures (MLP, MLP-Large, TBNN, PI-TBNN, TBRF) and four classical models (baseline, $k$-$\omega$, SST, EARSM) are trained on the same dataset \citep{McConkey2021} with the same case-holdout protocol and implemented in a single GPU-accelerated incompressible Navier--Stokes solver.
+
+    \item \textbf{Detailed computational anatomy}: We provide a per-operation breakdown of computational cost for each closure type, identifying the specific operations (matrix multiplies, \texttt{tanh} activations, tree traversals, transport equation solves) that dominate wall-clock time. This goes beyond aggregate timing to explain \emph{why} each model costs what it does.
+
+    \item \textbf{Cost--accuracy Pareto analysis}: We map the tradeoff between prediction accuracy (\emph{a priori} and \emph{a posteriori}) and computational cost on both GPU and CPU hardware, identifying which models lie on the Pareto frontier and which are dominated.
+
+    \item \textbf{Negative result on physics-informed penalties}: We show that realizability constraints imposed via loss-function penalties do not improve TBNN accuracy, because the tensor basis architecture already constrains outputs to be near-realizable.
+
+    \item \textbf{TBRF solver integration}: We implement random forest inference in a CFD solver for the first time, demonstrating that the TBRF's superior offline accuracy comes at prohibitive online cost due to branch-heavy tree traversals and poor GPU cache utilization.
+\end{enumerate}
+
+The remainder of this paper is organized as follows.
+Section~\ref{sec:solver} describes the solver architecture and GPU implementation.
+Section~\ref{sec:closures} details the classical and data-driven closure models, including their computational cost per cell.
+Section~\ref{sec:training} describes the training methodology and solver integration.
+Section~\ref{sec:apriori} presents \emph{a priori} evaluation results.
+Section~\ref{sec:aposteriori} presents \emph{a posteriori} results on canonical flow cases.
+Section~\ref{sec:cost} provides the computational cost analysis and Pareto tradeoff.
+Section~\ref{sec:discussion} discusses practical implications and limitations.
+Section~\ref{sec:conclusions} summarizes our findings and recommendations.

@@ -1,0 +1,59 @@
+\section{A Posteriori Evaluation}
+\label{sec:aposteriori}
+
+To assess whether improved offline accuracy translates to better coupled CFD predictions, we evaluate all models within the solver on three canonical flow configurations.
+Each model uses the same spatial discretization, time integrator, and Poisson solver; only the turbulence closure differs.
+
+\subsection{Channel flow at $\Reytau = 180$}
+
+\subsubsection{Setup}
+
+\todo{Specify grid ($128 \times 96 \times 128$), domain size ($4\pi \times 2 \times 2\pi$), $\Rey$ (or $\nu$, $dp/dx$), time integrator (RK3), number of steps, CFL, stretch parameter. Reference: MKM DNS \citep{MKM1999}.}
+
+\subsubsection{Mean velocity profiles}
+
+\todo{Plot $u^+(y^+)$ for all models vs.\ MKM DNS data. Report the $L_2$ error in $u^+$ for each model. Include the law of the wall ($u^+ = y^+$, log law $u^+ = (1/\kappa)\ln y^+ + B$) for reference.}
+
+\subsubsection{Reynolds stress profiles}
+
+\todo{Plot $-\langle u'v' \rangle / u_\tau^2$ vs.\ $y/\delta$ for all models vs.\ MKM DNS. Report component-wise $L_2$ errors. This is the most discriminating metric for tensor-predicting models (TBNN, TBRF) vs.\ scalar models (MLP, SST).}
+
+\subsubsection{Predicted $\Reytau$}
+
+\todo{Report the friction Reynolds number $\Reytau = u_\tau \delta / \nu$ achieved by each model. MKM target: $\Reytau = 178.12$.}
+
+\subsection{Periodic hills at $\Rey_H = 5600$}
+
+\subsubsection{Setup}
+
+\todo{Specify grid, domain, $\Rey$, hill geometry (IBM), reference data \citep{Breuer2009}. Note that periodic hills at different slope angles were in the training set---this tests generalization to a different Reynolds number.}
+
+\subsubsection{Velocity profiles}
+
+\todo{Plot streamwise velocity $u/U_b$ vs.\ $y/H$ at key $x$-stations ($x/H = 0.5, 2, 4, 6, 8$) for all models vs.\ Breuer LES. These stations capture the recirculation zone, reattachment, and recovery regions.}
+
+\subsubsection{Separation and reattachment}
+
+\todo{Report separation and reattachment $x$-locations for each model. Breuer reference: separation at $x/H \approx 0.2$, reattachment at $x/H \approx 4.7$ for $\Rey_H = 5600$.}
+
+\subsubsection{Separation bubble visualization}
+
+\todo{Contour plots or streamlines of the mean flow field showing the separation bubble for selected models (baseline, SST, TBNN) vs.\ reference.}
+
+\subsection{Cylinder at $\Rey = 100$}
+
+\subsubsection{Setup}
+
+\todo{Specify grid ($128 \times 64 \times 64$), domain, cylinder diameter and location (IBM), reference values. Note that the cylinder geometry was not in the McConkey training set---this tests generalization to an entirely unseen geometry.}
+
+\subsubsection{Drag and lift coefficients}
+
+\todo{Report time-averaged drag coefficient $C_d$, RMS lift coefficient $C_{l,\mathrm{rms}}$, and Strouhal number $\mathrm{St}$ for each model. Established reference values: $C_d \approx 1.35$, $C_{l,\mathrm{rms}} \approx 0.34$, $\mathrm{St} \approx 0.165$.}
+
+\subsubsection{Wake profiles}
+
+\todo{Plot streamwise velocity and Reynolds stress profiles in the near wake ($x/D = 1, 2, 5$) for selected models vs.\ reference data.}
+
+\subsection{Grid sensitivity}
+
+\todo{Run the TBNN and SST models on 4 grids of increasing resolution for the channel flow case to demonstrate grid convergence. Report the $L_2$ error in $u^+(y^+)$ vs.\ grid spacing.}

@@ -1,0 +1,111 @@
+\section{Training and Solver Integration}
+\label{sec:training}
+
+\subsection{Dataset}
+
+All models are trained on the curated turbulence modelling dataset of \citet{McConkey2021}, which contains 902{,}601 spatial points across 38 flow cases in four geometries: square duct (14 Reynolds numbers), periodic hills (5 slope angles), converging-diverging channel, and curved backward-facing step.
+Each point provides RANS fields from a $k$-$\omega$ SST \citep{Menter1994} simulation (velocity gradients, $k$, $\varepsilon$, $\omega$, $\nut$) and DNS/LES reference data (Reynolds stress anisotropy tensor $b_{ij}$).
+
+\subsection{Feature engineering}
+\label{sec:features}
+
+\subsubsection{Input features: 5 Pope invariants}
+
+Following \citet{Ling2016} and \citet{Pope1975}, the inputs to all neural network models are 5 scalar invariants of the non-dimensionalized mean strain rate and rotation rate tensors.
+
+The strain and rotation rate tensors are computed from the RANS velocity gradients:
+\begin{equation}
+    S_{ij} = \frac{1}{2}\left(\frac{\partial U_i}{\partial x_j} + \frac{\partial U_j}{\partial x_i}\right), \quad
+    \Omega_{ij} = \frac{1}{2}\left(\frac{\partial U_i}{\partial x_j} - \frac{\partial U_j}{\partial x_i}\right),
+\end{equation}
+and non-dimensionalized using the turbulence time scale:
+\begin{equation}
+    \Shat_{ij} = \frac{k}{\varepsilon} S_{ij}, \quad \Omhat_{ij} = \frac{k}{\varepsilon} \Omega_{ij},
+\end{equation}
+where $k$ and $\varepsilon$ are clamped to a minimum of $10^{-30}$ to prevent division by zero.
+The 5 scalar invariants are:
+\begin{equation}
+    \lambda_1 = \mathrm{tr}(\Shat^2), \quad
+    \lambda_2 = \mathrm{tr}(\Omhat^2), \quad
+    \lambda_3 = \mathrm{tr}(\Shat^3), \quad
+    \lambda_4 = \mathrm{tr}(\Omhat^2 \Shat), \quad
+    \lambda_5 = \mathrm{tr}(\Omhat^2 \Shat^2).
+\end{equation}
+These form a complete integrity basis for the independent invariants of a symmetric and an antisymmetric $3 \times 3$ tensor \citep{Pope1975}.
+
+Input features are Z-score standardized using means and standard deviations computed from the training set only.
+
+\subsubsection{Tensor basis}
+
+For models predicting the full anisotropy tensor (TBNN, PI-TBNN, TBRF), the 10-tensor Pope integrity basis $T^{(n)}_{ij}$ is computed from $\Shat$ and $\Omhat$ (see Appendix~\ref{sec:appendix_basis}).
+Each basis tensor is symmetric and traceless, stored as 6 independent components.
+
+\subsubsection{Training labels}
+
+\paragraph{TBNN / PI-TBNN / TBRF.} The full anisotropy tensor $b_{ij} = \overline{u'_i u'_j} / (2k) - \delta_{ij}/3$ from DNS, represented as 6 symmetric components.
+The network predicts the raw DNS anisotropy---not the discrepancy $\Delta b = b_{\mathrm{DNS}} - b_{\mathrm{RANS}}$---following \citet{Ling2016}.
+
+\paragraph{MLP / MLP-Large.} A scalar proxy: the Frobenius-like norm $|b| = \sqrt{\sum_c b_c^2}$ computed over the 6 stored components.
+
+\subsection{Case-holdout split}
+
+We adopt a case-holdout protocol where entire flow cases are held out, testing geometric generalization rather than interpolation within a single flow configuration:
+
+\begin{itemize}
+    \item \textbf{Training} (18 cases, 271{,}924 points): Square duct at 14 Reynolds numbers, periodic hills at $\alpha = \{0.5, 1.0, 1.5\}$, converging-diverging channel.
+    \item \textbf{Validation} (2 cases, 23{,}967 points): Square duct $\Rey = 2000$ (interpolation), periodic hills $\alpha = 0.8$ (interpolation).
+    \item \textbf{Test} (2 cases, 51{,}844 points): Periodic hills $\alpha = 1.2$ (interpolation at new angle), curved backward-facing step $\Rey = 13{,}700$ (entirely new geometry).
+\end{itemize}
+
+\subsection{Training hyperparameters}
+
+All neural networks are trained with the Adam optimizer \citep{Kingma2015} using cosine annealing with warm restarts (initial period $T_0 = 200$ epochs, period multiplier $T_{\mathrm{mult}} = 2$), initial learning rate $10^{-3}$, minimum learning rate $10^{-6}$, and batch size 256.
+Training runs for up to 1{,}000 epochs with early stopping (patience 150 epochs on validation MSE).
+The best checkpoint (lowest validation MSE) is selected as the final model.
+No regularization (L2 weight decay, dropout) is applied.
+Full training details are provided in Appendix~\ref{sec:appendix_training}.
+
+\subsection{PI-TBNN realizability penalty}
+
+The PI-TBNN augments the standard MSE loss with a soft realizability penalty:
+\begin{equation}
+    \mathcal{L} = \mathrm{MSE}(b_{\mathrm{pred}}, b_{\mathrm{DNS}}) + \beta \cdot \frac{1}{N}\sum_{i=1}^{N} \sum_{c \in \{11,22,33\}} \left[\mathrm{ReLU}\!\left(-b_{cc}^{(i)} - \tfrac{1}{3}\right)^2 + \mathrm{ReLU}\!\left(b_{cc}^{(i)} - \tfrac{2}{3}\right)^2\right],
+    \label{eq:pi_loss}
+\end{equation}
+which enforces the necessary realizability conditions $-1/3 \leq b_{ii} \leq 2/3$ on the diagonal components.
+The penalty weight $\beta$ is linearly ramped from 0 to its target value over the first 100 epochs.
+Validation loss is always computed as pure MSE (without penalty terms) for fair comparison.
+We sweep $\beta \in \{0.001, 0.01\}$; results are presented in Section~\ref{sec:apriori}.
+
+\subsection{TBRF training}
+
+The TBRF \citep{Kaandorp2020} trains 10 independent random forests (one per basis coefficient) using scikit-learn.
+Before training, the 10 tensor basis coefficients $g^{(n)}$ are extracted for each training point via the minimum-norm least-squares solution:
+\begin{equation}
+    \bm{g} = A^T (A A^T + \epsilon I)^{-1} \bm{b},
+\end{equation}
+where $A = [T^{(1)} \cdots T^{(10)}]^T$ is the $6 \times 10$ basis matrix and $\epsilon = 10^{-10}$ provides regularization.
+Each forest uses 200 trees of maximum depth 20 with default scikit-learn hyperparameters and a fixed random seed of 42.
+Compact variants with 1, 5, and 10 trees per coefficient are exported for solver integration experiments.
+
+\subsection{Solver integration}
+\label{sec:solver_integration}
+
+The feature computation and inference pipeline within the solver proceeds as follows at each time step:
+
+\begin{enumerate}
+    \item \textbf{Velocity gradients}: Compute $\partial U_i / \partial x_j$ (9 components) via second-order central differences on the staggered grid---a standard stencil operation shared with EARSM.
+    \item \textbf{Strain/rotation tensors}: Symmetrize and antisymmetrize the gradient tensor, non-dimensionalize by $k/\varepsilon$.
+    \item \textbf{Invariants}: Compute the 5 scalar invariants via $3 \times 3$ matrix products and traces.
+    \item \textbf{Normalization}: Apply the saved Z-score parameters ($\mu$, $\sigma$ from training).
+    \item \textbf{Tensor basis} (TBNN/TBRF only): Compute the 10 basis tensors $T^{(n)}_{ij}$.
+    \item \textbf{Inference}: Forward pass through the neural network (MLP/TBNN) or tree traversal (TBRF).
+    \item \textbf{Postprocessing}: Write the predicted $\nut$ (MLP) or $\tau_{ij}$ (TBNN/TBRF) to the solver's turbulence fields.
+\end{enumerate}
+
+Steps 1--5 are implemented as GPU kernels with each cell processed independently.
+For neural network inference (step 6), the computation is parallelized over (cell, neuron) pairs: each GPU thread block processes a batch of cells, with threads within a block computing different output neurons of the same layer.
+Weight matrices are stored in constant memory (MLP) or read from global memory with L2 caching (TBNN).
+Workspace buffers use a ping-pong pattern between layers to avoid extra memory allocation.
+
+All sub-phases are instrumented with \texttt{TIMED\_SCOPE} profiling markers, enabling the detailed cost breakdown presented in Section~\ref{sec:cost}.

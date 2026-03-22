@@ -1,0 +1,59 @@
+\section{Conclusions}
+\label{sec:conclusions}
+
+\todo{Revise after all results are available.}
+
+We have presented a systematic comparison of five data-driven turbulence closure architectures and four classical RANS models, all implemented in a single GPU-accelerated incompressible Navier--Stokes solver and evaluated on the same training data, test cases, and hardware.
+The key findings are:
+
+\begin{enumerate}
+    \item \textbf{Classical transport models remain remarkably cheap.}
+    The $k$-$\omega$ SST and EARSM closures add only 0.2--9.4\% to the total solver step time on GPU, even for anisotropic Reynolds stress prediction.
+    Their stencil-based operations naturally match GPU memory access patterns.
+
+    \item \textbf{Neural network closures carry significant overhead.}
+    The MLP (1{,}249 parameters) adds 24--50\% overhead; the TBNN (9{,}354 parameters) adds 187--657\%.
+    The overhead grows with grid size because NN inference scales as $O(N)$ with a large per-cell constant, while the base solver benefits from sublinear FFT scaling.
+    \todo{Add quantitative a posteriori finding here.}
+
+    \item \textbf{Physics-informed realizability penalties do not improve TBNN accuracy.}
+    The tensor basis architecture already constrains outputs to be near-realizable (1.3\% violation rate), making soft penalty terms redundant or harmful ($+7.6\%$ RMSE at $\beta = 0.01$).
+
+    \item \textbf{The TBRF is the most accurate model offline but impractical online.}
+    Its 24.6\% RMSE improvement over TBNN comes at the cost of branch-heavy tree traversals that are fundamentally poorly suited for GPU execution.
+    The TBRF's primary value is as an accuracy ceiling for the invariant-basis feature representation.
+    \todo{Add TBRF solver timing.}
+
+    \item \textbf{The cost--accuracy Pareto frontier identifies \todo{which model} as the recommended choice for GPU-accelerated simulations.}
+    \todo{Fill in based on Pareto analysis.}
+\end{enumerate}
+
+\subsection{Practical recommendations}
+
+Based on these findings, we offer the following guidance for practitioners:
+
+\begin{itemize}
+    \item For \textbf{design optimization} or \textbf{parametric sweeps} (many solver evaluations): use $k$-$\omega$ SST or EARSM. The sub-10\% overhead allows hundreds of evaluations in the time a single TBNN run would take.
+
+    \item For \textbf{high-accuracy predictions of separated or anisotropic flows} (single or few evaluations): the TBNN provides the best accuracy among deployable models. \todo{Quantify accuracy gain vs.\ SST on periodic hills.}
+
+    \item For \textbf{initial exploration} of data-driven closures: the small MLP is an affordable entry point at 24--50\% overhead, suitable for assessing whether a data-driven approach improves results for a given flow class.
+
+    \item \textbf{Avoid deploying TBRF in online solvers}. Use it for offline analysis (accuracy ceiling, feature importance) and consider distilling its predictions into a more compact neural network.
+\end{itemize}
+
+\subsection{Future work}
+
+Several directions merit further investigation:
+
+\begin{itemize}
+    \item \textbf{Inference optimization}: TensorRT, ONNX Runtime, or custom CUDA kernels could reduce NN overhead by fusing operations and leveraging mixed-precision arithmetic (FP16/BF16 for weights).
+
+    \item \textbf{Architecture search}: Smaller TBNN variants (fewer layers, fewer neurons) or hybrid architectures that predict a low-rank approximation to $b_{ij}$ may offer better cost-accuracy tradeoffs.
+
+    \item \textbf{Knowledge distillation}: Train a compact MLP to approximate TBRF predictions, combining the TBRF's offline accuracy with the MLP's GPU efficiency.
+
+    \item \textbf{Online training}: Adapt model weights during the simulation using solver-generated data, potentially improving generalization without offline training datasets.
+
+    \item \textbf{Multi-GPU scaling}: Investigate how NN inference overhead interacts with MPI domain decomposition and multi-GPU communication.
+\end{itemize}
