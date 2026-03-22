@@ -14,10 +14,19 @@ TurbulenceNNMLP::~TurbulenceNNMLP() {
 
 void TurbulenceNNMLP::load(const std::string& weights_dir, const std::string& scaling_dir) {
     mlp_.load_weights(weights_dir);
-    
+
+    // Verify the loaded model expects 5 Pope invariants as input
+    if (mlp_.input_dim() != 5) {
+        throw std::runtime_error(
+            "NN-MLP model has input_dim=" + std::to_string(mlp_.input_dim()) +
+            " but the solver computes 5 Pope invariants. "
+            "Models trained with physical features are no longer supported. "
+            "Please retrain with Pope invariants (see scripts/paper/train_all_models.py).");
+    }
+
     // Load scaling if available
     try {
-        mlp_.load_scaling(scaling_dir + "/input_means.txt", 
+        mlp_.load_scaling(scaling_dir + "/input_means.txt",
                          scaling_dir + "/input_stds.txt");
     } catch (const std::exception& e) {
         // Scaling files optional
