@@ -303,7 +303,9 @@ int main(int argc, char** argv) {
 
     // Set turbulence model if requested
     if (config.turb_model != TurbulenceModelType::None) {
-        auto turb_model = create_turbulence_model(config.turb_model, "", "",
+        auto turb_model = create_turbulence_model(config.turb_model,
+                                                  config.nn_weights_path,
+                                                  config.nn_scaling_path,
                                                   config.pope_C1,
                                                   config.pope_C2);
         if (turb_model) {
