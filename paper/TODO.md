@@ -106,14 +106,26 @@
 
 ## Remaining Work (Priority Order)
 
-### 1. Validate smoke test results
-- [ ] Check all 44 runs complete on H200
+### 1. DEBUG: Duct MLP timing anomaly (BLOCKER)
+The duct MLP shows 3× more GPU kernel calls than expected (26 blend_3d per 2 steps vs expected ~12). MLP turb is only 2.9 ms but total step is 51 ms (baseline 15 ms). TBNN and TBRF don't show this. The anomaly also affects baseline (42 blend calls for 2 steps vs expected 18) — so the blend count math needs auditing first.
+- [ ] Audit ssprk3_step: count exactly how many blend_3d_uvw and blend_to_3d_uvw calls per step (including sub-kernels for u,v,w)
+- [ ] Check if solver.cpp:1485-1488 (diffusion CFL safety) causes dt subdivision within step()
+- [ ] Check if MLP's large nu_t triggers additional solver behavior (extra BC applications, filter, etc.)
+- [ ] Verify MLP nu_t values are physically reasonable for the duct initial condition
+- [ ] Consider adding nu_t clamp to MLP postprocess
+
+### 2. Add MLP-Large and PI-TBNN to model list
+- [ ] Add to smoke test sbatch (13 models total)
+- [ ] Verify both work on all 4 cases
+
+### 3. Validate smoke test results
+- [x] All 44 runs complete on H200 (job 5369348)
 - [ ] Verify NN models produce different results from baseline (especially for 3D cases)
 - [ ] Check transport models (SST, EARSM) — may need more steps or turbulent initial condition
 - [ ] Verify grid convergence (especially sphere at 8.5 cells/D)
 
-### 2. Production a posteriori runs
-- [ ] Run all 11 models × 4 cases at full iteration count (10K-15K steps) on H200
+### 4. Production a posteriori runs
+- [ ] Run all 13 models × 4 cases at full iteration count (10K-15K steps) on H200
 - [ ] Extract velocity profiles, drag/lift coefficients, separation points
 - [ ] Compare against reference data:
   - Hills: Breuer et al. (2009) LES — separation/reattachment x
