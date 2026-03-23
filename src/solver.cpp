@@ -349,8 +349,7 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     bool uniform_y = !config.stretch_y && !mesh.is_y_stretched();
 
     if (mesh.is2D()) {
-        // 2D mesh: try FFT2D solver (periodic x, non-periodic y)
-        // FFT2D now supports stretched y via mesh yLap coefficients
+        // 2D mesh: try FFT2D solver (periodic x, walls or periodic y)
         try {
             fft2d_poisson_solver_ = std::make_unique<FFT2DPoissonSolver>(mesh);
             fft2d_poisson_solver_->set_bc(PoissonBC::Periodic, PoissonBC::Periodic,
