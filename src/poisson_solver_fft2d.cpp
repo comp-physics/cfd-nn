@@ -55,9 +55,6 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     }
 
     fully_periodic_ = (y_lo == PoissonBC::Periodic && y_hi == PoissonBC::Periodic);
-              << " y_hi=" << static_cast<int>(y_hi)
-              << " fully_periodic=" << fully_periodic_
-              << " lambda_y=" << lambda_y_ << "\n";
 
     // Check if BCs actually changed
     bool bc_changed = (bc_y_lo_ != y_lo || bc_y_hi_ != y_hi);
