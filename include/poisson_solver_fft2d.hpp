@@ -78,11 +78,12 @@ private:
     // Precomputed eigenvalues for x direction
     double* lambda_x_ = nullptr;  // [N_modes]
 
-    // Fully-periodic mode: y-eigenvalues and C2C FFT plan
+    // Fully-periodic mode: 2D R2C/C2R FFT plans + y-eigenvalues
     bool fully_periodic_ = false;
-    double* lambda_y_ = nullptr;  // [Ny] — only for periodic y
-    cufftHandle fft_y_fwd_ = 0;   // C2C forward in y
-    cufftHandle fft_y_inv_ = 0;   // C2C inverse in y
+    double* lambda_y_ = nullptr;       // [Ny] — only for periodic y
+    cufftHandle fft_2d_r2c_ = 0;       // 2D R2C plan for fully periodic
+    cufftHandle fft_2d_c2r_ = 0;       // 2D C2R plan for fully periodic
+    int N_modes_2d_ = 0;               // Nx/2+1 (same as N_modes_ for x-only)
 
     // Y-direction stencil coefficients (wall-bounded y only)
     double* tri_lower_ = nullptr;     // [Ny] - lower diagonal (a_j)

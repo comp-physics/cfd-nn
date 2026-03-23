@@ -55,6 +55,9 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     }
 
     fully_periodic_ = (y_lo == PoissonBC::Periodic && y_hi == PoissonBC::Periodic);
+              << " y_hi=" << static_cast<int>(y_hi)
+              << " fully_periodic=" << fully_periodic_
+              << " lambda_y=" << lambda_y_ << "\n";
 
     // Check if BCs actually changed
     bool bc_changed = (bc_y_lo_ != y_lo || bc_y_hi_ != y_hi);
@@ -66,7 +69,6 @@ void FFT2DPoissonSolver::set_bc(PoissonBC x_lo, PoissonBC x_hi,
     // Initialize y-FFT for fully periodic if not already done
     if (fully_periodic_ && lambda_y_ == nullptr) {
         initialize_eigenvalues();  // Creates y-eigenvalues and C2C plans
-        std::cout << "[FFT2DPoissonSolver] Precomputed y-direction coefficients (periodic)\n";
     }
 
     // Recompute tridiagonal matrices if BCs changed and already initialized
@@ -200,7 +202,7 @@ void FFT2DPoissonSolver::initialize_eigenvalues() {
         lambda_x_[m] = (2.0 - 2.0 * std::cos(theta)) / h2x;
     }
 
-    // Y-eigenvalues for fully periodic case
+    // Y-eigenvalues and 2D FFT plans for fully periodic case
     if (fully_periodic_) {
         const double h2y = dy_ * dy_;
         cudaMallocManaged(&lambda_y_, Ny_ * sizeof(double));
@@ -209,29 +211,30 @@ void FFT2DPoissonSolver::initialize_eigenvalues() {
             lambda_y_[n] = (2.0 - 2.0 * std::cos(theta)) / h2y;
         }
 
-        // Create C2C FFT plans for y-direction (batched over x-modes)
-        int rank = 1;
-        int ny[1] = { Ny_ };
-        // Input/output layout: rhs_hat[mode * Ny + j] — j is contiguous for each mode
-        cufftResult result = cufftPlanMany(&fft_y_fwd_, rank, ny,
-                                            ny, 1, Ny_,   // istride=1, idist=Ny
-                                            ny, 1, Ny_,   // ostride=1, odist=Ny
-                                            CUFFT_Z2Z, N_modes_);
-        if (result != CUFFT_SUCCESS) {
-            throw std::runtime_error("Failed to create cuFFT C2C plan for y-direction");
-        }
-        cufftSetStream(fft_y_fwd_, stream_);
+        // Create 2D R2C and C2R plans
+        // Input: real [Ny][Nx], output: complex [Ny][Nx/2+1]
+        N_modes_2d_ = Nx_ / 2 + 1;  // same as N_modes_
+        int n2d[2] = { Ny_, Nx_ };
 
-        result = cufftPlanMany(&fft_y_inv_, rank, ny,
-                               ny, 1, Ny_,
-                               ny, 1, Ny_,
-                               CUFFT_Z2Z, N_modes_);
+        cufftResult result = cufftPlanMany(&fft_2d_r2c_, 2, n2d,
+                                            nullptr, 0, 0,   // auto layout
+                                            nullptr, 0, 0,
+                                            CUFFT_D2Z, 1);   // batch=1
         if (result != CUFFT_SUCCESS) {
-            throw std::runtime_error("Failed to create cuFFT C2C inverse plan for y-direction");
+            throw std::runtime_error("Failed to create 2D cuFFT R2C plan");
         }
-        cufftSetStream(fft_y_inv_, stream_);
+        cufftSetStream(fft_2d_r2c_, stream_);
 
-        std::cout << "[FFT2DPoissonSolver] Fully periodic: y-eigenvalues + C2C plans created\n";
+        result = cufftPlanMany(&fft_2d_c2r_, 2, n2d,
+                               nullptr, 0, 0,
+                               nullptr, 0, 0,
+                               CUFFT_Z2D, 1);
+        if (result != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create 2D cuFFT C2R plan");
+        }
+        cufftSetStream(fft_2d_c2r_, stream_);
+
+        std::cout << "[FFT2DPoissonSolver] Fully periodic: 2D FFT + y-eigenvalues created\n";
     }
 
     cudaDeviceSynchronize();
@@ -382,8 +385,8 @@ void FFT2DPoissonSolver::cleanup() {
     if (rhs_hat_) cudaFree(rhs_hat_);
     if (lambda_x_) cudaFree(lambda_x_);
     if (lambda_y_) cudaFree(lambda_y_);
-    if (fft_y_fwd_) cufftDestroy(fft_y_fwd_);
-    if (fft_y_inv_) cufftDestroy(fft_y_inv_);
+    if (fft_2d_r2c_) cufftDestroy(fft_2d_r2c_);
+    if (fft_2d_c2r_) cufftDestroy(fft_2d_c2r_);
 
     if (tri_dl_) cudaFree(tri_dl_);
     if (tri_d_) cudaFree(tri_d_);
@@ -401,7 +404,8 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
     const int Ny_full = Ny + 2 * Ng;
     // 2D solver uses 2D indexing: only accesses [0, Nx_full*Ny_full)
     const size_t plane_size = (size_t)Nx_full * Ny_full;
-    const double norm = 1.0 / Nx;  // FFT normalization
+    // FFT normalization: 1/Nx for 1D x-FFT, 1/(Nx*Ny) for 2D FFT
+    const double norm = fully_periodic_ ? 1.0 / (Nx * Ny) : 1.0 / Nx;
 
     double* packed = in_pack_;
     double* unpacked = out_pack_;
@@ -461,57 +465,72 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
         packed[idx] -= mean;
     }
 
-    // 3. Forward FFT: real -> complex (output to rhs_hat_)
-    cudaDeviceSynchronize();  // Ensure OMP target is done
-    cufftResult fft_result = cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
-    if (fft_result != CUFFT_SUCCESS) {
-        std::cerr << "[FFT2D] cufftExecD2Z failed: " << fft_result << "\n";
-        return -1;
+    if (!fully_periodic_) {
+        // 3. Forward 1D FFT in x: real -> complex (wall-bounded y path)
+        cudaDeviceSynchronize();
+        cufftResult fft_result = cufftExecD2Z(fft_plan_r2c_, in_pack_, rhs_hat_);
+        if (fft_result != CUFFT_SUCCESS) {
+            std::cerr << "[FFT2D] cufftExecD2Z failed: " << fft_result << "\n";
+            return -1;
+        }
+        cudaStreamSynchronize(stream_);
     }
-    cudaStreamSynchronize(stream_);
 
     // 4. Fix zero mode: set rhs_hat_[0] to 0 (pinned value for singularity)
-    cudaMemsetAsync(rhs_hat_, 0, sizeof(cufftDoubleComplex), stream_);
+    // For fully periodic, this is done after the 2D R2C FFT in step 5
+    if (!fully_periodic_) {
+        cudaMemsetAsync(rhs_hat_, 0, sizeof(cufftDoubleComplex), stream_);
+    }
 
     // 5. Solve in y-direction
     if (fully_periodic_) {
-        // Fully periodic: FFT in y, divide by eigenvalues, inverse FFT in y
-        // Forward C2C FFT in y (batched over x-modes)
-        cufftResult y_result = cufftExecZ2Z(fft_y_fwd_, rhs_hat_, rhs_hat_, CUFFT_FORWARD);
-        if (y_result != CUFFT_SUCCESS) {
-            std::cerr << "[FFT2D] y-direction C2C forward failed\n";
+        // Fully periodic: use 2D R2C FFT, eigenvalue division, 2D C2R
+        // The 1D x-FFT (step 3) already ran. But for fully periodic we need
+        // a 2D FFT. Re-do from packed real data using the 2D plan.
+
+        // 2D R2C FFT: real [Ny][Nx] -> complex [Ny][Nx/2+1]
+        cudaDeviceSynchronize();  // Ensure pack + mean subtraction done
+        cufftResult r2c_result = cufftExecD2Z(fft_2d_r2c_, in_pack_, rhs_hat_);
+        if (r2c_result != CUFFT_SUCCESS) {
+            std::cerr << "[FFT2D] 2D R2C failed: " << r2c_result << "\n";
             return -1;
         }
 
-        // Divide by -(lambda_x[m] + lambda_y[n]) for each (m, n)
-        // Layout: rhs_hat[m * Ny + n]
+        // Divide by -(lambda_x[kx] + lambda_y[ky]) for each (ky, kx)
+        // cuFFT 2D R2C output layout: [ky * (Nx/2+1) + kx], row-major
+        // Use raw double* cast to avoid nvc++ issues with cufftDoubleComplex in OMP target
+        cudaDeviceSynchronize();
+        double* hat_raw = reinterpret_cast<double*>(rhs_hat_);
         const double* lx = lambda_x_;
         const double* ly = lambda_y_;
-        const int n_modes = N_modes_;
+        const int nx_c = N_modes_2d_;  // Nx/2+1
         const int ny = Ny_;
-        const double y_norm = 1.0 / Ny_;  // y-FFT normalization
         #pragma omp target teams distribute parallel for collapse(2) \
-            is_device_ptr(rhs_hat_, lx, ly)
-        for (int m = 0; m < n_modes; ++m) {
-            for (int n = 0; n < ny; ++n) {
-                double denom = lx[m] + ly[n];
-                size_t idx = (size_t)m * ny + n;
+            is_device_ptr(hat_raw, lx, ly)
+        for (int ky = 0; ky < ny; ++ky) {
+            for (int kx = 0; kx < nx_c; ++kx) {
+                double denom = lx[kx] + ly[ky];
+                size_t idx = 2 * ((size_t)ky * nx_c + kx);  // 2 doubles per complex
                 if (denom > 1e-30) {
-                    rhs_hat_[idx].x = -rhs_hat_[idx].x / denom * y_norm;
-                    rhs_hat_[idx].y = -rhs_hat_[idx].y / denom * y_norm;
+                    hat_raw[idx]     = -hat_raw[idx]     / denom;
+                    hat_raw[idx + 1] = -hat_raw[idx + 1] / denom;
                 } else {
-                    rhs_hat_[idx].x = 0.0;
-                    rhs_hat_[idx].y = 0.0;
+                    hat_raw[idx]     = 0.0;
+                    hat_raw[idx + 1] = 0.0;
                 }
             }
         }
 
-        // Inverse C2C FFT in y
-        y_result = cufftExecZ2Z(fft_y_inv_, rhs_hat_, rhs_hat_, CUFFT_INVERSE);
-        if (y_result != CUFFT_SUCCESS) {
-            std::cerr << "[FFT2D] y-direction C2C inverse failed\n";
+        // 2D C2R FFT: complex [Ny][Nx/2+1] -> real [Ny][Nx]
+        cufftResult c2r_result = cufftExecZ2D(fft_2d_c2r_, rhs_hat_, out_pack_);
+        if (c2r_result != CUFFT_SUCCESS) {
+            std::cerr << "[FFT2D] 2D C2R failed: " << c2r_result << "\n";
             return -1;
         }
+        cudaStreamSynchronize(stream_);
+
+        // Skip the 1D inverse x-FFT (step 6) — the 2D C2R already did both directions
+        // Jump directly to unpack (step 7)
     } else {
         // Wall-bounded y: cuSPARSE batched tridiagonal solve (in-place in rhs_hat_)
         cusparseStatus_t status = cusparseZgtsv2StridedBatch(
@@ -532,13 +551,15 @@ int FFT2DPoissonSolver::solve_device(double* rhs_ptr, double* p_ptr, const Poiss
         }
     }
 
-    // 6. Inverse FFT: complex -> real
-    fft_result = cufftExecZ2D(fft_plan_c2r_, rhs_hat_, out_pack_);
-    if (fft_result != CUFFT_SUCCESS) {
-        std::cerr << "[FFT2D] cufftExecZ2D failed: " << fft_result << "\n";
-        return -1;
+    // 6. Inverse FFT: complex -> real (skip for fully periodic — already done in step 5)
+    if (!fully_periodic_) {
+        cufftResult ifft_result = cufftExecZ2D(fft_plan_c2r_, rhs_hat_, out_pack_);
+        if (ifft_result != CUFFT_SUCCESS) {
+            std::cerr << "[FFT2D] cufftExecZ2D failed: " << ifft_result << "\n";
+            return -1;
+        }
+        cudaStreamSynchronize(stream_);
     }
-    cudaStreamSynchronize(stream_);
 
     // 7. Unpack to ghost layout with normalization and BC application
     // NOTE: Use 2D indexing to match solver's 2D path (no k component)
