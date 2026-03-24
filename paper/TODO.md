@@ -6,62 +6,82 @@
 
 **Key findings so far**:
 1. A priori accuracy rankings reverse on test set — TBNN overfits (0.085 val → 0.389 test), TBRF generalizes best (0.064 → 0.125), PI-TBNN's realizability penalty acts as regularization
-2. NN closures cost 50-1400% overhead depending on grid size and architecture (SST costs 3%)
-3. Our solver is competitive with CaLES/CaNS after profiling-guided optimization (1.89× speedup from cuFFT stride fix)
-4. The cost depends strongly on whether the case is 2D (cheap) or 3D (expensive)
+2. Classical RANS (SST, EARSM) adds <5% overhead; NN closures add 30-2000% depending on architecture and grid
+3. TBRF GPU tree traversal achieves 21× speedup over CPU — cheaper than MLP on all cases
+4. Solver is competitive with CaLES/CaNS after profiling-guided optimization (1.89× speedup from cuFFT stride fix)
+5. TBNN accuracy saturates at small network sizes (32² ≈ 64³ ≈ 128³ in val RMSE)
 
-**GPU**: All production results on NVIDIA H200 for consistency.
+**GPU**: All production results on NVIDIA H200 for consistency. Training on L40S.
 
 ---
 
-## A Posteriori Cases (4 cases × 11 models)
+## Model Matrix (15 models total)
 
-| Case | Dim | Grid | Cells | Poisson | Training | Physics | Re |
-|------|-----|------|-------|---------|----------|---------|-----|
-| Periodic hills | 2D | 196×96×1 | 18.8K | FFT2D | Trained | Separation | Re_H=5600 |
-| Cylinder | 2D | 256×192×1 | 49.2K | FFT2D (fully periodic) | Unseen | Bluff body wake | Re=100 |
-| Square duct | 3D | 48×64×64 | 197K | Multigrid | Trained | Secondary flows | Re_b=2000 |
-| Sphere | 3D | 128×96×96 | 1.18M | FFT 3D | Unseen | 3D wake | Re=100 |
+### Classical RANS (7 models)
 
-**Grid resolution notes**:
-- Hills: 196×96 gives ~22 cells per hill height, adequate for RANS
-- Cylinder: 256×192 in domain 16D×12D gives ~16 cells/D. May need refinement.
-- Duct: 48×64×64 with stretching (β=2.0) in y and z. Adequate for Re_b=2000 RANS.
-- Sphere: 128×96×96 in domain 15D×8D×8D gives ~8.5 cells/D. May need refinement to 160×128×128.
+| # | Model | Type |
+|---|-------|------|
+| 1 | None (laminar) | Baseline |
+| 2 | Mixing length | Algebraic |
+| 3 | k-omega | 2-eq transport |
+| 4 | SST k-omega | 2-eq transport |
+| 5 | EARSM-WJ | Nonlinear algebraic |
+| 6 | EARSM-GS | Nonlinear algebraic |
+| 7 | EARSM-Pope | Nonlinear algebraic |
 
-**All 11 RANS models**:
+### ML Models (8 models, 2-3 sizes per architecture)
 
-| # | Model | Type | Category |
-|---|-------|------|----------|
-| 1 | None (laminar) | — | Baseline |
-| 2 | Mixing length | Algebraic | Classical |
-| 3 | k-omega | 2-eq transport | Classical |
-| 4 | SST k-omega | 2-eq transport | Classical (industry standard) |
-| 5 | EARSM-WJ | Nonlinear algebraic | Classical |
-| 6 | EARSM-GS | Nonlinear algebraic | Classical |
-| 7 | EARSM-Pope | Nonlinear algebraic | Classical |
-| 8 | GEP | Symbolic regression | ML (algebraic) |
-| 9 | MLP (5→32→32→1) | Neural network | ML (scalar closure) |
-| 10 | TBNN (5→64³→10) | Neural network | ML (tensor closure) |
-| 11 | TBRF (1-tree) | Random forest | ML (tensor closure) |
+| # | Model | Architecture | Params | Val RMSE | GPU Ready |
+|---|-------|-------------|--------|----------|-----------|
+| 8 | MLP | 5→32→32→1 | 1.2K | 0.110 | Yes |
+| 9 | MLP-Medium | 5→64→64→1 | 4.4K | ~0.108 | Yes |
+| 10 | MLP-Large | 5→128⁴→1 | 50K | 0.105 | Yes |
+| 11 | TBNN-Small | 5→32→32→10 | 1.4K | 0.085 | Yes |
+| 12 | TBNN | 5→64→64→64→10 | 9.4K | 0.085 | Yes |
+| 13 | TBNN-Large | 5→128→128→128→10 | 35K | 0.086 | Yes |
+| 14 | TBRF-1t | 1 tree/basis | 283K nodes | 0.078 | Yes (GPU) |
+| 15 | TBRF-5t | 5 trees/basis | 1.4M nodes | 0.068 | Yes (GPU) |
+
+Plus PI-TBNN-Small and PI-TBNN-Large (same architectures as TBNN-Small/Large, different training). GEP also available.
+
+TBRF-10t (2.8M nodes, 56MB) available but may be too large for practical deployment.
+
+## A Posteriori Cases (4 cases)
+
+| Case | Dim | Grid | Cells | Poisson | Re | Training |
+|------|-----|------|-------|---------|-----|----------|
+| Periodic hills | 2D | 384×192×1 | 74K | FFT2D | Re_H=10595 | Trained |
+| Cylinder | 2D | 384×288×1 | 111K | FFT2D (fully periodic) | Re=100 | Unseen |
+| Square duct | 3D | 96×96×96 | 885K | FFT1D (uniform grid) | Re_b=3500 | Trained |
+| Sphere | 3D | 192×128×128 | 3.15M | FFT 3D | Re=200 | Unseen |
+
+**Grid changes from initial smoke test (March 23):**
+- Hills: 196×96 → 384×192 (4× cells, better resolution)
+- Cylinder: 256×192 → 384×288 (2.3×, 24 cells/D)
+- Duct: 48×64×64 → 96×96×96 (4.5×, uniform grid for FFT1D, Re matched to training data)
+- Sphere: 128×96×96 → 192×128×128 (2.7×, 13 cells/D)
+
+**Duct Re fix**: nu changed from 0.001 (Re_tau~5000, way outside training) to 0.006 (Re_b~3500, top of training range).
 
 ---
 
 ## Completed Work
 
 ### Training & A Priori
-- [x] All 5 NN models trained on McConkey dataset (TBKAN 2025 split)
+- [x] All 5 original NN models trained on McConkey dataset (TBKAN 2025 split) on L40S
 - [x] Full a priori evaluation: val + test RMSE, component-wise, per-case
 - [x] PI-TBNN beta sweep (realizability as regularization finding)
 - [x] TBRF feature importance (λ₁ dominates at 43.4%)
 - [x] All plots: scatter, Lumley triangle, error distributions, training curves
-- [x] Training methodology documented (docs/paper/training_methodology.md)
+- [x] Training methodology documented (paper/training_methodology.md)
+- [x] TBNN-Small (5→32²→10) trained on L40S — val RMSE 0.085
+- [x] TBNN-Large (5→128³→10) trained on L40S — val RMSE 0.086
 
 ### Solver Implementation
 - [x] MLP uses Pope invariants (same as TBNN — Ling et al. 2016 methodology)
 - [x] All 5 NN models pass GPU tests (NNModelsTest on V100)
 - [x] Model weights committed to git
-- [x] TBRF C++ inference (CPU tree traversal)
+- [x] **TBRF GPU tree traversal** — 21× speedup over CPU (was CPU-only, now full GPU pipeline)
 - [x] Duct binary fixed (NN weights path was empty)
 - [x] Fully-periodic 2D Poisson solver (FFT2D with 2D R2C) — enables Nz=1 cylinder
 
@@ -70,116 +90,99 @@
 - [x] FFT unpack kernel: output-coalesced transpose (4.7× kernel speedup)
 - [x] FFT stride fix: contiguous layout + shared-memory transpose (1.89× total speedup)
 - [x] Thomas solver evaluated and rejected (cuSPARSE PCR faster at Ny=256)
-- [x] Per-case nsys profiles: hills, cylinder, duct, sphere kernel breakdown
 - [x] Fully-periodic 2D Poisson: 86× speedup for cylinder (240ms → 2.8ms MG→FFT2D)
 
-### Solver Benchmarks
-- [x] V100: 253 Mcells/s at 256³ (post-optimization)
-- [x] H100: 626 Mcells/s at 256³ (pre-FFT-stride-fix, needs rerun)
-- [x] A100: 400 Mcells/s at 256³ (pre-FFT-stride-fix, needs rerun)
-- [x] CaNS comparison: 6.5× total throughput advantage vs 4× V100
-- [x] CaLES comparison: within 1.3× bandwidth-adjusted
-- [x] MPI scaling: 2× H100 slower than 1× (FFT transpose overhead)
+### Bug Fixes (March 23)
+- [x] **Duct MLP timing anomaly RESOLVED**: Root cause was MG Poisson + adaptive_projection. Fixed by using uniform grid (FFT1D selected). Blend count mystery solved: `copy_3d_uvw` = `blend_3d_uvw(1,0)`, 7 calls/step × 3 GPU kernels = 21/step is correct.
+- [x] **TBRF GPU**: Implemented full GPU pipeline — tree arrays mapped persistently, fused kernel for gradients→features→tree traversal→anisotropy→nu_t. Removed CPU k-estimation overhead from GPU path.
+
+### Solver Benchmarks (V100, updated grids, March 23)
+
+| Model | Duct 885K (ms) | Hills 74K (ms) | Cylinder 111K (ms) | Sphere 3.15M (ms) |
+|-------|---------------|----------------|--------------------|--------------------|
+| Baseline | 5.5 | 3.3 | 2.9 | 15.8 |
+| SST | 5.9 | 3.4 | 3.1 | 16.3 |
+| EARSM | 5.8 | 3.5 | 3.2 | 16.5 |
+| MLP | 19.3 | 4.8 | 5.0 | 60.0 |
+| TBRF-1t (GPU) | 7.3 | 3.5 | 3.3 | 19.6 |
+| TBNN | 89.9 | 13.5 | 20.0 | 331.4 |
+
+Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for paper.
 
 ### Paper LaTeX
-- [x] All sections drafted (intro, methods, results, discussion, conclusions, appendix)
-- [x] Results populated with actual data (a priori, cost analysis, solver validation)
-- [x] Profiling-guided optimization story written (methods_solver.tex)
-- [x] Kernel breakdown and cost anatomy documented (results_cost.tex)
+- [x] All sections drafted
+- [x] Results populated with actual data (a priori, cost analysis)
+- [x] Profiling-guided optimization story written
 - [x] References.bib with all citations
 
 ---
 
 ## In Progress
 
-### H200 Smoke Test (job 5369348)
-- 4 cases × 11 models × 50 steps = 44 runs
-- Validates all models on all cases before production runs
-- Using corrected Nz=1 cylinder with FFT2D
-
-### H200 A Posteriori Channel (job 5360870)
-- May need to cancel — channel converges to laminar Poiseuille with RANS
-- SST gave same result as baseline (no turbulence without instability)
-- MLP did change the flow (Re_tau 278 → 250)
+### Training new model sizes (L40S job 5429862)
+- [x] MLP-Medium (5→64→64→1) — training on L40S
+- [ ] PI-TBNN-Small (5→32→32→10, beta=0.001) — queued
+- [ ] PI-TBNN-Large (5→128→128→128→10, beta=0.001) — queued
 
 ---
 
 ## Remaining Work (Priority Order)
 
-### 1. DEBUG: Duct MLP timing anomaly (BLOCKER)
-The duct MLP shows 3× more GPU kernel calls than expected (26 blend_3d per 2 steps vs expected ~12). MLP turb is only 2.9 ms but total step is 51 ms (baseline 15 ms). TBNN and TBRF don't show this. The anomaly also affects baseline (42 blend calls for 2 steps vs expected 18) — so the blend count math needs auditing first.
-- [ ] Audit ssprk3_step: count exactly how many blend_3d_uvw and blend_to_3d_uvw calls per step (including sub-kernels for u,v,w)
-- [ ] Check if solver.cpp:1485-1488 (diffusion CFL safety) causes dt subdivision within step()
-- [ ] Check if MLP's large nu_t triggers additional solver behavior (extra BC applications, filter, etc.)
-- [ ] Verify MLP nu_t values are physically reasonable for the duct initial condition
-- [ ] Consider adding nu_t clamp to MLP postprocess
+### 1. Complete new model training
+- [ ] Verify MLP-Medium, PI-TBNN-Small, PI-TBNN-Large weights exported
+- [ ] Run a priori evaluation on all new models
+- [ ] Update training_methodology.md with new model specs
 
-### 2. Add MLP-Large and PI-TBNN to model list
-- [ ] Add to smoke test sbatch (13 models total)
-- [ ] Verify both work on all 4 cases
+### 2. Full timing sweep on H200
+- [ ] Run all 15+ models × 4 cases on H200 with updated grids
+- [ ] Include TBRF-5t and TBRF-10t for forest size scaling
+- [ ] Standardize: same binary, same H200, same step count
 
-### 3. Validate smoke test results
-- [x] All 44 runs complete on H200 (job 5369348)
-- [ ] Verify NN models produce different results from baseline (especially for 3D cases)
-- [ ] Check transport models (SST, EARSM) — may need more steps or turbulent initial condition
-- [ ] Verify grid convergence (especially sphere at 8.5 cells/D)
-
-### 4. Production a posteriori runs
-- [ ] Run all 13 models × 4 cases at full iteration count (10K-15K steps) on H200
-- [ ] Extract velocity profiles, drag/lift coefficients, separation points
+### 3. Production a posteriori runs (H200)
+- [ ] Run all models × 4 cases at full iteration count (5K-15K steps)
+- [ ] Extract velocity profiles, drag/lift, separation points
 - [ ] Compare against reference data:
-  - Hills: Breuer et al. (2009) LES — separation/reattachment x
-  - Cylinder: Established reference — Cd≈1.35, St≈0.165 at Re=100
-  - Duct: Pinelli et al. (2010) DNS — secondary flow patterns
-  - Sphere: Johnson & Patel (1999) — Cd, separation angle at Re=100
-- [ ] Compute L2 error norms for Pareto plot
-
-### 3. Cost benchmarks (from same production runs)
-- [ ] Extract timing from production run logs (all on same H200)
-- [ ] Sub-phase breakdown for each NN model
-- [ ] Cost vs grid size (2D hills 19K → 3D sphere 1.18M)
+  - Hills: Breuer et al. (2009) LES
+  - Cylinder: Cd≈1.35, St≈0.165 at Re=100
+  - Duct: Pinelli et al. (2010) DNS secondary flows
+  - Sphere: Johnson & Patel (1999) Cd, separation angle
 
 ### 4. Pareto plot (THE figure)
-- [ ] x-axis: computational cost (ms/step or overhead %)
+- [ ] x-axis: computational cost (turb model overhead ms/step)
 - [ ] y-axis: a posteriori error (L2 norm vs reference)
-- [ ] One point per model, labeled
+- [ ] Multiple points per architecture (size variants trace out curves)
+- [ ] Separate per case + combined
 - [ ] Pareto frontier identification
-- [ ] Separate plot per case, plus combined
 
-### 5. Rerun solver benchmarks on H200
-- [ ] Throughput benchmark at 256³ on H200 (post-FFT-stride-fix)
-- [ ] nsys kernel breakdown on H200
-- [ ] Update paper tables with H200 numbers (currently V100/H100)
+### 5. Rerun solver throughput benchmarks on H200
+- [ ] Throughput at 256³ on H200 (post-FFT-stride-fix)
+- [ ] Update paper tables (currently V100/H100)
 
 ### 6. Update paper with final results
-- [ ] results_aposteriori.tex — fill with actual profiles and comparisons
-- [ ] results_cost.tex — update profiling tables for H200, add MLP numbers
-- [ ] Update all tables to use H200 numbers consistently
+- [ ] results_aposteriori.tex — profiles and comparisons
+- [ ] results_cost.tex — H200 timing, size scaling curves
+- [ ] Update training_methodology.md with new models
 - [ ] Pareto plot figure
-- [ ] Architecture diagrams (tikz) — Fig 1, Fig 2
+- [ ] Architecture diagrams
 
-### 7. Grid convergence study
-- [ ] Run sphere at 160×128×128 (2.6M cells) to verify convergence
-- [ ] Run cylinder at 384×256 to verify convergence
-- [ ] Report in appendix or methods
-
-### 8. Paper polish
-- [ ] CaLES comparison moved to appendix (different GPU)
+### 7. Paper polish
 - [ ] Consistent notation throughout
-- [ ] Figure quality check (all using plot_style.py)
+- [ ] Figure quality (all using plot_style.py)
 - [ ] Abstract updated with final numbers
 
 ---
 
-## Key Decisions Made
+## Key Decisions
 
-1. **GPU**: All production results on H200 for consistency
-2. **Cases**: 4 cases (hills, cylinder, duct, sphere) — 2 trained + 2 unseen, 2 2D + 2 3D
-3. **Models**: All 11 RANS models (7 classical + 4 ML)
-4. **MLP inputs**: Pope invariants (same as TBNN, matching Ling et al. 2016)
-5. **Cylinder**: True 2D (Nz=1) with fully-periodic FFT2D Poisson
-6. **CaLES comparison**: Appendix only (different GPU), main paper uses H200 throughout
-7. **Cost measurement**: From the same runs that produce accuracy results (not artificial benchmarks)
+1. **GPU**: Production on H200, training on L40S (consistent with original models)
+2. **Cases**: 4 cases — 2 trained + 2 unseen, 2 2D + 2 3D
+3. **Models**: 15 total (7 classical + 8 ML with size variants)
+4. **Grids**: Updated March 23 — larger grids, correct Re for duct
+5. **Duct Poisson**: Uniform grid → FFT1D (avoids MG adaptive_projection artifact)
+6. **TBRF**: GPU tree traversal (21× speedup, cheaper than MLP)
+7. **MLP inputs**: Pope invariants (matching Ling et al. 2016)
+8. **Cost measurement**: From same runs that produce accuracy results
+9. **Multiple NN sizes**: 2-3 per architecture for Pareto curves
 
 ---
 
@@ -187,21 +190,16 @@ The duct MLP shows 3× more GPU kernel calls than expected (26 blend_3d per 2 st
 
 | File | Status | Contents |
 |------|--------|----------|
-| `paper/main.tex` | Draft | Main document, abstract with key findings |
+| `paper/main.tex` | Draft | Main document |
 | `paper/sections/introduction.tex` | Draft | Background, gap, contributions |
-| `paper/sections/methods_solver.tex` | Done | Solver architecture, CaNS comparison, optimization story |
-| `paper/sections/methods_closures.tex` | Done | All 11 models, FLOPs/cell, computational anatomy |
-| `paper/sections/methods_training.tex` | Done | Dataset, features, training procedure |
-| `paper/sections/results_apriori.tex` | Done | Val/test RMSE, overfitting finding, PI-TBNN sweep |
-| `paper/sections/results_aposteriori.tex` | TODO | Needs production run data |
-| `paper/sections/results_cost.tex` | Needs update | Has H100 data, needs H200 + MLP |
-| `paper/sections/discussion.tex` | Done | Overfitting, regularization, recommendations |
-| `paper/sections/conclusions.tex` | Done | Summary, practical guidelines |
-| `paper/sections/appendix.tex` | Draft | Training methodology, CaLES comparison |
-| `paper/references.bib` | Done | 14 references |
-| `paper/TODO.md` | This file | |
-| `paper/roadmap.md` | Outdated | Superseded by this TODO |
-| `paper/training_methodology.md` | Done | Full training specification |
-| `scripts/paper/` | Done | Training, evaluation, plotting scripts |
-| `results/paper/` | Partial | A priori done, a posteriori pending |
-| `data/models/*_paper/` | Committed | All model weights in git |
+| `paper/sections/methods_solver.tex` | Done | Solver, CaNS comparison, optimization |
+| `paper/sections/methods_closures.tex` | Needs update | Add new model sizes |
+| `paper/sections/methods_training.tex` | Needs update | Add new model specs |
+| `paper/sections/results_apriori.tex` | Needs update | Add new model results |
+| `paper/sections/results_aposteriori.tex` | TODO | Needs production data |
+| `paper/sections/results_cost.tex` | Needs update | H200 + new models + TBRF GPU |
+| `paper/sections/discussion.tex` | Needs update | TBNN saturation finding |
+| `paper/sections/conclusions.tex` | Done | Summary, guidelines |
+| `paper/training_methodology.md` | Needs update | Add new model specs |
+| `scripts/paper/train_all_models.py` | Updated | Added 5 new model variants |
+| `scripts/paper/train_remaining_sizes.sbatch` | Active | L40S job for remaining 3 models |

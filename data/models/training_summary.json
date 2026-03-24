@@ -1,20 +1,14 @@
 {
-  "mlp": {"rmse": 0.109595, "epochs": 1000, "architecture": [5, 32, 32, 1], "weights_kb": 56, "deployable": true},
-  "mlp_large": {"rmse": 0.104477, "epochs": 344, "architecture": [5, 128, 128, 128, 128, 1], "weights_kb": 896, "deployable": true},
-  "tbnn": {"rmse": 0.084501, "epochs": 694, "architecture": [5, 64, 64, 64, 10], "weights_kb": 196, "deployable": true},
-  "pi_tbnn": {
-    "sweep": {
-      "0.001": {"rmse": 0.085229, "epochs": 729},
-      "0.01": {"rmse": 0.090875, "epochs": 676}
-    },
-    "note": "Realizability penalty either negligible (beta=0.001, matches TBNN) or harmful (beta>=0.01). Tensor basis already produces near-realizable outputs (1.3% violations)."
+  "mlp_med": {
+    "rmse": 0.10803214035461779,
+    "time": 2330.5871500968933
   },
-  "tbrf": {"rmse": 0.063707, "n_trees": 200, "total_nodes": 55051026, "size_mb": 1101, "deployable": false,
-    "note": "Offline accuracy ceiling. 3.3GB pickle, 55M node traversals — impractical for online CFD inference."},
-  "tbrf_compact": {
-    "1_tree":  {"rmse": 0.077777, "total_nodes": 282902,  "size_mb": 5.7},
-    "5_tree":  {"rmse": 0.067833, "total_nodes": 1432612, "size_mb": 28.7},
-    "10_tree": {"rmse": 0.064982, "total_nodes": 2797130, "size_mb": 55.9},
-    "note": "Compact variants exported as flat binary (trees.bin) for C++ solver experiments. 10 trees captures 96% of full TBRF accuracy."
+  "pi_tbnn_small": {
+    "rmse": 0.08959260582923889,
+    "time": 2753.2883138656616
+  },
+  "pi_tbnn_large": {
+    "rmse": 0.08871041983366013,
+    "time": 3220.624278783798
   }
 }

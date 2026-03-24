@@ -747,7 +747,7 @@ def main():
     parser.add_argument('--rans_model', default='komegasst',
                         help='RANS baseline model in dataset')
     parser.add_argument('--models', nargs='*',
-                        default=['mlp', 'mlp_large', 'tbnn', 'pi_tbnn', 'tbrf'],
+                        default=['mlp', 'mlp_med', 'mlp_large', 'tbnn', 'tbnn_small', 'tbnn_large', 'pi_tbnn', 'pi_tbnn_small', 'pi_tbnn_large', 'tbrf'],
                         help='Models to train')
     args = parser.parse_args()
 
@@ -799,6 +799,21 @@ def main():
                              {'architecture': {'layers': [5, 32, 32, 1]}})
         results['mlp'] = {'rmse': rmse, 'time': time.time() - t0}
 
+    # ---- MLP (medium) ----
+    if 'mlp_med' in args.models:
+        print("\n" + "=" * 60)
+        print("  Training MLP-Medium (5→64→64→1)")
+        print("=" * 60)
+        t0 = time.time()
+        model, mean, std, rmse = train_mlp_nut(
+            inv_train, bij_train, k_train, inv_val, bij_val, k_val,
+            hidden=[64, 64], lr=1e-3, epochs=args.epochs,
+            device=args.device)
+        export_pytorch_model(model, mean, std,
+                             f'{args.output_dir}/mlp_med_paper', 'nn_mlp',
+                             {'architecture': {'layers': [5, 64, 64, 1]}})
+        results['mlp_med'] = {'rmse': rmse, 'time': time.time() - t0}
+
     # ---- MLP (large) ----
     if 'mlp_large' in args.models:
         print("\n" + "=" * 60)
@@ -828,6 +843,36 @@ def main():
                              f'{args.output_dir}/tbnn_paper', 'nn_tbnn',
                              {'architecture': {'layers': [5, 64, 64, 64, 10]}})
         results['tbnn'] = {'rmse': rmse, 'time': time.time() - t0}
+
+    # ---- TBNN (small) ----
+    if 'tbnn_small' in args.models:
+        print("\n" + "=" * 60)
+        print("  Training TBNN-Small (5→32→32→10)")
+        print("=" * 60)
+        t0 = time.time()
+        model, mean, std, rmse = train_tbnn(
+            inv_train, bij_train, basis_train, inv_val, bij_val, basis_val,
+            hidden=[32, 32], n_basis=10, lr=1e-3, epochs=args.epochs,
+            device=args.device)
+        export_pytorch_model(model, mean, std,
+                             f'{args.output_dir}/tbnn_small_paper', 'nn_tbnn',
+                             {'architecture': {'layers': [5, 32, 32, 10]}})
+        results['tbnn_small'] = {'rmse': rmse, 'time': time.time() - t0}
+
+    # ---- TBNN (large) ----
+    if 'tbnn_large' in args.models:
+        print("\n" + "=" * 60)
+        print("  Training TBNN-Large (5→128→128→128→10)")
+        print("=" * 60)
+        t0 = time.time()
+        model, mean, std, rmse = train_tbnn(
+            inv_train, bij_train, basis_train, inv_val, bij_val, basis_val,
+            hidden=[128, 128, 128], n_basis=10, lr=1e-3, epochs=args.epochs,
+            device=args.device)
+        export_pytorch_model(model, mean, std,
+                             f'{args.output_dir}/tbnn_large_paper', 'nn_tbnn',
+                             {'architecture': {'layers': [5, 128, 128, 128, 10]}})
+        results['tbnn_large'] = {'rmse': rmse, 'time': time.time() - t0}
 
     # ---- PI-TBNN sweep ----
     if 'pi_tbnn' in args.models:
@@ -864,6 +909,45 @@ def main():
                               'realizability_beta': best_pi_beta})
         results['pi_tbnn'] = {'rmse': best_pi_rmse, 'time': sum(r['time'] for r in pi_sweep_results.values()),
                               'best_beta': best_pi_beta, 'sweep': {str(k): v for k, v in pi_sweep_results.items()}}
+
+    # ---- PI-TBNN (small) ----
+    if 'pi_tbnn_small' in args.models:
+        print("\n" + "=" * 60)
+        print("  Training PI-TBNN-Small (5→32→32→10)")
+        print("=" * 60)
+        # Use best beta from medium sweep if available, else documented best (0.001)
+        pi_beta_use = results.get('pi_tbnn', {}).get('best_beta', 0.001)
+        t0 = time.time()
+        model, mean, std, rmse = train_tbnn(
+            inv_train, bij_train, basis_train, inv_val, bij_val, basis_val,
+            hidden=[32, 32], n_basis=10, lr=1e-3, epochs=args.epochs,
+            device=args.device, physics_informed=True,
+            pi_beta=pi_beta_use, pi_warmup=100)
+        export_pytorch_model(model, mean, std,
+                             f'{args.output_dir}/pi_tbnn_small_paper', 'nn_tbnn',
+                             {'architecture': {'layers': [5, 32, 32, 10]},
+                              'physics_informed': True,
+                              'realizability_beta': pi_beta_use})
+        results['pi_tbnn_small'] = {'rmse': rmse, 'time': time.time() - t0}
+
+    # ---- PI-TBNN (large) ----
+    if 'pi_tbnn_large' in args.models:
+        print("\n" + "=" * 60)
+        print("  Training PI-TBNN-Large (5→128→128→128→10)")
+        print("=" * 60)
+        pi_beta_use = results.get('pi_tbnn', {}).get('best_beta', 0.001)
+        t0 = time.time()
+        model, mean, std, rmse = train_tbnn(
+            inv_train, bij_train, basis_train, inv_val, bij_val, basis_val,
+            hidden=[128, 128, 128], n_basis=10, lr=1e-3, epochs=args.epochs,
+            device=args.device, physics_informed=True,
+            pi_beta=pi_beta_use, pi_warmup=100)
+        export_pytorch_model(model, mean, std,
+                             f'{args.output_dir}/pi_tbnn_large_paper', 'nn_tbnn',
+                             {'architecture': {'layers': [5, 128, 128, 128, 10]},
+                              'physics_informed': True,
+                              'realizability_beta': pi_beta_use})
+        results['pi_tbnn_large'] = {'rmse': rmse, 'time': time.time() - t0}
 
     # ---- TBRF ----
     if 'tbrf' in args.models:
