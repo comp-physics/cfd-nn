@@ -1,0 +1,21 @@
+{
+  "name": "nn_tbnn_mcconkey",
+  "type": "nn_tbnn",
+  "description": "nn_tbnn trained on McConkey et al. (2021) dataset",
+  "training": {
+    "dataset": "McConkey et al. (2021)",
+    "split": "TBKAN-2025 case-holdout protocol",
+    "rans_baseline": "k-omega SST"
+  },
+  "architecture": {
+    "layers": [
+      5,
+      128,
+      128,
+      128,
+      10
+    ]
+  },
+  "physics_informed": true,
+  "realizability_beta": 0.001
+}
