@@ -15,9 +15,11 @@
 #include "turbulence_model.hpp"
 #include "turbulence_baseline.hpp"
 #include "decomposition.hpp"
+#include "qoi_extraction.hpp"
 
 #include <iostream>
 #include <iomanip>
+#include <filesystem>
 #include <cmath>
 #include <fstream>
 #include <filesystem>
@@ -428,6 +430,50 @@ int main(int argc, char** argv) {
 #ifdef USE_GPU_OFFLOAD
     solver.sync_from_gpu();
 #endif
+
+    // QoI extraction: cross-section velocity profiles at mid-x
+    // Runs on CPU after sync_from_gpu (above). Cost: ~0.8ms for sync,
+    // negligible for CPU extraction. At qoi_freq=50: 0.016 ms/step amortized.
+    if (config.qoi_freq > 0) {
+        std::filesystem::create_directories(config.qoi_output_dir);
+
+        const auto& vel = solver.velocity();
+        const int Nx = mesh.Nx, Ny = mesh.Ny, Nz = mesh.Nz, Ng = mesh.Nghost;
+        const int i_mid = Nx / 2;  // Mid-x station
+
+        // Extract U(y,z), V(y,z), W(y,z) cross-section
+        std::vector<double> u_yz(Ny * Nz), v_yz(Ny * Nz), w_yz(Ny * Nz);
+        nncfd::qoi::extract_cross_section_device(
+            vel.u_data().data(), vel.v_data().data(), vel.w_data().data(),
+            vel.u_stride(), vel.v_stride(), vel.w_stride(),
+            vel.u_plane_stride(), vel.v_plane_stride(), vel.w_plane_stride(),
+            i_mid, Nx, Ny, Nz, Ng,
+            u_yz.data(), v_yz.data(), w_yz.data());
+
+        // Build coordinate arrays
+        std::vector<double> yc_arr(Ny), zc_arr(Nz);
+        for (int j = 0; j < Ny; ++j) yc_arr[j] = mesh.yc[j + Ng];
+        for (int k = 0; k < Nz; ++k) zc_arr[k] = mesh.zc[k + Ng];
+
+        nncfd::qoi::write_cross_section(
+            config.qoi_output_dir + "/duct_cross_section.dat",
+            yc_arr.data(), zc_arr.data(), u_yz.data(), v_yz.data(), w_yz.data(),
+            Ny, Nz, "y z U V W");
+
+        // Wall shear stress along y-walls (averaged over x)
+        std::vector<double> tau_bot(Nz), tau_top(Nz);
+        nncfd::qoi::compute_wall_shear_y_device(
+            vel.u_data().data(), vel.u_stride(), vel.u_plane_stride(),
+            config.nu, mesh.dy,
+            Nx, Ny, Nz, Ng,
+            tau_bot.data(), tau_top.data());
+
+        nncfd::qoi::write_profile(
+            config.qoi_output_dir + "/wall_shear_y.dat",
+            zc_arr.data(), tau_bot.data(), Nz, "z tau_w_bottom tau_w_top");
+
+        std::cout << "QoI written to " << config.qoi_output_dir << "/\n";
+    }
 
     // Results
     std::cout << "\n=== Results ===\n";

@@ -363,7 +363,7 @@ def main():
     parser.add_argument('--rans_model', default='komegasst',
                         help='RANS baseline model in dataset')
     parser.add_argument('--models', nargs='*',
-                        default=['mlp', 'mlp_large', 'tbnn', 'pi_tbnn', 'tbrf'],
+                        default=['mlp', 'mlp_med', 'mlp_large', 'tbnn', 'tbnn_small', 'tbnn_large', 'pi_tbnn', 'pi_tbnn_small', 'pi_tbnn_large', 'tbrf'],
                         help='Models to evaluate')
     args = parser.parse_args()
 
@@ -428,6 +428,38 @@ def main():
         else:
             print(f"\n  SKIP: {model_path} not found")
 
+    # ---- TBNN-Small ----
+    if 'tbnn_small' in args.models:
+        model_path = Path(args.model_dir) / 'tbnn_small_paper'
+        if model_path.exists():
+            print(f"\n--- Evaluating TBNN-Small (5->32->32->10) ---")
+            model, inv_mean, inv_std = load_nn_weights(
+                model_path, TBNNModel, n_in=5, hidden=[32, 32], n_basis=10)
+            def _pred_tbnn_sm(inv, basis, _m=model, _mean=inv_mean, _std=inv_std):
+                return predict_tbnn(_m, inv, basis, _mean, _std, args.device)
+            all_results['tbnn_small'] = eval_tensor_model_on_splits(
+                'tbnn_small', _pred_tbnn_sm, val_data, test_data)
+            print(f"  Val  RMSE(b): {all_results['tbnn_small']['val']['rmse']:.6f}")
+            print(f"  Test RMSE(b): {all_results['tbnn_small']['test']['rmse']:.6f}")
+        else:
+            print(f"\n  SKIP: {model_path} not found")
+
+    # ---- TBNN-Large ----
+    if 'tbnn_large' in args.models:
+        model_path = Path(args.model_dir) / 'tbnn_large_paper'
+        if model_path.exists():
+            print(f"\n--- Evaluating TBNN-Large (5->128->128->128->10) ---")
+            model, inv_mean, inv_std = load_nn_weights(
+                model_path, TBNNModel, n_in=5, hidden=[128, 128, 128], n_basis=10)
+            def _pred_tbnn_lg(inv, basis, _m=model, _mean=inv_mean, _std=inv_std):
+                return predict_tbnn(_m, inv, basis, _mean, _std, args.device)
+            all_results['tbnn_large'] = eval_tensor_model_on_splits(
+                'tbnn_large', _pred_tbnn_lg, val_data, test_data)
+            print(f"  Val  RMSE(b): {all_results['tbnn_large']['val']['rmse']:.6f}")
+            print(f"  Test RMSE(b): {all_results['tbnn_large']['test']['rmse']:.6f}")
+        else:
+            print(f"\n  SKIP: {model_path} not found")
+
     # ---- PI-TBNN ----
     if 'pi_tbnn' in args.models:
         model_path = Path(args.model_dir) / 'pi_tbnn_paper'
@@ -441,6 +473,38 @@ def main():
                 'pi_tbnn', _pred_pi, val_data, test_data)
             print(f"  Val  RMSE(b): {all_results['pi_tbnn']['val']['rmse']:.6f}")
             print(f"  Test RMSE(b): {all_results['pi_tbnn']['test']['rmse']:.6f}")
+        else:
+            print(f"\n  SKIP: {model_path} not found")
+
+    # ---- PI-TBNN-Small ----
+    if 'pi_tbnn_small' in args.models:
+        model_path = Path(args.model_dir) / 'pi_tbnn_small_paper'
+        if model_path.exists():
+            print(f"\n--- Evaluating PI-TBNN-Small (5->32->32->10) ---")
+            model, inv_mean, inv_std = load_nn_weights(
+                model_path, TBNNModel, n_in=5, hidden=[32, 32], n_basis=10)
+            def _pred_pi_sm(inv, basis, _m=model, _mean=inv_mean, _std=inv_std):
+                return predict_tbnn(_m, inv, basis, _mean, _std, args.device)
+            all_results['pi_tbnn_small'] = eval_tensor_model_on_splits(
+                'pi_tbnn_small', _pred_pi_sm, val_data, test_data)
+            print(f"  Val  RMSE(b): {all_results['pi_tbnn_small']['val']['rmse']:.6f}")
+            print(f"  Test RMSE(b): {all_results['pi_tbnn_small']['test']['rmse']:.6f}")
+        else:
+            print(f"\n  SKIP: {model_path} not found")
+
+    # ---- PI-TBNN-Large ----
+    if 'pi_tbnn_large' in args.models:
+        model_path = Path(args.model_dir) / 'pi_tbnn_large_paper'
+        if model_path.exists():
+            print(f"\n--- Evaluating PI-TBNN-Large (5->128->128->128->10) ---")
+            model, inv_mean, inv_std = load_nn_weights(
+                model_path, TBNNModel, n_in=5, hidden=[128, 128, 128], n_basis=10)
+            def _pred_pi_lg(inv, basis, _m=model, _mean=inv_mean, _std=inv_std):
+                return predict_tbnn(_m, inv, basis, _mean, _std, args.device)
+            all_results['pi_tbnn_large'] = eval_tensor_model_on_splits(
+                'pi_tbnn_large', _pred_pi_lg, val_data, test_data)
+            print(f"  Val  RMSE(b): {all_results['pi_tbnn_large']['val']['rmse']:.6f}")
+            print(f"  Test RMSE(b): {all_results['pi_tbnn_large']['test']['rmse']:.6f}")
         else:
             print(f"\n  SKIP: {model_path} not found")
 
@@ -472,6 +536,22 @@ def main():
                 'mlp', _pred_mlp, val_data, test_data)
             print(f"  Val  RMSE(|b|): {all_results['mlp']['val']['rmse']:.6f}")
             print(f"  Test RMSE(|b|): {all_results['mlp']['test']['rmse']:.6f}")
+        else:
+            print(f"\n  SKIP: {model_path} not found")
+
+    # ---- MLP-Medium ----
+    if 'mlp_med' in args.models:
+        model_path = Path(args.model_dir) / 'mlp_med_paper'
+        if model_path.exists():
+            print(f"\n--- Evaluating MLP-Medium (5->64->64->1) ---")
+            model, inv_mean, inv_std = load_nn_weights(
+                model_path, MLPModel, n_in=5, hidden=[64, 64], n_out=1)
+            def _pred_mlp_md(inv, _m=model, _mean=inv_mean, _std=inv_std):
+                return predict_mlp(_m, inv, _mean, _std, args.device)
+            all_results['mlp_med'] = eval_scalar_model_on_splits(
+                'mlp_med', _pred_mlp_md, val_data, test_data)
+            print(f"  Val  RMSE(|b|): {all_results['mlp_med']['val']['rmse']:.6f}")
+            print(f"  Test RMSE(|b|): {all_results['mlp_med']['test']['rmse']:.6f}")
         else:
             print(f"\n  SKIP: {model_path} not found")
 

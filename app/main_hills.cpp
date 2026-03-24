@@ -14,6 +14,7 @@
 #include "ibm_forcing.hpp"
 #include "decomposition.hpp"
 #include "turbulence_model.hpp"
+#include "qoi_extraction.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -291,6 +292,88 @@ int main(int argc, char** argv) {
     }
 
     total_timer.stop();
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_from_gpu();
+#endif
+
+    // QoI extraction: Cf(x), velocity profiles at x/H stations
+    if (config.qoi_freq > 0 && mpi_rank == 0) {
+        std::filesystem::create_directories(config.qoi_output_dir);
+
+        const auto& vel = solver.velocity();
+        const int Nx = mesh.Nx, Ny = mesh.Ny, Ng = mesh.Nghost;
+
+        // Pre-compute hill geometry: y_hill[i] and first fluid cell index
+        std::vector<double> hill_y(Nx);
+        std::vector<int> j_first_fluid(Nx);
+        for (int i = 0; i < Nx; ++i) {
+            double xc_i = mesh.xc[i + Ng];
+            hill_y[i] = 0.0;
+            // Walk upward from bottom to find first fluid cell
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                double yc_j = mesh.yc[j];
+                if (body->phi(xc_i, yc_j, 0.0) > 0.0) {
+                    j_first_fluid[i] = j;
+                    hill_y[i] = yc_j - body->phi(xc_i, yc_j, 0.0);  // Surface y
+                    break;
+                }
+            }
+        }
+
+        // Skin friction Cf(x)
+        double u_ref = 1.0;  // Reference velocity
+        std::vector<double> cf(Nx);
+        qoi::compute_cf_x_device(
+            vel.u_data().data(), vel.u_stride(), 0,
+            mesh.yf.data(), Ny + 2 * Ng + 1,
+            hill_y.data(), j_first_fluid.data(),
+            config.nu, u_ref, cf.data(),
+            Nx, Ny, Ng);
+
+        // Write Cf(x)
+        std::vector<double> xc_arr(Nx);
+        for (int i = 0; i < Nx; ++i) xc_arr[i] = mesh.xc[i + Ng];
+        qoi::write_profile(config.qoi_output_dir + "/cf_x.dat",
+                           xc_arr.data(), cf.data(), Nx, "x Cf");
+
+        // Separation/reattachment
+        auto [x_sep, x_reattach] = qoi::find_separation_reattachment(
+            cf.data(), xc_arr.data(), Nx);
+        std::cout << "  Separation:    x/H = " << x_sep / h << "\n";
+        std::cout << "  Reattachment:  x/H = " << x_reattach / h << "\n";
+
+        // Velocity profiles at x/H = 0.5, 2, 4, 6, 8
+        std::vector<double> yc_arr(Ny);
+        for (int j = 0; j < Ny; ++j) yc_arr[j] = mesh.yc[j + Ng];
+
+        double stations[] = {0.5, 2.0, 4.0, 6.0, 8.0};
+        for (double xH : stations) {
+            double x_target = xH * h;
+            // Find closest grid index
+            int i_station = 0;
+            double min_dist = 1e30;
+            for (int i = 0; i < Nx; ++i) {
+                double d = std::abs(mesh.xc[i + Ng] - x_target);
+                if (d < min_dist) { min_dist = d; i_station = i; }
+            }
+
+            std::vector<double> u_prof(Ny), v_prof(Ny);
+            qoi::extract_velocity_profile_device(
+                vel.u_data().data(), vel.v_data().data(),
+                vel.u_stride(), vel.v_stride(), 0, 0,
+                i_station, Nx, Ny, 1, Ng,
+                u_prof.data(), v_prof.data());
+
+            std::string fname = config.qoi_output_dir + "/profile_xH"
+                                + std::to_string((int)(xH * 10)) + ".dat";
+            qoi::write_profile_uv(fname, yc_arr.data(),
+                                  u_prof.data(), v_prof.data(), Ny,
+                                  "y U V at x/H=" + std::to_string(xH));
+        }
+
+        std::cout << "QoI written to " << config.qoi_output_dir << "/\n";
+    }
 
     if (mpi_rank == 0) {
         std::cout << "\n=== Simulation complete ===\n";

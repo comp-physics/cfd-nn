@@ -242,6 +242,8 @@ void Config::load(const std::string& filename) {
     output_freq = get_int("output_freq", output_freq);
     num_snapshots = get_int("num_snapshots", num_snapshots);
     verbose = get_bool("verbose", verbose);
+    qoi_freq = get_int("qoi_freq", qoi_freq);
+    qoi_output_dir = get_string("qoi_output_dir", qoi_output_dir);
     postprocess = get_bool("postprocess", postprocess);
     write_fields = get_bool("write_fields", write_fields);
     vtk_binary = get_bool("vtk_binary", vtk_binary);

@@ -324,6 +324,7 @@ set(LIB_SOURCES
     src/poisson_solver_fft_mpi.cpp
     src/ibm_geometry.cpp
     src/ibm_forcing.cpp
+    src/qoi_extraction.cpp
     src/velocity_gradient.cpp
     src/turbulence_les.cpp
     src/turbulence_les_dynamic.cpp

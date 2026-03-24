@@ -134,6 +134,8 @@ struct Config {
     int num_snapshots = 10;     ///< Number of VTK snapshots during simulation
     bool verbose = true;
     int diag_interval = 1;      ///< Expensive diagnostics frequency (div norms, Poisson stats). Set >1 for perf runs.
+    int qoi_freq = 0;           ///< QoI extraction frequency (steps); 0 = disabled
+    std::string qoi_output_dir = "qoi";  ///< Subdirectory for QoI output files
     
     // Benchmark / postprocessing controls
     // - postprocess: Poiseuille table + L2 error + velocity_profile.dat
