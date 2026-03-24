@@ -7,6 +7,10 @@
 #include <string>
 #include <cstdint>
 
+#ifdef USE_GPU_OFFLOAD
+#include <omp.h>
+#endif
+
 namespace nncfd {
 
 /// Tree offset entry: maps (basis_idx, tree_idx) to a contiguous node range
@@ -23,9 +27,9 @@ struct TreeOffset {
 ///
 /// Following Kaandorp & Dwight (2020), Computers & Fluids 202.
 ///
-/// CPU-only tree traversal: decision trees are branch-heavy and poorly
-/// suited for GPU execution. Feature computation (invariants + tensor basis)
-/// reuses the same code as TBNN.
+/// GPU strategy: tree structure arrays are uploaded once to GPU and kept
+/// resident. A fused GPU kernel computes gradients, features, tensor basis,
+/// tree traversal, and eddy viscosity in a single pass per cell.
 class TurbulenceNNTBRF : public TurbulenceModel {
 public:
     TurbulenceNNTBRF();
@@ -60,10 +64,10 @@ public:
     void set_u_ref(double u_ref) { u_ref_ = u_ref; }
     void set_k_min(double k_min) { k_min_ = k_min; }
 
-    /// GPU buffer management (no-op for TBRF: tree traversal is CPU-only)
-    void initialize_gpu_buffers(const Mesh& mesh) override { (void)mesh; }
-    void cleanup_gpu_buffers() override {}
-    bool is_gpu_ready() const override { return false; }
+    /// GPU buffer management
+    void initialize_gpu_buffers(const Mesh& mesh) override;
+    void cleanup_gpu_buffers() override;
+    bool is_gpu_ready() const override { return gpu_ready_; }
 
     /// Access tree metadata
     int total_nodes() const { return total_nodes_; }
@@ -80,6 +84,10 @@ private:
 
     // Tree offset table
     std::vector<TreeOffset> tree_offsets_;
+
+    // Flat tree_starts array: tree_starts_[b * n_trees_ + t] = start_node
+    // Built from tree_offsets_ for GPU-friendly access
+    std::vector<int> tree_starts_;
 
     // Header metadata
     int total_nodes_ = 0;
@@ -100,9 +108,23 @@ private:
     double u_ref_ = 1.0;
     double k_min_ = 1e-10;
 
-    // Work buffers
+    // Work buffers (CPU fallback)
     std::vector<Features> features_;
     std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis_;
+
+    // GPU work buffers (flat arrays for upload/download)
+    std::vector<double> features_flat_;   // n_cells * 5 (TBNN scalar features)
+    std::vector<double> basis_flat_;      // n_cells * 12 (4 basis tensors, 3 components each)
+    std::vector<double> nu_t_flat_;       // Output nu_t (interior only)
+    std::vector<double> tau_xx_flat_;     // Output tau_xx (interior only)
+    std::vector<double> tau_xy_flat_;     // Output tau_xy (interior only)
+    std::vector<double> tau_yy_flat_;     // Output tau_yy (interior only)
+
+    // GPU state
+    bool gpu_ready_ = false;
+    [[maybe_unused]] bool tree_buffers_on_gpu_ = false;
+    [[maybe_unused]] bool work_buffers_on_gpu_ = false;
+    [[maybe_unused]] int cached_n_cells_ = 0;
 
     void ensure_initialized(const Mesh& mesh);
 
@@ -114,6 +136,18 @@ private:
 
     /// Predict g_n coefficient for a given basis index by averaging all trees
     double predict_coefficient(int basis_idx, const double* features) const;
+
+    /// Map tree structure arrays to GPU (called once from initialize_gpu_buffers)
+    void map_trees_to_gpu();
+
+    /// Allocate and map work buffers for GPU pipeline
+    void allocate_work_buffers_gpu(int n_cells);
+
+    /// Free GPU-mapped tree buffers
+    void free_tree_buffers_gpu();
+
+    /// Free GPU-mapped work buffers
+    void free_work_buffers_gpu();
 };
 
 } // namespace nncfd
