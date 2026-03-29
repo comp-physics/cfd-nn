@@ -234,8 +234,13 @@ TensorCovarianceResult test_tensor_covariance(const VelocityGradient& grad_orig,
     result.n_rotations = n_angles;
 
     // Compute basis for original gradient
-    std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis_orig;
+    std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS> basis_orig;
     TensorBasis::compute(grad_orig, k, epsilon, basis_orig);
+
+    // Helper: extract 2D components (xx, xy, yy) from 6-component tensor
+    auto extract_2d = [](const std::array<double, TensorBasis::NUM_COMPONENTS>& full) {
+        return std::array<double, 3>{full[TensorBasis::XX], full[TensorBasis::XY], full[TensorBasis::YY]};
+    };
 
     double max_T1 = 0.0;
     double max_T2 = 0.0;
@@ -253,28 +258,27 @@ TensorCovarianceResult test_tensor_covariance(const VelocityGradient& grad_orig,
                           grad_rot.dvdx, grad_rot.dvdy);
 
         // Compute basis for rotated gradient
-        std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis_rot;
+        std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS> basis_rot;
         TensorBasis::compute(grad_rot, k, epsilon, basis_rot);
 
-        // Compare: basis_rot should equal R * basis_orig * R^T
-        // Note: T^(3) = dev(S²) is structurally diagonal in strain-aligned coords
-        // for incompressible flow, so it won't transform covariantly individually.
-        // What matters is that the final anisotropy b = Σ G_n T^(n) transforms correctly.
-        for (int n = 0; n < 2; ++n) {  // Only check T^(1) and T^(2), skip T^(3) and T^(4)
+        for (int n = 0; n < 2; ++n) {
+            auto orig_2d = extract_2d(basis_orig[n]);
+            auto rot_2d = extract_2d(basis_rot[n]);
             std::array<double, 3> basis_orig_rotated;
-            rotate_tensor_basis(R, basis_orig[n], basis_orig_rotated);
+            rotate_tensor_basis(R, orig_2d, basis_orig_rotated);
 
-            double err = tensor_rel_L2_error(basis_rot[n], basis_orig_rotated);
+            double err = tensor_rel_L2_error(rot_2d, basis_orig_rotated);
 
             if (n == 0) max_T1 = std::max(max_T1, err);
             else if (n == 1) max_T2 = std::max(max_T2, err);
         }
 
-        // For T^(3), just track error for reporting (not for pass/fail)
         {
+            auto orig_2d = extract_2d(basis_orig[2]);
+            auto rot_2d = extract_2d(basis_rot[2]);
             std::array<double, 3> basis_orig_rotated;
-            rotate_tensor_basis(R, basis_orig[2], basis_orig_rotated);
-            double err = tensor_rel_L2_error(basis_rot[2], basis_orig_rotated);
+            rotate_tensor_basis(R, orig_2d, basis_orig_rotated);
+            double err = tensor_rel_L2_error(rot_2d, basis_orig_rotated);
             max_T3 = std::max(max_T3, err);
         }
     }
@@ -308,11 +312,12 @@ AnisotropyCovarianceResult test_anisotropy_covariance(
     result.n_rotations = n_angles;
 
     // Compute anisotropy for original gradient
-    std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis_orig;
+    std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS> basis_orig;
     TensorBasis::compute(grad_orig, k, epsilon, basis_orig);
 
-    double b_xx_orig, b_xy_orig, b_yy_orig;
-    TensorBasis::construct_anisotropy(G, basis_orig, b_xx_orig, b_xy_orig, b_yy_orig);
+    double b_xx_orig, b_xy_orig, b_xz_orig, b_yy_orig, b_yz_orig, b_zz_orig;
+    TensorBasis::construct_anisotropy(G, basis_orig,
+        b_xx_orig, b_xy_orig, b_xz_orig, b_yy_orig, b_yz_orig, b_zz_orig);
     std::array<double, 3> b_orig = {b_xx_orig, b_xy_orig, b_yy_orig};
 
     double max_err = 0.0;
@@ -329,11 +334,12 @@ AnisotropyCovarianceResult test_anisotropy_covariance(
                           grad_rot.dvdx, grad_rot.dvdy);
 
         // Compute anisotropy for rotated gradient
-        std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis_rot;
+        std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS> basis_rot;
         TensorBasis::compute(grad_rot, k, epsilon, basis_rot);
 
-        double b_xx_rot, b_xy_rot, b_yy_rot;
-        TensorBasis::construct_anisotropy(G, basis_rot, b_xx_rot, b_xy_rot, b_yy_rot);
+        double b_xx_rot, b_xy_rot, b_xz_rot, b_yy_rot, b_yz_rot, b_zz_rot;
+        TensorBasis::construct_anisotropy(G, basis_rot,
+            b_xx_rot, b_xy_rot, b_xz_rot, b_yy_rot, b_yz_rot, b_zz_rot);
         std::array<double, 3> b_rot = {b_xx_rot, b_xy_rot, b_yy_rot};
 
         // b_rot should equal R * b_orig * R^T
@@ -433,9 +439,9 @@ void test_rans_frame_invariance() {
     std::cout << "\n  === Anisotropy Tensor Covariance Tests ===\n\n";
 
     std::array<double, TensorBasis::NUM_BASIS> G_sets[] = {
-        {1.0, 0.0, 0.0, 0.0},   // Pure linear (Boussinesq-like)
-        {0.5, 0.3, 0.2, 0.0},   // Mixed contributions
-        {0.0, 1.0, 0.0, 0.0},   // Pure commutator term
+        {1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},   // Pure linear (Boussinesq-like)
+        {0.5, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},   // Mixed contributions
+        {0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},   // Pure commutator term
     };
     const char* G_names[] = {"Linear (G1=1)", "Mixed (G1,G2,G3)", "Commutator (G2=1)"};
 

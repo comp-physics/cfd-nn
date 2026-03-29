@@ -140,7 +140,7 @@ protected:
     /// Compute G coefficients given invariants
     /// @param eta   Normalized strain invariant: η = (k/ε) × |S|
     /// @param zeta  Normalized rotation invariant: ζ = (k/ε) × |Ω|
-    /// @param G     [out] Tensor basis coefficients (4 for 2D)
+    /// @param G     [out] Tensor basis coefficients (10 for full 3D basis)
     virtual void compute_G(
         double eta, double zeta,
         std::array<double, TensorBasis::NUM_BASIS>& G
@@ -149,7 +149,7 @@ protected:
     // Work arrays (initialized lazily)
     std::unique_ptr<FeatureComputer> feature_computer_;
     std::vector<Features> features_;
-    std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis_;
+    std::vector<std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS>> basis_;
     bool initialized_ = false;
     
     // EARSM stability thresholds
@@ -356,10 +356,16 @@ public:
 
     /// Set Pope EARSM constants (no-op if closure is not Pope type)
     void set_pope_constants(double C1, double C2);
-    
+
+    /// Disable/enable the EARSM closure (for warm-up with pure SST transport)
+    void set_closure_active(bool active) { closure_active_ = active; }
+    bool is_closure_active() const { return closure_active_; }
+
 private:
     SSTKOmegaTransport transport_;
     std::unique_ptr<EARSMClosure> closure_;
+    ScalarField sst_nu_t_for_transport_;  ///< SST nu_t used for transport production (not EARSM nu_t)
+    bool closure_active_ = true;          ///< When false, acts as pure SST (for warm-up)
 };
 
 // ============================================================================
@@ -374,7 +380,8 @@ void compute_earsm_wj_full_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz,
     int Nx, int Ny, int Ng, int stride,
     double nu, const WJConstants& constants
 );
@@ -385,7 +392,8 @@ void compute_earsm_gs_full_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz,
     int Nx, int Ny, int Ng, int stride,
     double nu, const GSConstants& constants
 );
@@ -396,7 +404,8 @@ void compute_earsm_pope_full_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz,
     int Nx, int Ny, int Ng, int stride,
     double nu, double C1, double C2
 );

@@ -160,30 +160,35 @@ static bool test_tensor_basis_trace_free() {
     };
 
     for (const auto& grad : test_cases) {
-        std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis;
+        std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS> basis;
         TensorBasis::compute(grad, 0.1, 0.01, basis);
-        for (int n = 0; n < TensorBasis::NUM_BASIS; ++n)
-            if (std::abs(basis[n][0] + basis[n][2]) > 1e-10) return false;
+        for (int n = 0; n < TensorBasis::NUM_BASIS; ++n) {
+            // 3D trace: xx + yy + zz
+            double tr = basis[n][TensorBasis::XX] + basis[n][TensorBasis::YY] + basis[n][TensorBasis::ZZ];
+            if (std::abs(tr) > 1e-10) return false;
+        }
     }
     return true;
 }
 
 static bool test_anisotropy_construction_trace_free() {
     std::vector<std::array<double, TensorBasis::NUM_BASIS>> G_cases = {
-        {-0.1, 0.0, 0.0, 0.0}, {-0.1, 0.05, 0.0, 0.0},
-        {-0.1, 0.05, 0.02, 0.0}, {-0.3, 0.1, 0.08, 0.0}
+        {-0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+        {-0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+        {-0.1, 0.05, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+        {-0.3, 0.1, 0.08, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
     };
     std::vector<VelocityGradient> grad_cases = {
         {0.0, 1.0, 0.0, 0.0}, {0.5, 0.5, -0.5, -0.5}, {1.0, 0.5, -0.3, -1.0}
     };
 
     for (const auto& grad : grad_cases) {
-        std::array<std::array<double, 3>, TensorBasis::NUM_BASIS> basis;
+        std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS> basis;
         TensorBasis::compute(grad, 0.1, 0.01, basis);
         for (const auto& G : G_cases) {
-            double b_xx, b_xy, b_yy;
-            TensorBasis::construct_anisotropy(G, basis, b_xx, b_xy, b_yy);
-            if (std::abs(b_xx + b_yy) > 1e-10) return false;
+            double b_xx, b_xy, b_xz, b_yy, b_yz, b_zz;
+            TensorBasis::construct_anisotropy(G, basis, b_xx, b_xy, b_xz, b_yy, b_yz, b_zz);
+            if (std::abs(b_xx + b_yy + b_zz) > 1e-10) return false;
         }
     }
     return true;
@@ -372,7 +377,7 @@ static bool test_feature_computer_batch() {
             if (!std::isfinite(feat[n])) return false;
 
     std::vector<Features> tbnn_features;
-    std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis;
+    std::vector<std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS>> basis;
     fc.compute_tbnn_features(vel, k, omega, tbnn_features, basis);
     return static_cast<int>(tbnn_features.size()) == mesh.Nx * mesh.Ny;
 }

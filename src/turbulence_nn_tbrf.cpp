@@ -291,18 +291,24 @@ void TurbulenceNNTBRF::allocate_work_buffers_gpu(int n_cells) {
     free_work_buffers_gpu();
 
     features_flat_.resize(n_cells * 5);
-    basis_flat_.resize(n_cells * TensorBasis::NUM_BASIS * 3);
+    basis_flat_.resize(n_cells * TensorBasis::NUM_BASIS * TensorBasis::NUM_COMPONENTS);
     nu_t_flat_.resize(n_cells);
     tau_xx_flat_.resize(n_cells);
     tau_xy_flat_.resize(n_cells);
+    tau_xz_flat_.resize(n_cells);
     tau_yy_flat_.resize(n_cells);
+    tau_yz_flat_.resize(n_cells);
+    tau_zz_flat_.resize(n_cells);
 
     double* feat_ptr = features_flat_.data();
     double* basis_ptr = basis_flat_.data();
     double* nu_t_ptr = nu_t_flat_.data();
     double* txx_ptr = tau_xx_flat_.data();
     double* txy_ptr = tau_xy_flat_.data();
+    double* txz_ptr = tau_xz_flat_.data();
     double* tyy_ptr = tau_yy_flat_.data();
+    double* tyz_ptr = tau_yz_flat_.data();
+    double* tzz_ptr = tau_zz_flat_.data();
     size_t feat_sz = features_flat_.size();
     size_t basis_sz = basis_flat_.size();
 
@@ -312,7 +318,10 @@ void TurbulenceNNTBRF::allocate_work_buffers_gpu(int n_cells) {
         map(alloc: nu_t_ptr[0:n_cells]) \
         map(alloc: txx_ptr[0:n_cells]) \
         map(alloc: txy_ptr[0:n_cells]) \
-        map(alloc: tyy_ptr[0:n_cells])
+        map(alloc: txz_ptr[0:n_cells]) \
+        map(alloc: tyy_ptr[0:n_cells]) \
+        map(alloc: tyz_ptr[0:n_cells]) \
+        map(alloc: tzz_ptr[0:n_cells])
 
     work_buffers_on_gpu_ = true;
     cached_n_cells_ = n_cells;
@@ -335,7 +344,10 @@ void TurbulenceNNTBRF::free_work_buffers_gpu() {
         double* nu_t_ptr = nu_t_flat_.data();
         double* txx_ptr = tau_xx_flat_.data();
         double* txy_ptr = tau_xy_flat_.data();
+        double* txz_ptr = tau_xz_flat_.data();
         double* tyy_ptr = tau_yy_flat_.data();
+        double* tyz_ptr = tau_yz_flat_.data();
+        double* tzz_ptr = tau_zz_flat_.data();
         size_t feat_sz = features_flat_.size();
         size_t basis_sz = basis_flat_.size();
         size_t n_cells = nu_t_flat_.size();
@@ -346,7 +358,10 @@ void TurbulenceNNTBRF::free_work_buffers_gpu() {
             map(delete: nu_t_ptr[0:n_cells]) \
             map(delete: txx_ptr[0:n_cells]) \
             map(delete: txy_ptr[0:n_cells]) \
-            map(delete: tyy_ptr[0:n_cells])
+            map(delete: txz_ptr[0:n_cells]) \
+            map(delete: tyy_ptr[0:n_cells]) \
+            map(delete: tyz_ptr[0:n_cells]) \
+            map(delete: tzz_ptr[0:n_cells])
     }
 #endif
     features_flat_.clear();
@@ -354,7 +369,10 @@ void TurbulenceNNTBRF::free_work_buffers_gpu() {
     nu_t_flat_.clear();
     tau_xx_flat_.clear();
     tau_xy_flat_.clear();
+    tau_xz_flat_.clear();
     tau_yy_flat_.clear();
+    tau_yz_flat_.clear();
+    tau_zz_flat_.clear();
 }
 
 void TurbulenceNNTBRF::initialize_gpu_buffers(const Mesh& mesh) {
@@ -505,6 +523,8 @@ void TurbulenceNNTBRF::update(
                 device_view->u_face, device_view->v_face, device_view->w_face,
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
+                device_view->dudz, device_view->dvdz,
+                device_view->dwdx, device_view->dwdy, device_view->dwdz,
                 Nx, Ny, Nz, Ng,
                 mesh.dx, mesh.dy, mesh.dz,
                 u_stride, v_stride, cell_stride,
@@ -551,6 +571,10 @@ void TurbulenceNNTBRF::update(
             double* tau_xx_dev = device_view->tau_xx;
             double* tau_xy_dev = device_view->tau_xy;
             double* tau_yy_dev = device_view->tau_yy;
+            // 3D tau components (may be nullptr until device_view is extended)
+            double* tau_xz_dev = nullptr;  // TODO: device_view->tau_xz when available
+            double* tau_yz_dev = nullptr;  // TODO: device_view->tau_yz when available
+            double* tau_zz_dev = nullptr;  // TODO: device_view->tau_zz when available
 
             // Tree structure pointers (already on GPU from map_trees_to_gpu)
             int32_t* cl_ptr = children_left_.data();
@@ -589,7 +613,8 @@ void TurbulenceNNTBRF::update(
                 map(present: dvdx_dev[0:tc], dvdy_dev[0:tc], nu_t_dev[0:tc])
             for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
                 const int FEATURE_DIM = 5;
-                const int NUM_BASIS = 4;
+                const int NUM_BASIS = 10;
+                const int NUM_COMP = 6;
 
                 // Convert flat index to (i, j, kz) interior coordinates
                 int i = cell_idx % Nx;
@@ -615,16 +640,16 @@ void TurbulenceNNTBRF::update(
                     }
                 }
 
-                // ====== Read precomputed tensor basis (4 x 3 components) ======
-                double T[4][3];
+                // ====== Read precomputed tensor basis (10 x 6 components) ======
+                double T[10][6];
                 for (int n = 0; n < NUM_BASIS; ++n) {
-                    for (int c = 0; c < 3; ++c) {
-                        T[n][c] = basis_ptr[cell_idx * 12 + n * 3 + c];
+                    for (int c = 0; c < NUM_COMP; ++c) {
+                        T[n][c] = basis_ptr[cell_idx * 60 + n * 6 + c];
                     }
                 }
 
                 // ====== Tree traversal: predict G coefficients ======
-                double G[4] = {0.0, 0.0, 0.0, 0.0};
+                double G[10] = {0};
                 int n_basis_use = (n_basis_local < NUM_BASIS) ? n_basis_local : NUM_BASIS;
 
                 for (int b = 0; b < n_basis_use; ++b) {
@@ -657,11 +682,11 @@ void TurbulenceNNTBRF::update(
                 }
 
                 // ====== Construct anisotropy b_ij = sum_n G[n] * T^(n)_ij ======
-                double b_xx = 0.0, b_xy = 0.0, b_yy = 0.0;
+                double b_xx = 0.0, b_xy = 0.0, b_xz = 0.0;
+                double b_yy = 0.0, b_yz = 0.0, b_zz = 0.0;
                 for (int n = 0; n < NUM_BASIS; ++n) {
-                    b_xx += G[n] * T[n][0];
-                    b_xy += G[n] * T[n][1];
-                    b_yy += G[n] * T[n][2];
+                    b_xx += G[n] * T[n][0]; b_xy += G[n] * T[n][1]; b_xz += G[n] * T[n][2];
+                    b_yy += G[n] * T[n][3]; b_yz += G[n] * T[n][4]; b_zz += G[n] * T[n][5];
                 }
 
                 // ====== Reynolds stresses (optional) ======
@@ -671,6 +696,15 @@ void TurbulenceNNTBRF::update(
                     tau_xx_dev[cell_flat] = 2.0 * k_safe * (b_xx + 1.0 / 3.0);
                     tau_xy_dev[cell_flat] = 2.0 * k_safe * b_xy;
                     tau_yy_dev[cell_flat] = 2.0 * k_safe * (b_yy + 1.0 / 3.0);
+                    if (tau_xz_dev != nullptr) {
+                        tau_xz_dev[cell_flat] = 2.0 * k_safe * b_xz;
+                    }
+                    if (tau_yz_dev != nullptr) {
+                        tau_yz_dev[cell_flat] = 2.0 * k_safe * b_yz;
+                    }
+                    if (tau_zz_dev != nullptr) {
+                        tau_zz_dev[cell_flat] = 2.0 * k_safe * (b_zz + 1.0 / 3.0);
+                    }
                 }
 
                 // ====== Compute eddy viscosity ======
@@ -687,7 +721,8 @@ void TurbulenceNNTBRF::update(
                     double Syy = dvdy_dev[cell_flat];
                     double S_mag = sqrt(2.0 * (Sxx * Sxx + Syy * Syy + 2.0 * Sxy * Sxy));
                     if (S_mag > 1e-10) {
-                        double b_mag = sqrt(b_xx * b_xx + 2.0 * b_xy * b_xy + b_yy * b_yy);
+                        double b_mag = sqrt(b_xx * b_xx + 2.0 * b_xy * b_xy + 2.0 * b_xz * b_xz
+                                            + b_yy * b_yy + 2.0 * b_yz * b_yz + b_zz * b_zz);
                         nu_t_val = k_val * b_mag / S_mag;
                     }
                 }
@@ -781,20 +816,26 @@ void TurbulenceNNTBRF::update(
                     }
 
                     // Construct anisotropy tensor: b_ij = sum_n G_n * T^(n)_ij
-                    double b_xx, b_xy, b_yy;
+                    double b_xx, b_xy, b_xz, b_yy, b_yz, b_zz;
                     TensorBasis::construct_anisotropy(G, basis_[idx],
-                                                      b_xx, b_xy, b_yy);
+                                                      b_xx, b_xy, b_xz,
+                                                      b_yy, b_yz, b_zz);
 
                     // Convert to Reynolds stresses if requested
                     if (tau_ij) {
                         double k_val = k_local(i, j);
-                        double tau_xx, tau_xy, tau_yy;
+                        double tau_xx, tau_xy, tau_xz, tau_yy, tau_yz, tau_zz;
                         TensorBasis::anisotropy_to_reynolds_stress(
-                            b_xx, b_xy, b_yy, k_val,
-                            tau_xx, tau_xy, tau_yy);
+                            b_xx, b_xy, b_xz,
+                            b_yy, b_yz, b_zz, k_val,
+                            tau_xx, tau_xy, tau_xz,
+                            tau_yy, tau_yz, tau_zz);
                         tau_ij->xx(i, j) = tau_xx;
                         tau_ij->xy(i, j) = tau_xy;
+                        tau_ij->xz(i, j, 0) = tau_xz;
                         tau_ij->yy(i, j) = tau_yy;
+                        tau_ij->yz(i, j, 0) = tau_yz;
+                        tau_ij->zz(i, j, 0) = tau_zz;
                     }
 
                     // Compute equivalent eddy viscosity from anisotropy
@@ -815,7 +856,8 @@ void TurbulenceNNTBRF::update(
                         double S_mag = grad.S_mag();
                         if (S_mag > 1e-10) {
                             double b_mag = std::sqrt(b_xx * b_xx + 2.0 * b_xy * b_xy
-                                                     + b_yy * b_yy);
+                                                     + 2.0 * b_xz * b_xz + b_yy * b_yy
+                                                     + 2.0 * b_yz * b_yz + b_zz * b_zz);
                             nu_t(i, j) = k_val * b_mag / S_mag;
                         } else {
                             nu_t(i, j) = 0.0;

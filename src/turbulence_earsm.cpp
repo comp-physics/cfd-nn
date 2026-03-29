@@ -96,10 +96,10 @@ void EARSMClosure::allocate_gpu_buffers(const Mesh& mesh) {
     v_flat_.resize(n_total);
     wall_dist_flat_.resize(n_interior);
     nu_t_flat_.resize(n_interior);
-    tau_flat_.resize(n_interior * 3);  // xx, xy, yy
-    
-    // Workspace: gradients (4), features (5), basis (12), G (4), b (3)
-    work_flat_.resize(n_interior * 28);
+    tau_flat_.resize(n_interior * 6);  // xx, xy, xz, yy, yz, zz
+
+    // Workspace: gradients (9), features (5), basis (60), G (10), b (6)
+    work_flat_.resize(n_interior * 90);
     
     // Precompute wall distances
     int idx = 0;
@@ -284,48 +284,57 @@ void EARSMClosure::compute_nu_t(
             
             // Apply smooth Re_t-based blending to nonlinear terms
             // G[0]: Linear Boussinesq term (β₁ S*) - ALWAYS keep this
-            // G[1]: Commutator term [S*, Ω*] - blend to zero at low Re_t
-            // G[2]: Quadratic strain S*² - blend to zero at low Re_t
-            // G[3]: Quadratic rotation Ω*² - blend to zero at low Re_t (zero in 2D anyway)
+            // G[1..NUM_BASIS-1]: Nonlinear corrections - blend to zero at low Re_t
             //
             // Physical reasoning: Nonlinear turbulence effects (anisotropy, secondary flows)
             // only matter when turbulence is actually present (Re_t >> 1).
             // In laminar or weakly turbulent flows (Re_t ~ 0), the linear Boussinesq
             // hypothesis is exact, and nonlinear corrections are both unnecessary and
             // numerically problematic.
-            G[1] *= alpha;  // Fade commutator term
-            G[2] *= alpha;  // Fade quadratic strain term
-            G[3] *= alpha;  // Fade quadratic rotation term (already 0 in 2D)
+            for (int n = 1; n < TensorBasis::NUM_BASIS; ++n) {
+                G[n] *= alpha;
+            }
             
-            // Construct anisotropy tensor
-            double b_xx, b_xy, b_yy;
-            TensorBasis::construct_anisotropy(G, basis_[idx], b_xx, b_xy, b_yy);
-            
+            // Construct anisotropy tensor (full 3D: 6 components)
+            double b_xx, b_xy, b_xz, b_yy, b_yz, b_zz;
+            TensorBasis::construct_anisotropy(G, basis_[idx],
+                                              b_xx, b_xy, b_xz,
+                                              b_yy, b_yz, b_zz);
+
             // Enforce realizability: clamp anisotropy to prevent instability
             if (!std::isfinite(b_xx)) b_xx = 0.0;
             if (!std::isfinite(b_xy)) b_xy = 0.0;
+            if (!std::isfinite(b_xz)) b_xz = 0.0;
             if (!std::isfinite(b_yy)) b_yy = 0.0;
-            
+            if (!std::isfinite(b_yz)) b_yz = 0.0;
+            if (!std::isfinite(b_zz)) b_zz = 0.0;
+
             // Compute Reynolds stresses if requested
             if (tau_ij) {
-                double tau_xx, tau_xy, tau_yy;
+                double tau_xx, tau_xy, tau_xz, tau_yy, tau_yz, tau_zz;
                 TensorBasis::anisotropy_to_reynolds_stress(
-                    b_xx, b_xy, b_yy, k_loc, tau_xx, tau_xy, tau_yy);
+                    b_xx, b_xy, b_xz, b_yy, b_yz, b_zz,
+                    k_loc,
+                    tau_xx, tau_xy, tau_xz, tau_yy, tau_yz, tau_zz);
                 tau_ij->xx(i, j) = tau_xx;
                 tau_ij->xy(i, j) = tau_xy;
+                tau_ij->xz(i, j, 0) = tau_xz;
                 tau_ij->yy(i, j) = tau_yy;
+                tau_ij->yz(i, j, 0) = tau_yz;
+                tau_ij->zz(i, j, 0) = tau_zz;
             }
-            
+
             // Compute equivalent eddy viscosity
             double Sxy = grad.Sxy();
             double nu_t_loc = 0.0;
-            
+
             if (std::abs(Sxy) > 1e-10) {
                 // Match τ_xy = -2k b_xy with Boussinesq: τ_xy = -2ν_t S_xy
                 nu_t_loc = std::abs(safe_divide(-b_xy * k_loc, Sxy, 1e-10));
             } else if (S_mag > 1e-10) {
                 // Fallback: use magnitude
-                double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + 2.0*b_xz*b_xz
+                                         + b_yy*b_yy + 2.0*b_yz*b_yz + b_zz*b_zz);
                 nu_t_loc = safe_divide(k_loc * b_mag, S_mag, 1e-10);
             }
             
@@ -438,7 +447,11 @@ void WallinJohanssonEARSM::compute_G(
     G[1] = beta2;
     G[2] = beta3;
     G[3] = 0.0;
-    
+    // Higher-order basis terms not used by this algebraic model
+    for (int n = 4; n < TensorBasis::NUM_BASIS; ++n) {
+        G[n] = 0.0;
+    }
+
     // Limit coefficients for stability
     for (int n = 0; n < TensorBasis::NUM_BASIS; ++n) {
         G[n] = std::max(-10.0, std::min(G[n], 10.0));
@@ -482,8 +495,12 @@ void GatskiSpezialeEARSM::compute_G(
     G[0] = -C_mu_eff * rot_factor;  // Linear term (Boussinesq-like)
     G[1] = C1 * C_mu_eff * C_mu_eff;  // Rotation-strain interaction
     G[2] = C2 * C_mu_eff;              // Quadratic strain term
-    G[3] = 0.0;                         // Zero in 2D
-    
+    G[3] = 0.0;                         // Ω² term (zero for this model)
+    // Higher-order basis terms not used by this algebraic model
+    for (int n = 4; n < TensorBasis::NUM_BASIS; ++n) {
+        G[n] = 0.0;
+    }
+
     // Stability limits
     for (int n = 0; n < TensorBasis::NUM_BASIS; ++n) {
         G[n] = std::max(-5.0, std::min(G[n], 5.0));
@@ -519,8 +536,12 @@ void PopeQuadraticEARSM::compute_G(
     G[0] = -C_mu_eff;         // Linear Boussinesq term
     G[1] = C2_ * eta_safe;    // Rotation-strain interaction (scaled by η)
     G[2] = C1_ * eta_safe;    // Quadratic strain term (scaled by η)
-    G[3] = 0.0;               // Zero in 2D
-    
+    G[3] = 0.0;               // Ω² term (zero for this model)
+    // Higher-order basis terms not used by this algebraic model
+    for (int n = 4; n < TensorBasis::NUM_BASIS; ++n) {
+        G[n] = 0.0;
+    }
+
     (void)zeta;  // Not used in simple Pope model
 }
 
@@ -574,9 +595,20 @@ void SSTWithEARSM::advance_turbulence(
     const ScalarField& nu_t_prev,
     const TurbulenceDeviceView* device_view)
 {
-    // Use SST transport for k, ω evolution
+    // Use SST transport for k, ω evolution.
+    // Important: use SST's own nu_t = k/max(omega, S*F2/a1) for production,
+    // NOT the EARSM closure nu_t. The EARSM closure can return zero nu_t
+    // when velocity gradients are small (cold start), which kills production
+    // and prevents the transport from bootstrapping.
     transport_.set_nu(nu_);
-    transport_.advance_turbulence(mesh, velocity, dt, k, omega, nu_t_prev, device_view);
+
+    // Compute SST-based nu_t for transport production
+    if (sst_nu_t_for_transport_.data().empty()) {
+        sst_nu_t_for_transport_ = ScalarField(mesh);
+    }
+    transport_.update(mesh, velocity, k, omega, sst_nu_t_for_transport_, nullptr, device_view);
+
+    transport_.advance_turbulence(mesh, velocity, dt, k, omega, sst_nu_t_for_transport_, device_view);
 }
 
 void SSTWithEARSM::update(
@@ -588,6 +620,12 @@ void SSTWithEARSM::update(
     TensorField* tau_ij,
     const TurbulenceDeviceView* device_view)
 {
+    // When closure is inactive (warm-up phase), use pure SST
+    if (!closure_active_) {
+        transport_.update(mesh, velocity, k, omega, nu_t, tau_ij, device_view);
+        return;
+    }
+
 #ifdef USE_GPU_OFFLOAD
     // GPU path: compute EARSM directly on device without touching host arrays
     if (device_view && device_view->is_valid() && closure_) {
@@ -605,6 +643,11 @@ void SSTWithEARSM::update(
             device_view->dudy,
             device_view->dvdx,
             device_view->dvdy,
+            device_view->dudz,
+            device_view->dvdz,
+            device_view->dwdx,
+            device_view->dwdy,
+            device_view->dwdz,
             Nx, Ny, device_view->Nz, Ng,
             device_view->dx, device_view->dy, device_view->dz,
             device_view->u_stride,
@@ -634,7 +677,8 @@ void SSTWithEARSM::update(
                 device_view->dvdx, device_view->dvdy,
                 device_view->k, device_view->omega,
                 device_view->nu_t,
-                device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
+                device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
+                device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
                 Nx, Ny, Ng, stride,
                 nu_, wj_model->constants()
             );
@@ -644,7 +688,8 @@ void SSTWithEARSM::update(
                 device_view->dvdx, device_view->dvdy,
                 device_view->k, device_view->omega,
                 device_view->nu_t,
-                device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
+                device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
+                device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
                 Nx, Ny, Ng, stride,
                 nu_, gs_model->constants()
             );
@@ -654,13 +699,19 @@ void SSTWithEARSM::update(
                 device_view->dvdx, device_view->dvdy,
                 device_view->k, device_view->omega,
                 device_view->nu_t,
-                device_view->tau_xx, device_view->tau_xy, device_view->tau_yy,
+                device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
+                device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
                 Nx, Ny, Ng, stride,
                 nu_, pope_model->C1(), pope_model->C2()
             );
         }
         
-        // Done - nu_t and tau_ij are now computed on GPU, no CPU sync needed
+        // Decomposition method: restore SST nu_t for the diffusion operator.
+        // The EARSM-derived nu_t can be very different from SST near separation,
+        // causing instability in explicit solvers. The anisotropic correction
+        // enters through tau_div (computed from tau_ij) instead.
+        // Re-compute SST nu_t directly on GPU using the transport update:
+        transport_.update(mesh, velocity, k, omega, nu_t, nullptr, device_view);
         return;
     }
 #else
@@ -740,14 +791,16 @@ std::unique_ptr<EARSMClosure> create_earsm_closure(const std::string& name) {
 /// @param k_loc                Local turbulent kinetic energy
 /// @param S_mag                Strain rate magnitude
 /// @param nu                   Molecular viscosity (for clipping)
-/// @param tau_xx_ptr, tau_xy_ptr, tau_yy_ptr  [out] Reynolds stress components
+/// @param tau_xx_ptr, tau_xy_ptr, tau_xz_ptr, tau_yy_ptr, tau_yz_ptr, tau_zz_ptr  [out] Reynolds stress components
 /// @param nu_t_ptr             [out] Eddy viscosity
 /// @param idx                  Array index for output
 inline void earsm_compute_output(
     double beta1, double beta2, double beta3, double alpha,
     double Sxx, double Syy, double Sxy, double Oxy,
     double tau, double k_loc, double S_mag, double nu,
-    double* tau_xx_ptr, double* tau_xy_ptr, double* tau_yy_ptr, double* nu_t_ptr,
+    double* tau_xx_ptr, double* tau_xy_ptr, double* tau_xz_ptr,
+    double* tau_yy_ptr, double* tau_yz_ptr, double* tau_zz_ptr,
+    double* nu_t_ptr,
     int idx)
 {
     // Apply Re_t blending: keep linear term (beta1), fade nonlinear terms (beta2, beta3)
@@ -786,7 +839,10 @@ inline void earsm_compute_output(
     // Reynolds stresses: τ_ij = -2k b_ij
     tau_xx_ptr[idx] = -2.0 * k_loc * b_xx;
     tau_xy_ptr[idx] = -2.0 * k_loc * b_xy;
+    tau_xz_ptr[idx] = 0.0;   // Zero in 2D EARSM (no z-gradients in algebraic model)
     tau_yy_ptr[idx] = -2.0 * k_loc * b_yy;
+    tau_yz_ptr[idx] = 0.0;   // Zero in 2D EARSM
+    tau_zz_ptr[idx] = 0.0;   // Zero in 2D EARSM
 
     // Equivalent eddy viscosity from τ_xy = -2ν_t S_xy
     double nu_t_loc = 0.0;
@@ -821,7 +877,8 @@ inline void earsm_wj_cell_kernel(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double A1, double A2, double A3, double A4, double C_mu, double nu,
-    double* tau_xx, double* tau_xy, double* tau_yy, double* nu_t)
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz, double* nu_t)
 {
     // Strain and rotation tensors
     double Sxx = dudx[idx];
@@ -877,7 +934,9 @@ inline void earsm_wj_cell_kernel(
     earsm_compute_output(beta1, beta2, beta3, alpha,
                          Sxx, Syy, Sxy, Oxy,
                          tau, k_loc, S_mag, nu,
-                         tau_xx, tau_xy, tau_yy, nu_t, idx);
+                         tau_xx, tau_xy, tau_xz,
+                         tau_yy, tau_yz, tau_zz,
+                         nu_t, idx);
 }
 
 /// Unified GS EARSM cell kernel
@@ -887,7 +946,8 @@ inline void earsm_gs_cell_kernel(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double C_mu0, double C1, double C2, double eta_max, double C_mu_eps, double nu,
-    double* tau_xx, double* tau_xy, double* tau_yy, double* nu_t)
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz, double* nu_t)
 {
     // Strain and rotation
     double Sxx = dudx[idx];
@@ -940,7 +1000,9 @@ inline void earsm_gs_cell_kernel(
     earsm_compute_output(beta1, beta2, beta3, alpha,
                          Sxx, Syy, Sxy, Oxy,
                          tau, k_loc, S_mag, nu,
-                         tau_xx, tau_xy, tau_yy, nu_t, idx);
+                         tau_xx, tau_xy, tau_xz,
+                         tau_yy, tau_yz, tau_zz,
+                         nu_t, idx);
 }
 
 /// Unified Pope EARSM cell kernel
@@ -950,7 +1012,8 @@ inline void earsm_pope_cell_kernel(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double C_mu, double C1, double C2, double nu,
-    double* tau_xx, double* tau_xy, double* tau_yy, double* nu_t)
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz, double* nu_t)
 {
     double k_loc = (k[idx] > 1e-10) ? k[idx] : 1e-10;
     double omega_loc = (omega[idx] > 1e-10) ? omega[idx] : 1e-10;
@@ -985,7 +1048,9 @@ inline void earsm_pope_cell_kernel(
     earsm_compute_output(beta1, beta2, beta3, alpha,
                          Sxx, Syy, Sxy, Oxy,
                          tau, k_loc, S_mag, nu,
-                         tau_xx, tau_xy, tau_yy, nu_t, idx);
+                         tau_xx, tau_xy, tau_xz,
+                         tau_yy, tau_yz, tau_zz,
+                         nu_t, idx);
 }
 
 #ifdef USE_GPU_OFFLOAD
@@ -1006,7 +1071,8 @@ void compute_earsm_wj_full_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz,
     int Nx, int Ny, int Ng, int stride,
     double nu, const WJConstants& constants)
 {
@@ -1015,7 +1081,7 @@ void compute_earsm_wj_full_gpu(
     const double A3 = constants.A3();
     const double A4 = constants.A4();
     const double C_mu = numerics::C_MU;
-    const size_t total_size = stride * (Ny + 2*Ng);
+    [[maybe_unused]] const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallel execution using unified kernel
@@ -1024,24 +1090,26 @@ void compute_earsm_wj_full_gpu(
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
-                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_xz[0:total_size], \
+                     tau_yy[0:total_size], tau_yz[0:total_size], tau_zz[0:total_size])
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
                                  A1, A2, A3, A4, C_mu, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t);
+                                 tau_xx, tau_xy, tau_xz,
+                                 tau_yy, tau_yz, tau_zz, nu_t);
         }
     }
 #else
     // Host path: sequential execution using same unified kernel
-    (void)total_size;
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
                                  A1, A2, A3, A4, C_mu, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t);
+                                 tau_xx, tau_xy, tau_xz,
+                                 tau_yy, tau_yz, tau_zz, nu_t);
         }
     }
 #endif
@@ -1052,7 +1120,8 @@ void compute_earsm_gs_full_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz,
     int Nx, int Ny, int Ng, int stride,
     double nu, const GSConstants& constants)
 {
@@ -1061,7 +1130,7 @@ void compute_earsm_gs_full_gpu(
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
     const double C_mu_eps = numerics::C_MU;
-    const size_t total_size = stride * (Ny + 2*Ng);
+    [[maybe_unused]] const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallel execution using unified kernel
@@ -1070,24 +1139,26 @@ void compute_earsm_gs_full_gpu(
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
-                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_xz[0:total_size], \
+                     tau_yy[0:total_size], tau_yz[0:total_size], tau_zz[0:total_size])
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
                                  C_mu0, C1, C2, eta_max, C_mu_eps, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t);
+                                 tau_xx, tau_xy, tau_xz,
+                                 tau_yy, tau_yz, tau_zz, nu_t);
         }
     }
 #else
     // Host path: sequential execution using same unified kernel
-    (void)total_size;
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
                                  C_mu0, C1, C2, eta_max, C_mu_eps, nu,
-                                 tau_xx, tau_xy, tau_yy, nu_t);
+                                 tau_xx, tau_xy, tau_xz,
+                                 tau_yy, tau_yz, tau_zz, nu_t);
         }
     }
 #endif
@@ -1098,12 +1169,13 @@ void compute_earsm_pope_full_gpu(
     const double* dvdx, const double* dvdy,
     const double* k, const double* omega,
     double* nu_t,
-    double* tau_xx, double* tau_xy, double* tau_yy,
+    double* tau_xx, double* tau_xy, double* tau_xz,
+    double* tau_yy, double* tau_yz, double* tau_zz,
     int Nx, int Ny, int Ng, int stride,
     double nu, double C1, double C2)
 {
     const double C_mu = numerics::C_MU;
-    const size_t total_size = stride * (Ny + 2*Ng);
+    [[maybe_unused]] const size_t total_size = stride * (Ny + 2*Ng);
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallel execution using unified kernel
@@ -1112,24 +1184,26 @@ void compute_earsm_pope_full_gpu(
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
-                     tau_xx[0:total_size], tau_xy[0:total_size], tau_yy[0:total_size])
+                     tau_xx[0:total_size], tau_xy[0:total_size], tau_xz[0:total_size], \
+                     tau_yy[0:total_size], tau_yz[0:total_size], tau_zz[0:total_size])
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
                                    C_mu, C1, C2, nu,
-                                   tau_xx, tau_xy, tau_yy, nu_t);
+                                   tau_xx, tau_xy, tau_xz,
+                                   tau_yy, tau_yz, tau_zz, nu_t);
         }
     }
 #else
     // Host path: sequential execution using same unified kernel
-    (void)total_size;
     for (int j = Ng; j < Ng + Ny; ++j) {
         for (int i = Ng; i < Ng + Nx; ++i) {
             const int idx = j * stride + i;
             earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
                                    C_mu, C1, C2, nu,
-                                   tau_xx, tau_xy, tau_yy, nu_t);
+                                   tau_xx, tau_xy, tau_xz,
+                                   tau_yy, tau_yz, tau_zz, nu_t);
         }
     }
 #endif

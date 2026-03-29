@@ -23,12 +23,20 @@ struct TurbulenceDeviceView {
 
     double* tau_xx = nullptr;
     double* tau_xy = nullptr;
+    double* tau_xz = nullptr;
     double* tau_yy = nullptr;
+    double* tau_yz = nullptr;
+    double* tau_zz = nullptr;
 
     double* dudx = nullptr;
     double* dudy = nullptr;
     double* dvdx = nullptr;
     double* dvdy = nullptr;
+    double* dudz = nullptr;  // 3D gradient components
+    double* dvdz = nullptr;
+    double* dwdx = nullptr;
+    double* dwdy = nullptr;
+    double* dwdz = nullptr;
 
     double* wall_distance = nullptr;
 

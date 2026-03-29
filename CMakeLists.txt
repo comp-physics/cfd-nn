@@ -596,6 +596,7 @@ if(BUILD_TESTS)
     # =========================================================================
     add_nncfd_test(test_mesh LABELS fast)
     add_nncfd_test(test_features LABELS fast)
+    add_nncfd_test(test_tensor_basis_3d TEST_NAME_SUFFIX TensorBasis3DTest LABELS fast)
     add_nncfd_test(test_nn_core TEST_NAME_SUFFIX NNCoreTest LABELS fast)
     add_nncfd_test(test_config LABELS fast)
     add_nncfd_test(test_mpi_guard LABELS fast)
@@ -785,6 +786,9 @@ add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS med
 
     # IBM drag: Cd ~ 2.05 at Re=20 (Tritton 1959)
     add_nncfd_test(test_ibm_cylinder_drag TEST_NAME_SUFFIX IBMCylinderDragTest LABELS "medium")
+
+    # Ghost-cell IBM unit tests
+    add_nncfd_test(test_ghost_cell_ibm TEST_NAME_SUFFIX GhostCellIBMTest LABELS "fast")
 
     # IBM symmetry: NACA 0012 at AoA=0 must produce Cl ~ 0
     add_nncfd_test(test_ibm_naca_symmetry TEST_NAME_SUFFIX IBMNACASymmetryTest LABELS "medium")

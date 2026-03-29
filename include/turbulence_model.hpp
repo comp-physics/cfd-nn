@@ -60,6 +60,18 @@ struct SolverDeviceView {
     double* diff_v = nullptr;
     double* diff_w = nullptr;  // 3D
 
+    // Reynolds stress tensor (cell-centered) — for anisotropic models
+    double* tau_xx = nullptr;
+    double* tau_xy = nullptr;
+    double* tau_xz = nullptr;
+    double* tau_yy = nullptr;
+    double* tau_yz = nullptr;
+    double* tau_zz = nullptr;
+    // Anisotropic stress divergence (at velocity faces)
+    double* tau_div_u = nullptr;
+    double* tau_div_v = nullptr;
+    double* tau_div_w = nullptr;  // 3D
+
     // Mesh parameters
     int Nx = 0, Ny = 0, Nz = 1, Ng = 0;
     double dx = 0.0, dy = 0.0, dz = 1.0, dt = 0.0;

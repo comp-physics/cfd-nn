@@ -72,7 +72,7 @@ void TurbulenceNNTBNN::allocate_gpu_buffers(int n_cells) {
     
     // Allocate CPU buffers
     features_flat_.resize(n_cells * feature_dim);
-    basis_flat_.resize(n_cells * TensorBasis::NUM_BASIS * 3);  // NUM_BASIS tensors × 3 components
+    basis_flat_.resize(n_cells * TensorBasis::NUM_BASIS * TensorBasis::NUM_COMPONENTS);  // 10 tensors × 6 components
     outputs_flat_.resize(n_cells * output_dim);
     workspace_.resize(workspace_size);
     
@@ -122,12 +122,15 @@ void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
     nu_t_flat_.resize(n_interior);
     tau_xx_flat_.resize(n_interior);
     tau_xy_flat_.resize(n_interior);
+    tau_xz_flat_.resize(n_interior);
     tau_yy_flat_.resize(n_interior);
-    
+    tau_yz_flat_.resize(n_interior);
+    tau_zz_flat_.resize(n_interior);
+
     // Workspace for full pipeline:
-    // - gradients: 4 * n_interior
+    // - gradients: 9 * n_interior
     // - features: 5 * n_interior
-    // - basis: 12 * n_interior
+    // - basis: 60 * n_interior
     // - NN workspace: 2 * max_dim * n_interior
     // - NN outputs: output_dim * n_interior
     int max_dim = 64;  // Reasonable upper bound for layer dimensions
@@ -136,7 +139,7 @@ void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
         max_dim = std::max(max_dim, mlp_.layer(l).out_dim);
     }
     
-    size_t workspace_size = n_interior * (4 + 5 + 12 + 2 * max_dim + mlp_.output_dim());
+    size_t workspace_size = n_interior * (9 + 5 + 60 + 2 * max_dim + mlp_.output_dim());
     full_workspace_.resize(workspace_size);
     
     // Map to GPU
@@ -148,9 +151,12 @@ void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
     double* nu_t_ptr = nu_t_flat_.data();
     double* tau_xx_ptr = tau_xx_flat_.data();
     double* tau_xy_ptr = tau_xy_flat_.data();
+    double* tau_xz_ptr = tau_xz_flat_.data();
     double* tau_yy_ptr = tau_yy_flat_.data();
+    double* tau_yz_ptr = tau_yz_flat_.data();
+    double* tau_zz_ptr = tau_zz_flat_.data();
     double* work_ptr = full_workspace_.data();
-    
+
     #pragma omp target enter data \
         map(alloc: u_ptr[0:n_total]) \
         map(alloc: v_ptr[0:n_total]) \
@@ -160,7 +166,10 @@ void TurbulenceNNTBNN::allocate_full_gpu_buffers(const Mesh& mesh) {
         map(alloc: nu_t_ptr[0:n_interior]) \
         map(alloc: tau_xx_ptr[0:n_interior]) \
         map(alloc: tau_xy_ptr[0:n_interior]) \
+        map(alloc: tau_xz_ptr[0:n_interior]) \
         map(alloc: tau_yy_ptr[0:n_interior]) \
+        map(alloc: tau_yz_ptr[0:n_interior]) \
+        map(alloc: tau_zz_ptr[0:n_interior]) \
         map(alloc: work_ptr[0:workspace_size])
     
     full_buffers_on_gpu_ = true;  // Mark buffers as mapped to GPU
@@ -222,13 +231,16 @@ void TurbulenceNNTBNN::free_full_gpu_buffers() {
             double* nu_t_ptr = nu_t_flat_.data();
             double* tau_xx_ptr = tau_xx_flat_.data();
             double* tau_xy_ptr = tau_xy_flat_.data();
+            double* tau_xz_ptr = tau_xz_flat_.data();
             double* tau_yy_ptr = tau_yy_flat_.data();
+            double* tau_yz_ptr = tau_yz_flat_.data();
+            double* tau_zz_ptr = tau_zz_flat_.data();
             double* work_ptr = full_workspace_.data();
-            
+
             size_t n_total = u_flat_.size();
             size_t n_interior = k_flat_.size();
             size_t work_size = full_workspace_.size();
-            
+
             #pragma omp target exit data \
                 map(delete: u_ptr[0:n_total]) \
                 map(delete: v_ptr[0:n_total]) \
@@ -238,7 +250,10 @@ void TurbulenceNNTBNN::free_full_gpu_buffers() {
                 map(delete: nu_t_ptr[0:n_interior]) \
                 map(delete: tau_xx_ptr[0:n_interior]) \
                 map(delete: tau_xy_ptr[0:n_interior]) \
+                map(delete: tau_xz_ptr[0:n_interior]) \
                 map(delete: tau_yy_ptr[0:n_interior]) \
+                map(delete: tau_yz_ptr[0:n_interior]) \
+                map(delete: tau_zz_ptr[0:n_interior]) \
                 map(delete: work_ptr[0:work_size])
         } else {
             full_buffers_on_gpu_ = false;  // Clear flag even if vectors are empty
@@ -253,7 +268,10 @@ void TurbulenceNNTBNN::free_full_gpu_buffers() {
     nu_t_flat_.clear();
     tau_xx_flat_.clear();
     tau_xy_flat_.clear();
+    tau_xz_flat_.clear();
     tau_yy_flat_.clear();
+    tau_yz_flat_.clear();
+    tau_zz_flat_.clear();
     full_workspace_.clear();
     cached_total_cells_ = 0;
 }
@@ -386,7 +404,10 @@ void TurbulenceNNTBNN::update_full_gpu(
     double* nu_t_ptr = nu_t_flat_.data();
     double* tau_xx_ptr = tau_ij ? tau_xx_flat_.data() : nullptr;
     double* tau_xy_ptr = tau_ij ? tau_xy_flat_.data() : nullptr;
+    double* tau_xz_ptr = tau_ij ? tau_xz_flat_.data() : nullptr;
     double* tau_yy_ptr = tau_ij ? tau_yy_flat_.data() : nullptr;
+    double* tau_yz_ptr = tau_ij ? tau_yz_flat_.data() : nullptr;
+    double* tau_zz_ptr = tau_ij ? tau_zz_flat_.data() : nullptr;
     
     // NN weights (already mapped to GPU via MLP::sync_weights_to_gpu)
     const double* weights_ptr = mlp_.weights_gpu();
@@ -420,7 +441,7 @@ void TurbulenceNNTBNN::update_full_gpu(
         for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
             // Workspace layout within work_ptr (all already on device)
             const int FEATURE_DIM = 5;
-            const int NUM_BASIS = 4;
+            const int NUM_BASIS = 10;
 
             // Convert flat index to (i, j, k) - interior coordinates
             int i = cell_idx % Nx;
@@ -442,103 +463,323 @@ void TurbulenceNNTBNN::update_full_gpu(
             double dudy_v = (u_ptr[idx_jp] - u_ptr[idx_jm]) * inv_2dy;
             double dvdx_v = (v_ptr[idx_ip] - v_ptr[idx_im]) * inv_2dx;
             double dvdy_v = (v_ptr[idx_jp] - v_ptr[idx_jm]) * inv_2dy;
-            
-            // ========== Step 2: Compute strain/rotation ==========
-            double Sxx = dudx_v;
-            double Syy = dvdy_v;
-            double Sxy = 0.5 * (dudy_v + dvdx_v);
-            double Oxy = 0.5 * (dudy_v - dvdx_v);
-            
-            double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-            double Omega_mag = sqrt(2.0 * Oxy * Oxy);
-            
+            // Note: w gradients not available in this fused path (only u,v uploaded).
+            // For full 3D, use the device_view path. Here we set z-gradients to zero.
+            double dudz_v = 0.0, dvdz_v = 0.0;
+            double dwdx_v = 0.0, dwdy_v = 0.0, dwdz_v = 0.0;
+
+            // ========== Step 2: Compute 3D strain and rotation tensors ==========
+            // S_ij = 0.5 * (du_i/dx_j + du_j/dx_i)
+            double S[3][3];
+            S[0][0] = dudx_v;
+            S[1][1] = dvdy_v;
+            S[2][2] = dwdz_v;
+            S[0][1] = 0.5 * (dudy_v + dvdx_v);
+            S[0][2] = 0.5 * (dudz_v + dwdx_v);
+            S[1][2] = 0.5 * (dvdz_v + dwdy_v);
+            S[1][0] = S[0][1];
+            S[2][0] = S[0][2];
+            S[2][1] = S[1][2];
+
+            // Omega_ij = 0.5 * (du_i/dx_j - du_j/dx_i)
+            double O[3][3];
+            O[0][0] = 0.0; O[1][1] = 0.0; O[2][2] = 0.0;
+            O[0][1] = 0.5 * (dudy_v - dvdx_v);
+            O[0][2] = 0.5 * (dudz_v - dwdx_v);
+            O[1][2] = 0.5 * (dvdz_v - dwdy_v);
+            O[1][0] = -O[0][1];
+            O[2][0] = -O[0][2];
+            O[2][1] = -O[1][2];
+
+            // S_mag and Omega_mag (Frobenius norms)
+            double S_mag = 0.0;
+            double Omega_mag = 0.0;
+            for (int p = 0; p < 3; ++p) {
+                for (int q = 0; q < 3; ++q) {
+                    S_mag += S[p][q] * S[p][q];
+                    Omega_mag += O[p][q] * O[p][q];
+                }
+            }
+            S_mag = sqrt(S_mag);
+            Omega_mag = sqrt(Omega_mag);
+
             double k_val = k_ptr[cell_idx];
             double omega_val = omega_ptr[cell_idx];
-            
+
             // Ensure k and omega are positive and reasonable
             k_val = (k_val > k_min_val) ? k_val : k_min_val;
-            k_val = (k_val < 100.0) ? k_val : 100.0;  // Cap at reasonable max
+            k_val = (k_val < 100.0) ? k_val : 100.0;
             omega_val = (omega_val > 1e-10) ? omega_val : 1e-10;
-            omega_val = (omega_val < 1e6) ? omega_val : 1e6;  // Cap at reasonable max
-            
+            omega_val = (omega_val < 1e6) ? omega_val : 1e6;
+
             double eps = C_mu * k_val * omega_val;
             double eps_safe = (eps > 1e-20) ? eps : 1e-20;
             double tau_scale = k_val / eps_safe;
-            
+
             double S_norm = S_mag * tau_scale;
             double Omega_norm = Omega_mag * tau_scale;
-            double Sxx_n = Sxx * tau_scale;
-            double Syy_n = Syy * tau_scale;
-            double Sxy_n = Sxy * tau_scale;
-            double Oxy_n = Oxy * tau_scale;
-            
+
+            // Normalize S and O by tau_scale
+            double Sn[3][3], On[3][3];
+            for (int p = 0; p < 3; ++p) {
+                for (int q = 0; q < 3; ++q) {
+                    Sn[p][q] = S[p][q] * tau_scale;
+                    On[p][q] = O[p][q] * tau_scale;
+                }
+            }
+
             // ========== Step 3: Compute features ==========
             double feat[5];
+            // tr(S^2)
+            double trSnSn = 0.0;
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q)
+                    trSnSn += Sn[p][q] * Sn[q][p];
+            // tr(O^2)
+            double trOnOn = 0.0;
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q)
+                    trOnOn += On[p][q] * On[q][p];
+
             feat[0] = S_norm * S_norm;
             feat[1] = Omega_norm * Omega_norm;
-            feat[2] = Sxx_n*Sxx_n + Syy_n*Syy_n + 2.0*Sxy_n*Sxy_n;
-            feat[3] = 2.0 * Oxy_n * Oxy_n;
+            feat[2] = trSnSn;
+            feat[3] = -trOnOn;  // tr(O^2) is negative; store positive magnitude
             feat[4] = wall_ptr[cell_idx] / delta_val;
-            
+
             // Apply input scaling if available
             if (has_scaling && means_ptr != nullptr && stds_ptr != nullptr) {
                 for (int f = 0; f < FEATURE_DIM && f < scale_size; ++f) {
                     feat[f] = (feat[f] - means_ptr[f]) / stds_ptr[f];
                 }
             }
-            
-            // ========== Step 4: Compute tensor basis ==========
-            double T[4][3];  // 4 basis tensors, 3 components each (xx, xy, yy)
-            
-            // T^(1) = S
-            T[0][0] = Sxx_n; T[0][1] = Sxy_n; T[0][2] = Syy_n;
-            
-            // T^(2) = [S, Omega]
-            T[1][0] = -2.0 * Sxy_n * Oxy_n;
-            T[1][1] = (Sxx_n - Syy_n) * Oxy_n;
-            T[1][2] = 2.0 * Sxy_n * Oxy_n;
-            
-            // T^(3) = S^2 - (1/2)*tr(S^2)*I
-            double S2xx = Sxx_n*Sxx_n + Sxy_n*Sxy_n;
-            double S2yy = Sxy_n*Sxy_n + Syy_n*Syy_n;
-            double S2xy = Sxy_n * (Sxx_n + Syy_n);
-            double trS2 = S2xx + S2yy;
-            T[2][0] = S2xx - 0.5 * trS2;
-            T[2][1] = S2xy;
-            T[2][2] = S2yy - 0.5 * trS2;
-            
-            // T^(4) = 0 in 2D
-            T[3][0] = 0.0; T[3][1] = 0.0; T[3][2] = 0.0;
-            
+
+            // ========== Step 4: Compute Pope (1975) tensor basis ==========
+            // Helper: 3x3 matrix multiply C = A * B (inline, no lambdas on GPU)
+            // We'll compute products into local arrays as needed.
+            double T[10][6];  // 10 basis tensors, 6 symmetric components each
+
+            // Precompute needed matrix products
+            // S2 = S*S
+            double S2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    S2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        S2[p][q] += Sn[p][r] * Sn[r][q];
+                }
+
+            // O2 = O*O
+            double O2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    O2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        O2[p][q] += On[p][r] * On[r][q];
+                }
+
+            // SO = S*O
+            double SO[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    SO[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        SO[p][q] += Sn[p][r] * On[r][q];
+                }
+
+            // OS = O*S
+            double OS[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    OS[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        OS[p][q] += On[p][r] * Sn[r][q];
+                }
+
+            // Traces
+            double trS2 = S2[0][0] + S2[1][1] + S2[2][2];
+            double trO2 = O2[0][0] + O2[1][1] + O2[2][2];
+
+            // T1 = S
+            T[0][0] = Sn[0][0]; T[0][1] = Sn[0][1]; T[0][2] = Sn[0][2];
+            T[0][3] = Sn[1][1]; T[0][4] = Sn[1][2]; T[0][5] = Sn[2][2];
+
+            // T2 = SO - OS
+            T[1][0] = SO[0][0] - OS[0][0]; T[1][1] = SO[0][1] - OS[0][1]; T[1][2] = SO[0][2] - OS[0][2];
+            T[1][3] = SO[1][1] - OS[1][1]; T[1][4] = SO[1][2] - OS[1][2]; T[1][5] = SO[2][2] - OS[2][2];
+
+            // T3 = S^2 - (1/3)*tr(S^2)*I
+            double trS2_3 = trS2 / 3.0;
+            T[2][0] = S2[0][0] - trS2_3; T[2][1] = S2[0][1]; T[2][2] = S2[0][2];
+            T[2][3] = S2[1][1] - trS2_3;  T[2][4] = S2[1][2]; T[2][5] = S2[2][2] - trS2_3;
+
+            // T4 = O^2 - (1/3)*tr(O^2)*I
+            double trO2_3 = trO2 / 3.0;
+            T[3][0] = O2[0][0] - trO2_3; T[3][1] = O2[0][1]; T[3][2] = O2[0][2];
+            T[3][3] = O2[1][1] - trO2_3;  T[3][4] = O2[1][2]; T[3][5] = O2[2][2] - trO2_3;
+
+            // T5 = OS^2 - S^2O
+            // OS2 = O*S^2
+            double OS2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    OS2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        OS2[p][q] += On[p][r] * S2[r][q];
+                }
+            // S2O = S^2*O
+            double S2O[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    S2O[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        S2O[p][q] += S2[p][r] * On[r][q];
+                }
+            T[4][0] = OS2[0][0] - S2O[0][0]; T[4][1] = OS2[0][1] - S2O[0][1]; T[4][2] = OS2[0][2] - S2O[0][2];
+            T[4][3] = OS2[1][1] - S2O[1][1]; T[4][4] = OS2[1][2] - S2O[1][2]; T[4][5] = OS2[2][2] - S2O[2][2];
+
+            // T6 = O^2*S + S*O^2 - (2/3)*tr(S*O^2)*I
+            // O2S = O^2*S
+            double O2S[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    O2S[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        O2S[p][q] += O2[p][r] * Sn[r][q];
+                }
+            // SO2 = S*O^2
+            double SO2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    SO2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        SO2[p][q] += Sn[p][r] * O2[r][q];
+                }
+            double trSO2 = SO2[0][0] + SO2[1][1] + SO2[2][2];
+            double trSO2_23 = 2.0 * trSO2 / 3.0;
+            T[5][0] = O2S[0][0] + SO2[0][0] - trSO2_23;
+            T[5][1] = O2S[0][1] + SO2[0][1];
+            T[5][2] = O2S[0][2] + SO2[0][2];
+            T[5][3] = O2S[1][1] + SO2[1][1] - trSO2_23;
+            T[5][4] = O2S[1][2] + SO2[1][2];
+            T[5][5] = O2S[2][2] + SO2[2][2] - trSO2_23;
+
+            // T7 = O*S*O^2 - O^2*S*O
+            // OSO2 = O*(S*O^2) — note SO2 already computed
+            double OSO2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    OSO2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        OSO2[p][q] += On[p][r] * SO2[r][q];
+                }
+            // O2SO = O^2*(S*O) — note OS already = O*S, we need (O^2)*(SO)
+            // But formula is O^2*S*O. O2S already computed, so O2SO = O2S*O
+            double O2SO[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    O2SO[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        O2SO[p][q] += O2S[p][r] * On[r][q];
+                }
+            T[6][0] = OSO2[0][0] - O2SO[0][0]; T[6][1] = OSO2[0][1] - O2SO[0][1]; T[6][2] = OSO2[0][2] - O2SO[0][2];
+            T[6][3] = OSO2[1][1] - O2SO[1][1]; T[6][4] = OSO2[1][2] - O2SO[1][2]; T[6][5] = OSO2[2][2] - O2SO[2][2];
+
+            // T8 = S*O*S^2 - S^2*O*S
+            // SOS2 = (S*O)*S^2 — SO already computed
+            double SOS2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    SOS2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        SOS2[p][q] += SO[p][r] * S2[r][q];
+                }
+            // S2OS = (S^2*O)*S — S2O already computed
+            double S2OS[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    S2OS[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        S2OS[p][q] += S2O[p][r] * Sn[r][q];
+                }
+            T[7][0] = SOS2[0][0] - S2OS[0][0]; T[7][1] = SOS2[0][1] - S2OS[0][1]; T[7][2] = SOS2[0][2] - S2OS[0][2];
+            T[7][3] = SOS2[1][1] - S2OS[1][1]; T[7][4] = SOS2[1][2] - S2OS[1][2]; T[7][5] = SOS2[2][2] - S2OS[2][2];
+
+            // T9 = O^2*S^2 + S^2*O^2 - (2/3)*tr(S^2*O^2)*I
+            // O2S2 = O^2*S^2
+            double O2S2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    O2S2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        O2S2[p][q] += O2[p][r] * S2[r][q];
+                }
+            // S2O2 = S^2*O^2
+            double S2O2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    S2O2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        S2O2[p][q] += S2[p][r] * O2[r][q];
+                }
+            double trS2O2 = S2O2[0][0] + S2O2[1][1] + S2O2[2][2];
+            double trS2O2_23 = 2.0 * trS2O2 / 3.0;
+            T[8][0] = O2S2[0][0] + S2O2[0][0] - trS2O2_23;
+            T[8][1] = O2S2[0][1] + S2O2[0][1];
+            T[8][2] = O2S2[0][2] + S2O2[0][2];
+            T[8][3] = O2S2[1][1] + S2O2[1][1] - trS2O2_23;
+            T[8][4] = O2S2[1][2] + S2O2[1][2];
+            T[8][5] = O2S2[2][2] + S2O2[2][2] - trS2O2_23;
+
+            // T10 = O*S^2*O^2 - O^2*S^2*O
+            // OS2O2 = O*(S^2*O^2) — S2O2 already computed
+            double OS2O2[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    OS2O2[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        OS2O2[p][q] += On[p][r] * S2O2[r][q];
+                }
+            // O2S2O = (O^2*S^2)*O — O2S2 already computed
+            double O2S2O[3][3];
+            for (int p = 0; p < 3; ++p)
+                for (int q = 0; q < 3; ++q) {
+                    O2S2O[p][q] = 0.0;
+                    for (int r = 0; r < 3; ++r)
+                        O2S2O[p][q] += O2S2[p][r] * On[r][q];
+                }
+            T[9][0] = OS2O2[0][0] - O2S2O[0][0]; T[9][1] = OS2O2[0][1] - O2S2O[0][1]; T[9][2] = OS2O2[0][2] - O2S2O[0][2];
+            T[9][3] = OS2O2[1][1] - O2S2O[1][1]; T[9][4] = OS2O2[1][2] - O2S2O[1][2]; T[9][5] = OS2O2[2][2] - O2S2O[2][2];
+
             // ========== Step 5: NN Forward Pass ==========
             // Use workspace for ping-pong buffers
-            // Skip past gradients (4*n_cells), features (5*n_cells), and basis (12*n_cells)
-            double* nn_work_start = work_ptr + n_cells * (4 + 5 + 12);
+            // Skip past gradients (9*n_cells), features (5*n_cells), and basis (60*n_cells)
+            double* nn_work_start = work_ptr + n_cells * (9 + 5 + 60);
             double* buf1 = nn_work_start + cell_idx * max_dim * 2;
             double* buf2 = buf1 + max_dim;
-            
+
             // Copy features to buf1
             for (int f = 0; f < FEATURE_DIM; ++f) {
                 buf1[f] = feat[f];
             }
-            
+
             double* current = buf1;
             double* next = buf2;
-            
+
             for (int l = 0; l < n_layers; ++l) {
                 int in_dim = dims_ptr[l * 2];
                 int out_dim_l = dims_ptr[l * 2 + 1];
                 int w_off = w_offsets_ptr[l];
                 int b_off = b_offsets_ptr[l];
                 int act_type = act_ptr[l];
-                
+
                 // Matrix-vector multiply: next = W * current + b
                 for (int o = 0; o < out_dim_l; ++o) {
                     double sum = biases_ptr[b_off + o];
                     for (int k_idx = 0; k_idx < in_dim; ++k_idx) {
                         sum += weights_ptr[w_off + o * in_dim + k_idx] * current[k_idx];
                     }
-                    
+
                     // Apply activation (Linear=0, ReLU=1, Tanh=2, Sigmoid=3, Swish=4, GELU=5)
                     if (act_type == 2) {  // Tanh
                         sum = tanh(sum);
@@ -554,38 +795,43 @@ void TurbulenceNNTBNN::update_full_gpu(
                         sum = 0.5 * sum * (1.0 + tanh(sqrt(2.0/3.14159265358979323846) * (sum + c * s3)));
                     }
                     // act_type == 0: Linear (no activation)
-                    
+
                     next[o] = sum;
                 }
-                
+
                 // Swap buffers
                 double* tmp = current;
                 current = next;
                 next = tmp;
             }
-            
+
             // ========== Step 6: Construct anisotropy ==========
-            double G[4] = {0.0, 0.0, 0.0, 0.0};
+            double G[10] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
             for (int n = 0; n < NUM_BASIS && n < output_dim_val; ++n) {
                 G[n] = current[n];
             }
-            
-            double b_xx = 0.0, b_xy = 0.0, b_yy = 0.0;
+
+            double b_xx = 0.0, b_xy = 0.0, b_xz = 0.0;
+            double b_yy = 0.0, b_yz = 0.0, b_zz = 0.0;
             for (int n = 0; n < NUM_BASIS; ++n) {
-                b_xx += G[n] * T[n][0];
-                b_xy += G[n] * T[n][1];
-                b_yy += G[n] * T[n][2];
+                b_xx += G[n] * T[n][0]; b_xy += G[n] * T[n][1]; b_xz += G[n] * T[n][2];
+                b_yy += G[n] * T[n][3]; b_yz += G[n] * T[n][4]; b_zz += G[n] * T[n][5];
             }
-            
+
             // ========== Step 7: Compute Reynolds stresses (optional) ==========
             if (compute_tau && tau_xx_ptr != nullptr) {
                 double k_safe2 = (k_val > 0.0) ? k_val : 0.0;
                 tau_xx_ptr[cell_idx] = 2.0 * k_safe2 * (b_xx + 1.0/3.0);
                 tau_xy_ptr[cell_idx] = 2.0 * k_safe2 * b_xy;
+                tau_xz_ptr[cell_idx] = 2.0 * k_safe2 * b_xz;
                 tau_yy_ptr[cell_idx] = 2.0 * k_safe2 * (b_yy + 1.0/3.0);
+                tau_yz_ptr[cell_idx] = 2.0 * k_safe2 * b_yz;
+                tau_zz_ptr[cell_idx] = 2.0 * k_safe2 * (b_zz + 1.0/3.0);
             }
-            
+
             // ========== Step 8: Compute eddy viscosity ==========
+            // Use full 3D Sxy for nu_t extraction
+            double Sxy = S[0][1];
             double nu_t_val = 0.0;
             double abs_Sxy = (Sxy >= 0.0) ? Sxy : -Sxy;
             if (abs_Sxy > 1e-10) {
@@ -593,7 +839,8 @@ void TurbulenceNNTBNN::update_full_gpu(
                 nu_t_val = (tmp >= 0.0) ? tmp : -tmp;
             } else {
                 if (S_mag > 1e-10) {
-                    double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                    double b_mag = sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + 2.0*b_xz*b_xz
+                                      + b_yy*b_yy + 2.0*b_yz*b_yz + b_zz*b_zz);
                     nu_t_val = k_val * b_mag / S_mag;
                 }
             }
@@ -618,7 +865,10 @@ void TurbulenceNNTBNN::update_full_gpu(
         if (tau_ij) {
             #pragma omp target update from(tau_xx_ptr[0:n_cells]) \
                                        from(tau_xy_ptr[0:n_cells]) \
-                                       from(tau_yy_ptr[0:n_cells])
+                                       from(tau_xz_ptr[0:n_cells]) \
+                                       from(tau_yy_ptr[0:n_cells]) \
+                                       from(tau_yz_ptr[0:n_cells]) \
+                                       from(tau_zz_ptr[0:n_cells])
         }
     }
     
@@ -634,7 +884,10 @@ void TurbulenceNNTBNN::update_full_gpu(
                     if (tau_ij) {
                         tau_ij->xx(i, j, k) = tau_xx_flat_[idx];
                         tau_ij->xy(i, j, k) = tau_xy_flat_[idx];
+                        tau_ij->xz(i, j, k) = tau_xz_flat_[idx];
                         tau_ij->yy(i, j, k) = tau_yy_flat_[idx];
+                        tau_ij->yz(i, j, k) = tau_yz_flat_[idx];
+                        tau_ij->zz(i, j, k) = tau_zz_flat_[idx];
                     }
                     ++idx;
                 }
@@ -742,6 +995,8 @@ void TurbulenceNNTBNN::update(
                 device_view->u_face, device_view->v_face, device_view->w_face,
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
+                device_view->dudz, device_view->dvdz,
+                device_view->dwdx, device_view->dwdy, device_view->dwdz,
                 Nx, Ny, Nz, Ng,
                 mesh.dx, mesh.dy, mesh.dz,
                 u_stride, v_stride, cell_stride,
@@ -836,16 +1091,18 @@ void TurbulenceNNTBNN::update(
                     G[n] = (n < static_cast<int>(output.size())) ? output[n] : 0.0;
                 }
                 
-                // Construct anisotropy tensor
-                double b_xx, b_xy, b_yy;
-                TensorBasis::construct_anisotropy(G, basis_[idx], b_xx, b_xy, b_yy);
-                
+                // Construct anisotropy tensor (full 3D: 6 components)
+                double b_xx, b_xy, b_xz, b_yy, b_yz, b_zz;
+                TensorBasis::construct_anisotropy(G, basis_[idx],
+                                                  b_xx, b_xy, b_xz, b_yy, b_yz, b_zz);
+
                 // Convert to Reynolds stresses if requested
                 if (tau_ij) {
                     double k_val = k_local(i, j);
-                    double tau_xx, tau_xy, tau_yy;
-                    TensorBasis::anisotropy_to_reynolds_stress(b_xx, b_xy, b_yy, k_val,
-                                                              tau_xx, tau_xy, tau_yy);
+                    double tau_xx, tau_xy, tau_xz, tau_yy, tau_yz, tau_zz;
+                    TensorBasis::anisotropy_to_reynolds_stress(
+                        b_xx, b_xy, b_xz, b_yy, b_yz, b_zz, k_val,
+                        tau_xx, tau_xy, tau_xz, tau_yy, tau_yz, tau_zz);
                     tau_ij->xx(i, j) = tau_xx;
                     tau_ij->xy(i, j) = tau_xy;
                     tau_ij->yy(i, j) = tau_yy;
@@ -868,7 +1125,8 @@ void TurbulenceNNTBNN::update(
                 } else {
                     double S_mag = grad.S_mag();
                     if (S_mag > 1e-10) {
-                        double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + b_yy*b_yy);
+                        double b_mag = std::sqrt(b_xx*b_xx + 2.0*b_xy*b_xy + 2.0*b_xz*b_xz
+                                               + b_yy*b_yy + 2.0*b_yz*b_yz + b_zz*b_zz);
                         nu_t(i, j) = k_val * b_mag / S_mag;
                     } else {
                         nu_t(i, j) = 0.0;

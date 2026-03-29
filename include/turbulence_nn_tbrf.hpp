@@ -110,15 +110,18 @@ private:
 
     // Work buffers (CPU fallback)
     std::vector<Features> features_;
-    std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>> basis_;
+    std::vector<std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS>> basis_;
 
     // GPU work buffers (flat arrays for upload/download)
     std::vector<double> features_flat_;   // n_cells * 5 (TBNN scalar features)
-    std::vector<double> basis_flat_;      // n_cells * 12 (4 basis tensors, 3 components each)
+    std::vector<double> basis_flat_;      // n_cells * 60 (10 basis tensors, 6 components each)
     std::vector<double> nu_t_flat_;       // Output nu_t (interior only)
     std::vector<double> tau_xx_flat_;     // Output tau_xx (interior only)
     std::vector<double> tau_xy_flat_;     // Output tau_xy (interior only)
+    std::vector<double> tau_xz_flat_;     // Output tau_xz (interior only)
     std::vector<double> tau_yy_flat_;     // Output tau_yy (interior only)
+    std::vector<double> tau_yz_flat_;     // Output tau_yz (interior only)
+    std::vector<double> tau_zz_flat_;     // Output tau_zz (interior only)
 
     // GPU state
     bool gpu_ready_ = false;
