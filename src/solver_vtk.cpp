@@ -76,16 +76,38 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     }
 
     // VTK header (always ASCII)
+    // Use RECTILINEAR_GRID for stretched meshes, STRUCTURED_POINTS for uniform
+    const bool is_stretched = mesh_->is_y_stretched();
     file << "# vtk DataFile Version 3.0\n";
     file << "RANS simulation output\n";
     file << (use_binary ? "BINARY\n" : "ASCII\n");
-    file << "DATASET STRUCTURED_POINTS\n";
+
+    if (is_stretched) {
+        file << "DATASET RECTILINEAR_GRID\n";
+    } else {
+        file << "DATASET STRUCTURED_POINTS\n";
+    }
 
     // Binary 3D output - streamlined for spectral analysis
     if (use_binary) {
         file << "DIMENSIONS " << Nx << " " << Ny << " " << Nz << "\n";
-        file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " " << mesh_->z_min << "\n";
-        file << "SPACING " << mesh_->dx << " " << mesh_->dy << " " << mesh_->dz << "\n";
+        if (is_stretched) {
+            file << "X_COORDINATES " << Nx << " double\n";
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i)
+                file << (mesh_->x_min + (i - mesh_->i_begin()) * mesh_->dx) << " ";
+            file << "\n";
+            file << "Y_COORDINATES " << Ny << " double\n";
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
+                file << mesh_->y(j) << " ";
+            file << "\n";
+            file << "Z_COORDINATES " << Nz << " double\n";
+            for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k)
+                file << (mesh_->z_min + (k - mesh_->k_begin()) * mesh_->dz) << " ";
+            file << "\n";
+        } else {
+            file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " " << mesh_->z_min << "\n";
+            file << "SPACING " << mesh_->dx << " " << mesh_->dy << " " << mesh_->dz << "\n";
+        }
         file << "POINT_DATA " << Nx * Ny * Nz << "\n";
 
         // Velocity vector field (main data for spectral analysis)
@@ -119,8 +141,20 @@ void RANSSolver::write_vtk(const std::string& filename) const {
 
     if (is_2d) {
         file << "DIMENSIONS " << Nx << " " << Ny << " 1\n";
-        file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " 0\n";
-        file << "SPACING " << mesh_->dx << " " << mesh_->dy << " 1\n";
+        if (is_stretched) {
+            file << "X_COORDINATES " << Nx << " double\n";
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i)
+                file << (mesh_->x_min + (i - mesh_->i_begin()) * mesh_->dx) << " ";
+            file << "\n";
+            file << "Y_COORDINATES " << Ny << " double\n";
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
+                file << mesh_->y(j) << " ";
+            file << "\n";
+            file << "Z_COORDINATES 1 double\n0\n";
+        } else {
+            file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " 0\n";
+            file << "SPACING " << mesh_->dx << " " << mesh_->dy << " 1\n";
+        }
         file << "POINT_DATA " << Nx * Ny << "\n";
 
         // Velocity vector field (interpolated from staggered grid to cell centers)
@@ -308,8 +342,23 @@ void RANSSolver::write_vtk(const std::string& filename) const {
     } else {
         // 3D output
         file << "DIMENSIONS " << Nx << " " << Ny << " " << Nz << "\n";
-        file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " " << mesh_->z_min << "\n";
-        file << "SPACING " << mesh_->dx << " " << mesh_->dy << " " << mesh_->dz << "\n";
+        if (is_stretched) {
+            file << "X_COORDINATES " << Nx << " double\n";
+            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i)
+                file << (mesh_->x_min + (i - mesh_->i_begin()) * mesh_->dx) << " ";
+            file << "\n";
+            file << "Y_COORDINATES " << Ny << " double\n";
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
+                file << mesh_->y(j) << " ";
+            file << "\n";
+            file << "Z_COORDINATES " << Nz << " double\n";
+            for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k)
+                file << (mesh_->z_min + (k - mesh_->k_begin()) * mesh_->dz) << " ";
+            file << "\n";
+        } else {
+            file << "ORIGIN " << mesh_->x_min << " " << mesh_->y_min << " " << mesh_->z_min << "\n";
+            file << "SPACING " << mesh_->dx << " " << mesh_->dy << " " << mesh_->dz << "\n";
+        }
         file << "POINT_DATA " << Nx * Ny * Nz << "\n";
 
         // Velocity vector field (interpolated from staggered grid to cell centers)

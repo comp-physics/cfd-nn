@@ -105,7 +105,16 @@ public:
 
     /// Set turbulence model (takes ownership)
     void set_turbulence_model(std::unique_ptr<TurbulenceModel> model);
-    
+
+    /// Get raw pointer to current turbulence model (for dynamic_cast)
+    TurbulenceModel* turb_model_ptr() { return turb_model_.get(); }
+
+    /// Set background transport model (SST) that keeps k/omega alive
+    /// for non-transport closures (MLP, TBNN, TBRF, GEP, mixing_length).
+    /// The background model runs advance_turbulence() every step but
+    /// does NOT call update() (the main model handles nu_t).
+    void set_background_transport(std::unique_ptr<TurbulenceModel> model);
+
     /// Set velocity boundary conditions
     void set_velocity_bc(const VelocityBC& bc);
     
@@ -231,7 +240,10 @@ public:
     
     /// Compute bulk velocity (area-averaged)
     double bulk_velocity() const;
-    
+
+    /// Current body force in x-direction (includes bulk velocity controller)
+    double body_force_x() const { return fx_; }
+
     /// Compute wall shear stress (at y_min wall)
     double wall_shear_stress() const;
     
@@ -855,6 +867,7 @@ private:
     
     // Gradient scratch buffers for turbulence models (GPU-resident)
     ScalarField dudx_, dudy_, dvdx_, dvdy_;
+    ScalarField dudz_, dvdz_, dwdx_, dwdy_, dwdz_;  // 3D gradient components
     ScalarField wall_distance_;  // Precomputed wall distance field
     
     // Solvers
@@ -874,6 +887,7 @@ private:
     std::string selection_reason_;  // Human-readable reason for solver selection (observability)
     PoissonStats poisson_stats_;    // Statistics from last Poisson solve (for testing/diagnostics)
     std::unique_ptr<TurbulenceModel> turb_model_;
+    std::unique_ptr<TurbulenceModel> bg_transport_;  // background SST transport for non-transport models
     bool use_multigrid_ = true;  // Use multigrid by default for speed
     
     // Boundary conditions
@@ -935,6 +949,8 @@ private:
     // Bulk velocity controller (for periodic-domain IBM simulations)
     bool bulk_velocity_control_ = false;
     double bulk_velocity_target_ = 0.0;
+    double bulk_velocity_fx_init_ = 0.0;  // initial fx for constant-power controller
+    double bulk_velocity_avg_ = 0.0;      // exponential moving average of U_bulk
 
     // Force ramping state (for startup stabilization)
     bool force_ramp_enabled_ = false;
@@ -969,6 +985,7 @@ private:
     void apply_velocity_bc();
     void compute_convective_term(const VectorField& vel, VectorField& conv);
     void compute_diffusive_term(const VectorField& vel, const ScalarField& nu_eff, VectorField& diff);
+    void compute_tau_divergence();
     void compute_divergence(VelocityWhich which, ScalarField& div);
 
     /// Correct velocity using pressure gradient: vel_out = vel_in - dt * grad(p_correction)
@@ -1041,6 +1058,15 @@ private:
     double* tau_yy_ptr_ = nullptr;
     double* tau_yz_ptr_ = nullptr;  // 3D
     double* tau_zz_ptr_ = nullptr;  // 3D
+
+    // Anisotropic stress divergence at velocity faces
+    double* tau_div_u_ptr_ = nullptr;
+    double* tau_div_v_ptr_ = nullptr;
+    double* tau_div_w_ptr_ = nullptr;
+    std::vector<double> tau_div_u_buf_;  // owned storage
+    std::vector<double> tau_div_v_buf_;
+    std::vector<double> tau_div_w_buf_;
+    bool tau_div_frozen_ = false;       // frozen stress: tau_div computed once, then fixed
 
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;

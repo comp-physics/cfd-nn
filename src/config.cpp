@@ -166,6 +166,7 @@ void Config::load(const std::string& filename) {
     CFL_max = get_double("CFL_max", CFL_max);
     CFL_xz = get_double("CFL_xz", CFL_xz);
     dt_safety = get_double("dt_safety", dt_safety);
+    dt_min = get_double("dt_min", dt_min);
     filter_strength = get_double("filter_strength", filter_strength);
     filter_interval = get_int("filter_interval", filter_interval);
     adaptive_dt = get_bool("adaptive_dt", adaptive_dt);
@@ -173,7 +174,8 @@ void Config::load(const std::string& filename) {
     max_steps = get_int("max_steps", max_steps);
     T_final = get_double("T_final", T_final);
     tol = get_double("tol", tol);
-    
+    warmup_steps = get_int("warmup_steps", warmup_steps);
+
     // Numerical scheme (advection)
     convective_scheme = parse_convective_scheme(get_string("convective_scheme", "central"));
 
@@ -231,12 +233,25 @@ void Config::load(const std::string& filename) {
     }
     
     nu_t_max = get_double("nu_t_max", nu_t_max);
+    nu_t_relaxation = get_double("nu_t_relaxation", nu_t_relaxation);
+    tau_div_scale = get_double("tau_div_scale", tau_div_scale);
+    freeze_tau_div = get_bool("freeze_tau_div", freeze_tau_div);
     pope_C1 = get_double("pope_C1", pope_C1);
     pope_C2 = get_double("pope_C2", pope_C2);
     nn_weights_path = get_string("nn_weights_path", nn_weights_path);
     nn_scaling_path = get_string("nn_scaling_path", nn_scaling_path);
     nn_preset = get_string("nn_preset", nn_preset);
-    
+
+    // IBM body
+    ibm_body = get_string("ibm_body", ibm_body);
+    ibm_radius = get_double("ibm_radius", ibm_radius);
+    ibm_cx = get_double("ibm_cx", ibm_cx);
+    ibm_cy = get_double("ibm_cy", ibm_cy);
+    ibm_cz = get_double("ibm_cz", ibm_cz);
+    ibm_eta = get_double("ibm_eta", ibm_eta);
+    warmup_model = get_string("warmup_model", warmup_model);
+    warmup_time = get_double("warmup_time", warmup_time);
+
     // Output
     output_dir = get_string("output_dir", output_dir);
     output_freq = get_int("output_freq", output_freq);
@@ -846,6 +861,15 @@ void Config::finalize() {
                   << "If this is intentional (e.g., debugging), use a simpler model:\n"
                   << "  --model none      (laminar)\n"
                   << "  --model baseline  (algebraic mixing length)\n";
+        std::exit(1);
+    }
+
+    // Validate nu_t_relaxation is in (0, 1]
+    if (nu_t_relaxation <= 0.0 || nu_t_relaxation > 1.0) {
+        std::cerr << "ERROR: Invalid configuration: nu_t_relaxation=" << nu_t_relaxation << ".\n"
+                  << "\n"
+                  << "The nu_t under-relaxation factor must be in (0, 1].\n"
+                  << "1.0 = no relaxation (default), 0.3 = strong relaxation.\n";
         std::exit(1);
     }
 

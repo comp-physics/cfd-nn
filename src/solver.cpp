@@ -605,10 +605,20 @@ void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
     turb_model_ = std::move(model);
     if (turb_model_) {
         turb_model_->set_nu(config_.nu);
-        
+
         // Initialize turbulence model GPU buffers if GPU is available and mesh is initialized
         if (mesh_) {
             turb_model_->initialize_gpu_buffers(*mesh_);
+        }
+    }
+}
+
+void RANSSolver::set_background_transport(std::unique_ptr<TurbulenceModel> model) {
+    bg_transport_ = std::move(model);
+    if (bg_transport_) {
+        bg_transport_->set_nu(config_.nu);
+        if (mesh_) {
+            bg_transport_->initialize_gpu_buffers(*mesh_);
         }
     }
 }
@@ -1235,6 +1245,22 @@ double RANSSolver::step() {
     NVTX_POP();
     }
 
+    // Zero tau_div arrays — unless frozen (frozen stress keeps the fixed source term).
+    if (tau_div_u_ptr_ && !tau_div_frozen_) {
+        [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+        [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+        [[maybe_unused]] const size_t w_sz = velocity_.w_total_size();
+        double* tdu = tau_div_u_ptr_;
+        double* tdv = tau_div_v_ptr_;
+        double* tdw = tau_div_w_ptr_;
+        #pragma omp target teams distribute parallel for map(present: tdu[0:u_sz])
+        for (size_t i = 0; i < u_sz; ++i) tdu[i] = 0.0;
+        #pragma omp target teams distribute parallel for map(present: tdv[0:v_sz])
+        for (size_t i = 0; i < v_sz; ++i) tdv[i] = 0.0;
+        #pragma omp target teams distribute parallel for map(present: tdw[0:w_sz])
+        for (size_t i = 0; i < w_sz; ++i) tdw[i] = 0.0;
+    }
+
     // Update effective body force if ramping is enabled
     // This modifies fx_, fy_, fz_ which are used by euler_substep and RK methods
     if (force_ramp_enabled_) {
@@ -1244,39 +1270,51 @@ double RANSSolver::step() {
         fz_ = fz_target_ * ramp;
     }
 
+    // Note: bulk velocity control is available but NOT used for Cd computation.
+    // For periodic-domain IBM, use fixed dp/dx and compute Cd from momentum balance:
+    //   Cd = |dp/dx| * V_domain / (0.5 * U_bulk^2 * A_ref)
+    // The dp/dx value determines the Re, not the other way around.
+
     // 1a. Advance turbulence transport equations (if model uses them)
-    if (turb_model_ && turb_model_->uses_transport_equations()) {
-        TIMED_SCOPE("turbulence_transport");
-        NVTX_PUSH("turbulence_transport");
-        
-        // Get device view for GPU-accelerated transport
-        const TurbulenceDeviceView* device_view_ptr = nullptr;
-#ifdef USE_GPU_OFFLOAD
-        TurbulenceDeviceView device_view = get_device_view();
-        if (device_view.is_valid()) {
-            device_view_ptr = &device_view;
+    //     OR use background transport to keep k/omega alive for non-transport models
+    {
+        TurbulenceModel* transport_to_advance = nullptr;
+        if (turb_model_ && turb_model_->uses_transport_equations()) {
+            transport_to_advance = turb_model_.get();
+        } else if (bg_transport_ && bg_transport_->uses_transport_equations()) {
+            transport_to_advance = bg_transport_.get();
         }
-#endif
-        
-        turb_model_->advance_turbulence(
-            *mesh_,
-            velocity_,
-            current_dt_,
-            k_,          // Updated in-place
-            omega_,      // Updated in-place
-            nu_t_,       // Previous step's nu_t for diffusion coefficients
-            device_view_ptr
-        );
-        NVTX_POP();
-        
+
+        if (transport_to_advance) {
+            TIMED_SCOPE("turbulence_transport");
+            NVTX_PUSH("turbulence_transport");
+
+            const TurbulenceDeviceView* device_view_ptr = nullptr;
 #ifdef USE_GPU_OFFLOAD
-        // CRITICAL FIX: Sync k and omega to GPU after transport equation update
-        // ONLY if model didn't use GPU path (models operating on device_view don't need this)
-        if (!turb_model_->is_gpu_ready()) {
-            #pragma omp target update to(k_ptr_[0:field_total_size_])
-            #pragma omp target update to(omega_ptr_[0:field_total_size_])
-        }
+            TurbulenceDeviceView device_view = get_device_view();
+            if (device_view.is_valid()) {
+                device_view_ptr = &device_view;
+            }
 #endif
+
+            transport_to_advance->advance_turbulence(
+                *mesh_,
+                velocity_,
+                current_dt_,
+                k_,          // Updated in-place
+                omega_,      // Updated in-place
+                nu_t_,       // Previous step's nu_t for diffusion coefficients
+                device_view_ptr
+            );
+            NVTX_POP();
+
+#ifdef USE_GPU_OFFLOAD
+            if (!transport_to_advance->is_gpu_ready()) {
+                #pragma omp target update to(k_ptr_[0:field_total_size_])
+                #pragma omp target update to(omega_ptr_[0:field_total_size_])
+            }
+#endif
+        }
     }
     
     // 1b. Update turbulence model (compute nu_t and optional tau_ij)
@@ -1304,11 +1342,33 @@ double RANSSolver::step() {
         }
 #endif
         
-        turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_, 
+        turb_model_->update(*mesh_, velocity_, k_, omega_, nu_t_,
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr,
                            device_view_ptr);
+
+        // Decomposition method: for models with background transport, restore
+        // SST's nu_t for the diffusion operator. The model's tau_ij (if it
+        // provides Reynolds stresses) enters via tau_div source term, while
+        // SST's nu_t provides the stable linear closure in the diffusion.
+        // For scalar models (MLP, GEP), this ensures SST-level stability.
+        if (bg_transport_) {
+            bg_transport_->update(*mesh_, velocity_, k_, omega_, nu_t_, nullptr, device_view_ptr);
+        }
+
+        // Clamp nu_t to prevent extreme values from NN models destabilizing the flow
+        if (config_.nu_t_max > 0.0 && config_.nu_t_max < 1e10) {
+            const double nu_t_limit = config_.nu_t_max;
+            [[maybe_unused]] const size_t nt_sz = field_total_size_;
+            double* nt_ptr = nu_t_ptr_;
+            #pragma omp target teams distribute parallel for map(present: nt_ptr[0:nt_sz])
+            for (size_t i = 0; i < nt_sz; ++i) {
+                if (nt_ptr[i] > nu_t_limit) nt_ptr[i] = nu_t_limit;
+                if (nt_ptr[i] < 0.0) nt_ptr[i] = 0.0;
+            }
+        }
+
         NVTX_POP();
-        
+
         // CRITICAL FIX: Only sync nu_t to GPU if the model didn't use GPU path
         // Models that use device_view write directly to GPU nu_t and should NOT be overwritten
         // Models that work on CPU (like NN-MLP) write to host nu_t and MUST be synced to GPU
@@ -1322,6 +1382,23 @@ double RANSSolver::step() {
 #endif
     }
     
+    // Under-relax nu_t: blend with previous step's nu_t for stability
+    // nu_eff_ still has PREVIOUS step's values (nu + nu_t_old), so
+    // nu_t_old = nu_eff_old - nu_mol
+    if (config_.nu_t_relaxation < 1.0 && config_.nu_t_relaxation > 0.0) {
+        const double alpha = config_.nu_t_relaxation;
+        const double nu_mol = config_.nu;
+        [[maybe_unused]] const size_t nt_sz = field_total_size_;
+        double* nt = nu_t_ptr_;
+        double* ne = nu_eff_ptr_;  // nu_eff still has PREVIOUS step's values
+        #pragma omp target teams distribute parallel for map(present: nt[0:nt_sz], ne[0:nt_sz])
+        for (size_t i = 0; i < nt_sz; ++i) {
+            double nu_t_old = ne[i] - nu_mol;
+            if (nu_t_old < 0.0) nu_t_old = 0.0;
+            nt[i] = alpha * nt[i] + (1.0 - alpha) * nu_t_old;
+        }
+    }
+
     // Effective viscosity: nu_eff_ = nu + nu_t (use persistent field)
     // GPU path: compute directly on GPU without CPU fill
     // CRITICAL: Must fill ALL cells (including ghosts) with nu first, matching
@@ -3713,6 +3790,11 @@ double RANSSolver::compute_adaptive_dt() const {
     // Take minimum of all directional constraints, apply safety factor
     double dt_new = config_.dt_safety * std::min({dt_cfl_x, dt_cfl_y, dt_cfl_z, dt_diff});
 
+    // Apply minimum dt floor (prevents simulation freeze from huge nu_t)
+    if (config_.dt_min > 0.0 && dt_new < config_.dt_min) {
+        dt_new = config_.dt_min;
+    }
+
     // Store diagnostic values for health monitoring
     diag_u_max_ = u_abs_max;
     diag_v_max_ = v_abs_max;
@@ -3778,11 +3860,31 @@ void RANSSolver::extract_field_pointers() {
     tau_xy_ptr_ = tau_ij_.xy_data().data();
     tau_yy_ptr_ = tau_ij_.yy_data().data();
 
+    // Allocate tau_div buffers (same size as velocity face arrays)
+    tau_div_u_buf_.resize(velocity_.u_total_size(), 0.0);
+    tau_div_v_buf_.resize(velocity_.v_total_size(), 0.0);
+    tau_div_w_buf_.resize(velocity_.w_total_size(), 0.0);
+    tau_div_u_ptr_ = tau_div_u_buf_.data();
+    tau_div_v_ptr_ = tau_div_v_buf_.data();
+    tau_div_w_ptr_ = tau_div_w_buf_.data();
+
     // Gradient scratch buffers for turbulence models
     dudx_ptr_ = dudx_.data().data();
     dudy_ptr_ = dudy_.data().data();
     dvdx_ptr_ = dvdx_.data().data();
     dvdy_ptr_ = dvdy_.data().data();
+    if (!mesh_->is2D()) {
+        dudz_ = ScalarField(*mesh_);
+        dvdz_ = ScalarField(*mesh_);
+        dwdx_ = ScalarField(*mesh_);
+        dwdy_ = ScalarField(*mesh_);
+        dwdz_ = ScalarField(*mesh_);
+        dudz_ptr_ = dudz_.data().data();
+        dvdz_ptr_ = dvdz_.data().data();
+        dwdx_ptr_ = dwdx_.data().data();
+        dwdy_ptr_ = dwdy_.data().data();
+        dwdz_ptr_ = dwdz_.data().data();
+    }
     wall_distance_ptr_ = wall_distance_.data().data();
 
     // Y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
@@ -3859,6 +3961,16 @@ void RANSSolver::initialize_gpu_buffers() {
                 dvdy_ptr_[0:field_total_size_], \
                 wall_distance_ptr_[0:field_total_size_])
 
+    // Group 4b: 3D gradient buffers (only for 3D simulations)
+    if (!mesh_->is2D()) {
+        #pragma omp target enter data \
+            map(to: dudz_ptr_[0:field_total_size_], \
+                    dvdz_ptr_[0:field_total_size_], \
+                    dwdx_ptr_[0:field_total_size_], \
+                    dwdy_ptr_[0:field_total_size_], \
+                    dwdz_ptr_[0:field_total_size_])
+    }
+
     // Group 5: device-only arrays (alloc: will be computed on GPU)
     // velocity_old: device-resident for residual computation (host never used)
     // velocity_rk: work buffer for RK time integration stages
@@ -3871,6 +3983,16 @@ void RANSSolver::initialize_gpu_buffers() {
                    tau_xx_ptr_[0:field_total_size_], \
                    tau_xy_ptr_[0:field_total_size_], \
                    tau_yy_ptr_[0:field_total_size_])
+
+    // Anisotropic stress divergence buffers (zero-initialized, same size as velocity faces)
+    {
+        [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+        [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+        [[maybe_unused]] const size_t w_sz = velocity_.w_total_size();
+        #pragma omp target enter data map(to: tau_div_u_ptr_[0:u_sz])
+        #pragma omp target enter data map(to: tau_div_v_ptr_[0:v_sz])
+        #pragma omp target enter data map(to: tau_div_w_ptr_[0:w_sz])
+    }
 
     // 3D w-velocity fields
     if (!mesh_->is2D()) {
@@ -4002,6 +4124,13 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: dudy_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: dvdx_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: dvdy_ptr_[0:field_total_size_])
+    if (!mesh_->is2D()) {
+        #pragma omp target exit data map(delete: dudz_ptr_[0:field_total_size_])
+        #pragma omp target exit data map(delete: dvdz_ptr_[0:field_total_size_])
+        #pragma omp target exit data map(delete: dwdx_ptr_[0:field_total_size_])
+        #pragma omp target exit data map(delete: dwdy_ptr_[0:field_total_size_])
+        #pragma omp target exit data map(delete: dwdz_ptr_[0:field_total_size_])
+    }
     #pragma omp target exit data map(delete: wall_distance_ptr_[0:field_total_size_])
     
     // Delete transport fields
@@ -4012,6 +4141,16 @@ void RANSSolver::cleanup_gpu_buffers() {
     #pragma omp target exit data map(delete: tau_xx_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_xy_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_yy_ptr_[0:field_total_size_])
+
+    // Delete anisotropic stress divergence buffers
+    {
+        [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+        [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+        [[maybe_unused]] const size_t w_sz = velocity_.w_total_size();
+        #pragma omp target exit data map(delete: tau_div_u_ptr_[0:u_sz])
+        #pragma omp target exit data map(delete: tau_div_v_ptr_[0:v_sz])
+        #pragma omp target exit data map(delete: tau_div_w_ptr_[0:w_sz])
+    }
 
     // Delete y-metric arrays for non-uniform y-spacing
     if (y_metrics_size_ > 0 && dyv_ptr_ && dyc_ptr_) {
@@ -4224,13 +4363,21 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     // Reynolds stress tensor
     view.tau_xx = tau_xx_ptr_;
     view.tau_xy = tau_xy_ptr_;
+    view.tau_xz = tau_xz_ptr_;
     view.tau_yy = tau_yy_ptr_;
+    view.tau_yz = tau_yz_ptr_;
+    view.tau_zz = tau_zz_ptr_;
 
     // Gradient scratch buffers
     view.dudx = dudx_ptr_;
     view.dudy = dudy_ptr_;
     view.dvdx = dvdx_ptr_;
     view.dvdy = dvdy_ptr_;
+    view.dudz = dudz_ptr_;
+    view.dvdz = dvdz_ptr_;
+    view.dwdx = dwdx_ptr_;
+    view.dwdy = dwdy_ptr_;
+    view.dwdz = dwdz_ptr_;
 
     // Wall distance
     view.wall_distance = wall_distance_ptr_;
@@ -4673,6 +4820,17 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.diff_u = diff_u_ptr_;
     view.diff_v = diff_v_ptr_;
 
+    // Reynolds stress and anisotropic divergence
+    view.tau_xx = tau_xx_ptr_;
+    view.tau_xy = tau_xy_ptr_;
+    view.tau_xz = tau_xz_ptr_;
+    view.tau_yy = tau_yy_ptr_;
+    view.tau_yz = tau_yz_ptr_;
+    view.tau_zz = tau_zz_ptr_;
+    view.tau_div_u = tau_div_u_ptr_;
+    view.tau_div_v = tau_div_v_ptr_;
+    view.tau_div_w = tau_div_w_ptr_;
+
     // Initialize 3D work arrays to avoid undefined behavior in 2D mode
     view.conv_w = nullptr;
     view.diff_w = nullptr;
@@ -4706,7 +4864,7 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.v_old_face = const_cast<double*>(velocity_old_.v_data().data());
     view.u_stride = velocity_.u_stride();
     view.v_stride = velocity_.v_stride();
-    
+
     view.p = const_cast<double*>(pressure_.data().data());
     view.p_corr = const_cast<double*>(pressure_correction_.data().data());
     view.nu_t = const_cast<double*>(nu_t_.data().data());
@@ -4714,12 +4872,23 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.rhs = const_cast<double*>(rhs_poisson_.data().data());
     view.div = const_cast<double*>(div_velocity_.data().data());
     view.cell_stride = mesh_->total_Nx();
-    
+
     view.conv_u = const_cast<double*>(conv_.u_data().data());
     view.conv_v = const_cast<double*>(conv_.v_data().data());
     view.diff_u = const_cast<double*>(diff_.u_data().data());
     view.diff_v = const_cast<double*>(diff_.v_data().data());
-    
+
+    // Reynolds stress and anisotropic divergence
+    view.tau_xx = tau_xx_ptr_;
+    view.tau_xy = tau_xy_ptr_;
+    view.tau_xz = tau_xz_ptr_;
+    view.tau_yy = tau_yy_ptr_;
+    view.tau_yz = tau_yz_ptr_;
+    view.tau_zz = tau_zz_ptr_;
+    view.tau_div_u = tau_div_u_ptr_;
+    view.tau_div_v = tau_div_v_ptr_;
+    view.tau_div_w = tau_div_w_ptr_;
+
     view.Nx = mesh_->Nx;
     view.Ny = mesh_->Ny;
     view.Ng = mesh_->Nghost;
@@ -4786,13 +4955,21 @@ TurbulenceDeviceView RANSSolver::get_device_view() const {
     // Reynolds stress tensor
     view.tau_xx = tau_xx_ptr_;
     view.tau_xy = tau_xy_ptr_;
+    view.tau_xz = tau_xz_ptr_;
     view.tau_yy = tau_yy_ptr_;
+    view.tau_yz = tau_yz_ptr_;
+    view.tau_zz = tau_zz_ptr_;
 
     // Gradient scratch buffers
     view.dudx = dudx_ptr_;
     view.dudy = dudy_ptr_;
     view.dvdx = dvdx_ptr_;
     view.dvdy = dvdy_ptr_;
+    view.dudz = dudz_ptr_;
+    view.dvdz = dvdz_ptr_;
+    view.dwdx = dwdx_ptr_;
+    view.dwdy = dwdy_ptr_;
+    view.dwdz = dwdz_ptr_;
 
     // Wall distance
     view.wall_distance = wall_distance_ptr_;
@@ -4865,6 +5042,17 @@ SolverDeviceView RANSSolver::get_solver_view() const {
     view.conv_v = const_cast<double*>(conv_.v_data().data());
     view.diff_u = const_cast<double*>(diff_.u_data().data());
     view.diff_v = const_cast<double*>(diff_.v_data().data());
+
+    // Reynolds stress and anisotropic divergence
+    view.tau_xx = tau_xx_ptr_;
+    view.tau_xy = tau_xy_ptr_;
+    view.tau_xz = tau_xz_ptr_;
+    view.tau_yy = tau_yy_ptr_;
+    view.tau_yz = tau_yz_ptr_;
+    view.tau_zz = tau_zz_ptr_;
+    view.tau_div_u = tau_div_u_ptr_;
+    view.tau_div_v = tau_div_v_ptr_;
+    view.tau_div_w = tau_div_w_ptr_;
 
     // Initialize 3D work arrays to avoid undefined behavior in 2D mode
     view.conv_w = nullptr;

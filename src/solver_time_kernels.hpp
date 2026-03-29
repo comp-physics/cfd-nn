@@ -75,7 +75,8 @@ void euler_advance_2d(double* u_in, double* u_out, double* conv_u, double* diff_
                       double* v_in, double* v_out, double* conv_v, double* diff_v,
                       int Nx, int Ny, int Ng, int u_stride, int v_stride,
                       double dt, double fx, double fy,
-                      size_t u_total, size_t v_total);
+                      size_t u_total, size_t v_total,
+                      double* tau_div_u = nullptr, double* tau_div_v = nullptr);
 
 void euler_advance_3d(double* u_in, double* u_out, double* conv_u, double* diff_u,
                       double* v_in, double* v_out, double* conv_v, double* diff_v,
@@ -84,7 +85,9 @@ void euler_advance_3d(double* u_in, double* u_out, double* conv_u, double* diff_
                       int u_stride, int v_stride, int w_stride,
                       int u_plane, int v_plane, int w_plane,
                       double dt, double fx, double fy, double fz,
-                      size_t u_total, size_t v_total, size_t w_total);
+                      size_t u_total, size_t v_total, size_t w_total,
+                      double* tau_div_u = nullptr, double* tau_div_v = nullptr,
+                      double* tau_div_w = nullptr);
 
 // ============================================================================
 // Periodicity enforcement kernels

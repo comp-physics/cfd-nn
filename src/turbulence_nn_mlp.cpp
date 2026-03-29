@@ -207,6 +207,8 @@ void TurbulenceNNMLP::update(
                 device_view->u_face, device_view->v_face, device_view->w_face,
                 device_view->dudx, device_view->dudy,
                 device_view->dvdx, device_view->dvdy,
+                device_view->dudz, device_view->dvdz,
+                device_view->dwdx, device_view->dwdy, device_view->dwdz,
                 Nx, Ny, Nz, Ng,
                 mesh.dx, mesh.dy, mesh.dz,
                 u_stride, v_stride, cell_stride,

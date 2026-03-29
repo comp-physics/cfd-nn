@@ -7,7 +7,9 @@
 #include "solver.hpp"
 #include "solver_time_kernels.hpp"
 #include "halo_exchange.hpp"
+#include "ibm_forcing.hpp"
 #include "gpu_utils.hpp"
+#include "timing.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -270,8 +272,23 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
     // Compute convective and diffusive terms for vel_in.
     // The compute functions now use get_velocity_ptrs() to properly handle
     // any VectorField (velocity_, velocity_star_, etc.) without swapping.
-    compute_convective_term(vel_in, conv_);
-    compute_diffusive_term(vel_in, nu_eff_, diff_);
+    {
+        TIMED_SCOPE("convective_term");
+        compute_convective_term(vel_in, conv_);
+    }
+    {
+        TIMED_SCOPE("diffusive_term");
+        compute_diffusive_term(vel_in, nu_eff_, diff_);
+    }
+    if (turb_model_ && turb_model_->provides_reynolds_stresses() && !tau_div_frozen_) {
+        compute_tau_divergence();
+        // Frozen stress approach (Kaandorp 2020): compute tau_div once from
+        // warm-up flow field, then freeze it as a fixed source term.
+        // The solver iterates to steady state with this fixed correction.
+        if (config_.freeze_tau_div && step_count_ >= config_.warmup_steps + 1) {
+            tau_div_frozen_ = true;
+        }
+    }
 
     // Get unified device view (device pointers in GPU build, host in CPU build)
     auto sv = get_solver_view();
@@ -333,21 +350,23 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
             double* v_out_ptr = sv.v_star_face;
             double* conv_v_ptr = sv.conv_v;
             double* diff_v_ptr = sv.diff_v;
+            double* tau_div_u_ptr = sv.tau_div_u;
+            double* tau_div_v_ptr = sv.tau_div_v;
 
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total], tau_div_u_ptr[0:u_total])
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     int idx = j * u_stride + i;
-                    u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
+                    u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx + tau_div_u_ptr[idx]);
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total], tau_div_v_ptr[0:v_total])
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     int idx = j * v_stride + i;
-                    v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
+                    v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy + tau_div_v_ptr[idx]);
                 }
             }
 
@@ -378,21 +397,23 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
             double* v_out_ptr = sv.v_face;
             double* conv_v_ptr = sv.conv_v;
             double* diff_v_ptr = sv.diff_v;
+            double* tau_div_u_ptr = sv.tau_div_u;
+            double* tau_div_v_ptr = sv.tau_div_v;
 
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total], tau_div_u_ptr[0:u_total])
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     int idx = j * u_stride + i;
-                    u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
+                    u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx + tau_div_u_ptr[idx]);
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total], tau_div_v_ptr[0:v_total])
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     int idx = j * v_stride + i;
-                    v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
+                    v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy + tau_div_v_ptr[idx]);
                 }
             }
             // Periodicity for velocity_
@@ -420,21 +441,23 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
             double* v_ptr = sv.v_face;
             double* conv_v_ptr = sv.conv_v;
             double* diff_v_ptr = sv.diff_v;
+            double* tau_div_u_ptr = sv.tau_div_u;
+            double* tau_div_v_ptr = sv.tau_div_v;
 
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: u_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
+                map(present: u_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total], tau_div_u_ptr[0:u_total])
             for (int j = Ng; j < Ng + Ny; ++j) {
                 for (int i = Ng; i <= Ng + Nx; ++i) {
                     int idx = j * u_stride + i;
-                    u_ptr[idx] = u_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
+                    u_ptr[idx] = u_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx + tau_div_u_ptr[idx]);
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
-                map(present: v_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
+                map(present: v_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total], tau_div_v_ptr[0:v_total])
             for (int j = Ng; j <= Ng + Ny; ++j) {
                 for (int i = Ng; i < Ng + Nx; ++i) {
                     int idx = j * v_stride + i;
-                    v_ptr[idx] = v_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
+                    v_ptr[idx] = v_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy + tau_div_v_ptr[idx]);
                 }
             }
             // Periodicity for velocity_
@@ -458,7 +481,8 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
             time_kernels::euler_advance_2d(
                 u_in, u_out, conv_u_ptr_, diff_u_ptr_,
                 v_in, v_out, conv_v_ptr_, diff_v_ptr_,
-                Nx, Ny, Ng, u_stride, v_stride, dt, fx_, fy_, u_total, v_total);
+                Nx, Ny, Ng, u_stride, v_stride, dt, fx_, fy_, u_total, v_total,
+                tau_div_u_ptr_, tau_div_v_ptr_);
             time_kernels::periodic_2d(u_out, v_out, x_periodic, y_periodic,
                                        Nx, Ny, Ng, u_stride, v_stride, u_total, v_total);
         }
@@ -492,37 +516,40 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
             double* w_out_ptr = sv.w_star_face;
             double* conv_w_ptr = sv.conv_w;
             double* diff_w_ptr = sv.diff_w;
+            double* tau_div_u_ptr = sv.tau_div_u;
+            double* tau_div_v_ptr = sv.tau_div_v;
+            double* tau_div_w_ptr = sv.tau_div_w;
 
             // Euler advance u
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total], tau_div_u_ptr[0:u_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i <= Ng + Nx; ++i) {
                         int idx = k * u_plane + j * u_stride + i;
-                        u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
+                        u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx + tau_div_u_ptr[idx]);
                     }
                 }
             }
             // Euler advance v
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total], tau_div_v_ptr[0:v_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j <= Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * v_plane + j * v_stride + i;
-                        v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
+                        v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy + tau_div_v_ptr[idx]);
                     }
                 }
             }
             // Euler advance w
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: w_in_ptr[0:w_total], w_out_ptr[0:w_total], conv_w_ptr[0:w_total], diff_w_ptr[0:w_total])
+                map(present: w_in_ptr[0:w_total], w_out_ptr[0:w_total], conv_w_ptr[0:w_total], diff_w_ptr[0:w_total], tau_div_w_ptr[0:w_total])
             for (int k = Ng; k <= Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * w_plane + j * w_stride_local + i;
-                        w_out_ptr[idx] = w_in_ptr[idx] + dt * (-conv_w_ptr[idx] + diff_w_ptr[idx] + fz);
+                        w_out_ptr[idx] = w_in_ptr[idx] + dt * (-conv_w_ptr[idx] + diff_w_ptr[idx] + fz + tau_div_w_ptr[idx]);
                     }
                 }
             }
@@ -573,37 +600,40 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
             double* w_out_ptr = sv.w_face;
             double* conv_w_ptr = sv.conv_w;
             double* diff_w_ptr = sv.diff_w;
+            double* tau_div_u_ptr = sv.tau_div_u;
+            double* tau_div_v_ptr = sv.tau_div_v;
+            double* tau_div_w_ptr = sv.tau_div_w;
 
             // Euler advance u
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total])
+                map(present: u_in_ptr[0:u_total], u_out_ptr[0:u_total], conv_u_ptr[0:u_total], diff_u_ptr[0:u_total], tau_div_u_ptr[0:u_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i <= Ng + Nx; ++i) {
                         int idx = k * u_plane + j * u_stride + i;
-                        u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx);
+                        u_out_ptr[idx] = u_in_ptr[idx] + dt * (-conv_u_ptr[idx] + diff_u_ptr[idx] + fx + tau_div_u_ptr[idx]);
                     }
                 }
             }
             // Euler advance v
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total])
+                map(present: v_in_ptr[0:v_total], v_out_ptr[0:v_total], conv_v_ptr[0:v_total], diff_v_ptr[0:v_total], tau_div_v_ptr[0:v_total])
             for (int k = Ng; k < Ng + Nz; ++k) {
                 for (int j = Ng; j <= Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * v_plane + j * v_stride + i;
-                        v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy);
+                        v_out_ptr[idx] = v_in_ptr[idx] + dt * (-conv_v_ptr[idx] + diff_v_ptr[idx] + fy + tau_div_v_ptr[idx]);
                     }
                 }
             }
             // Euler advance w
             #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: w_in_ptr[0:w_total], w_out_ptr[0:w_total], conv_w_ptr[0:w_total], diff_w_ptr[0:w_total])
+                map(present: w_in_ptr[0:w_total], w_out_ptr[0:w_total], conv_w_ptr[0:w_total], diff_w_ptr[0:w_total], tau_div_w_ptr[0:w_total])
             for (int k = Ng; k <= Ng + Nz; ++k) {
                 for (int j = Ng; j < Ng + Ny; ++j) {
                     for (int i = Ng; i < Ng + Nx; ++i) {
                         int idx = k * w_plane + j * w_stride_local + i;
-                        w_out_ptr[idx] = w_in_ptr[idx] + dt * (-conv_w_ptr[idx] + diff_w_ptr[idx] + fz);
+                        w_out_ptr[idx] = w_in_ptr[idx] + dt * (-conv_w_ptr[idx] + diff_w_ptr[idx] + fz + tau_div_w_ptr[idx]);
                     }
                 }
             }
@@ -646,7 +676,8 @@ void RANSSolver::euler_substep(VectorField& vel_in, VectorField& vel_out, double
                 v_in, v_out, conv_v_ptr_, diff_v_ptr_,
                 w_in, w_out, conv_w_ptr_, diff_w_ptr_,
                 Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride_local,
-                u_plane, v_plane, w_plane, dt, fx_, fy_, fz_, u_total, v_total, w_total);
+                u_plane, v_plane, w_plane, dt, fx_, fy_, fz_, u_total, v_total, w_total,
+                tau_div_u_ptr_, tau_div_v_ptr_, tau_div_w_ptr_);
 
             time_kernels::periodic_3d(u_out, v_out, w_out, x_periodic, y_periodic, z_periodic,
                                        Nx, Ny, Nz, Ng, u_stride, v_stride, w_stride_local,
@@ -760,6 +791,23 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 
     apply_velocity_bc();
 
+    // Pre-correction IBM: reduce velocity inside body so div(u*) is small.
+    // Post-correction IBM (after correct_velocity) then enforces the final no-slip.
+    // Both are needed: pre-correction keeps Poisson RHS well-conditioned,
+    // post-correction applies the accurate Angot (1999) splitting.
+    {
+        TIMED_SCOPE("ibm_forcing");
+        if (ibm_) {
+            if (gpu_ready_ && ibm_->is_gpu_ready()) {
+                ibm_->apply_forcing_device(velocity_u_ptr_, velocity_v_ptr_,
+                                           mesh_->is2D() ? nullptr : velocity_w_ptr_,
+                                           dt);
+            } else {
+                ibm_->apply_forcing(velocity_, dt);
+            }
+        }
+    }
+
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Nz = mesh_->Nz;
@@ -865,6 +913,34 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
         }
     }
 
+    // IBM RHS masking: zero Poisson RHS at solid cells to prevent spurious
+    // pressure gradients inside the body
+    if (ibm_) {
+        if (gpu_ready_ && ibm_->is_gpu_ready()) {
+            ibm_->mask_rhs_device(rhs_poisson_ptr_);
+        } else {
+            // CPU fallback: use body phi to identify solid cells
+            const int Nz_l = std::max(Nz, 1);
+            const int Nz_eff = is_2d ? 1 : Nz_l;
+            for (int k = Ng; k < Nz_eff + Ng; ++k) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                        double x = mesh_->x(i);
+                        double y = mesh_->y(j);
+                        double z = is_2d ? 0.0 : mesh_->z(k);
+                        if (ibm_->body().phi(x, y, z) < 0.0) {
+                            if (is_2d) {
+                                rhs_poisson_(i, j) = 0.0;
+                            } else {
+                                rhs_poisson_(i, j, k) = 0.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     PoissonConfig pcfg;
     pcfg.max_vcycles = config_.poisson_max_vcycles;
     pcfg.tol_rhs = config_.poisson_tol_rhs;
@@ -874,6 +950,8 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
     // Use solve() for CPU builds (data is host-resident)
     // IMPORTANT: Dispatch based on selected_solver_ to use FFT when appropriate
     int vcycles = 0;
+    {
+    TIMED_SCOPE("poisson_solve");
 #ifdef USE_GPU_OFFLOAD
     switch (selected_solver_) {
 #ifdef USE_FFT_POISSON
@@ -901,6 +979,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
 #else
     vcycles = mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
 #endif
+    } // end TIMED_SCOPE("poisson_solve")
 
     // Populate PoissonStats for external access (for RK paths that call project_velocity)
     if (selected_solver_ == PoissonSolverType::MG) {
@@ -994,7 +1073,21 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
                                   velocity_.w_total_size());
     }
 
-    correct_velocity();
+    {
+        TIMED_SCOPE("velocity_correction");
+        correct_velocity();
+    }
+
+    // Re-apply ghost-cell AFTER velocity correction to restore the interpolated
+    // values that the pressure correction may have overwritten.
+    // The pre-correction ghost-cell keeps div(u*) clean for the Poisson solve,
+    // and this post-correction re-application ensures the final velocity respects no-slip.
+    if (ibm_ && ibm_->is_ghost_cell_ibm()) {
+        TIMED_SCOPE("ibm_ghost_cell");
+        ibm_->apply_ghost_cell(velocity_u_ptr_, velocity_v_ptr_,
+                               mesh_->is2D() ? nullptr : velocity_w_ptr_);
+    }
+    // Adding post-correction penalization causes instability on hills geometry.
 
     // Exchange velocity halos after correction, before BC application (MPI)
 #ifdef USE_MPI
@@ -1218,6 +1311,9 @@ void RANSSolver::ssprk2_step(double dt) {
     [[maybe_unused]] const int v_stride = Nx + 2 * Ng;
     const bool is_2d = mesh_->is2D();
 
+    // Reset IBM force accumulator once per full step
+    if (ibm_) ibm_->reset_force_accumulator();
+
     // Store u^n in velocity_rk_ (use kernel calls to avoid inlining)
     if (is_2d) {
         time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_rk_u_ptr_,
@@ -1312,6 +1408,15 @@ void RANSSolver::ssprk3_step(double dt) {
     const int v_plane = v_stride * (Ny + 2 * Ng + 1);
     const int w_stride_local = Nx + 2 * Ng;
     const int w_plane = w_stride_local * (Ny + 2 * Ng);
+
+    // IBM: reset accumulator and disable force accumulation for intermediate stages.
+    // Only the final stage (Stage 3) accumulates forces for Cd/Cl computation.
+    bool ibm_accum_saved = false;
+    if (ibm_) {
+        ibm_->reset_force_accumulator();
+        ibm_accum_saved = ibm_->accumulate_forces();
+        ibm_->set_accumulate_forces(false);
+    }
 
     // Check if in diagnostic range for NaN sentinels
     const bool run_diag = in_diagnostic_range(step_count_);
@@ -1425,6 +1530,10 @@ void RANSSolver::ssprk3_step(double dt) {
     project_velocity(velocity_star_, dt);
 
     // Stage 3: u^{n+1} = (1/3) * u^n + (2/3) * (u^(2) + dt * L(u^(2)))
+    // Restore force accumulation for final stage — this is where Cd/Cl are computed
+    if (ibm_) {
+        ibm_->set_accumulate_forces(ibm_accum_saved);
+    }
     euler_substep(velocity_star_, velocity_, dt);
 
     // SENTINEL A3: Check for NaN after predictor (Stage 3)

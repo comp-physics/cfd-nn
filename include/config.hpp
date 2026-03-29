@@ -98,6 +98,7 @@ struct Config {
     double CFL_max = 0.5;       ///< Maximum CFL for adaptive dt (used for y-direction)
     double CFL_xz = -1.0;      ///< CFL for x/z directions (-1 = use CFL_max)
     double dt_safety = 1.0;    ///< Safety factor for adaptive dt (0.5-1.0, applied after CFL)
+    double dt_min = 0.0;       ///< Minimum adaptive dt (0 = no floor). Prevents simulation freeze from huge nu_t
     double filter_strength = 0.0;  ///< Explicit velocity filter strength (0=off, 0.01-0.05 typical)
     int filter_interval = 10;      ///< Apply filter every N steps (0=off)
     bool adaptive_dt = true;    ///< Use adaptive time stepping based on CFL
@@ -120,6 +121,9 @@ struct Config {
     // Turbulence model
     TurbulenceModelType turb_model = TurbulenceModelType::None;
     double nu_t_max = 1.0;      ///< Maximum eddy viscosity (clipping)
+    double nu_t_relaxation = 1.0;  ///< Under-relaxation factor for nu_t (1.0=none, 0.3=strong)
+    double tau_div_scale = 1.0;    ///< Continuation ramp for anisotropic stress divergence
+    bool freeze_tau_div = false;   ///< Frozen stress approach: compute tau_div once, then freeze
     double pope_C1 = 0.1;       ///< Pope quadratic EARSM C1 constant
     double pope_C2 = 0.1;       ///< Pope quadratic EARSM C2 constant
 
@@ -127,7 +131,19 @@ struct Config {
     std::string nn_weights_path;
     std::string nn_scaling_path;
     std::string nn_preset;      ///< Preset model name (e.g., "tbnn_channel_caseholdout")
-    
+
+    // IBM body selection (used by cylinder binary for body dispatch)
+    std::string ibm_body = "cylinder";  ///< IBM body type: cylinder, sphere, naca, step, periodic_hill
+    double ibm_radius = 0.5;    ///< Body radius (cylinder/sphere)
+    double ibm_cx = 0.0;       ///< Body center x (0 = auto from domain)
+    double ibm_cy = 0.0;       ///< Body center y
+    double ibm_cz = 0.0;       ///< Body center z (sphere only)
+    double ibm_eta = 0.0;       ///< Volume penalization timescale (0=hard forcing, >0=smooth)
+
+    // Warm-up initialization
+    std::string warmup_model = "";   ///< Turbulence model for warm-up (empty = no warm-up)
+    double warmup_time = 0.0;       ///< Physical time for warm-up phase (0 = disabled)
+
     // Output
     std::string output_dir = "output/";
     int output_freq = 100;      ///< Console output frequency (iterations)

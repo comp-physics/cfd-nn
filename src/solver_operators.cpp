@@ -1069,6 +1069,249 @@ void RANSSolver::compute_diffusive_term(const VectorField& vel, const ScalarFiel
     }
 }
 
+void RANSSolver::compute_tau_divergence() {
+    // Compute the NONLINEAR anisotropic stress divergence (decomposition method).
+    //
+    // The total Reynolds stress is: R_ij = -2*nu_t*S_ij + tau_ij_aniso
+    // The diffusion operator already includes div(nu_eff * grad(u)), which is the
+    // Boussinesq (linear) part. We add ONLY the nonlinear correction:
+    //
+    //   tau_nl_xx = tau_xx - 2*nu_t * du/dx
+    //   tau_nl_xy = tau_xy - nu_t * (du/dy + dv/dx)
+    //   tau_nl_yy = tau_yy - 2*nu_t * dv/dy
+    //
+    //   tau_div_u = d(tau_nl_xx)/dx + d(tau_nl_xy)/dy
+    //   tau_div_v = d(tau_nl_xy)/dx + d(tau_nl_yy)/dy
+    //
+    // This is naturally bounded because the nonlinear part is typically much
+    // smaller than the full tau_ij. No arbitrary scaling factor needed.
+    //
+    // Reference: Standard decomposition approach, see e.g.:
+    // - "Data-driven RANS closures for separated flows" (2024)
+    // - Thompson et al. (2019) on ill-conditioning of explicit injection
+
+    if (!turb_model_ || !turb_model_->provides_reynolds_stresses()) return;
+
+    // tau_div_scale: fixed multiplier on the anisotropic correction.
+    // 0.0 = disabled, 0.1 = 10% correction, 1.0 = full correction.
+    // Values < 1.0 can stabilize explicit solvers on separated flows.
+    const double scale = config_.tau_div_scale;
+    if (scale <= 0.0) return;
+
+    const int Nx = mesh_->Nx;
+    const int Ny = mesh_->Ny;
+    const int Ng = mesh_->Nghost;
+    const double dx = mesh_->dx;
+    const double dy = mesh_->dy;
+    const int u_stride = Nx + 2 * Ng + 1;
+    const int v_stride = Nx + 2 * Ng;
+    const int c_stride = Nx + 2 * Ng;
+
+    [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+    [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+    [[maybe_unused]] const size_t c_sz = field_total_size_;
+
+    double* tdu = tau_div_u_ptr_;
+    double* tdv = tau_div_v_ptr_;
+    double* txx = tau_xx_ptr_;
+    double* txy = tau_xy_ptr_;
+    double* tyy = tau_yy_ptr_;
+    double* nut = nu_t_ptr_;
+    double* dudx = dudx_ptr_;
+    double* dudy = dudy_ptr_;
+    double* dvdx = dvdx_ptr_;
+    double* dvdy = dvdy_ptr_;
+
+    if (mesh_->is2D()) {
+        // 2D path (existing, tested)
+
+        // Step 1: Compute nonlinear tau at cell centers in-place.
+        // tau_nl = tau - 2*nu_t*S (subtract the Boussinesq part)
+        // We modify tau_xx/xy/yy temporarily — they'll be recomputed next step.
+        #pragma omp target teams distribute parallel for \
+            map(present: txx[0:c_sz], txy[0:c_sz], tyy[0:c_sz], \
+                         nut[0:c_sz], dudx[0:c_sz], dudy[0:c_sz], dvdx[0:c_sz], dvdy[0:c_sz])
+        for (size_t idx = 0; idx < c_sz; ++idx) {
+            double nu_t_val = nut[idx];
+            txx[idx] -= 2.0 * nu_t_val * dudx[idx];
+            txy[idx] -= nu_t_val * (dudy[idx] + dvdx[idx]);
+            tyy[idx] -= 2.0 * nu_t_val * dvdy[idx];
+        }
+
+        // Step 2: Compute divergence of the nonlinear correction at velocity faces.
+        // tau_div_u at u-face (i, j)
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: tdu[0:u_sz], txx[0:c_sz], txy[0:c_sz])
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i <= Ng + Nx; ++i) {
+                int u_idx = j * u_stride + i;
+                int c_L = j * c_stride + (i - 1);
+                int c_R = j * c_stride + i;
+                double dtxx_dx = (txx[c_R] - txx[c_L]) / dx;
+                double txy_top = 0.5 * (txy[(j + 1) * c_stride + (i - 1)] + txy[(j + 1) * c_stride + i]);
+                double txy_bot = 0.5 * (txy[(j - 1) * c_stride + (i - 1)] + txy[(j - 1) * c_stride + i]);
+                double dtxy_dy = (txy_top - txy_bot) / (2.0 * dy);
+                tdu[u_idx] = scale * (dtxx_dx + dtxy_dy);
+            }
+        }
+
+        // tau_div_v at v-face (i, j)
+        #pragma omp target teams distribute parallel for collapse(2) \
+            map(present: tdv[0:v_sz], txy[0:c_sz], tyy[0:c_sz])
+        for (int j = Ng; j <= Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                int v_idx = j * v_stride + i;
+                int c_B = (j - 1) * c_stride + i;
+                int c_T = j * c_stride + i;
+                double dtyy_dy = (tyy[c_T] - tyy[c_B]) / dy;
+                double txy_R = 0.5 * (txy[(j - 1) * c_stride + (i + 1)] + txy[j * c_stride + (i + 1)]);
+                double txy_L = 0.5 * (txy[(j - 1) * c_stride + (i - 1)] + txy[j * c_stride + (i - 1)]);
+                double dtxy_dx = (txy_R - txy_L) / (2.0 * dx);
+                tdv[v_idx] = scale * (dtxy_dx + dtyy_dy);
+            }
+        }
+    } else {
+        // 3D path
+        const int Nz = mesh_->Nz;
+        const double dz = mesh_->dz;
+        const int c_plane = c_stride * (Ny + 2 * Ng);
+        const int u_plane = u_stride * (Ny + 2 * Ng);
+        const int v_plane = v_stride * (Ny + 2 * Ng + 1);
+        const int w_stride = Nx + 2 * Ng;
+        const int w_plane = w_stride * (Ny + 2 * Ng);
+
+        [[maybe_unused]] const size_t w_sz = velocity_.w_total_size();
+
+        double* tdw = tau_div_w_ptr_;
+        double* txz = tau_xz_ptr_;
+        double* tyz = tau_yz_ptr_;
+        double* tzz = tau_zz_ptr_;
+        double* dudz = dudz_ptr_;
+        double* dvdz = dvdz_ptr_;
+        double* dwdx = dwdx_ptr_;
+        double* dwdy = dwdy_ptr_;
+        double* dwdz = dwdz_ptr_;
+
+        const int n_cells = static_cast<int>(c_sz);
+
+        // Step 1: Compute nonlinear tau at cell centers in-place (all 6 components).
+        // tau_nl = tau - 2*nu_t*S (subtract the Boussinesq part)
+        // We modify tau_xx..tau_zz temporarily — they'll be recomputed next step.
+        #pragma omp target teams distribute parallel for \
+            map(present: txx[0:c_sz], txy[0:c_sz], txz[0:c_sz], \
+                         tyy[0:c_sz], tyz[0:c_sz], tzz[0:c_sz], \
+                         nut[0:c_sz], dudx[0:c_sz], dudy[0:c_sz], dudz[0:c_sz], \
+                         dvdx[0:c_sz], dvdy[0:c_sz], dvdz[0:c_sz], \
+                         dwdx[0:c_sz], dwdy[0:c_sz], dwdz[0:c_sz])
+        for (int idx = 0; idx < n_cells; ++idx) {
+            double nu_t_val = nut[idx];
+            txx[idx] -= 2.0 * nu_t_val * dudx[idx];
+            txy[idx] -= nu_t_val * (dudy[idx] + dvdx[idx]);
+            txz[idx] -= nu_t_val * (dudz[idx] + dwdx[idx]);
+            tyy[idx] -= 2.0 * nu_t_val * dvdy[idx];
+            tyz[idx] -= nu_t_val * (dvdz[idx] + dwdy[idx]);
+            tzz[idx] -= 2.0 * nu_t_val * dwdz[idx];
+        }
+
+        // Step 2: Compute divergence of the nonlinear correction at velocity faces.
+        // tau_div_u at u-face (i+1/2, j, k):
+        //   d(tau_nl_xx)/dx + d(tau_nl_xy)/dy + d(tau_nl_xz)/dz
+        const int n_u_faces = (Nx + 1) * Ny * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: tdu[0:u_sz], txx[0:c_sz], txy[0:c_sz], txz[0:c_sz])
+        for (int idx = 0; idx < n_u_faces; ++idx) {
+            int i_local = idx % (Nx + 1);
+            int j_local = (idx / (Nx + 1)) % Ny;
+            int k_local = idx / ((Nx + 1) * Ny);
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            int k = k_local + Ng;
+            int u_idx = k * u_plane + j * u_stride + i;
+            int c_L = k * c_plane + j * c_stride + (i - 1);
+            int c_R = k * c_plane + j * c_stride + i;
+            // d(tau_nl_xx)/dx: direct difference between adjacent cells
+            double dtxx_dx = (txx[c_R] - txx[c_L]) / dx;
+            // d(tau_nl_xy)/dy: interpolate txy to u-face, then central difference
+            double txy_top = 0.5 * (txy[k * c_plane + (j + 1) * c_stride + (i - 1)] +
+                                    txy[k * c_plane + (j + 1) * c_stride + i]);
+            double txy_bot = 0.5 * (txy[k * c_plane + (j - 1) * c_stride + (i - 1)] +
+                                    txy[k * c_plane + (j - 1) * c_stride + i]);
+            double dtxy_dy = (txy_top - txy_bot) / (2.0 * dy);
+            // d(tau_nl_xz)/dz: interpolate txz to u-face, then central difference
+            double txz_fwd = 0.5 * (txz[(k + 1) * c_plane + j * c_stride + (i - 1)] +
+                                    txz[(k + 1) * c_plane + j * c_stride + i]);
+            double txz_bwd = 0.5 * (txz[(k - 1) * c_plane + j * c_stride + (i - 1)] +
+                                    txz[(k - 1) * c_plane + j * c_stride + i]);
+            double dtxz_dz = (txz_fwd - txz_bwd) / (2.0 * dz);
+            tdu[u_idx] = scale * (dtxx_dx + dtxy_dy + dtxz_dz);
+        }
+
+        // tau_div_v at v-face (i, j+1/2, k):
+        //   d(tau_nl_xy)/dx + d(tau_nl_yy)/dy + d(tau_nl_yz)/dz
+        const int n_v_faces = Nx * (Ny + 1) * Nz;
+        #pragma omp target teams distribute parallel for \
+            map(present: tdv[0:v_sz], txy[0:c_sz], tyy[0:c_sz], tyz[0:c_sz])
+        for (int idx = 0; idx < n_v_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = (idx / Nx) % (Ny + 1);
+            int k_local = idx / (Nx * (Ny + 1));
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            int k = k_local + Ng;
+            int v_idx = k * v_plane + j * v_stride + i;
+            int c_B = k * c_plane + (j - 1) * c_stride + i;
+            int c_T = k * c_plane + j * c_stride + i;
+            // d(tau_nl_yy)/dy: direct difference between adjacent cells
+            double dtyy_dy = (tyy[c_T] - tyy[c_B]) / dy;
+            // d(tau_nl_xy)/dx: interpolate txy to v-face, then central difference
+            double txy_R = 0.5 * (txy[k * c_plane + (j - 1) * c_stride + (i + 1)] +
+                                  txy[k * c_plane + j * c_stride + (i + 1)]);
+            double txy_L = 0.5 * (txy[k * c_plane + (j - 1) * c_stride + (i - 1)] +
+                                  txy[k * c_plane + j * c_stride + (i - 1)]);
+            double dtxy_dx = (txy_R - txy_L) / (2.0 * dx);
+            // d(tau_nl_yz)/dz: interpolate tyz to v-face, then central difference
+            double tyz_fwd = 0.5 * (tyz[(k + 1) * c_plane + (j - 1) * c_stride + i] +
+                                    tyz[(k + 1) * c_plane + j * c_stride + i]);
+            double tyz_bwd = 0.5 * (tyz[(k - 1) * c_plane + (j - 1) * c_stride + i] +
+                                    tyz[(k - 1) * c_plane + j * c_stride + i]);
+            double dtyz_dz = (tyz_fwd - tyz_bwd) / (2.0 * dz);
+            tdv[v_idx] = scale * (dtxy_dx + dtyy_dy + dtyz_dz);
+        }
+
+        // tau_div_w at w-face (i, j, k+1/2):
+        //   d(tau_nl_xz)/dx + d(tau_nl_yz)/dy + d(tau_nl_zz)/dz
+        const int n_w_faces = Nx * Ny * (Nz + 1);
+        #pragma omp target teams distribute parallel for \
+            map(present: tdw[0:w_sz], txz[0:c_sz], tyz[0:c_sz], tzz[0:c_sz])
+        for (int idx = 0; idx < n_w_faces; ++idx) {
+            int i_local = idx % Nx;
+            int j_local = (idx / Nx) % Ny;
+            int k_local = idx / (Nx * Ny);
+            int i = i_local + Ng;
+            int j = j_local + Ng;
+            int k = k_local + Ng;
+            int w_idx = k * w_plane + j * w_stride + i;
+            int c_bk = (k - 1) * c_plane + j * c_stride + i;
+            int c_fw = k * c_plane + j * c_stride + i;
+            // d(tau_nl_zz)/dz: direct difference between adjacent cells
+            double dtzz_dz = (tzz[c_fw] - tzz[c_bk]) / dz;
+            // d(tau_nl_xz)/dx: interpolate txz to w-face, then central difference
+            double txz_R = 0.5 * (txz[(k - 1) * c_plane + j * c_stride + (i + 1)] +
+                                  txz[k * c_plane + j * c_stride + (i + 1)]);
+            double txz_L = 0.5 * (txz[(k - 1) * c_plane + j * c_stride + (i - 1)] +
+                                  txz[k * c_plane + j * c_stride + (i - 1)]);
+            double dtxz_dx = (txz_R - txz_L) / (2.0 * dx);
+            // d(tau_nl_yz)/dy: interpolate tyz to w-face, then central difference
+            double tyz_top = 0.5 * (tyz[(k - 1) * c_plane + (j + 1) * c_stride + i] +
+                                    tyz[k * c_plane + (j + 1) * c_stride + i]);
+            double tyz_bot = 0.5 * (tyz[(k - 1) * c_plane + (j - 1) * c_stride + i] +
+                                    tyz[k * c_plane + (j - 1) * c_stride + i]);
+            double dtyz_dy = (tyz_top - tyz_bot) / (2.0 * dy);
+            tdw[w_idx] = scale * (dtxz_dx + dtyz_dy + dtzz_dz);
+        }
+    }
+}
+
 void RANSSolver::compute_divergence(VelocityWhich which, ScalarField& div) {
     (void)div;  // Unused - always operates on div_velocity_ via view
 

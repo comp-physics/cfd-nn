@@ -1005,6 +1005,7 @@ double RANSSolver::get_effective_fz() const {
 void RANSSolver::enable_bulk_velocity_control(double target) {
     bulk_velocity_control_ = true;
     bulk_velocity_target_ = target;
+    bulk_velocity_fx_init_ = fx_;  // store initial fx for constant-power method
 }
 
 // ============================================================================
