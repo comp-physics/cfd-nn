@@ -54,19 +54,23 @@ namespace nncfd {
 /// @param k_min, k_max, omega_min, omega_max, CD_min  Limiting constants
 /// @param k_new_out, omega_new_out  [out] Updated values
 inline void sst_transport_cell_kernel(
-    // Cell indices
+    // Cell indices (x/y neighbors + z neighbors)
     int idx_c, int idx_ip, int idx_im, int idx_jp, int idx_jm,
+    int idx_kp, int idx_km,
     // Velocity face indices
     int u_idx_ip, int u_idx_im, int u_idx_jp, int u_idx_jm,
     int v_idx_ip, int v_idx_im, int v_idx_jp, int v_idx_jm,
     int u_idx_c, int u_idx_c1, int v_idx_c, int v_idx_c1,
+    int w_idx_c, int w_idx_c1,
     // Data pointers
-    const double* u_ptr, const double* v_ptr,
+    const double* u_ptr, const double* v_ptr, const double* w_ptr,
     const double* k_ptr, const double* omega_ptr,
     const double* nu_t_ptr, const double* wall_dist_ptr,
     // Grid parameters
-    double dx, double dy, double dt,
-    double inv_2dx, double inv_2dy, double dx2, double dy2,
+    double dx, double dy, double dz, double dt,
+    double inv_2dx, double inv_2dy, double inv_2dz,
+    double dx2, double dy2, double dz2,
+    bool is_3d,
     // Model constants
     double nu, double beta_star, double beta1, double beta2,
     double alpha1, double alpha2, double sigma_k1, double sigma_k2,
@@ -84,6 +88,10 @@ inline void sst_transport_cell_kernel(
     // Cell-centered velocity (interpolate from faces)
     double u_c = 0.5 * (u_ptr[u_idx_c] + u_ptr[u_idx_c1]);
     double v_c = 0.5 * (v_ptr[v_idx_c] + v_ptr[v_idx_c1]);
+    double w_c = 0.0;
+    if (is_3d && w_ptr) {
+        w_c = 0.5 * (w_ptr[w_idx_c] + w_ptr[w_idx_c1]);
+    }
 
     // Get cell values with limiting
     double k_c = k_ptr[idx_c];
@@ -96,11 +104,22 @@ inline void sst_transport_cell_kernel(
     double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
     nu_t_c = (nu_t_c > 0.0) ? nu_t_c : 0.0;
 
-    // Strain rate magnitude squared
+    // Strain rate magnitude squared (2D terms)
     double Sxx = dudx_v;
     double Syy = dvdy_v;
     double Sxy = 0.5 * (dudy_v + dvdx_v);
     double S2 = 2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy);
+
+    // Add 3D strain rate contribution: Szz diagonal term
+    // Cross terms (Sxz, Syz) require additional face indices not available here.
+    // The full 3D gradient computation is done in compute_gradients_from_mac_gpu
+    // and used by the SST closure. For transport production, Szz is the dominant
+    // 3D contribution (captures spanwise compression/expansion).
+    if (is_3d && w_ptr) {
+        double dwdz_v = (w_ptr[w_idx_c1] - w_ptr[w_idx_c]) / dz;
+        double Szz = dwdz_v;
+        S2 += 2.0 * Szz * Szz;
+    }
 
     // Gradients for cross-diffusion and F1
     double dkdx = (k_ptr[idx_ip] - k_ptr[idx_im]) * inv_2dx;
@@ -108,8 +127,17 @@ inline void sst_transport_cell_kernel(
     double domegadx = (omega_ptr[idx_ip] - omega_ptr[idx_im]) * inv_2dx;
     double domegady = (omega_ptr[idx_jp] - omega_ptr[idx_jm]) * inv_2dy;
 
+    // Add z-direction gradients for cross-diffusion in 3D
+    double dkdz = 0.0;
+    double domegadz = 0.0;
+    if (is_3d) {
+        dkdz = (k_ptr[idx_kp] - k_ptr[idx_km]) * inv_2dz;
+        domegadz = (omega_ptr[idx_kp] - omega_ptr[idx_km]) * inv_2dz;
+    }
+
     // Cross-diffusion term for F1 calculation
-    double CD_omega = 2.0 * sigma_omega2 / omega_c * (dkdx * domegadx + dkdy * domegady);
+    double grad_k_dot_grad_omega = dkdx * domegadx + dkdy * domegady + dkdz * domegadz;
+    double CD_omega = 2.0 * sigma_omega2 / omega_c * grad_k_dot_grad_omega;
     CD_omega = (CD_omega > CD_min) ? CD_omega : CD_min;
 
     // F1 blending function
@@ -153,16 +181,31 @@ inline void sst_transport_cell_kernel(
         adv_k += v_c * (k_ptr[idx_jp] - k_c) / dy;
         adv_omega += v_c * (omega_ptr[idx_jp] - omega_c) / dy;
     }
+    // z-advection in 3D
+    if (is_3d) {
+        if (w_c >= 0) {
+            adv_k += w_c * (k_c - k_ptr[idx_km]) / dz;
+            adv_omega += w_c * (omega_c - omega_ptr[idx_km]) / dz;
+        } else {
+            adv_k += w_c * (k_ptr[idx_kp] - k_c) / dz;
+            adv_omega += w_c * (omega_ptr[idx_kp] - omega_c) / dz;
+        }
+    }
 
     // Diffusion (central difference)
     double diff_k = nu_k * ((k_ptr[idx_ip] - 2.0*k_c + k_ptr[idx_im]) / dx2
                           + (k_ptr[idx_jp] - 2.0*k_c + k_ptr[idx_jm]) / dy2);
     double diff_omega = nu_omega_eff * ((omega_ptr[idx_ip] - 2.0*omega_c + omega_ptr[idx_im]) / dx2
                                        + (omega_ptr[idx_jp] - 2.0*omega_c + omega_ptr[idx_jm]) / dy2);
+    // z-diffusion in 3D
+    if (is_3d) {
+        diff_k += nu_k * (k_ptr[idx_kp] - 2.0*k_c + k_ptr[idx_km]) / dz2;
+        diff_omega += nu_omega_eff * (omega_ptr[idx_kp] - 2.0*omega_c + omega_ptr[idx_km]) / dz2;
+    }
 
     // Cross-diffusion term for omega equation
     double CD = 2.0 * (1.0 - F1) * sigma_omega2 / omega_c
-              * (dkdx * domegadx + dkdy * domegady);
+              * grad_k_dot_grad_omega;
     CD = (CD > 0.0) ? CD : 0.0;
 
     // Point-implicit time integration: treat destruction terms implicitly
@@ -622,20 +665,27 @@ void SSTKOmegaTransport::advance_turbulence(
         // but operate directly on solver-owned device-resident data
         const int Nx = mesh.Nx;
         const int Ny = mesh.Ny;
+        const int Nz = mesh.Nz;
         const int Ng = mesh.Nghost;
-        const int n_cells = Nx * Ny;
+        const int n_cells = Nx * Ny * Nz;
         const int cell_stride = mesh.total_Nx();
-        const size_t cell_total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
-        const size_t u_total_size = (size_t)mesh.total_Ny() * (mesh.total_Nx() + 1);
-        const size_t v_total_size = (size_t)(mesh.total_Ny() + 1) * mesh.total_Nx();
-        
+        const int cell_plane_stride = mesh.total_Nx() * mesh.total_Ny();
+        [[maybe_unused]] const size_t cell_total_size = (size_t)mesh.total_Nx() * mesh.total_Ny() * mesh.total_Nz();
+        [[maybe_unused]] const size_t u_total_size = device_view->u_total;
+        [[maybe_unused]] const size_t v_total_size = device_view->v_total;
+        [[maybe_unused]] const size_t w_total_size = device_view->w_total;
+        const bool is_3d = (Nz > 1);
+
         const double dx = mesh.dx;
         const double dy = mesh.dy;
+        const double dz = mesh.dz;
         const double dx2 = dx * dx;
         const double dy2 = dy * dy;
+        const double dz2 = dz * dz;
         const double inv_2dx = 1.0 / (2.0 * dx);
         const double inv_2dy = 1.0 / (2.0 * dy);
-        
+        const double inv_2dz = (dz > 0.0) ? 1.0 / (2.0 * dz) : 0.0;
+
         // Copy model constants to local for GPU capture
         const double nu = nu_;
         const double beta_star = constants_.beta_star;
@@ -652,60 +702,77 @@ void SSTKOmegaTransport::advance_turbulence(
         const double omega_min = constants_.omega_min;
         const double omega_max = constants_.omega_max;
         const double CD_min = constants_.CD_omega_min;
-        
+
         // Get device pointers from device_view
         const double* u_ptr = device_view->u_face;
         const double* v_ptr = device_view->v_face;
+        const double* w_ptr = device_view->w_face;
         double* k_ptr = device_view->k;
         double* omega_ptr = device_view->omega;
         const double* nu_t_ptr = device_view->nu_t;
         const double* wall_dist_ptr = device_view->wall_distance;
         const int u_stride = device_view->u_stride;
         const int v_stride = device_view->v_stride;
-        
-        // GPU kernel: SST k-ω transport using unified kernel
+        const int w_stride = device_view->w_stride;
+        const int u_plane_stride = device_view->u_plane_stride;
+        const int v_plane_stride = device_view->v_plane_stride;
+        const int w_plane_stride = device_view->w_plane_stride;
+
+        // GPU kernel: SST k-ω transport using unified kernel (3D-capable)
         #pragma omp target teams distribute parallel for \
             map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], \
                          k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size], \
-                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
-        for (int cell_idx = 0; cell_idx < n_cells; ++cell_idx) {
-            const int i = cell_idx % Nx;
-            const int j = cell_idx / Nx;
+                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size]) \
+            map(present: w_ptr[0:w_total_size])
+        for (int flat_idx = 0; flat_idx < n_cells; ++flat_idx) {
+            const int i = flat_idx % Nx;
+            const int j = (flat_idx / Nx) % Ny;
+            const int kk = flat_idx / (Nx * Ny);
             const int ii = i + Ng;
             const int jj = j + Ng;
+            const int kkz = kk + Ng;
 
-            // Cell indices
-            const int idx_c = jj * cell_stride + ii;
-            const int idx_ip = jj * cell_stride + (ii + 1);
-            const int idx_im = jj * cell_stride + (ii - 1);
-            const int idx_jp = (jj + 1) * cell_stride + ii;
-            const int idx_jm = (jj - 1) * cell_stride + ii;
+            // Cell indices (3D with plane stride)
+            const int idx_c  = kkz * cell_plane_stride + jj * cell_stride + ii;
+            const int idx_ip = kkz * cell_plane_stride + jj * cell_stride + (ii + 1);
+            const int idx_im = kkz * cell_plane_stride + jj * cell_stride + (ii - 1);
+            const int idx_jp = kkz * cell_plane_stride + (jj + 1) * cell_stride + ii;
+            const int idx_jm = kkz * cell_plane_stride + (jj - 1) * cell_stride + ii;
+            const int idx_kp = (kkz + 1) * cell_plane_stride + jj * cell_stride + ii;
+            const int idx_km = (kkz - 1) * cell_plane_stride + jj * cell_stride + ii;
 
-            // Velocity face indices for gradients
-            const int u_idx_ip = jj * u_stride + (ii + 1);
-            const int u_idx_im = jj * u_stride + (ii - 1);
-            const int u_idx_jp = (jj + 1) * u_stride + ii;
-            const int u_idx_jm = (jj - 1) * u_stride + ii;
-            const int v_idx_ip = jj * v_stride + (ii + 1);
-            const int v_idx_im = jj * v_stride + (ii - 1);
-            const int v_idx_jp = (jj + 1) * v_stride + ii;
-            const int v_idx_jm = (jj - 1) * v_stride + ii;
+            // Velocity face indices for gradients (u at x-faces)
+            const int u_idx_ip = kkz * u_plane_stride + jj * u_stride + (ii + 1);
+            const int u_idx_im = kkz * u_plane_stride + jj * u_stride + (ii - 1);
+            const int u_idx_jp = kkz * u_plane_stride + (jj + 1) * u_stride + ii;
+            const int u_idx_jm = kkz * u_plane_stride + (jj - 1) * u_stride + ii;
+            // v at y-faces
+            const int v_idx_ip = kkz * v_plane_stride + jj * v_stride + (ii + 1);
+            const int v_idx_im = kkz * v_plane_stride + jj * v_stride + (ii - 1);
+            const int v_idx_jp = kkz * v_plane_stride + (jj + 1) * v_stride + ii;
+            const int v_idx_jm = kkz * v_plane_stride + (jj - 1) * v_stride + ii;
 
             // Velocity face indices for cell-center interpolation
-            const int u_idx_c = jj * u_stride + ii;
-            const int u_idx_c1 = jj * u_stride + (ii + 1);
-            const int v_idx_c = jj * v_stride + ii;
-            const int v_idx_c1 = (jj + 1) * v_stride + ii;
+            const int u_idx_c  = kkz * u_plane_stride + jj * u_stride + ii;
+            const int u_idx_c1 = kkz * u_plane_stride + jj * u_stride + (ii + 1);
+            const int v_idx_c  = kkz * v_plane_stride + jj * v_stride + ii;
+            const int v_idx_c1 = kkz * v_plane_stride + (jj + 1) * v_stride + ii;
+            // w at z-faces for cell-center interpolation
+            const int w_idx_c  = kkz * w_plane_stride + jj * w_stride + ii;
+            const int w_idx_c1 = (kkz + 1) * w_plane_stride + jj * w_stride + ii;
 
             // Call unified kernel
             double k_new, omega_new;
             sst_transport_cell_kernel(
                 idx_c, idx_ip, idx_im, idx_jp, idx_jm,
+                idx_kp, idx_km,
                 u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
                 v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
                 u_idx_c, u_idx_c1, v_idx_c, v_idx_c1,
-                u_ptr, v_ptr, k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
-                dx, dy, dt, inv_2dx, inv_2dy, dx2, dy2,
+                w_idx_c, w_idx_c1,
+                u_ptr, v_ptr, w_ptr, k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+                dx, dy, dz, dt, inv_2dx, inv_2dy, inv_2dz, dx2, dy2, dz2,
+                is_3d,
                 nu, beta_star, beta1, beta2, alpha1, alpha2,
                 sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
                 k_min, k_max, omega_min, omega_max, CD_min,
@@ -717,13 +784,20 @@ void SSTKOmegaTransport::advance_turbulence(
 
         // Apply wall BCs directly on GPU — no CPU roundtrip.
         // k BC: ghost = -interior (linear extrapolation gives k=0 at wall)
+        // Loop over all x-i and z-k cells (3D)
         const int total_Nx_bc = cell_stride;  // == mesh.total_Nx()
+        const int total_Nz_bc = mesh.total_Nz();
+        const int bc_count = total_Nx_bc * total_Nz_bc;
         #pragma omp target teams distribute parallel for \
             map(present: k_ptr[0:cell_total_size])
-        for (int i = 0; i < total_Nx_bc; ++i) {
+        for (int bc_idx = 0; bc_idx < bc_count; ++bc_idx) {
+            const int i = bc_idx % total_Nx_bc;
+            const int kz = bc_idx / total_Nx_bc;
             for (int g = 0; g < Ng; ++g) {
-                k_ptr[g * cell_stride + i]            = -k_ptr[Ng * cell_stride + i];
-                k_ptr[(Ny + Ng + g) * cell_stride + i] = -k_ptr[(Ny + Ng - 1) * cell_stride + i];
+                k_ptr[kz * cell_plane_stride + g * cell_stride + i]
+                    = -k_ptr[kz * cell_plane_stride + Ng * cell_stride + i];
+                k_ptr[kz * cell_plane_stride + (Ny + Ng + g) * cell_stride + i]
+                    = -k_ptr[kz * cell_plane_stride + (Ny + Ng - 1) * cell_stride + i];
             }
         }
 
@@ -733,14 +807,18 @@ void SSTKOmegaTransport::advance_turbulence(
         const double nu_bc       = nu;
         const double beta1_bc    = beta1;
         const double omega_max_bc = omega_max;
+        const int omega_bc_count = Nx * total_Nz_bc;
         #pragma omp target teams distribute parallel for \
             map(present: omega_ptr[0:cell_total_size], wall_ptr[0:wall_total])
-        for (int i = Ng; i < Nx + Ng; ++i) {
+        for (int bc_idx = 0; bc_idx < omega_bc_count; ++bc_idx) {
+            const int ix = bc_idx % Nx;
+            const int kz = bc_idx / Nx;
+            const int i = ix + Ng;
             for (int g = 0; g < Ng; ++g) {
                 // Bottom wall
                 {
-                    const int idx_ghost = g * cell_stride + i;
-                    const int idx_int   = Ng * cell_stride + i;
+                    const int idx_ghost = kz * cell_plane_stride + g * cell_stride + i;
+                    const int idx_int   = kz * cell_plane_stride + Ng * cell_stride + i;
                     double y1 = wall_ptr[idx_int];
                     y1 = (y1 > 1e-10) ? y1 : 1e-10;
                     double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
@@ -749,8 +827,8 @@ void SSTKOmegaTransport::advance_turbulence(
                 }
                 // Top wall
                 {
-                    const int idx_ghost = (Ny + Ng + g) * cell_stride + i;
-                    const int idx_int   = (Ny + Ng - 1) * cell_stride + i;
+                    const int idx_ghost = kz * cell_plane_stride + (Ny + Ng + g) * cell_stride + i;
+                    const int idx_int   = kz * cell_plane_stride + (Ny + Ng - 1) * cell_stride + i;
                     double y1 = wall_ptr[idx_int];
                     y1 = (y1 > 1e-10) ? y1 : 1e-10;
                     double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
@@ -769,30 +847,42 @@ void SSTKOmegaTransport::advance_turbulence(
     
     // CPU implementation using unified kernel (same code path as GPU)
     const int cell_stride = mesh.total_Nx();
+    const int cell_plane_stride = mesh.total_Nx() * mesh.total_Ny();
     const int u_stride = mesh.total_Nx() + 1;
     const int v_stride = mesh.total_Nx();
+    const int w_stride = mesh.total_Nx();
+    const int u_plane_stride = u_stride * mesh.total_Ny();
+    const int v_plane_stride = v_stride * (mesh.total_Ny() + 1);
+    const int w_plane_stride = w_stride * mesh.total_Ny();
+    const bool is_3d = (mesh.Nz > 1);
 
     const double dx = mesh.dx;
     const double dy = mesh.dy;
+    const double dz = mesh.dz;
     const double dx2 = dx * dx;
     const double dy2 = dy * dy;
+    const double dz2 = dz * dz;
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
+    const double inv_2dz = (dz > 0.0) ? 1.0 / (2.0 * dz) : 0.0;
 
     // Get raw pointers from fields
     const double* u_ptr = velocity.u_data().data();
     const double* v_ptr = velocity.v_data().data();
+    const double* w_ptr = velocity.w_data().data();
     double* k_ptr = k.data().data();
     double* omega_ptr = omega.data().data();
     const double* nu_t_ptr = nu_t_prev.data().data();
 
     // Create wall_distance buffer for unified kernel
-    const size_t total_cells = (size_t)mesh.total_Nx() * mesh.total_Ny();
+    const size_t total_cells = (size_t)mesh.total_Nx() * mesh.total_Ny() * mesh.total_Nz();
     std::vector<double> wall_dist_buf(total_cells, 0.0);
-    for (int j = 0; j < mesh.total_Ny(); ++j) {
-        for (int i = 0; i < mesh.total_Nx(); ++i) {
-            const int idx = j * cell_stride + i;
-            wall_dist_buf[idx] = mesh.wall_distance(i, j);
+    for (int kz = 0; kz < mesh.total_Nz(); ++kz) {
+        for (int j = 0; j < mesh.total_Ny(); ++j) {
+            for (int i = 0; i < mesh.total_Nx(); ++i) {
+                const int idx = kz * cell_plane_stride + j * cell_stride + i;
+                wall_dist_buf[idx] = mesh.wall_distance(i, j);
+            }
         }
     }
     const double* wall_dist_ptr = wall_dist_buf.data();
@@ -814,48 +904,57 @@ void SSTKOmegaTransport::advance_turbulence(
     const double omega_max = constants_.omega_max;
     const double CD_min = constants_.CD_omega_min;
 
-    // Single pass using unified kernel
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            // Cell indices
-            const int idx_c = j * cell_stride + i;
-            const int idx_ip = j * cell_stride + (i + 1);
-            const int idx_im = j * cell_stride + (i - 1);
-            const int idx_jp = (j + 1) * cell_stride + i;
-            const int idx_jm = (j - 1) * cell_stride + i;
+    // Single pass using unified kernel (3D-capable)
+    for (int kz = mesh.k_begin(); kz < mesh.k_end(); ++kz) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                // Cell indices (3D)
+                const int idx_c  = kz * cell_plane_stride + j * cell_stride + i;
+                const int idx_ip = kz * cell_plane_stride + j * cell_stride + (i + 1);
+                const int idx_im = kz * cell_plane_stride + j * cell_stride + (i - 1);
+                const int idx_jp = kz * cell_plane_stride + (j + 1) * cell_stride + i;
+                const int idx_jm = kz * cell_plane_stride + (j - 1) * cell_stride + i;
+                const int idx_kp = (kz + 1) * cell_plane_stride + j * cell_stride + i;
+                const int idx_km = (kz - 1) * cell_plane_stride + j * cell_stride + i;
 
-            // Velocity face indices for gradients
-            const int u_idx_ip = j * u_stride + (i + 1);
-            const int u_idx_im = j * u_stride + (i - 1);
-            const int u_idx_jp = (j + 1) * u_stride + i;
-            const int u_idx_jm = (j - 1) * u_stride + i;
-            const int v_idx_ip = j * v_stride + (i + 1);
-            const int v_idx_im = j * v_stride + (i - 1);
-            const int v_idx_jp = (j + 1) * v_stride + i;
-            const int v_idx_jm = (j - 1) * v_stride + i;
+                // Velocity face indices for gradients (u at x-faces)
+                const int u_idx_ip = kz * u_plane_stride + j * u_stride + (i + 1);
+                const int u_idx_im = kz * u_plane_stride + j * u_stride + (i - 1);
+                const int u_idx_jp = kz * u_plane_stride + (j + 1) * u_stride + i;
+                const int u_idx_jm = kz * u_plane_stride + (j - 1) * u_stride + i;
+                const int v_idx_ip = kz * v_plane_stride + j * v_stride + (i + 1);
+                const int v_idx_im = kz * v_plane_stride + j * v_stride + (i - 1);
+                const int v_idx_jp = kz * v_plane_stride + (j + 1) * v_stride + i;
+                const int v_idx_jm = kz * v_plane_stride + (j - 1) * v_stride + i;
 
-            // Velocity face indices for cell-center interpolation
-            const int u_idx_c = j * u_stride + i;
-            const int u_idx_c1 = j * u_stride + (i + 1);
-            const int v_idx_c = j * v_stride + i;
-            const int v_idx_c1 = (j + 1) * v_stride + i;
+                // Velocity face indices for cell-center interpolation
+                const int u_idx_c  = kz * u_plane_stride + j * u_stride + i;
+                const int u_idx_c1 = kz * u_plane_stride + j * u_stride + (i + 1);
+                const int v_idx_c  = kz * v_plane_stride + j * v_stride + i;
+                const int v_idx_c1 = kz * v_plane_stride + (j + 1) * v_stride + i;
+                const int w_idx_c  = kz * w_plane_stride + j * w_stride + i;
+                const int w_idx_c1 = (kz + 1) * w_plane_stride + j * w_stride + i;
 
-            // Call unified kernel (same code path as GPU)
-            double k_new, omega_new;
-            sst_transport_cell_kernel(
-                idx_c, idx_ip, idx_im, idx_jp, idx_jm,
-                u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
-                v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
-                u_idx_c, u_idx_c1, v_idx_c, v_idx_c1,
-                u_ptr, v_ptr, k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
-                dx, dy, dt, inv_2dx, inv_2dy, dx2, dy2,
-                nu, beta_star, beta1, beta2, alpha1, alpha2,
-                sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
-                k_min, k_max, omega_min, omega_max, CD_min,
-                k_new, omega_new);
+                // Call unified kernel (same code path as GPU)
+                double k_new, omega_new;
+                sst_transport_cell_kernel(
+                    idx_c, idx_ip, idx_im, idx_jp, idx_jm,
+                    idx_kp, idx_km,
+                    u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
+                    v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
+                    u_idx_c, u_idx_c1, v_idx_c, v_idx_c1,
+                    w_idx_c, w_idx_c1,
+                    u_ptr, v_ptr, w_ptr, k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+                    dx, dy, dz, dt, inv_2dx, inv_2dy, inv_2dz, dx2, dy2, dz2,
+                    is_3d,
+                    nu, beta_star, beta1, beta2, alpha1, alpha2,
+                    sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
+                    k_min, k_max, omega_min, omega_max, CD_min,
+                    k_new, omega_new);
 
-            k_ptr[idx_c] = k_new;
-            omega_ptr[idx_c] = omega_new;
+                k_ptr[idx_c] = k_new;
+                omega_ptr[idx_c] = omega_new;
+            }
         }
     }
 
@@ -887,10 +986,12 @@ void SSTKOmegaTransport::update(
             // Direct SST closure on GPU
             const int Nx = mesh.Nx;
             const int Ny = mesh.Ny;
+            const int Nz = mesh.Nz;
             const int Ng = mesh.Nghost;
             const int stride = mesh.total_Nx();
-            const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny();
-            
+            const int cell_plane_stride_closure = mesh.total_Nx() * mesh.total_Ny();
+            const size_t total_size = (size_t)mesh.total_Nx() * mesh.total_Ny() * mesh.total_Nz();
+
             // CRITICAL: Compute gradients first (SST closure needs them)
             gpu_kernels::compute_gradients_from_mac_gpu(
                 device_view->u_face,
@@ -922,7 +1023,7 @@ void SSTKOmegaTransport::update(
                 device_view->dyc,
                 device_view->dyc_size
             );
-            
+
             // Now compute SST closure using gradients
             gpu_kernels::compute_sst_closure_gpu(
                 device_view->k,              // Already on device
@@ -933,7 +1034,9 @@ void SSTKOmegaTransport::update(
                 device_view->dvdy,
                 device_view->wall_distance,  // Wall distance on device (full field with ghosts)
                 device_view->nu_t,           // Output on device
-                Nx, Ny, Ng, stride, total_size, total_size,  // Last arg: wall_dist_size = total_size (not interior!)
+                Nx, Ny, Nz, Ng, stride,
+                cell_plane_stride_closure,
+                total_size, total_size,      // Last arg: wall_dist_size = total_size (not interior!)
                 nu_,                         // Laminar viscosity
                 constants_.a1,               // SST constant (0.31)
                 constants_.beta_star,        // SST constant (0.09)

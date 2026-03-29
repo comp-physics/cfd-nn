@@ -173,13 +173,14 @@ void compute_sst_closure_gpu(
     const double* dudy,
     const double* dvdx,
     const double* dvdy,
-    const double* wall_distance,        // Wall distance (cell-centered, NO ghost cells)
+    const double* wall_distance,        // Wall distance (cell-centered, with ghost cells)
     double* nu_t,                       // Output: eddy viscosity (cell-centered, with ghost cells)
-    int Nx, int Ny,                     // Interior dimensions
+    int Nx, int Ny, int Nz,             // Interior dimensions (Nz=1 for 2D)
     int Ng,                             // Ghost cells
     int stride,                         // Row stride = Nx+2Ng
-    int total_size,                     // Total array size for k/omega/nu_t/gradients
-    int wall_dist_size,                 // Size of wall_distance array (interior only)
+    int cell_plane_stride,              // Plane stride = (Nx+2Ng)*(Ny+2Ng)
+    int total_size,                     // Total 3D array size for k/omega/nu_t/gradients
+    int wall_dist_size,                 // Size of wall_distance array
     double nu,                          // Laminar viscosity
     double a1,                          // SST constant (0.31)
     double beta_star,                   // SST constant (0.09)

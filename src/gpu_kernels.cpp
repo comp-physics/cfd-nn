@@ -986,9 +986,10 @@ void compute_sst_closure_gpu(
     const double* dvdy,
     const double* wall_distance,
     double* nu_t,
-    int Nx, int Ny,
+    int Nx, int Ny, int Nz,
     int Ng,
     int stride,
+    int cell_plane_stride,
     int total_size,
     int wall_dist_size,
     double nu,
@@ -1000,8 +1001,9 @@ void compute_sst_closure_gpu(
     NVTX_SCOPE_CLOSURE("kernel:sst_closure");
 
 #ifdef USE_GPU_OFFLOAD
-    const int n_cells = Nx * Ny;
-    
+    const int n_cells = Nx * Ny * Nz;
+    const int NxNy = Nx * Ny;
+
     // CRITICAL: map(present:...) for solver-managed device buffers
     // wall_distance has same layout as k/omega/nu_t (full field with ghosts)
     #pragma omp target teams distribute parallel for \
@@ -1011,27 +1013,28 @@ void compute_sst_closure_gpu(
                      wall_distance[0:wall_dist_size], \
                      nu_t[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {
-        // Convert flat index to (i,j) including ghost cells
+        // Convert flat index to (i,j,k) including ghost cells
         const int i = idx % Nx + Ng;
-        const int j = idx / Nx + Ng;
-        const int cell_idx = j * stride + i;
-        
+        const int j = (idx / Nx) % Ny + Ng;
+        const int kz = idx / NxNy + Ng;
+        const int cell_idx = kz * cell_plane_stride + j * stride + i;
+
         // Read fields (all use stride-based indexing with ghosts)
         double k_val = k[cell_idx];
         double omega_val = omega[cell_idx];
         double y_wall = wall_distance[cell_idx];  // Wall distance uses same indexing as k/omega
-        
+
         // Clamp to minimum values
         k_val = (k_val > k_min) ? k_val : k_min;
         omega_val = (omega_val > omega_min) ? omega_val : omega_min;
         double y_safe = (y_wall > 1e-10) ? y_wall : 1e-10;
-        
+
         // Strain rate magnitude from gradients
         double Sxx = dudx[cell_idx];
         double Syy = dvdy[cell_idx];
         double Sxy = 0.5 * (dudy[cell_idx] + dvdx[cell_idx]);
         double S_mag = sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
-        
+
         // F2 blending function for SST
         // arg2 = max(2√k / (β*ωy), 500ν / (y²ω))
         double sqrt_k = sqrt(k_val);
@@ -1039,30 +1042,31 @@ void compute_sst_closure_gpu(
         double term2 = 500.0 * nu / (y_safe * y_safe * omega_val);
         double arg2 = (term1 > term2) ? term1 : term2;
         double F2 = tanh(arg2 * arg2);
-        
+
         // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
         double denom = a1 * omega_val;
         double SF2 = S_mag * F2;
         denom = (denom > SF2) ? denom : SF2;
-        
+
         // Prevent division by zero
         denom = (denom > 1e-20) ? denom : 1e-20;
-        
+
         double nu_t_val = a1 * k_val / denom;
-        
+
         // Realizability: ν_t ≥ 0
         nu_t_val = (nu_t_val > 0.0) ? nu_t_val : 0.0;
-        
+
         // Upper limit: ν_t ≤ nu_t_max * ν
         double max_val = nu_t_max * nu;
         nu_t_val = (nu_t_val < max_val) ? nu_t_val : max_val;
-        
+
         nu_t[cell_idx] = nu_t_val;
     }
 #else
     (void)k; (void)omega; (void)dudx; (void)dudy; (void)dvdx; (void)dvdy;
     (void)wall_distance; (void)nu_t;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride; (void)total_size; (void)wall_dist_size;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng; (void)stride; (void)cell_plane_stride;
+    (void)total_size; (void)wall_dist_size;
     (void)nu; (void)a1; (void)beta_star;
     (void)k_min; (void)omega_min; (void)nu_t_max;
 #endif
