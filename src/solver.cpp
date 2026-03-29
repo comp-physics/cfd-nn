@@ -3855,10 +3855,13 @@ void RANSSolver::extract_field_pointers() {
     k_ptr_ = k_.data().data();
     omega_ptr_ = omega_.data().data();
 
-    // Reynolds stress tensor components (for EARSM/TBNN)
+    // Reynolds stress tensor components (for EARSM/TBNN/RSM)
     tau_xx_ptr_ = tau_ij_.xx_data().data();
     tau_xy_ptr_ = tau_ij_.xy_data().data();
     tau_yy_ptr_ = tau_ij_.yy_data().data();
+    tau_xz_ptr_ = tau_ij_.xz_data().data();
+    tau_yz_ptr_ = tau_ij_.yz_data().data();
+    tau_zz_ptr_ = tau_ij_.zz_data().data();
 
     // Allocate tau_div buffers (same size as velocity face arrays)
     tau_div_u_buf_.resize(velocity_.u_total_size(), 0.0);
@@ -3982,7 +3985,10 @@ void RANSSolver::initialize_gpu_buffers() {
                    velocity_rk_v_ptr_[0:v_total_size], \
                    tau_xx_ptr_[0:field_total_size_], \
                    tau_xy_ptr_[0:field_total_size_], \
-                   tau_yy_ptr_[0:field_total_size_])
+                   tau_xz_ptr_[0:field_total_size_], \
+                   tau_yy_ptr_[0:field_total_size_], \
+                   tau_yz_ptr_[0:field_total_size_], \
+                   tau_zz_ptr_[0:field_total_size_])
 
     // Anisotropic stress divergence buffers (zero-initialized, same size as velocity faces)
     {
@@ -4037,6 +4043,15 @@ void RANSSolver::initialize_gpu_buffers() {
 
     #pragma omp target teams distribute parallel for map(present: tau_yy_ptr_[0:field_total_size_])
     for (size_t i = 0; i < field_total_size_; ++i) tau_yy_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: tau_xz_ptr_[0:field_total_size_])
+    for (size_t i = 0; i < field_total_size_; ++i) tau_xz_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: tau_yz_ptr_[0:field_total_size_])
+    for (size_t i = 0; i < field_total_size_; ++i) tau_yz_ptr_[i] = 0.0;
+
+    #pragma omp target teams distribute parallel for map(present: tau_zz_ptr_[0:field_total_size_])
+    for (size_t i = 0; i < field_total_size_; ++i) tau_zz_ptr_[i] = 0.0;
 
     // Map y-metric arrays for non-uniform y-spacing (projection step D·G = L consistency)
     if (y_metrics_size_ > 0 && dyv_ptr_ && dyc_ptr_) {
@@ -4140,7 +4155,10 @@ void RANSSolver::cleanup_gpu_buffers() {
     // Delete Reynolds stress tensor buffers
     #pragma omp target exit data map(delete: tau_xx_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_xy_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_xz_ptr_[0:field_total_size_])
     #pragma omp target exit data map(delete: tau_yy_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_yz_ptr_[0:field_total_size_])
+    #pragma omp target exit data map(delete: tau_zz_ptr_[0:field_total_size_])
 
     // Delete anisotropic stress divergence buffers
     {

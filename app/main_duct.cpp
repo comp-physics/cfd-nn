@@ -337,12 +337,14 @@ int main(int argc, char** argv) {
     // For RANS transport models: seed k/omega to turbulent values.
     // Without this, SST k stays at zero on uniform grids because
     // P_k = nu_t * |S|^2 = 0 when nu_t = 0 (chicken-and-egg problem).
-    // Use 5% turbulence intensity and nu_t/nu ~ 10 as initial condition.
+    // Key insight: nu_t = k/omega (times blending), so omega must be LOW
+    // enough that nu_t/nu ~ 100 in the freestream. Otherwise the SST
+    // destruction term beta_star*k*omega overwhelms production P_k = nu_t*S^2.
     if (config.turb_model != TurbulenceModelType::None) {
         double U_b_est = std::max(std::abs(u_center_approx), 0.1);
-        double Ti = 0.05;
+        double Ti = 0.10;  // 10% turbulence intensity (higher for sustaining k)
         double k_seed = std::max(1.5 * (U_b_est * Ti) * (U_b_est * Ti), 1e-4);
-        double nu_t_ratio = 10.0;  // initial nu_t / nu
+        double nu_t_ratio = 100.0;  // initial nu_t / nu ~ 100 (RANS freestream)
         double omega_seed = k_seed / (0.09 * config.nu * nu_t_ratio);
         omega_seed = std::max(omega_seed, 1.0);
 
@@ -618,14 +620,23 @@ int main(int argc, char** argv) {
     std::cout << "Max |v| (secondary): " << std::scientific << std::setprecision(6) << max_v << "\n";
     std::cout << "Max |w| (secondary): " << max_w << "\n";
 
-    // Turbulence diagnostics
+    // Turbulence diagnostics — use 2D accessors for 2D meshes since
+    // turbulence fields are stored in 2D layout (k=0 plane only)
     double max_k = 0.0, max_nut = 0.0;
-    for (int kk = mesh.k_begin(); kk < mesh.k_end(); ++kk)
+    if (mesh.is2D()) {
         for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
             for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                max_k = std::max(max_k, solver.k()(i, j, kk));
-                max_nut = std::max(max_nut, solver.nu_t()(i, j, kk));
+                max_k = std::max(max_k, solver.k()(i, j));
+                max_nut = std::max(max_nut, solver.nu_t()(i, j));
             }
+    } else {
+        for (int kk = mesh.k_begin(); kk < mesh.k_end(); ++kk)
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    max_k = std::max(max_k, solver.k()(i, j, kk));
+                    max_nut = std::max(max_nut, solver.nu_t()(i, j, kk));
+                }
+    }
     std::cout << "Max k: " << max_k << "\n";
     std::cout << "Max nu_t: " << max_nut << std::fixed << "\n";
 

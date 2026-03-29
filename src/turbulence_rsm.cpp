@@ -156,24 +156,8 @@ inline void rsm_cell_kernel(
     // b_mn * S_mn (trace of b*S)
     double bS_trace = bxx*Sxx + byy*Syy + bzz*Szz + 2.0*(bxy*Sxy + bxz*Sxz + byz*Syz);
 
-    // ---- b_ik * W_kj + b_jk * W_ki (symmetric combination) ----
+    // ---- b_ik*W_jk + b_jk*W_ik (symmetric combination) ----
     // W is antisymmetric: W_ij = -W_ji, W_ii = 0
-    double bW_xx = 2.0 * (bxy*(-Wxy) + bxz*(-Wxz));   // = -2*(bxy*Wxy + bxz*Wxz)
-    double bW_yy = 2.0 * (bxy*Wxy + byz*(-Wyz));       // = 2*(bxy*Wxy - byz*Wyz)
-    double bW_zz = 2.0 * (bxz*Wxz + byz*Wyz);
-    double bW_xy = bxx*Wxy + bxz*(-Wyz)
-                 + (-Wxy)*byy + (-Wxz)*byz;
-    // Simplify: bW_xy = bxx*Wxy - bxz*Wyz - Wxy*byy - Wxz*byz
-    //                  = (bxx - byy)*Wxy - (bxz + byz... wait, let me be careful
-    // b_ik * W_kj: for (i=x,j=y): bxx*Wxy + bxy*Wyy + bxz*Wzy = bxx*Wxy + 0 + bxz*(-Wyz)
-    // b_jk * W_ki: for (i=x,j=y): byx*Wxx + byy*Wxy... wait, this isn't right.
-    // The term is b_ik*W_jk + b_jk*W_ik (note the index placement)
-    // b_ik*W_jk: sum_k b_ik * W_jk
-    // for (i=x,j=y): bxx*Wyx + bxy*Wyy + bxz*Wyz = bxx*(-Wxy) + 0 + bxz*Wyz = -bxx*Wxy + bxz*Wyz
-    // b_jk*W_ik: sum_k b_jk * W_ik
-    // for (i=x,j=y): byx*Wxx + byy*Wxy + byz*Wxz = 0 + byy*Wxy + byz*Wxz = byy*Wxy + byz*Wxz
-
-    // Let me recompute properly:
     // b_ik*W_jk + b_jk*W_ik
     // Note: W_ij = -W_ji, W_ii = 0
     // W_xy = Wxy, W_xz = Wxz, W_yz = Wyz
@@ -391,6 +375,35 @@ void RSMModel::ensure_initialized(const Mesh& mesh, const ScalarField& k) {
         }
 
         initialized_ = true;
+
+        // Allocate GPU flat buffers and sync initial R_ij data
+#ifdef USE_GPU_OFFLOAD
+        allocate_gpu_buffers(mesh);
+        if (buffers_on_gpu_) {
+            // Copy isotropic initialization to flat buffers and update GPU
+            const int tot = cached_total_cells_;
+            for (int idx = 0; idx < tot; ++idx) {
+                Rxx_flat_[idx] = R_xx_.data()[idx];
+                Ryy_flat_[idx] = R_yy_.data()[idx];
+                Rzz_flat_[idx] = R_zz_.data()[idx];
+                Rxy_flat_[idx] = R_xy_.data()[idx];
+                Rxz_flat_[idx] = R_xz_.data()[idx];
+                Ryz_flat_[idx] = R_yz_.data()[idx];
+            }
+            double* rxx_p = Rxx_flat_.data();
+            double* ryy_p = Ryy_flat_.data();
+            double* rzz_p = Rzz_flat_.data();
+            double* rxy_p = Rxy_flat_.data();
+            double* rxz_p = Rxz_flat_.data();
+            double* ryz_p = Ryz_flat_.data();
+            #pragma omp target update to(rxx_p[0:tot])
+            #pragma omp target update to(ryy_p[0:tot])
+            #pragma omp target update to(rzz_p[0:tot])
+            #pragma omp target update to(rxy_p[0:tot])
+            #pragma omp target update to(rxz_p[0:tot])
+            #pragma omp target update to(ryz_p[0:tot])
+        }
+#endif
     }
 }
 
@@ -548,13 +561,17 @@ void RSMModel::advance_turbulence(
         // Get device pointers
         const double* dudx_d = device_view->dudx;
         const double* dudy_d = device_view->dudy;
-        const double* dudz_d = device_view->dudz;
         const double* dvdx_d = device_view->dvdx;
         const double* dvdy_d = device_view->dvdy;
-        const double* dvdz_d = device_view->dvdz;
-        const double* dwdx_d = device_view->dwdx;
-        const double* dwdy_d = device_view->dwdy;
-        const double* dwdz_d = device_view->dwdz;
+
+        // 3D gradient pointers are only allocated/mapped for 3D meshes.
+        // For 2D, alias them to dudx_d (always mapped) — the kernel zeros
+        // these components when !is3D, so the values are never read.
+        const double* dudz_d = is3D ? device_view->dudz : dudx_d;
+        const double* dvdz_d = is3D ? device_view->dvdz : dudx_d;
+        const double* dwdx_d = is3D ? device_view->dwdx : dudx_d;
+        const double* dwdy_d = is3D ? device_view->dwdy : dudx_d;
+        const double* dwdz_d = is3D ? device_view->dwdz : dudx_d;
         double* k_d = device_view->k;
         double* omega_d = device_view->omega;
         const double* nu_t_d = device_view->nu_t;
