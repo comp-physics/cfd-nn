@@ -1,37 +1,69 @@
 \section{Turbulence Closure Models}
 \label{sec:closures}
 
-We evaluate nine turbulence closure models spanning the full hierarchy from zero-equation algebraic to random forest.
-All models are implemented in the same solver and share the same spatial discretization, time integration, and Poisson solver.
+We evaluate 20 turbulence closure models spanning the full hierarchy from zero-equation algebraic to random forest, organized into 8 classical RANS models and 12 data-driven models (the latter comprising 2--3 size variants per architecture).
+All models are implemented in the same solver and share the same spatial discretization, time integration, and Poisson solver, ensuring that performance and accuracy differences reflect the closure alone rather than numerical artifacts.
 Table~\ref{tab:model_summary} summarizes their key properties.
 
 \begin{table}[htbp]
 \centering
-\caption{Summary of turbulence closure models evaluated. FLOPs/cell counts are for the turbulence update only (excluding shared solver operations). Weight sizes refer to the model parameters stored on device.}
+\caption{Summary of the 20 turbulence closure models evaluated. All classical models have zero learned parameters; all NN/RF models are trained on the McConkey et al.\ (2021) dataset with case-holdout cross-validation. FLOPs/cell counts are for the turbulence update only (excluding shared solver operations). PI-TBNN variants have identical architecture and inference cost to their TBNN counterparts; the physics-informed realizability penalty applies at training time only. Validation RMSE is on the held-out case (anisotropy tensor prediction).}
 \label{tab:model_summary}
-\begin{tabular}{lllrrl}
+\small
+\begin{tabular}{llllrll}
 \toprule
-Model & Type & Architecture & Parameters & FLOPs/cell & Weights \\
+\# & Model & Type & Architecture & Params & Output & Val.\ RMSE \\
 \midrule
-Baseline       & Algebraic    & Mixing length              & 0       & $\sim$2    & --- \\
-$k$-$\omega$   & Transport    & 2-equation                 & 0       & $\sim$50   & --- \\
-SST            & Transport    & 2-equation + blending      & 0       & $\sim$80   & --- \\
-EARSM          & Algebraic RS & SST + tensor algebra       & 0       & $\sim$120  & --- \\
-GEP            & Algebraic RS & Symbolic regression        & 0       & $\sim$100  & --- \\
-MLP            & NN (scalar)  & $5 \to 32 \to 32 \to 1$    & 1{,}249  & $\sim$1{,}249 & \SI{56}{KB} \\
-MLP-Large      & NN (scalar)  & $5 \to 128^4 \to 1$        & 50{,}049 & $\sim$50{,}049 & \SI{896}{KB} \\
-TBNN           & NN (tensor)  & $5 \to 64^3 \to 10$        & 9{,}354  & $\sim$10{,}300 & \SI{196}{KB} \\
-PI-TBNN        & NN (tensor)  & Same as TBNN               & 9{,}354  & $\sim$10{,}300 & \SI{196}{KB} \\
-TBRF           & RF (tensor)  & 10 coeff.\ $\times$ 10 trees & $\sim$2.8M nodes & $\sim$2{,}000 branches & \SI{56}{MB} \\
+\multicolumn{7}{l}{\textit{Classical RANS}} \\
+1  & Baseline (laminar) & --- & No model & 0 & $\nut = 0$ & --- \\
+2  & Mixing length      & Algebraic & $\nut = \ell^2 |S|$ & 0 & Scalar $\nut$ & --- \\
+3  & $k$-$\omega$       & Transport & 2-equation & 0 & Scalar $\nut$ & --- \\
+4  & SST $k$-$\omega$   & Transport & 2-eq + blending & 0 & Scalar $\nut$ & --- \\
+5  & EARSM-WJ           & Transport+NLEV & SST + WJ algebraic & 0 & Tensor $b_{ij}$ & --- \\
+6  & EARSM-GS           & Transport+NLEV & SST + GS algebraic & 0 & Tensor $b_{ij}$ & --- \\
+7  & EARSM-Pope          & Transport+NLEV & SST + quadratic & 0 & Tensor $b_{ij}$ & --- \\
+8  & GEP                & Algebraic RS & Symbolic regression & 0 & Tensor $b_{ij}$ & --- \\
+\midrule
+\multicolumn{7}{l}{\textit{Data-driven: MLP (scalar eddy viscosity)}} \\
+9  & MLP                & NN (scalar) & $5 \to 32^2 \to 1$ & 1.2K & Scalar $|b|$ & 0.110 \\
+10 & MLP-med            & NN (scalar) & $5 \to 64^2 \to 1$ & 4.4K & Scalar $|b|$ & 0.108 \\
+11 & MLP-large          & NN (scalar) & $5 \to 128^4 \to 1$ & 50K & Scalar $|b|$ & 0.105 \\
+\midrule
+\multicolumn{7}{l}{\textit{Data-driven: TBNN (tensor basis neural network)}} \\
+12 & TBNN-small         & NN (tensor) & $5 \to 32^2 \to 10$ & 1.4K & 10 coefficients & 0.085 \\
+13 & TBNN               & NN (tensor) & $5 \to 64^3 \to 10$ & 9.4K & 10 coefficients & 0.085 \\
+14 & TBNN-large         & NN (tensor) & $5 \to 128^3 \to 10$ & 35K & 10 coefficients & 0.086 \\
+\midrule
+\multicolumn{7}{l}{\textit{Data-driven: PI-TBNN (physics-informed TBNN)}} \\
+15 & PI-TBNN-small      & NN (tensor) & $5 \to 32^2 \to 10$ & 1.4K & 10 coefficients & 0.090 \\
+16 & PI-TBNN            & NN (tensor) & $5 \to 64^3 \to 10$ & 9.4K & 10 coefficients & 0.120 \\
+17 & PI-TBNN-large      & NN (tensor) & $5 \to 128^3 \to 10$ & 35K & 10 coefficients & 0.089 \\
+\midrule
+\multicolumn{7}{l}{\textit{Data-driven: TBRF (tensor basis random forest)}} \\
+18 & TBRF-1t            & RF (tensor) & 1 tree/coeff.  & 283K nodes & 10 coefficients & 0.078 \\
+19 & TBRF-5t            & RF (tensor) & 5 trees/coeff. & 1.4M nodes & 10 coefficients & 0.068 \\
+20 & TBRF-10t           & RF (tensor) & 10 trees/coeff. & 2.8M nodes & 10 coefficients & $\sim$0.064 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+Of these 20 models, 15 form the production set used in the full 4-case a posteriori sweep (Section~\ref{sec:aposteriori}): models 1--10 and 12--13 (MLP, MLP-med, TBNN-small, TBNN) plus models 15--16 (PI-TBNN-small, PI-TBNN), model 18 (TBRF-1t), and model 8 (GEP).
+The remaining 5 ``large'' variants---MLP-large, TBNN-large, PI-TBNN-large, TBRF-5t, and TBRF-10t---are included in the a priori evaluation (Section~\ref{sec:apriori}) and selected cost comparisons, but are omitted from the full a posteriori sweep due to their high computational cost.
+The TBNN-large, for example, requires 144~ms per step on the 3.15M-cell sphere grid, making a full production run prohibitively expensive.
+Including these large variants allows us to isolate the effect of model capacity on a priori accuracy and to construct Pareto frontiers of cost versus accuracy (Section~\ref{sec:pareto}).
+
 \subsection{Classical models}
 
-\subsubsection{Baseline mixing length}
+\subsubsection{Baseline (laminar)}
 
-The algebraic baseline computes the eddy viscosity from a mixing length $\ell_{\mathrm{mix}}$ and the local velocity gradient:
+The baseline case uses no turbulence model at all: $\nut = 0$ everywhere.
+The effective viscosity is simply the molecular viscosity $\nu$.
+This serves as the cost and accuracy reference against which all other models are compared.
+It also provides a lower bound on solver cost: every solver component (convection, diffusion, Poisson, IBM) runs at the same cost as with any other model, but the turbulence evaluation time is zero.
+
+\subsubsection{Mixing length}
+
+The algebraic mixing length model computes the eddy viscosity from a mixing length $\ell_{\mathrm{mix}}$ and the local velocity gradient magnitude:
 \begin{equation}
     \nut = \ell_{\mathrm{mix}}^2 \left| \frac{\partial u}{\partial y} \right|.
 \end{equation}
@@ -48,55 +80,83 @@ The $k$-$\omega$ model \citep{Wilcox1988} solves transport equations for the tur
 Each equation involves convective and diffusive flux computation (stencil operations) plus source and sink terms, totaling approximately 50~FLOPs per cell.
 Destruction terms ($\beta^* k \omega$, $\beta \omega^2$) are treated point-implicitly to avoid stiffness-induced blow-up at wall cells, where $\omega_{\mathrm{wall}} \sim O(10^5)$.
 
+The $k$-$\omega$ model is notable for its extremely low per-step cost (0.01~ms across all grids in Table~\ref{tab:turb_cost_all}), which is lower than SST because it lacks the blending function and cross-diffusion term computations.
+However, in production with adaptive time stepping, its transport equations can produce large $\omega$ values near walls that drive the diffusive CFL limit to extremely small values, making it impractical at low Reynolds numbers.
+
 \subsubsection{SST $k$-$\omega$}
+\label{sec:sst}
 
 The SST model \citep{Menter1994} augments $k$-$\omega$ with blending functions $F_1$ and $F_2$ that transition between near-wall ($k$-$\omega$) and free-stream ($k$-$\varepsilon$) formulations, plus a cross-diffusion term $\mathrm{CD}_{k\omega}$.
-Each blending function requires wall distance, $\nabla k \cdot \nabla \omega$, and several auxiliary quantities, raising the cost to approximately 80~FLOPs per cell (2.5$\times$ the base $k$-$\omega$ model).
+Each blending function requires wall distance, $\nabla k \cdot \nabla \omega$, and several auxiliary quantities, raising the cost to approximately 80~FLOPs per cell ($\sim$$2.5\times$ the base $k$-$\omega$ model).
 
-\subsubsection{EARSM}
+SST plays a special role in our evaluation methodology: it is used as the warm-up model for all a posteriori runs (Section~\ref{sec:warmup}).
+Its transport equations provide the only mechanism for bootstrapping turbulence from uniform initial conditions in the absence of resolved turbulent fluctuations, since algebraic and data-driven models require nonzero velocity gradients and turbulence quantities ($k$, $\omega$) as input.
+After warm-up, the SST transport equations continue to run in the background for all models, providing the turbulence time scale needed to non-dimensionalize the strain and rotation rate tensors.
 
-The explicit algebraic Reynolds stress model extends SST by computing the anisotropy tensor $a_{ij}$ from an algebraic relation involving the normalized strain rate $\Shat_{ij}$ and rotation rate $\Omhat_{ij}$ tensors:
-\begin{equation}
-    a_{ij} = f(\Shat, \Omhat),
-\end{equation}
-where the functional form follows Pope, Wallin--Johansson, or Gatski--Speziale closures.
-The tensor algebra (3$\times$3 matrix multiplications, traces, invariant computation) adds approximately 40~FLOPs per cell on top of the SST transport, totaling $\sim$120~FLOPs per cell.
-Despite the higher per-cell cost, EARSM retains the stencil-based memory access pattern of transport models and remains memory-bandwidth-bound on GPU.
+\subsubsection{EARSM variants (WJ, GS, Pope)}
+\label{sec:earsm}
+
+The explicit algebraic Reynolds stress models extend SST by computing the Reynolds stress anisotropy tensor $b_{ij}$ from an algebraic relation involving the normalized strain rate $\Shat_{ij}$ and rotation rate $\Omhat_{ij}$ tensors.
+We implement three variants:
+
+\begin{itemize}
+    \item \textbf{Wallin--Johansson (WJ)} \citep{Wallin2000}: Derived from the SSG pressure-strain model with a weak equilibrium assumption. Solves a cubic equation for the effective viscosity parameter $N$.
+    \item \textbf{Gatski--Speziale (GS)} \citep{Gatski1993}: A regularized version that avoids singularities in the cubic solution, using a bounded $C_\mu$ formulation.
+    \item \textbf{Pope quadratic} \citep{Pope1975}: A simpler quadratic extension of the Boussinesq hypothesis: $b_{ij} = -C_\mu \frac{k}{\varepsilon} S_{ij} + C_1 \frac{k^2}{\varepsilon^2} [S_{ik}S_{kj} - \frac{1}{3}S^2 \delta_{ij}] + C_2 \frac{k^2}{\varepsilon^2} [\Omega_{ik}S_{kj} + S_{ik}\Omega_{kj}]$.
+\end{itemize}
+
+All three variants use the SST $k$-$\omega$ transport equations for $k$ and $\omega$ evolution, with the EARSM closure replacing the linear Boussinesq hypothesis in the momentum equations.
+The tensor algebra ($3 \times 3$ matrix multiplications, traces, invariant computation) adds approximately 40~FLOPs per cell on top of the SST transport.
+Despite the higher per-cell cost, all EARSM variants remain memory-bandwidth-bound on GPU, and their measured cost (0.025--0.038~ms per step) is within 10\% of SST itself.
+
+An important implementation detail: the EARSM closure's eddy viscosity is used only for the momentum equations, while the SST transport uses its own internally computed $\nut = k / \max(\omega, S F_2 / a_1)$ for the production term $P_k = 2 \nut |S|^2$.
+Without this decoupling, the EARSM closure's potentially small $\nut$ (from weak velocity gradients during startup) would suppress production, preventing the transport equations from bootstrapping.
 
 \subsubsection{GEP}
 
-The gene expression programming model \citep{Weatheritt2016} uses a symbolic expression discovered via genetic programming to compute the Reynolds stress anisotropy.
-The expression is algebraic (no transport equations beyond SST), with a cost of $\sim$100~FLOPs per cell.
+The gene expression programming model \citep{Weatheritt2016} uses a symbolic expression discovered via genetic programming to compute the Reynolds stress anisotropy as a function of the strain and rotation rate tensors.
+The expression is algebraic (no transport equations of its own), but in our implementation it is combined with the SST $k$-$\omega$ transport to provide $k$, $\omega$, and wall distance---identical to the EARSM coupling described above.
+Unlike the EARSM variants, which derive their tensor basis coefficients from analytical pressure-strain models, the GEP coefficients are discovered by an evolutionary algorithm that optimizes for agreement with DNS data.
+This places GEP at the boundary between classical modeling and data-driven approaches: it uses the same tensor basis representation as the EARSM and TBNN models, but with a fixed, interpretable symbolic expression rather than a learned parametric function.
+Its cost ($\sim$0.03--0.08~ms per step) is comparable to the EARSM variants, as expected for an algebraic closure with the same tensor algebra and no additional transport equations.
 
-\subsection{Neural network architectures}
+\subsection{Data-driven models}
+\label{sec:nn_models}
 
-All neural network models take the same 5 scalar invariants of the non-dimensionalized strain rate and rotation rate tensors as input (Section~\ref{sec:training}).
-The architectures differ in capacity, output dimensionality, and how the output maps to a turbulence closure.
+All data-driven models (MLP, TBNN, PI-TBNN, and TBRF) take the same 5 scalar invariants of the non-dimensionalized strain rate and rotation rate tensors as input, following \citet{Ling2016}:
+\begin{equation}
+    \hat{\lambda}_1 = \mathrm{tr}(\Shat^2), \quad
+    \hat{\lambda}_2 = \mathrm{tr}(\Omhat^2), \quad
+    \hat{\lambda}_3 = \mathrm{tr}(\Shat^3), \quad
+    \hat{\lambda}_4 = \mathrm{tr}(\Omhat^2 \Shat), \quad
+    \hat{\lambda}_5 = \mathrm{tr}(\Omhat^2 \Shat^2),
+\end{equation}
+where $\Shat = (k/\varepsilon) S$ and $\Omhat = (k/\varepsilon) \Omega$ are non-dimensionalized by the turbulence time scale $k/\varepsilon = 1/(\beta^* \omega)$.
+Like the EARSM models, all data-driven models require $k$ and $\omega$ from the SST transport equations to compute these non-dimensional inputs; the SST warm-up methodology (Section~\ref{sec:warmup}) ensures these fields are well-established before the target model takes over.
+All data-driven models are trained on the McConkey et al.\ (2021) dataset with case-holdout cross-validation (Section~\ref{sec:training}).
 
-\subsubsection{MLP (scalar closure)}
+\subsubsection{MLP variants (scalar eddy viscosity)}
 
 The multilayer perceptron predicts a scalar proxy for the eddy viscosity magnitude:
 \begin{equation}
     |b| = f_{\mathrm{MLP}}(\hat{\lambda}_1, \ldots, \hat{\lambda}_5),
 \end{equation}
-with architecture $5 \to 32 \to 32 \to 1$ (1{,}249 parameters).
+which is converted to $\nut$ via $\nut = |b| \cdot k / |S|$ (clipped for stability).
+The MLP uses the same Pope invariant inputs as the TBNN, following the methodology of \citet{Ling2016}---the only difference is that the output is a single scalar rather than 10 tensor basis coefficients.
 Hidden layers use $\tanh$ activations; the output layer is linear.
-The inference cost per cell is:
+We evaluate three size variants spanning a $40\times$ range in parameter count:
+
 \begin{itemize}
-    \item Layer 0 ($5 \to 32$): 160 multiplies + 32 adds + 32 $\tanh$
-    \item Layer 1 ($32 \to 32$): 1{,}024 multiplies + 32 adds + 32 $\tanh$
-    \item Layer 2 ($32 \to 1$): 32 multiplies + 1 add
-    \item \textbf{Total}: 1{,}249 FLOPs + 64 $\tanh$ evaluations
+    \item \textbf{MLP} ($5 \to 32 \to 32 \to 1$, 1.2K parameters, \SI{56}{KB}): The small variant. Two hidden layers with 32 neurons each. Weight matrices fit in GPU L1 cache, enabling broadcast to all threads with minimal memory traffic. Inference cost: 1{,}249~FLOPs + 64~$\tanh$ per cell. Validation RMSE: 0.110.
+    \item \textbf{MLP-med} ($5 \to 64 \to 64 \to 1$, 4.4K parameters, \SI{76}{KB}): The medium variant. Two hidden layers with 64 neurons each. Inference cost: $\sim$4{,}400~FLOPs + 128~$\tanh$ per cell. Still fits in L1 cache. Validation RMSE: 0.108.
+    \item \textbf{MLP-large} ($5 \to 128 \to 128 \to 128 \to 128 \to 1$, 50K parameters, \SI{210}{KB}): The large variant. Four hidden layers with 128 neurons each. The $128 \times 128$ weight matrices (16K elements each) dominate the compute at 16{,}384~FLOPs per matrix multiply, with 512~$\tanh$ evaluations per cell. Despite the $40\times$ parameter increase over the small MLP, the validation RMSE improves only marginally to 0.105, indicating that the scalar eddy viscosity output is the binding constraint on accuracy, not model capacity.
 \end{itemize}
-The weight matrix (\SI{56}{KB}) fits in GPU L1 cache, enabling broadcast to all threads with minimal memory traffic.
 
-\subsubsection{MLP-Large (scalar closure)}
+The MLP's scalar output means it cannot predict Reynolds stress anisotropy---it is limited to isotropic eddy viscosity closures.
+Despite this limitation, the MLP serves as a useful cost reference: it has the same input features as the TBNN but produces a simpler output, isolating the cost of the tensor basis machinery.
+The marginal improvement from MLP to MLP-large (RMSE: 0.110 $\to$ 0.105, a 4.5\% reduction) compared to the improvement from MLP to TBNN-small (RMSE: 0.110 $\to$ 0.085, a 23\% reduction) quantifies the value of the tensor basis representation over simply adding parameters to a scalar model.
 
-A larger MLP with architecture $5 \to 128 \to 128 \to 128 \to 128 \to 1$ (50{,}049 parameters) serves as a capacity scaling test.
-The dominant cost is four $128 \times 128$ matrix-vector products (16{,}384 multiplies each), totaling $\sim$50{,}000~FLOPs per cell with 512~$\tanh$ evaluations.
-The weight matrix (\SI{896}{KB}) exceeds L1 but fits in L2 cache.
-
-\subsubsection{TBNN (tensor basis closure)}
+\subsubsection{TBNN and PI-TBNN variants (tensor basis closure)}
 \label{sec:tbnn}
 
 The tensor basis neural network \citep{Ling2016} predicts 10 scalar coefficients $g^{(n)}$ that are contracted with the Pope integrity basis \citep{Pope1975} to reconstruct the anisotropy tensor:
@@ -105,56 +165,127 @@ The tensor basis neural network \citep{Ling2016} predicts 10 scalar coefficients
     \label{eq:tbnn}
 \end{equation}
 where $T^{(n)}$ are the 10 symmetric, traceless tensor basis functions of $\Shat$ and $\Omhat$.
-The architecture is $5 \to 64 \to 64 \to 64 \to 10$ (9{,}354 parameters) with $\tanh$ hidden activations.
-
-The per-cell computational cost breaks down as follows:
-\begin{itemize}
-    \item \textbf{Feature computation}: velocity gradients (stencil), $S_{ij}$ and $\Omega_{ij}$ (symmetrize/antisymmetrize), non-dimensionalize by $k/\varepsilon$, compute 5 invariants (matrix products + traces)---shared with EARSM, $\sim$80 FLOPs.
-    \item \textbf{Tensor basis computation}: 10 basis tensors $T^{(n)}$ from products of $\Shat$ and $\Omhat$, each requiring one or more $3 \times 3$ matrix multiplies---$\sim$900~FLOPs.
-    \item \textbf{NN forward pass}: 4 layers totaling 9{,}354 FLOPs + 192 $\tanh$ evaluations. The cost is dominated by the two $64 \times 64$ hidden layers (4{,}096 FLOPs each, comprising 87\% of the network's compute).
-    \item \textbf{Tensor contraction}: $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$---60 multiplies + 60 adds.
-    \item \textbf{Total}: $\sim$10{,}300 FLOPs/cell, approximately 7.5$\times$ the MLP.
-\end{itemize}
-
-The TBNN weight matrix (\SI{196}{KB}) fits in GPU L2 cache.
 The architecture guarantees Galilean invariance, symmetry, and zero trace of the predicted $b_{ij}$ by construction.
 
-\subsubsection{PI-TBNN (physics-informed TBNN)}
+We evaluate six variants organized into three matched pairs (TBNN / PI-TBNN) at three size points:
 
-The PI-TBNN shares the same architecture as the TBNN but is trained with an augmented loss function that penalizes violations of the realizability constraints $b_{ii} \geq -1/3$ and $b_{ii} \leq 2/3$ (see Section~\ref{sec:training}).
-At inference time, the PI-TBNN is computationally identical to the TBNN.
-
-\subsubsection{TBRF (tensor basis random forest)}
-
-The tensor basis random forest \citep{Kaandorp2020} replaces the neural network with an ensemble of decision trees.
-For each of the 10 basis coefficients $g^{(n)}$, a separate random forest of 10--200 trees (depth 20) is trained on least-squares-extracted coefficients.
-
-The inference cost per cell differs fundamentally from neural networks:
 \begin{itemize}
-    \item For each cell, for each of 10 coefficients, traverse 10 trees to depth $\sim$20: this requires $10 \times 10 \times 20 = 2{,}000$ comparison-and-branch operations.
-    \item Each branch decision accesses a different memory location in the tree structure (feature index, threshold, child pointers), producing scattered, non-coalesced memory accesses.
-    \item The 10-tree TBRF requires \SI{56}{MB} of tree data, which does not fit in any GPU cache level (L1: \SI{128}{KB}, L2: \SI{48}{MB} on A100).
-    \item Warp divergence is severe: cells in the same warp follow different paths through each tree, serializing execution.
+    \item \textbf{TBNN-small} ($5 \to 32 \to 32 \to 10$, 1.4K params): Two hidden layers with 32 neurons. Cost: $\sim$2{,}400~FLOPs + 10 basis tensors ($\sim$900~FLOPs) per cell. Validation RMSE: 0.085.
+    \item \textbf{TBNN} ($5 \to 64 \to 64 \to 64 \to 10$, 9.4K params): Three hidden layers with 64 neurons. Cost: $\sim$10{,}300~FLOPs + basis tensors per cell. The two $64 \times 64$ hidden layers dominate at 4{,}096~FLOPs each. Validation RMSE: 0.085.
+    \item \textbf{TBNN-large} ($5 \to 128 \to 128 \to 128 \to 10$, 35K params): Three hidden layers with 128 neurons. The $128 \times 128$ weight matrices yield $\sim$33{,}000~FLOPs per cell. Validation RMSE: 0.086---no improvement over the 9.4K-parameter TBNN, suggesting that the 10-basis representation saturates at approximately this accuracy level for the McConkey dataset.
+    \item \textbf{PI-TBNN-small} ($5 \to 32 \to 32 \to 10$, 1.4K params): Same architecture as TBNN-small, trained with an augmented loss function that penalizes realizability violations ($b_{ii} \geq -1/3$, $b_{ii} \leq 2/3$) with penalty weight $\beta = 0.001$. At inference time, computationally identical to TBNN-small. Validation RMSE: 0.090---slightly higher than the unconstrained TBNN-small (0.085), indicating that the realizability penalty trades a priori accuracy for physical consistency.
+    \item \textbf{PI-TBNN} ($5 \to 64 \to 64 \to 64 \to 10$, 9.4K params): Same architecture as TBNN, with realizability penalty. Inference cost identical to TBNN. Validation RMSE: 0.120---notably worse than the unconstrained TBNN (0.085), suggesting that the penalty interacts poorly with this architecture's optimization landscape.
+    \item \textbf{PI-TBNN-large} ($5 \to 128 \to 128 \to 128 \to 10$, 35K params): Same architecture as TBNN-large, with realizability penalty ($\beta = 0.001$). Inference cost identical to TBNN-large. Validation RMSE: 0.089---much better than PI-TBNN (0.120), indicating that the larger capacity partially compensates for the realizability constraint.
 \end{itemize}
 
-Contrast this with neural network inference, where every cell performs the \emph{same} matrix-vector multiply with the \emph{same} weights---a perfectly regular, data-parallel operation with high arithmetic intensity and coalesced memory access.
+The TBNN-small costs $\sim$2--3~ms on 2D grids and $\sim$46~ms on the 3.15M-cell sphere, while the full TBNN costs $\sim$4--6~ms (2D) and $\sim$144~ms (3D).
+The $3.1\times$ cost increase from TBNN-small to TBNN is sub-linear relative to the $6.7\times$ parameter increase, reflecting improved GPU occupancy at larger hidden dimensions.
+The TBNN-large adds another $3.7\times$ in parameters over the TBNN but yields no a priori accuracy improvement, confirming that the bottleneck for this class of models is the training data and basis representation, not the network capacity.
+
+\subsubsection{TBRF (tensor basis random forest)}
+\label{sec:tbrf}
+
+The tensor basis random forest \citep{Kaandorp2020} replaces the neural network with an ensemble of decision trees.
+For each of the 10 basis coefficients $g^{(n)}$, a separate random forest is trained on least-squares-extracted coefficients from the McConkey dataset.
+We evaluate three size variants that trade ensemble size for accuracy:
+
+\begin{itemize}
+    \item \textbf{TBRF-1t} (1 tree per coefficient, 283K total nodes, \SI{5.7}{MB}): The minimal ensemble. Each of the 10 basis coefficients is predicted by a single decision tree of depth $\leq 20$. Validation RMSE: 0.078---already better than any MLP variant, demonstrating the effectiveness of the tensor basis representation even with a simple nonlinear approximator.
+    \item \textbf{TBRF-5t} (5 trees per coefficient, 1.43M total nodes, \SI{28.7}{MB}): Ensemble averaging over 5 trees per coefficient. The predicted coefficient is the arithmetic mean of the 5 tree outputs. Validation RMSE: 0.068---a 13\% improvement over TBRF-1t, approaching the best neural network models.
+    \item \textbf{TBRF-10t} (10 trees per coefficient, 2.80M total nodes, \SI{55.9}{MB}): The full ensemble. Validation RMSE: $\sim$0.064---the best a priori accuracy of any model in our evaluation, at the cost of $10\times$ the memory and traversal work of TBRF-1t.
+\end{itemize}
+
+All three TBRF variants use a fully GPU-resident inference pipeline, implemented as a single fused OpenMP target kernel with no CPU synchronization:
+\begin{enumerate}
+    \item \textbf{Velocity gradients} (GPU): Compute $\partial u_i / \partial x_j$ from the staggered velocity field using central differences.
+    \item \textbf{Feature computation} (GPU): Non-dimensionalize $S_{ij}$ and $\Omega_{ij}$ by $k/\varepsilon$, compute 5 Pope invariants and 10 tensor basis tensors $T^{(n)}_{ij}$.  Optional input normalization (per-feature mean and standard deviation) is applied when scaling files are present.
+    \item \textbf{Tree traversal} (GPU): For each cell and each basis coefficient, traverse each tree from root to leaf ($\sim$20 comparisons per tree). All tree node data---feature indices (\texttt{int32}), thresholds (\texttt{float32}), child pointers (\texttt{int32}), and leaf values (\texttt{float32})---is persistently mapped to GPU memory at initialization via \texttt{omp target enter data}. A flat offset array maps (basis index, tree index) pairs to root node positions in the packed node array, enabling coalescent access across the ensemble.
+    \item \textbf{Ensemble averaging} (GPU): For multi-tree variants (TBRF-5t, TBRF-10t), the coefficient for each basis function is the arithmetic mean over trees: $g^{(n)} = \frac{1}{N_t}\sum_{t=1}^{N_t} g^{(n)}_t$.
+    \item \textbf{Tensor contraction} (GPU): Reconstruct $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$ and compute the equivalent $\nut$.
+\end{enumerate}
+
+The GPU tree traversal represents a significant improvement over the naive CPU implementation used in offline evaluation.
+On the H200 GPU, the fused kernel achieves a $21\times$ speedup over single-threaded CPU traversal, despite the fundamental challenge of warp divergence: cells within the same warp follow different paths through the tree, serializing execution within each warp.
+The memory-bandwidth-bound nature of tree traversal (each node access reads a threshold + feature index from global memory) means the GPU's high memory bandwidth (3.35~TB/s on H200) compensates for the low arithmetic intensity ($\sim$2~FLOPs per node visit).
+The TBRF-1t's measured cost (0.07--1.6~ms per step across grids) makes it the cheapest data-driven model by an order of magnitude, and comparable to classical EARSM models on 2D grids.
+The TBRF-5t and TBRF-10t scale linearly with tree count, reaching 0.35--8~ms and 0.7--16~ms per step respectively, but remain cheaper than even the TBNN-small on 3D grids due to the lower per-cell arithmetic cost of tree traversal versus matrix multiplication.
 
 \subsection{Computational anatomy: why NNs are expensive on GPU}
 \label{sec:comp_anatomy}
 
-The fundamental mismatch between neural network inference and GPU architecture manifests in three ways:
+The measured cost data (Section~\ref{sec:cost}) reveals that the turbulence model evaluation dominates the solver step time for all dense NN models on 3D grids (62--96\% of total step time).
+Three architectural factors explain this:
 
 \paragraph{Layer-sequential execution.}
-Each MLP layer depends on the previous layer's output.
-For a TBNN with 4 layers, this means 4 serial phases within each kernel.
+Each MLP/TBNN layer depends on the previous layer's output.
+For a TBNN with 3 hidden layers, this means 4 serial phases within each kernel.
 Parallelism is only over (cell, neuron) pairs; the depth dimension is sequential.
 This limits the arithmetic intensity compared to stencil operations that process all cells independently.
 
 \paragraph{Activation functions.}
 The $\tanh$ function costs approximately 20 GPU cycles per evaluation versus $\sim$4 cycles for a multiply.
-With 192 $\tanh$ evaluations per cell for the TBNN, activation functions account for a significant fraction of the total compute.
+With 192 $\tanh$ evaluations per cell for the full TBNN, activation functions account for a significant fraction of the total compute.
 
-\paragraph{Memory access patterns.}
-Classical stencil-based closures (transport models) access compact neighborhoods of large arrays with perfect spatial locality and coalesced GPU memory access.
-Neural network weights must be broadcast to all threads---this is efficient for small models (MLP, \SI{56}{KB}, fits in L1) but increasingly costly as model size grows.
-The TBRF's tree data (\SI{56}{MB}) causes cache thrashing and random memory accesses, making it fundamentally poorly suited for GPU execution.
+\paragraph{Per-cell cost scaling.}
+Classical stencil-based closures access compact neighborhoods of large arrays---the cost per cell is dominated by memory bandwidth, which scales sub-linearly with cell count on GPU.
+Neural network inference performs a fixed amount of compute per cell regardless of the grid structure, scaling linearly.
+This means the NN overhead grows \emph{faster} than the base solver cost as the grid is refined, as clearly seen in Table~\ref{tab:overhead}: the TBNN's overhead increases from 69\% (74K cells) to 96\% (3.15M cells).
+
+\paragraph{TBRF as exception.}
+The TBRF's tree traversal is memory-bandwidth-bound (comparison + branch per node), not compute-bound (matrix multiply per layer).
+This gives it a fundamentally different scaling profile: sub-linear with cell count, and only 3--21\% overhead versus baseline.
+The tradeoff is lower per-cell accuracy (tree-based approximation vs.\ continuous neural network), which we evaluate a posteriori in Section~\ref{sec:aposteriori}.
+
+\subsection{Training methodology}
+\label{sec:training}
+
+All data-driven models are trained on the McConkey et al.\ (2021) dataset, which provides high-fidelity DNS data for turbulent flows over periodic hills, square ducts, and other canonical geometries.
+The training follows the TBKAN-2025 case-holdout cross-validation protocol: each model is trained on all cases except one held-out case, and the validation RMSE reported in Table~\ref{tab:model_summary} is evaluated on the held-out case.
+This protocol tests generalization to unseen flow configurations, not merely interpolation within seen geometries.
+
+The RANS baseline for all training data is SST $k$-$\omega$, which provides the $k$, $\omega$, and velocity gradient fields used to compute the input invariants $\hat{\lambda}_1, \ldots, \hat{\lambda}_5$.
+The target labels are the Reynolds stress anisotropy tensor $b_{ij}$ from DNS, projected onto the Pope integrity basis to obtain 10 scalar coefficients $g^{(n)}$ for the tensor-basis models (TBNN, PI-TBNN, TBRF).
+For the MLP models, the target is the Frobenius norm $|b| = \sqrt{b_{ij} b_{ij}}$, which serves as a scalar proxy for the anisotropy magnitude.
+
+Training times vary significantly across architectures.
+The MLP-med trains in $\sim$39 minutes, while PI-TBNN-small and PI-TBNN-large require $\sim$46 and $\sim$54 minutes respectively, due to the additional realizability penalty computation at each training step.
+The TBRF models train in under 5 minutes using scikit-learn's random forest implementation, as tree fitting is embarrassingly parallel across basis coefficients and ensemble members.
+All neural network models are trained with PyTorch using the Adam optimizer with a learning rate of $10^{-3}$ and batch size of 1024.
+
+\subsection{SST warm-up methodology}
+\label{sec:warmup}
+
+A fundamental challenge in a posteriori evaluation of non-transport turbulence models (algebraic, NN, and RF) is initialization: these models require nonzero velocity gradients and turbulence quantities ($k$, $\omega$) as input, but a uniform initial condition has zero gradients everywhere.
+Transport-equation models (SST, $k$-$\omega$) can bootstrap from small initial $k$ and $\omega$ values because their source terms generate turbulence from the mean flow, but algebraic and data-driven models have no such mechanism.
+
+We resolve this with a three-phase simulation protocol:
+\begin{enumerate}
+    \item \textbf{SST warm-up phase}: The simulation runs with the SST $k$-$\omega$ model for a configurable warm-up time (\texttt{warmup\_time} in the configuration file, typically 5--20 convective time units depending on the flow case). This phase establishes a physically reasonable mean flow, builds up the turbulent kinetic energy $k$ and specific dissipation rate $\omega$ fields, and populates the velocity gradient tensor. The warm-up time is chosen to be long enough for the SST solution to reach a quasi-steady state but short enough to avoid excessive computational cost.
+
+    \item \textbf{Stabilization phase}: At the end of warm-up, the turbulence model is switched from SST to the target model. The SST-computed $k$ and $\omega$ fields are retained and continue to be advected by the SST transport equations (providing the turbulence time scale $k/\varepsilon = k/(\beta^* k \omega) = 1/(\beta^* \omega)$ needed by all models), while the Reynolds stress closure switches to the target model's prediction. This phase runs for an additional 5--10 convective time units to allow transients from the model switch to decay.
+
+    \item \textbf{Measurement phase}: After stabilization, timers are reset and QoI extraction begins. All timing and accuracy measurements reported in Sections~\ref{sec:cost} and~\ref{sec:aposteriori} are from this phase only, ensuring that warm-up and stabilization costs do not contaminate the results.
+\end{enumerate}
+
+An important implementation detail for the EARSM models: the EARSM closure's eddy viscosity is used only in the momentum equations, while the SST transport equations use their own internally computed $\nut = k / \max(\omega, S F_2 / a_1)$ for the production term $P_k = 2\nut |S|^2$.
+Without this decoupling, the EARSM closure's potentially small $\nut$ during startup (from weak velocity gradients) would suppress production, preventing the transport equations from bootstrapping.
+This ``EARSM bootstrap'' ensures that the SST transport provides a stable foundation for the algebraic closure, regardless of the closure's behavior in low-gradient regions.
+
+\subsection{Immersed boundary treatment}
+\label{sec:ibm_closures}
+
+For flows around immersed bodies (cylinder, sphere, periodic hills), we use a ghost-cell immersed boundary method following \citet{Fadlun2000}.
+The ghost-cell approach identifies cells inside the solid body and sets their velocity values via interpolation from the fluid side, enforcing the no-slip condition at the immersed surface.
+Unlike volume penalization methods that add a forcing term proportional to $-(1/\eta)(u - u_b)$, the ghost-cell method directly modifies the discrete velocity field, avoiding the need to tune a penalization timescale $\eta$ and eliminating the associated stiffness.
+
+The ghost-cell IBM is applied at two points in each time step:
+\begin{enumerate}
+    \item \textbf{Pre-projection}: After the predictor step computes $u^*$, ghost cells are set to enforce the body velocity. This ensures the Poisson right-hand side ($\nabla \cdot u^*$) is consistent near the body.
+    \item \textbf{Post-projection}: After the pressure correction $u^{n+1} = u^* - \Delta t \nabla p'$, ghost cells are re-set to ensure the corrected velocity satisfies the no-slip condition at the immersed surface. This prevents the pressure correction from re-introducing nonzero velocity inside the body.
+\end{enumerate}
+
+The ghost-cell method uses pre-computed weight arrays that are persistently mapped to GPU memory: $w = 0$ for solid cells, $w = 1$ for fluid cells, with interpolation weights at ghost cells determined at initialization based on the signed distance function $\phi(\mathbf{x})$.
+The forcing operation is a simple element-wise multiply ($u \leftarrow w \cdot u$), adding less than 0.3\% overhead per step.
+All geometry evaluation (distance functions, normal vectors) occurs at initialization time; the virtual functions defining the body shape cannot be called on GPU, so all geometric data is pre-computed and stored in flat arrays.
+
+For the periodic hills case at Re = 10{,}595, a brief warm-up phase using volume penalization ($\eta = 0.1$) is applied before switching to the ghost-cell method, as the high Reynolds number flow is unstable from a cold start with ghost-cell forcing alone.

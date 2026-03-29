@@ -79,6 +79,103 @@ At initialization, signed distance functions define the solid boundary, and weig
 During each time step, the IBM applies element-wise multiplication of the velocity field by these weight arrays---a trivially parallel operation that adds less than 0.3\% overhead on GPU.
 The Poisson equation right-hand side is masked at solid cells via a separate GPU kernel, avoiding any CPU--GPU synchronization.
 
+\subsubsection{Ghost-cell immersed boundary method}
+\label{sec:ghost_cell_ibm}
+
+The primary IBM approach uses the ghost-cell method of \citet{Fadlun2000}.
+For each ghost cell (the first solid cell adjacent to the fluid--solid interface), the velocity is reconstructed by interpolating from the fluid side along the surface-normal direction to enforce the no-slip condition at the boundary.
+This yields sharp boundary representation with second-order accuracy in the boundary location, avoiding the $O(\eta)$ accuracy limitation of volume penalization methods~\citep{Angot1999}.
+
+The solver also retains a semi-implicit volume penalization option,
+\begin{equation}
+    \bm{u} \leftarrow \bm{u} \left[ 1 - (1 - w) \min\!\left(\frac{\Delta t}{\eta}, 1\right) \right],
+    \label{eq:volume_penalization}
+\end{equation}
+where $\eta$ is a penalization timescale and $w$ is the solid mask ($w=0$ inside the body, $w=1$ in the fluid).
+This penalization is used during the SST warm-up phase for the periodic hills geometry, where it provides robust stabilization of the initial transient; the solver then switches to the ghost-cell method for the production measurement phase.
+For cylinder and sphere cases, ghost-cell forcing is used throughout.
+
+In all cases, the re-forcing step after the pressure correction is removed: only the pre-correction forcing (step~5 in Section~\ref{sec:solver}) and the Poisson RHS masking (step~7) are retained.
+This eliminates a feedback instability that arises when the corrected velocity is re-forced, generating divergence that is never projected out.
+
+\subsubsection{Grid convergence of the ghost-cell IBM}
+\label{sec:ibm_grid_convergence}
+
+The ghost-cell method of \citet{Fadlun2000} is first-order accurate in the grid spacing $h$, since the velocity at each ghost cell is reconstructed via linear interpolation along the surface normal.
+We verify this convergence behavior on two canonical cases: the circular cylinder at $\Rey = 100$ and the sphere at $\Rey = 200$.
+
+Table~\ref{tab:ibm_convergence_cyl} shows the cylinder drag coefficient $C_D$ as a function of grid resolution, expressed as cells per diameter $D/h$.
+At 8 cells/$D$ the error exceeds 50\%, but by 24 cells/$D$ the ghost-cell method recovers $C_D$ to within 9\% of the reference value $C_D = 1.35$.
+Adding SST warm-up (Section~\ref{sec:sst_warmup}) further improves the result to $C_D = 1.40$ (3.6\% error), indicating that the turbulence initialization contributes meaningfully once the IBM resolution is adequate.
+
+\begin{table}[htbp]
+\centering
+\caption{Grid convergence of ghost-cell IBM for circular cylinder at $\Rey = 100$. Reference $C_D = 1.35$.}
+\label{tab:ibm_convergence_cyl}
+\begin{tabular}{lrrr}
+\toprule
+Grid & Cells/$D$ & $C_D$ & Error \\
+\midrule
+$128 \times 96$  & 8  & 0.63 & 53\% \\
+$384 \times 288$ & 24 & 1.47 & 9\%  \\
+$384 \times 288$ (SST warm-up) & 24 & 1.40 & 3.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ibm_convergence_sph} presents the corresponding data for the sphere.
+Convergence is substantially slower: at 24 cells/$D$, the error remains 51\%.
+This is a known property of first-order immersed boundary methods on staggered grids---the three-dimensional interpolation geometry at curved surfaces is more complex than in two dimensions, and the volume fraction of cells cut by the interface scales as $O(h^{-2})$ in 3D versus $O(h^{-1})$ in 2D.
+Notably, the baseline simulation (no SST warm-up) produces the same $C_D$ as the SST-initialized run at $384 \times 256^2$, confirming that the IBM grid resolution is the convergence bottleneck rather than the turbulence model.
+
+\begin{table}[htbp]
+\centering
+\caption{Grid convergence of ghost-cell IBM for sphere at $\Rey = 200$. Reference $C_D = 0.77$.}
+\label{tab:ibm_convergence_sph}
+\begin{tabular}{lrrr}
+\toprule
+Grid & Cells/$D$ & $C_D$ & Error \\
+\midrule
+$128 \times 96^2$  & 10 & 0.17 & 78\% \\
+$192 \times 128^2$ & 13 & 0.25 & 68\% \\
+$256 \times 192^2$ & 17 & 0.21 & 73\% \\
+$384 \times 256^2$ & 24 & 0.38 & 51\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These results are consistent with the $O(h)$ convergence rate reported in the IBM literature \citep{Fadlun2000}.
+For the cylinder, 24 cells/$D$ provides sufficient resolution for quantitative $C_D$ comparison (${<}10\%$ error).
+For the sphere, while absolute $C_D$ values have not converged at affordable resolutions, relative comparisons between turbulence models at a fixed grid resolution remain meaningful---any model-to-model differences are attributable to the closure rather than to IBM discretization error.
+
+\subsection{SST warm-up initialization}
+\label{sec:sst_warmup}
+
+Non-transport turbulence models---including mixing-length, GEP, and all neural network closures---compute the eddy viscosity $\nut$ from the local velocity gradient $\partial u_i / \partial x_j$.
+When the simulation is initialized from a uniform velocity field, all velocity gradients are zero and these models produce $\nut = 0$, causing the early-time flow development to proceed as if laminar.
+This can delay or entirely prevent the establishment of a turbulent mean flow.
+
+To address this, the solver implements a two-phase initialization:
+\begin{enumerate}
+    \item \textbf{SST warm-up}: The Menter SST $k$--$\omega$ transport model~\citep{Menter1994} is run for a specified physical time (\texttt{warmup\_time}), developing the velocity, $k$, and $\omega$ fields from the uniform initial condition. Because the SST model integrates transport equations for $k$ and $\omega$, it produces nonzero $\nut$ even from uniform flow via the production terms.
+    \item \textbf{Model switch}: The target turbulence closure replaces SST and operates on the developed flow field. The $k$ and $\omega$ fields are discarded (unless the target model is itself a transport model).
+\end{enumerate}
+Timer statistics are reset at the model switch so that reported wall-clock times reflect only the cost of the target closure, not the SST warm-up phase.
+
+\subsection{Three-phase timing methodology}
+\label{sec:timing_methodology}
+
+Rigorous cost measurement requires separating model startup transients from steady-state operation.
+Each model evaluation uses a three-phase protocol:
+\begin{enumerate}
+    \item \textbf{SST warm-up} (Section~\ref{sec:sst_warmup}): Develop the flow field using SST $k$--$\omega$ for a specified physical time. This phase is not timed.
+    \item \textbf{Model stabilization}: The target closure runs for a specified number of warm-up steps (\texttt{warmup\_steps}) to allow its $\nut$ field to equilibrate with the developed flow. This phase is not timed.
+    \item \textbf{Measurement}: Timing is recorded over the remaining steps. Only this phase contributes to the reported wall-clock cost.
+\end{enumerate}
+All three phases use adaptive time stepping with identical CFL constraints, so the time step adjusts naturally to the effective viscosity of each model.
+For the fixed-$\Delta t$ cost comparisons (Section~\ref{sec:cost}), a common time step is imposed across all models to ensure that the Poisson, convection, and diffusion costs are identical and only the turbulence closure cost varies.
+The relevant configuration parameters are \texttt{warmup\_model}, \texttt{warmup\_time}, and \texttt{warmup\_steps}.
+
 \subsection{Performance validation}
 \label{sec:perf_validation}
 

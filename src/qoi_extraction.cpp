@@ -215,5 +215,129 @@ void append_timeseries(const std::string& filename,
     out << "\n";
 }
 
+double compute_strouhal(const std::vector<double>& time,
+                        const std::vector<double>& cl,
+                        double diameter, double U_inf) {
+    int N = static_cast<int>(cl.size());
+    if (N < 4) return -1.0;
+
+    // Use second half of the time series (skip transient)
+    int start = N / 2;
+
+    // Find zero-crossings (positive-going) in Cl
+    std::vector<double> crossing_times;
+    for (int i = start + 1; i < N; ++i) {
+        if (cl[i - 1] < 0.0 && cl[i] >= 0.0) {
+            // Linear interpolation for crossing time
+            double frac = -cl[i - 1] / (cl[i] - cl[i - 1]);
+            double t_cross = time[i - 1] + frac * (time[i] - time[i - 1]);
+            crossing_times.push_back(t_cross);
+        }
+    }
+
+    if (crossing_times.size() < 2) return -1.0;
+
+    // Average period from consecutive crossings
+    double total_period = 0.0;
+    int n_periods = static_cast<int>(crossing_times.size()) - 1;
+    for (int i = 0; i < n_periods; ++i) {
+        total_period += crossing_times[i + 1] - crossing_times[i];
+    }
+    double avg_period = total_period / n_periods;
+
+    double freq = 1.0 / avg_period;
+    return freq * diameter / U_inf;
+}
+
+double compute_separation_angle_sphere(
+    const double* u_ptr, const double* v_ptr,
+    int u_stride, int v_stride,
+    int u_plane_stride, int v_plane_stride,
+    double cx, double cy, double radius, double probe_offset,
+    const double* xf, const double* yf, int Nx, int Ny, int Nz, int Ng) {
+
+    double r_probe = radius + probe_offset;
+    int n_angles = 360;
+    double prev_v_tan = 0.0;
+    double sep_angle = -1.0;
+
+    // Mid-plane in z for 3D
+    int k_mid = Nz / 2;
+    int kg_mid = k_mid + Ng;
+
+    for (int a = 0; a < n_angles; ++a) {
+        // Angle from front stagnation point (theta=0 is upstream face)
+        double theta = M_PI * a / n_angles;  // 0 to pi
+        double px = cx - r_probe * std::cos(theta);  // front is -x direction
+        double py = cy + r_probe * std::sin(theta);
+
+        // Find enclosing cell indices
+        int ic = -1, jc = -1;
+        for (int i = Ng; i < Nx + Ng; ++i) {
+            if (xf[i] <= px && px < xf[i + 1]) { ic = i; break; }
+        }
+        for (int j = Ng; j < Ny + Ng; ++j) {
+            if (yf[j] <= py && py < yf[j + 1]) { jc = j; break; }
+        }
+        if (ic < 0 || jc < 0) continue;
+
+        // Bilinear interpolation of u and v at probe point
+        // Simple: use nearest cell-center velocity
+        int u_off = (Nz > 1) ? kg_mid * u_plane_stride : 0;
+        int v_off = (Nz > 1) ? kg_mid * v_plane_stride : 0;
+
+        double u_local = 0.5 * (u_ptr[u_off + jc * u_stride + ic] +
+                                 u_ptr[u_off + jc * u_stride + ic + 1]);
+        double v_local = 0.5 * (v_ptr[v_off + jc * v_stride + ic] +
+                                 v_ptr[v_off + (jc + 1) * v_stride + ic]);
+
+        // Tangential velocity: v_tan = -u*sin(theta) + v*cos(theta)
+        double v_tan = -u_local * std::sin(theta) + v_local * std::cos(theta);
+
+        // Separation: tangential velocity changes sign (positive to negative)
+        if (a > 0 && prev_v_tan > 0.0 && v_tan <= 0.0) {
+            // Interpolate
+            double frac = prev_v_tan / (prev_v_tan - v_tan);
+            sep_angle = M_PI * (a - 1 + frac) / n_angles;
+            break;
+        }
+        prev_v_tan = v_tan;
+    }
+
+    if (sep_angle < 0.0) return -1.0;  // Not found
+    return sep_angle * 180.0 / M_PI;   // Convert to degrees
+}
+
+void extract_wake_profile(
+    const double* u_ptr, const double* v_ptr,
+    int u_stride, int v_stride,
+    int u_plane_stride, int v_plane_stride,
+    int Nx, int Ny, int Nz, int Ng,
+    double x_station, const double* xc, const double* yc,
+    const std::string& filename, const std::string& header) {
+
+    // Find closest grid index to x_station
+    int i_station = 0;
+    double min_dist = 1e30;
+    for (int i = 0; i < Nx; ++i) {
+        double d = std::abs(xc[i + Ng] - x_station);
+        if (d < min_dist) { min_dist = d; i_station = i; }
+    }
+
+    std::vector<double> u_prof(Ny), v_prof(Ny);
+    extract_velocity_profile_device(
+        u_ptr, v_ptr,
+        u_stride, v_stride,
+        u_plane_stride, v_plane_stride,
+        i_station, Nx, Ny, Nz, Ng,
+        u_prof.data(), v_prof.data());
+
+    std::vector<double> yc_arr(Ny);
+    for (int j = 0; j < Ny; ++j) yc_arr[j] = yc[j + Ng];
+
+    write_profile_uv(filename, yc_arr.data(),
+                     u_prof.data(), v_prof.data(), Ny, header);
+}
+
 } // namespace qoi
 } // namespace nncfd

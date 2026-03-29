@@ -58,10 +58,11 @@ training_log.txt
 # Output
 output/
 results/
+!results/paper/
+!results/paper/**
 *.vtk
 *.vtu
 *.pvd
-*.dat
 *.txt.gz
 *.png
 *.jpg
@@ -124,3 +125,4 @@ profile_*
 profiles/
 
 bench_*
+data/models/tbrf_paper/forests.pkl

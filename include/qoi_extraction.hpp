@@ -82,5 +82,38 @@ void append_timeseries(const std::string& filename,
                        int step, double time,
                        const std::vector<double>& values);
 
+/// Compute Strouhal number from a lift coefficient time series.
+/// Uses zero-crossing detection on the second half of the series
+/// (assumes first half is transient). Returns St = f*D/U_inf.
+/// If fewer than 2 full cycles found, returns -1.
+double compute_strouhal(const std::vector<double>& time,
+                        const std::vector<double>& cl,
+                        double diameter, double U_inf);
+
+/// Compute separation angle on a sphere from the velocity field.
+/// Probes tangential velocity at angular positions around the sphere
+/// equator (z=cz plane for 3D, y-plane for 2D). Separation = where
+/// tangential velocity at surface changes sign.
+/// Returns angle in degrees from front stagnation point.
+/// probe_offset: distance outside surface to sample (e.g., 1.5*dx).
+double compute_separation_angle_sphere(
+    const double* u_ptr, const double* v_ptr,
+    int u_stride, int v_stride,
+    int u_plane_stride, int v_plane_stride,
+    double cx, double cy, double radius, double probe_offset,
+    const double* xf, const double* yf, int Nx, int Ny, int Nz, int Ng);
+
+/// Extract a wake velocity profile u(y) at a given x-station downstream.
+/// For 3D, averages over z. For sphere, this gives u(y) on the centerline plane.
+/// Reuses extract_velocity_profile_device internally.
+/// Also writes the profile to file.
+void extract_wake_profile(
+    const double* u_ptr, const double* v_ptr,
+    int u_stride, int v_stride,
+    int u_plane_stride, int v_plane_stride,
+    int Nx, int Ny, int Nz, int Ng,
+    double x_station, const double* xc, const double* yc,
+    const std::string& filename, const std::string& header);
+
 } // namespace qoi
 } // namespace nncfd

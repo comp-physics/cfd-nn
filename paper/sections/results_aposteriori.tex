@@ -1,59 +1,303 @@
 \section{A Posteriori Evaluation}
 \label{sec:aposteriori}
 
-To assess whether improved offline accuracy translates to better coupled CFD predictions, we evaluate all models within the solver on three canonical flow configurations.
+To assess whether improved offline accuracy translates to better coupled CFD predictions, we evaluate all 15 models within the solver on four canonical flow configurations spanning separated flow over curved surfaces, bluff-body vortex shedding, turbulence-driven secondary flow, and three-dimensional wake dynamics.
 Each model uses the same spatial discretization, time integrator, and Poisson solver; only the turbulence closure differs.
+The cost data for every model--case combination was reported in Section~\ref{sec:cost}; here we focus on prediction accuracy and use the cost data to construct a Pareto cost--accuracy tradeoff in Section~\ref{sec:pareto_plot}.
 
-\subsection{Channel flow at $\Reytau = 180$}
+For clarity, figures and tables in this section highlight a representative subset of six models spanning all closure classes: baseline (laminar), SST $k$--$\omega$, EARSM-WJ, MLP ($32^2$), TBNN-small ($32^2$), and TBRF (1 tree).
+The complete 15-model results are tabulated in Appendix~\ref{app:full_aposteriori}.
 
-\subsubsection{Setup}
+\subsection{Simulation protocol}
+\label{sec:aposteriori:protocol}
 
-\todo{Specify grid ($128 \times 96 \times 128$), domain size ($4\pi \times 2 \times 2\pi$), $\Rey$ (or $\nu$, $dp/dx$), time integrator (RK3), number of steps, CFL, stretch parameter. Reference: MKM DNS \citep{MKM1999}.}
+All four cases use the same three-phase protocol described in Section~\ref{sec:cost:setup}: SST warm-up ($t_\mathrm{warmup} = \todo{X}$~s), model stabilization (50 steps), and production measurement.
+During the production phase, QoI are extracted at a frequency of \todo{X} steps and time-averaged over \todo{X} flow-through times to ensure statistical convergence.
+Table~\ref{tab:aposteriori_cases} summarizes the computational setup.
 
-\subsubsection{Mean velocity profiles}
+\begin{table}[htbp]
+\centering
+\caption{A posteriori case configurations. All use skew-symmetric convection, SSP-RK3 time integration, and FFT-based Poisson solvers. IBM denotes immersed boundary method for non-body-fitted geometries.}
+\label{tab:aposteriori_cases}
+\begin{tabular}{llrrll}
+\toprule
+Case & Geometry & Grid & Cells & Reference & Training \\
+\midrule
+Hills $\Rey_H=10{,}595$ & Periodic hills (IBM) & $\todo{X}$ & \todo{X} & \citet{Breuer2009} LES & Trained \\
+Cylinder $\Rey=100$ & Circular cylinder (IBM) & $\todo{X}$ & \todo{X} & Literature & Unseen \\
+Duct $\Rey_b=3{,}500$ & Square duct & $\todo{X}$ & \todo{X} & \citet{Pinelli2010} DNS & Trained \\
+Sphere $\Rey=200$ & Sphere (IBM) & $\todo{X}$ & \todo{X} & \citet{Johnson1999} & Unseen \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\todo{Plot $u^+(y^+)$ for all models vs.\ MKM DNS data. Report the $L_2$ error in $u^+$ for each model. Include the law of the wall ($u^+ = y^+$, log law $u^+ = (1/\kappa)\ln y^+ + B$) for reference.}
+% =====================================================================
+\subsection{Periodic hills at $\Rey_H = 10{,}595$}
+\label{sec:aposteriori:hills}
+% =====================================================================
 
-\subsubsection{Reynolds stress profiles}
+The periodic hills geometry generates a large separation bubble on the lee side of each hill, with reattachment on the flat channel floor.
+This case appeared in the training data at lower Reynolds numbers; the $\Rey_H = 10{,}595$ configuration tests whether the models generalize across Reynolds number within a known geometry class.
+The reference data are the wall-resolved LES of \citet{Breuer2009}.
 
-\todo{Plot $-\langle u'v' \rangle / u_\tau^2$ vs.\ $y/\delta$ for all models vs.\ MKM DNS. Report component-wise $L_2$ errors. This is the most discriminating metric for tensor-predicting models (TBNN, TBRF) vs.\ scalar models (MLP, SST).}
+\subsubsection{Skin friction coefficient}
 
-\subsubsection{Predicted $\Reytau$}
+Figure~\ref{fig:hills_cf} compares the streamwise distribution of skin friction coefficient $C_f(x)$ for the six representative models against the Breuer LES reference.
+The sign change in $C_f$ identifies the separation and reattachment points, and the magnitude in the recovery region ($x/H > 6$) reflects how well each model captures the boundary layer redevelopment.
 
-\todo{Report the friction Reynolds number $\Reytau = u_\tau \delta / \nu$ achieved by each model. MKM target: $\Reytau = 178.12$.}
-
-\subsection{Periodic hills at $\Rey_H = 5600$}
-
-\subsubsection{Setup}
-
-\todo{Specify grid, domain, $\Rey$, hill geometry (IBM), reference data \citep{Breuer2009}. Note that periodic hills at different slope angles were in the training set---this tests generalization to a different Reynolds number.}
-
-\subsubsection{Velocity profiles}
-
-\todo{Plot streamwise velocity $u/U_b$ vs.\ $y/H$ at key $x$-stations ($x/H = 0.5, 2, 4, 6, 8$) for all models vs.\ Breuer LES. These stations capture the recirculation zone, reattachment, and recovery regions.}
+\begin{figure}[htbp]
+\centering
+\todo{Insert $C_f(x/H)$ plot for 6 representative models vs.\ Breuer LES.}
+\caption{Skin friction coefficient $C_f$ along the lower wall of the periodic hills at $\Rey_H = 10{,}595$. The sign change from negative to positive marks the reattachment point. Reference: \citet{Breuer2009} LES.}
+\label{fig:hills_cf}
+\end{figure}
 
 \subsubsection{Separation and reattachment}
 
-\todo{Report separation and reattachment $x$-locations for each model. Breuer reference: separation at $x/H \approx 0.2$, reattachment at $x/H \approx 4.7$ for $\Rey_H = 5600$.}
+Table~\ref{tab:hills_sep} reports the predicted separation and reattachment locations for all models.
+The reference separation point is $x_\mathrm{sep}/H \approx \todo{X}$ and the reattachment point is $x_\mathrm{re}/H \approx \todo{X}$ \citep{Breuer2009}.
+Accurate prediction of these locations is the most demanding test: errors in the turbulent transport within the shear layer directly affect the recirculation zone length.
 
-\subsubsection{Separation bubble visualization}
+\begin{table}[htbp]
+\centering
+\caption{Separation and reattachment locations on the periodic hills lower wall at $\Rey_H = 10{,}595$. The error is the absolute deviation from the Breuer LES reference values ($x_\mathrm{sep}/H = \todo{X}$, $x_\mathrm{re}/H = \todo{X}$).}
+\label{tab:hills_sep}
+\begin{tabular}{lrrrr}
+\toprule
+Model & $x_\mathrm{sep}/H$ & Error & $x_\mathrm{re}/H$ & Error \\
+\midrule
+Baseline (laminar) & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+SST $k$-$\omega$   & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+EARSM-WJ           & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+MLP ($32^2$)       & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+TBNN-s ($32^2$)    & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+TBRF-1t            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\todo{Contour plots or streamlines of the mean flow field showing the separation bubble for selected models (baseline, SST, TBNN) vs.\ reference.}
+\subsubsection{Velocity profiles}
 
+Figure~\ref{fig:hills_profiles} compares streamwise velocity profiles $u/U_b$ at five stations spanning the recirculation zone ($x/H = 0.5$), the reattachment region ($x/H = 2, 4$), and the recovery region ($x/H = 6, 8$).
+These profiles reveal both the recirculation bubble shape and the rate of boundary layer recovery downstream of reattachment.
+
+\begin{figure}[htbp]
+\centering
+\todo{Insert $u/U_b$ vs.\ $y/H$ profiles at $x/H = 0.5, 2, 4, 6, 8$ for 6 representative models vs.\ Breuer LES.}
+\caption{Streamwise velocity profiles $u/U_b$ at five stations along the periodic hills lower wall. Reference: \citet{Breuer2009} LES at $\Rey_H = 10{,}595$.}
+\label{fig:hills_profiles}
+\end{figure}
+
+\subsubsection{Discussion}
+
+\todo{Summarize which models over/under-predict the recirculation zone length. Note whether the EARSM and tensor-predicting NN models improve separation prediction over the scalar SST and MLP, as expected from their ability to capture Reynolds stress anisotropy in the separated shear layer. Compare the trained-geometry hills case with the unseen-geometry cylinder and sphere cases below to assess the effect of training data availability.}
+
+% =====================================================================
 \subsection{Cylinder at $\Rey = 100$}
+\label{sec:aposteriori:cylinder}
+% =====================================================================
 
-\subsubsection{Setup}
+Flow past a circular cylinder at $\Rey = 100$ produces a periodic von K\'arm\'an vortex street with well-characterized integral quantities.
+The cylinder geometry was absent from the training data, making this a strict test of geometric generalization.
+At this Reynolds number, the flow is laminar and two-dimensional; the turbulence model acts as a perturbation to the baseline solver, and excessively large $\nu_t$ predictions suppress vortex shedding entirely.
 
-\todo{Specify grid ($128 \times 64 \times 64$), domain, cylinder diameter and location (IBM), reference values. Note that the cylinder geometry was not in the McConkey training set---this tests generalization to an entirely unseen geometry.}
+\subsubsection{Integral quantities}
 
-\subsubsection{Drag and lift coefficients}
+Table~\ref{tab:cyl_integral} reports the time-averaged drag coefficient $\bar{C}_d$, RMS lift coefficient $C_{l,\mathrm{rms}}$, and Strouhal number $\mathrm{St} = fD/U_\infty$ for each model.
+Established reference values are $\bar{C}_d \approx 1.35$, $\mathrm{St} \approx 0.165$ \citep{Tritton1959,Williamson1996}.
 
-\todo{Report time-averaged drag coefficient $C_d$, RMS lift coefficient $C_{l,\mathrm{rms}}$, and Strouhal number $\mathrm{St}$ for each model. Established reference values: $C_d \approx 1.35$, $C_{l,\mathrm{rms}} \approx 0.34$, $\mathrm{St} \approx 0.165$.}
+\begin{table}[htbp]
+\centering
+\caption{Cylinder $\Rey = 100$: time-averaged drag coefficient, RMS lift coefficient, and Strouhal number. Reference: $\bar{C}_d \approx 1.35$, $\mathrm{St} \approx 0.165$.}
+\label{tab:cyl_integral}
+\begin{tabular}{lrrr}
+\toprule
+Model & $\bar{C}_d$ & $C_{l,\mathrm{rms}}$ & $\mathrm{St}$ \\
+\midrule
+Baseline (laminar) & \todo{X} & \todo{X} & \todo{X} \\
+SST $k$-$\omega$   & \todo{X} & \todo{X} & \todo{X} \\
+EARSM-WJ           & \todo{X} & \todo{X} & \todo{X} \\
+MLP ($32^2$)       & \todo{X} & \todo{X} & \todo{X} \\
+TBNN-s ($32^2$)    & \todo{X} & \todo{X} & \todo{X} \\
+TBRF-1t            & \todo{X} & \todo{X} & \todo{X} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\subsubsection{Wake profiles}
+\subsubsection{Wake velocity profiles}
 
-\todo{Plot streamwise velocity and Reynolds stress profiles in the near wake ($x/D = 1, 2, 5$) for selected models vs.\ reference data.}
+Figure~\ref{fig:cyl_wake} compares time-averaged streamwise velocity profiles in the near wake at $x/D = 1, 2, 3, 5$.
+The wake deficit depth and recovery rate are sensitive indicators of how well each closure captures the Reynolds-averaged momentum transport in the wake.
 
-\subsection{Grid sensitivity}
+\begin{figure}[htbp]
+\centering
+\todo{Insert time-averaged $\bar{u}/U_\infty$ vs.\ $y/D$ profiles at $x/D = 1, 2, 3, 5$ for 6 representative models.}
+\caption{Time-averaged streamwise velocity profiles in the cylinder near wake ($\Rey = 100$) at four downstream stations.}
+\label{fig:cyl_wake}
+\end{figure}
 
-\todo{Run the TBNN and SST models on 4 grids of increasing resolution for the channel flow case to demonstrate grid convergence. Report the $L_2$ error in $u^+(y^+)$ vs.\ grid spacing.}
+\subsubsection{Discussion}
+
+\todo{Describe which models suppress vortex shedding (expected: models with excessive $\nu_t$, consistent with the adaptive-$\Delta t$ penalty in Table~\ref{tab:wall_time}). Note that the baseline (laminar) should be near-exact at $\Rey = 100$, and any deviation from baseline indicates the turbulence model is adding spurious dissipation on an unseen geometry.}
+
+% =====================================================================
+\subsection{Square duct at $\Rey_b = 3{,}500$}
+\label{sec:aposteriori:duct}
+% =====================================================================
+
+Turbulent flow in a square duct generates Prandtl's secondary flow of the second kind: streamwise-aligned vortices driven by Reynolds stress anisotropy near the duct corners.
+This secondary flow is absent in any isotropic (Boussinesq) closure and can only be predicted by models that produce anisotropic Reynolds stresses.
+The duct geometry was included in the training data.
+The reference is the DNS of \citet{Pinelli2010} at $\Rey_b = 3{,}500$.
+
+\subsubsection{Secondary flow cross-section}
+
+Figure~\ref{fig:duct_secondary} compares the secondary flow pattern $(v, w)$ in the $y$--$z$ cross-section for each model.
+The DNS shows eight counter-rotating vortices, one pair per corner, with peak secondary velocities of approximately \todo{X}\% of the bulk velocity.
+
+\begin{figure}[htbp]
+\centering
+\todo{Insert $(v,w)$ vector fields or streamfunction contours in the $y$--$z$ plane for 6 representative models vs.\ Pinelli DNS.}
+\caption{Secondary flow cross-section in the square duct at $\Rey_b = 3{,}500$. Arrows show $(v, w)$ velocity components. Reference: \citet{Pinelli2010} DNS. Only anisotropic closures (EARSM, TBNN, TBRF) can generate secondary motion.}
+\label{fig:duct_secondary}
+\end{figure}
+
+\subsubsection{Wall shear stress}
+
+Figure~\ref{fig:duct_tauw} compares the spanwise distribution of wall shear stress $\tau_w(z)$ along one wall.
+The secondary flow convects high-momentum fluid from the duct center toward the corners, producing a characteristic non-monotonic $\tau_w(z)$ profile with local maxima near the corner bisectors.
+An isotropic model predicts uniform $\tau_w$ across the wall.
+
+\begin{figure}[htbp]
+\centering
+\todo{Insert $\tau_w(z)/\tau_{w,\mathrm{avg}}$ along one wall for 6 representative models vs.\ Pinelli DNS.}
+\caption{Wall shear stress distribution $\tau_w(z)$ along one wall of the square duct at $\Rey_b = 3{,}500$. The variation reflects secondary flow impinging on the wall near the bisector. Reference: \citet{Pinelli2010} DNS.}
+\label{fig:duct_tauw}
+\end{figure}
+
+\subsubsection{Secondary flow strength}
+
+Table~\ref{tab:duct_secondary} quantifies the secondary flow strength as the maximum cross-plane velocity magnitude $\max \sqrt{v^2 + w^2}/U_b$ and the RMS secondary velocity $\langle v^2 + w^2 \rangle^{1/2}/U_b$.
+These scalar measures allow direct comparison across all 15 models.
+
+\begin{table}[htbp]
+\centering
+\caption{Secondary flow strength in the square duct at $\Rey_b = 3{,}500$. The baseline, SST, and MLP are Boussinesq (isotropic) closures and produce zero secondary flow by construction.}
+\label{tab:duct_secondary}
+\begin{tabular}{lrr}
+\toprule
+Model & $\max |v_\perp|/U_b$ (\%) & $v_{\perp,\mathrm{rms}}/U_b$ (\%) \\
+\midrule
+Pinelli DNS        & \todo{X} & \todo{X} \\
+\midrule
+Baseline (laminar) & 0 & 0 \\
+SST $k$-$\omega$   & 0 & 0 \\
+EARSM-WJ           & \todo{X} & \todo{X} \\
+MLP ($32^2$)       & 0 & 0 \\
+TBNN-s ($32^2$)    & \todo{X} & \todo{X} \\
+TBRF-1t            & \todo{X} & \todo{X} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Discussion}
+
+\todo{Emphasize that the duct case is the most discriminating test for model architecture: the secondary flow is a direct consequence of Reynolds stress anisotropy and cannot be produced by any isotropic closure regardless of how accurate its scalar $\nu_t$ prediction. Discuss whether the EARSM, TBNN, and TBRF correctly predict the eight-vortex topology and the quantitative secondary flow strength. Note that training data availability (the duct was in the training set) should favor the data-driven models here.}
+
+% =====================================================================
+\subsection{Sphere at $\Rey = 200$}
+\label{sec:aposteriori:sphere}
+% =====================================================================
+
+Flow past a sphere at $\Rey = 200$ is axisymmetric and steady, with a well-defined separation point on the sphere surface and a recirculating wake.
+This three-dimensional, unseen geometry provides the most demanding test of model generalization, requiring the closure to operate on velocity gradients that differ qualitatively from the two-dimensional training data.
+The reference is the DNS of \citet{Johnson1999}, which reports $\bar{C}_d \approx 0.77$ and a separation angle of $\theta_\mathrm{sep} \approx 117^\circ$.
+
+\subsubsection{Drag and separation angle}
+
+Table~\ref{tab:sphere_integral} reports the drag coefficient $\bar{C}_d$ and separation angle $\theta_\mathrm{sep}$ for each model.
+The separation angle is defined as the polar angle (measured from the front stagnation point) at which the surface shear stress vanishes.
+
+\begin{table}[htbp]
+\centering
+\caption{Sphere $\Rey = 200$: drag coefficient and separation angle. Reference: $\bar{C}_d \approx 0.77$, $\theta_\mathrm{sep} \approx 117^\circ$ \citep{Johnson1999}.}
+\label{tab:sphere_integral}
+\begin{tabular}{lrrrr}
+\toprule
+Model & $\bar{C}_d$ & $C_d$ error (\%) & $\theta_\mathrm{sep}$ & $\theta_\mathrm{sep}$ error \\
+\midrule
+Baseline (laminar) & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+SST $k$-$\omega$   & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+EARSM-WJ           & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+MLP ($32^2$)       & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+TBNN-s ($32^2$)    & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+TBRF-1t            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Wake velocity profiles}
+
+Figure~\ref{fig:sphere_wake} compares the streamwise velocity profile along the wake centerline ($y = z = 0$, $x/D > 0.5$) and radial profiles at $x/D = 1, 2, 3$ downstream of the sphere center.
+The wake length (distance from the sphere rear to the downstream stagnation point) and the velocity deficit at each station are sensitive to the effective viscosity in the wake.
+
+\begin{figure}[htbp]
+\centering
+\todo{Insert wake centerline $\bar{u}/U_\infty$ vs.\ $x/D$ and radial profiles at $x/D = 1, 2, 3$ for 6 representative models vs.\ Johnson \& Patel data.}
+\caption{Sphere $\Rey = 200$: (a) wake centerline velocity and (b--d) radial velocity profiles at three downstream stations. Reference: \citet{Johnson1999}.}
+\label{fig:sphere_wake}
+\end{figure}
+
+\subsubsection{Discussion}
+
+\todo{The sphere is the hardest case: 3D, unseen geometry, and the training data are exclusively 2D-mean flows. Discuss whether models that generalize well a priori (PI-TBNN, TBRF) also generalize well a posteriori. Note whether excessive $\nu_t$ causes premature wake closure (shorter recirculation zone) and higher $C_d$ for the MLP, consistent with the adaptive-$\Delta t$ penalty observed in Section~\ref{sec:cost:adaptive}.}
+
+% =====================================================================
+\subsection{Summary of a posteriori accuracy}
+\label{sec:aposteriori:summary}
+% =====================================================================
+
+Table~\ref{tab:aposteriori_summary} consolidates the key error metrics across all four cases into a single overview.
+For each case, we report a single representative scalar error metric: reattachment location error for the hills, $C_d$ error for the cylinder and sphere, and secondary flow strength error for the duct.
+
+\begin{table}[htbp]
+\centering
+\caption{Summary of a posteriori prediction errors for the six representative models. Each column reports the most discriminating scalar metric for that case. Lower is better. The best data-driven model on each metric is in bold.}
+\label{tab:aposteriori_summary}
+\begin{tabular}{lrrrr}
+\toprule
+& Hills & Cylinder & Duct & Sphere \\
+& $|x_\mathrm{re} - x_\mathrm{re}^\mathrm{ref}|/H$ & $|\bar{C}_d - 1.35|/1.35$ & $|v_\perp - v_\perp^\mathrm{DNS}|$ & $|\bar{C}_d - 0.77|/0.77$ \\
+\midrule
+Baseline       & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+SST            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+EARSM-WJ      & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+MLP ($32^2$)   & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+TBNN-s ($32^2$)& \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+TBRF-1t        & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Discuss the key findings: (1) whether a priori accuracy ranking (Table~\ref{tab:apriori_rmse}) correlates with a posteriori ranking; (2) whether trained-geometry cases (hills, duct) show better data-driven model performance than unseen-geometry cases (cylinder, sphere); (3) whether tensor-predicting models (EARSM, TBNN, TBRF) outperform scalar models (SST, MLP) specifically on the duct, where anisotropy is essential.}
+
+% =====================================================================
+\subsection{Pareto cost--accuracy tradeoff}
+\label{sec:pareto_plot}
+% =====================================================================
+
+Figure~\ref{fig:pareto} combines the per-step cost from Section~\ref{sec:cost} ($x$-axis: turbulence model cost in ms/step from Table~\ref{tab:turb_cost_all}) with the a posteriori accuracy from Table~\ref{tab:aposteriori_summary} ($y$-axis: representative error metric) to construct a Pareto cost--accuracy plot.
+Each point represents one model on one case; marker shape encodes the case and color encodes the model class (classical, MLP, TBNN, TBRF).
+
+\begin{figure}[htbp]
+\centering
+\todo{Insert Pareto plot: turbulence cost (ms/step, log scale) on $x$-axis vs.\ a posteriori error on $y$-axis. 6 models $\times$ 4 cases = 24 points. Mark the Pareto front. Separate panels or overlaid with different markers for each case.}
+\caption{Pareto cost--accuracy tradeoff for a posteriori predictions. Each point represents one model on one case. Points on the lower-left Pareto front achieve the best accuracy at a given cost. Cost data from Table~\ref{tab:turb_cost_all} (NVIDIA H200, fixed $\Delta t$); accuracy from Table~\ref{tab:aposteriori_summary}.}
+\label{fig:pareto}
+\end{figure}
+
+The Pareto front identifies the models that offer the best accuracy at each cost level.
+\todo{Describe the Pareto front: which models appear on it, and which are dominated. Expected structure: baseline and SST anchor the low-cost end, EARSM-WJ provides a modest accuracy improvement at negligible additional cost, TBRF-1t occupies the ``sweet spot'' with moderate cost and good accuracy, and the TBNN variants offer the best accuracy (on trained geometries) at high cost. Discuss whether the MLP ever appears on the Pareto front, or whether it is dominated by models that are both cheaper and more accurate.}
+
+The adaptive-$\Delta t$ Pareto plot (using wall time from Table~\ref{tab:wall_time} instead of per-step cost) reshuffles the rankings:
+\todo{Describe how the adaptive-$\Delta t$ Pareto front differs from the fixed-$\Delta t$ version. Models with excessive $\nu_t$ (MLP) move rightward dramatically, while well-calibrated models (EARSM, TBRF on trained geometries) remain near their fixed-$\Delta t$ positions.}

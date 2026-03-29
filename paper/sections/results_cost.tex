@@ -1,214 +1,263 @@
 \section{Computational Cost Analysis}
 \label{sec:cost}
 
-We now turn to the central question of this paper: what does it cost to run each turbulence closure in a GPU-accelerated solver?
-All models are implemented in the same solver, use the same spatial discretization, time integration, and Poisson solver, and are timed on the same hardware.
-This eliminates confounding factors that arise when comparing models across different codes.
+We now turn to the central question of this paper: what does each turbulence closure cost to evaluate in a GPU-accelerated solver?
+All 15 models are implemented in the same solver, use the same spatial discretization (second-order finite differences on a staggered MAC grid), the same time integration (SSP-RK3), and the same Poisson solver (cuFFT-based direct solve).
+All timing is measured on a single NVIDIA H200 GPU using the solver's internal instrumentation (one \texttt{TIMED\_SCOPE} per component per RK3 substep).
+This eliminates confounding factors that arise when comparing models across different codes, compilers, or hardware.
 
-\subsection{Full 3D GPU profiling}
+\subsection{Experimental setup}
+\label{sec:cost:setup}
 
-Table~\ref{tab:gpu_profiling_3d} reports wall-clock timings for a $128^3$ channel flow benchmark (2.1M cells) on a single NVIDIA H100-SXM5-80GB GPU.
-All models use RK3 time integration, skew-symmetric convection, and the FFT Poisson solver.
-Timing is averaged over 50 time steps after a warm-up period.
-All closures are evaluated at every grid point in 3D (128 $\times$ 128 $\times$ 128 cells); the NN models process the full volumetric field, not a single 2D slice.
+We measure per-step cost on four representative flow configurations spanning 2D and 3D, trained and unseen geometries, and IBM and wall-bounded cases:
 
 \begin{table}[htbp]
 \centering
-\caption{GPU profiling: channel flow $128^3$ (2.1M cells), H100-SXM5-80GB, 50 steps, RK3 + skew + FFT Poisson. All turbulence closures evaluated at every grid point in 3D.}
-\label{tab:gpu_profiling_3d}
+\caption{Flow configurations for cost measurement. All use skew-symmetric convection, RK3 time integration, and FFT-based Poisson solvers.}
+\label{tab:cost_cases}
+\begin{tabular}{llrrll}
+\toprule
+Case & Geometry & Grid & Cells & Poisson & Training \\
+\midrule
+Hills Re$_H=10{,}595$ & Periodic hills (IBM) & $384 \times 192 \times 1$ & 74K & FFT2D & Trained \\
+Cylinder Re$=100$ & Circular cylinder (IBM) & $384 \times 288 \times 1$ & 111K & FFT2D & Unseen \\
+Duct Re$_b=3{,}500$ & Square duct & $96^3$ & 885K & FFT1D & Trained \\
+Sphere Re$=200$ & Sphere (IBM) & $192 \times 128^2$ & 3.15M & FFT 3D & Unseen \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+To ensure that all models operate on developed flow with realistic velocity gradients, turbulence fields, and eddy viscosity, we employ a three-phase measurement protocol:
+\begin{enumerate}
+    \item \textbf{SST warm-up} (\texttt{warmup\_model = sst}, $t_\mathrm{warmup} = 2$~s): The SST $k$--$\omega$ transport model drives the flow from uniform initial conditions to a developed state with nonzero $k$, $\omega$, and $\nu_t$ fields. All timing data from this phase is discarded.
+    \item \textbf{Model stabilization} (\texttt{warmup\_steps} = 50): The target turbulence model replaces SST, and the solver runs for 50 additional time steps to allow the model's eddy viscosity field to equilibrate. Timing data is again discarded.
+    \item \textbf{Measurement} (100 time steps): Timing data is recorded. This is the only phase that contributes to the reported cost.
+\end{enumerate}
+All four configurations use a \emph{fixed time step} within the measurement phase to ensure that every model executes the same number of Poisson solves, convection evaluations, and diffusion updates at the same $\Delta t$.
+This isolates the turbulence model cost from any indirect effects on the time step size (Section~\ref{sec:cost:adaptive} addresses the adaptive-$\Delta t$ scenario separately).
+
+\subsection{Infrastructure cost is model-independent}
+\label{sec:cost:infrastructure}
+
+A key finding of this study is that the cost of every solver component \emph{other than} the turbulence model evaluation is identical across all 15 models, to within measurement noise ($\pm 1$--$2\%$).
+Table~\ref{tab:infrastructure_cost} reports the per-substep cost of each solver component, averaged over all 15 models.
+
+\begin{table}[htbp]
+\centering
+\caption{Infrastructure cost per RK3 substep (3 substeps per solver step), averaged across all 15 turbulence models. Standard deviation across models is $<2\%$ in all cases. The FFT Poisson solver is a direct solve with no iterative convergence---its cost depends only on grid size, not on the turbulence model's $\nu_t$ field.}
+\label{tab:infrastructure_cost}
 \begin{tabular}{lrrrr}
 \toprule
-Model & Total step (ms) & Turb update (ms) & Overhead & Turb \% of total \\
+Component & Hills (74K) & Cylinder (111K) & Duct (885K) & Sphere (3.15M) \\
 \midrule
-Baseline (laminar)   & 4.84   & ---    & ---          & --- \\
-SST $k$-$\omega$     & 5.00   & 0.11   & $+3.3\%$     & 2.1\% \\
-TBNN                 & 103.3  & 98.4   & $+2{,}032\%$ & 95.3\% \\
-TBRF (1 tree)        & 44.4   & 39.5   & $+816\%$     & 89.0\% \\
-TBRF (5 trees)       & 57.4   & 52.5   & $+1{,}085\%$ & 91.4\% \\
-TBRF (10 trees)      & 81.4   & 76.4   & $+1{,}580\%$ & 93.9\% \\
+Poisson solve     & 0.275 ms & 0.280 ms & 0.105 ms & 0.377 ms \\
+Convection        & 0.021 ms & 0.021 ms & 0.096 ms & 0.265 ms \\
+Diffusion         & 0.020 ms & 0.021 ms & 0.071 ms & 0.177 ms \\
+IBM forcing       & 0.020 ms & 0.021 ms & ---      & 0.083 ms \\
+Vel.\ correction  & ---      & ---      & 0.079 ms & ---      \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The SST $k$-$\omega$ model adds only 3.3\% overhead, confirming that classical transport-equation closures are negligible relative to the base solver cost.
-In stark contrast, the TBNN adds $20\times$ overhead and dominates 95\% of the total step time.
-The TBRF variants range from $8\times$ (1~tree) to $16\times$ (10~trees) overhead; their lower overhead relative to TBNN reflects the simpler per-cell operations (comparison-and-branch vs.\ matrix-vector multiply with $\tanh$), offset by the CPU--GPU synchronization cost discussed in Section~\ref{sec:tbrf_cost}.
+The Poisson solver dominates the infrastructure cost on 2D grids (hills, cylinder), while convection and diffusion become significant on 3D grids (duct, sphere).
+The IBM forcing cost is negligible ($< 0.1$~ms) on all grids---the pre-computed weight-array multiplication adds minimal overhead to the element-wise velocity update.
 
-\paragraph{Comparison with prior 2D profiling.}
-Table~\ref{tab:gpu_profiling_2d} shows profiling data from an earlier campaign on a smaller 2D-extruded grid (524K cells, L40S GPU), where the NN models process only a single $x$-$y$ plane (16K cells) and apply the result uniformly across the spanwise direction.
-This is the standard approach for 2D RANS cases (cylinder, airfoil) where the flow is homogeneous in $z$.
+The model-independence of the Poisson cost deserves emphasis.
+Because we use a direct FFT-based solver (not an iterative multigrid), the Poisson solve performs exactly the same operations regardless of the turbulence model's eddy viscosity field.
+There are no additional iterations, no convergence-rate variations, and no model-dependent cost.
+This means that the \emph{entire} cost difference between models is contained in the turbulence evaluation itself---the tables below report this cleanly separable overhead.
+
+\subsection{Per-step turbulence model cost}
+\label{sec:cost:perstep}
+
+Table~\ref{tab:turb_cost_all} reports the turbulence model evaluation cost (ms per solver step) for all 15 models on all four cases.
+The total step cost equals the baseline step cost plus the turbulence cost plus a small overhead for $\nu_\mathrm{eff}$ computation and residual evaluation.
 
 \begin{table}[htbp]
 \centering
-\caption{GPU profiling: cylinder $\Rey = 100$, $128 \times 64 \times 64$ (524K cells, 2D NN evaluation), L40S, 50K steps.}
-\label{tab:gpu_profiling_2d}
+\caption{Turbulence model evaluation cost (ms/step) on NVIDIA H200, fixed $\Delta t$, 100 measured steps after warm-up + stabilization. Models sorted by sphere cost. The baseline step cost (no turbulence) is 1.89~ms (hills), 2.05~ms (cylinder), 2.64~ms (duct), 6.03~ms (sphere).}
+\label{tab:turb_cost_all}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Category & Hills & Cyl & Duct & Sphere \\
+      &          & (74K) & (111K) & (885K) & (3.15M) \\
+\midrule
+Baseline (laminar) & --- & 0 & 0 & 0 & 0 \\
+$k$-$\omega$       & Transport & 0.010 & 0.010 & 0.010 & 0.010 \\
+SST $k$-$\omega$   & Transport & 0.025 & 0.026 & 0.037 & 0.074 \\
+EARSM-WJ           & Transport+NLEV & 0.026 & 0.028 & 0.038 & 0.077 \\
+EARSM-GS           & Transport+NLEV & 0.025 & 0.028 & 0.038 & 0.078 \\
+EARSM-Pope         & Transport+NLEV & 0.025 & 0.028 & 0.038 & 0.077 \\
+GEP                & Algebraic & 0.025 & 0.027 & 0.037 & 0.075 \\
+Mixing length      & Algebraic & 0.054 & 0.058 & 0.064 & 0.102 \\
+\midrule
+TBRF (1 tree)      & NN (tree) & 0.069 & 0.087 & 0.503 & 1.588 \\
+MLP ($32^2$)       & NN (dense) & 0.454 & 0.637 & 4.525 & 15.830 \\
+MLP-med ($64^2$)   & NN (dense) & 1.434 & 2.099 & 16.223 & 57.367 \\
+TBNN-s ($32^2$)    & NN (tensor) & 2.074 & 3.012 & 13.318 & 46.223 \\
+PI-TBNN-s ($32^2$) & NN (tensor) & 2.076 & 3.008 & 13.286 & 46.270 \\
+TBNN ($64^3$)      & NN (tensor) & 4.372 & 6.451 & 40.743 & 143.563 \\
+PI-TBNN ($64^3$)   & NN (tensor) & 4.377 & 6.450 & 40.663 & 144.313 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several key observations emerge from Table~\ref{tab:turb_cost_all}:
+
+\paragraph{Classical RANS models are negligible.}
+All eight classical models (baseline through mixing length) cost less than 0.1~ms per step on every grid.
+The relative overhead ranges from 0.2\% ($k$-$\omega$ on sphere) to 2.9\% (mixing length on cylinder).
+This confirms the conventional wisdom that the turbulence model is not the computational bottleneck for classical RANS---the Poisson solve, convection, and diffusion dominate.
+
+\paragraph{TBRF is the cheapest NN model by a wide margin.}
+The TBRF with a single tree per basis coefficient costs 0.07--1.6~ms per step, corresponding to an overhead of 3--28\% relative to baseline.
+This is an order of magnitude cheaper than any dense NN model.
+The GPU tree traversal kernel, which evaluates all 10 basis coefficients in a single fused pass over the cell array, achieves this low cost through memory-bandwidth-bound execution with minimal arithmetic intensity.
+
+\paragraph{TBNN and PI-TBNN have identical cost.}
+The physics-informed TBNN (PI-TBNN) matches the standard TBNN within measurement noise at every grid size.
+The realizability penalty that distinguishes PI-TBNN from TBNN is applied only during training (as an additional loss term); at inference time, both architectures perform the same forward pass through the same network.
+This confirms that physics-informed training adds zero inference overhead.
+
+\paragraph{NN cost scales linearly with grid size.}
+Figure~\ref{fig:nn_scaling} (TODO) shows the scaling of turbulence model cost with cell count.
+All dense NN models (MLP, TBNN) scale linearly---each cell's forward pass is independent (embarrassingly parallel matrix-vector multiply).
+The TBRF scales sub-linearly, reflecting the memory-bandwidth-bound nature of tree traversal versus the compute-bound nature of dense matrix multiplication.
+Classical models also scale linearly but with a much smaller per-cell cost.
+
+\paragraph{Network size determines cost, not architecture type.}
+Comparing models with similar parameter counts reveals that architecture matters less than size:
+\begin{itemize}
+    \item MLP ($32^2$, 1.2K params): 15.8~ms on sphere
+    \item TBNN-small ($32^2$, 1.4K params): 46.2~ms on sphere
+\end{itemize}
+The TBNN-small is $2.9\times$ more expensive than the MLP despite similar parameter counts because the TBNN evaluates 10 tensor basis coefficients (10 outputs + 10 basis tensor computations) versus the MLP's single scalar output.
+Within the same architecture family, cost scales roughly linearly with parameters:
+\begin{itemize}
+    \item MLP ($32^2$, 1.2K params) $\to$ MLP-med ($64^2$, 4.4K params): $3.6\times$ cost increase ($3.7\times$ parameter increase)
+    \item TBNN-small ($32^2$, 1.4K params) $\to$ TBNN ($64^3$, 9.4K params): $3.1\times$ cost increase ($6.7\times$ parameter increase, sub-linear)
+\end{itemize}
+
+\subsection{Relative overhead}
+\label{sec:cost:overhead}
+
+Table~\ref{tab:overhead} expresses the turbulence model cost as a percentage of the total solver step, revealing how the overhead depends on grid size.
+
+\begin{table}[htbp]
+\centering
+\caption{Turbulence model cost as percentage of total solver step time, NVIDIA H200. On 3D grids (duct, sphere), NN models dominate step cost; on 2D grids (hills, cylinder), the overhead is smaller because the base solver cost per cell is proportionally higher.}
+\label{tab:overhead}
 \begin{tabular}{lrrrr}
 \toprule
-Model & Turb update (s) & Total step (s) & Overhead & Turb \% \\
+Model & Hills & Cyl & Duct & Sphere \\
 \midrule
-Baseline        & 2.33  & 45.0  & ---       & 5.2\% \\
-$k$-$\omega$    & 0.47  & 45.1  & $+0.2\%$  & 1.0\% \\
-SST             & 1.26  & 46.9  & $+4.2\%$  & 2.7\% \\
-EARSM           & 1.46  & 47.1  & $+4.7\%$  & 3.1\% \\
-NN-MLP          & 12.78 & 55.6  & $+23.6\%$ & 23.0\% \\
-NN-TBNN         & 85.55 & 129.0 & $+186.7\%$ & 66.3\% \\
+$k$-$\omega$ & 0.5\% & 0.5\% & 0.4\% & 0.2\% \\
+SST & 1.2\% & 1.3\% & 1.3\% & 1.2\% \\
+EARSM (avg) & 1.3\% & 1.4\% & 1.4\% & 1.2\% \\
+GEP & 1.3\% & 1.3\% & 1.4\% & 1.2\% \\
+Mixing length & 2.7\% & 2.8\% & 2.4\% & 1.7\% \\
+\midrule
+TBRF-1t & 3.4\% & 4.2\% & 15.7\% & 20.6\% \\
+MLP & 19.0\% & 23.7\% & 62.7\% & 72.4\% \\
+MLP-med & 42.4\% & 50.3\% & 85.8\% & 90.3\% \\
+TBNN-small & 51.0\% & 58.8\% & 83.1\% & 88.3\% \\
+TBNN & 68.9\% & 75.3\% & 93.7\% & 95.9\% \\
+PI-TBNN & 68.9\% & 75.3\% & 93.7\% & 95.9\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The scaling from 2D to 3D evaluation is informative: the TBNN turbulence update increases from 85.6~s (50K steps, 16K cells per step) to 98.4~ms/step $\times$ 50 steps $= 4.92$~s (50 steps, 2.1M cells per step).
-The per-cell cost is 85.6/50000/16384 $\approx$ 0.10~$\mu$s/cell (L40S, 2D) versus 98.4/2097152 $\approx$ 0.047~$\mu$s/cell (H100, 3D), reflecting the H100's higher throughput and the improved GPU occupancy at larger batch sizes.
+On the 3D sphere grid (3.15M cells), the TBNN consumes 96\% of the total step time---the solver infrastructure (Poisson, convection, diffusion, IBM) accounts for only 4\%.
+Even the smallest TBNN variant (TBNN-small, $32^2$ hidden layers) dominates at 88\%.
+The MLP with $32^2$ hidden layers reaches 72\%, and only the TBRF remains practical at 21\%.
 
-\subsection{Sub-phase timing breakdown}
-\label{sec:subphase}
+The overhead is systematically lower on 2D grids because the solver's per-cell infrastructure cost is proportionally higher (the FFT2D Poisson solve is relatively more expensive per cell on 2D grids than FFT3D is on 3D grids, due to cuFFT's batching efficiency at larger problem sizes).
 
-The solver's timing infrastructure (TIMED\_SCOPE) instruments each phase of the NN turbulence update independently.
-Table~\ref{tab:subphase} shows the breakdown for the TBNN and TBRF on the $128^3$ H100 benchmark.
+\subsection{Adaptive time step: wall time per physical time}
+\label{sec:cost:adaptive}
+
+The fixed-$\Delta t$ analysis above isolates the per-step model overhead.
+In production, however, the adaptive time step creates a second cost mechanism: models that produce large $\nu_t$ reduce the diffusive CFL limit, forcing smaller $\Delta t$ and more time steps to simulate the same physical time.
+Table~\ref{tab:wall_time} reports the total wall time to simulate a fixed interval of physical time (2~seconds) with adaptive $\Delta t$, using the same three-phase warm-up protocol.
 
 \begin{table}[htbp]
 \centering
-\caption{Sub-phase timing breakdown for NN turbulence models, $128^3$ (2.1M cells), H100. TBNN is fully GPU-resident; TBRF requires GPU$\to$CPU sync for tree traversal.}
-\label{tab:subphase}
-\begin{tabular}{llrrl}
+\caption{Wall time (seconds) to simulate 2~s of physical time with adaptive $\Delta t$ on NVIDIA H200, after SST warm-up. The step count varies because each model's $\nu_t$ field determines the CFL-limited $\Delta t$. The ``slowdown'' column is relative to baseline.}
+\label{tab:wall_time}
+\begin{tabular}{lrrrrrr}
 \toprule
-Model & Phase & ms/step & \% of turb & Device \\
+& \multicolumn{3}{c}{Cylinder Re$=100$ (111K)} & \multicolumn{3}{c}{Duct Re$_b=3{,}500$ (885K)} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+Model & Wall (s) & Steps & Slow & Wall (s) & Steps & Slow \\
 \midrule
-\multirow{5}{*}{TBNN}
-    & Velocity gradients     & 0.06   & 0.06\%  & GPU \\
-    & Feature computation    & 0.45   & 0.46\%  & GPU \\
-    & NN inference           & 76.8   & 78.0\%  & GPU \\
-    & Postprocessing         & 0.18   & 0.18\%  & GPU \\
-    & Full GPU kernel (fused)& 77.4   & 78.7\%  & GPU \\
-    & \textbf{Total turb}    & \textbf{98.4} & \textbf{100\%} & \textbf{GPU} \\
-\midrule
-\multirow{4}{*}{TBRF-1}
-    & Feature computation    & 10.9   & 27.6\%  & GPU$\to$CPU \\
-    & Tree inference         & 2.6    & 6.6\%   & CPU \\
-    & Postprocessing         & ---    & ---     & CPU \\
-    & \textbf{Total turb}    & \textbf{39.5}  & \textbf{100\%} & \textbf{hybrid} \\
-\midrule
-\multirow{4}{*}{TBRF-10}
-    & Feature computation    & 10.9   & 14.3\%  & GPU$\to$CPU \\
-    & Tree inference         & 39.3   & 51.4\%  & CPU \\
-    & Postprocessing         & ---    & ---     & CPU \\
-    & \textbf{Total turb}    & \textbf{76.4}  & \textbf{100\%} & \textbf{hybrid} \\
+Baseline      & 0.28  & 174   & $1.0\times$  & 0.79  & 298   & $1.0\times$ \\
+SST           & 0.87  & 482   & $3.1\times$  & 0.84  & 298   & $1.1\times$ \\
+EARSM-WJ     & 0.37  & 196   & $1.3\times$  & 0.85  & 298   & $1.1\times$ \\
+TBRF-1t       & 8.21  & 4659  & $29\times$   & 0.96  & 298   & $1.2\times$ \\
+MLP           & 11.01 & 4654  & $39\times$   & 125.5 & 17357 & $159\times$ \\
+TBNN-small    & 22.87 & 4663  & $82\times$   & 4.84  & 298   & $6.1\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Several important conclusions emerge:
+The adaptive-$\Delta t$ results reveal a qualitatively different cost landscape than the fixed-$\Delta t$ analysis:
 
-\paragraph{TBNN inference dominates its own cost.}
-The NN forward pass (matrix-vector multiplies with $\tanh$ activations) accounts for 78\% of the TBNN's turbulence update time.
-Feature computation (velocity gradients, invariants, tensor basis) is comparatively negligible at 0.5\%.
-This means that reducing the network size (e.g., fewer layers, smaller hidden dimensions) would translate nearly directly to proportional cost reduction.
+\paragraph{MLP crushes the time step on all geometries.}
+On the cylinder, the MLP takes 4{,}654 steps versus baseline's 174 ($27\times$ more steps) because its large $\nu_t$ prediction reduces $\Delta t$ from $1.2 \times 10^{-2}$ to $4.3 \times 10^{-4}$.
+Combined with the 47\% per-step model overhead, this yields a total slowdown of $39\times$.
+On the duct, the effect is even more dramatic: the MLP takes 17{,}357 steps ($58\times$ more) for a total slowdown of $159\times$.
+This systematic over-prediction of eddy viscosity is a generalization failure that imposes a severe practical cost penalty even when the model nominally ``runs'' without crashing.
 
-\paragraph{TBRF is bottlenecked by GPU$\to$CPU synchronization.}
-The feature computation phase for TBRF requires 10.9~ms---the same invariant and tensor basis computation that takes only 0.5~ms for the fully GPU-resident TBNN.
-The $22\times$ slowdown is entirely due to the GPU$\to$CPU memory transfer required to run the tree traversal on the CPU.
-At $128^3$ (2.1M cells), this synchronization transfers approximately 2.1M $\times$ 5 features $\times$ 8 bytes $= 84$~MB plus 2.1M $\times$ 10 bases $\times$ 6 components $\times$ 8 bytes $= 1.0$~GB of tensor basis data from GPU to CPU.
+\paragraph{TBRF-1t is penalized by $\Delta t$ on the cylinder but not on the duct.}
+On the cylinder (an unseen geometry), the TBRF-1t takes 4{,}659 steps ($27\times$ baseline), producing a $29\times$ total slowdown despite its low per-step cost.
+On the duct (a trained geometry), the TBRF-1t takes the same 298 steps as baseline, yielding only $1.2\times$ total slowdown.
+This demonstrates that the $\Delta t$ penalty is geometry-dependent and reflects the model's accuracy, not its computational architecture.
 
-\paragraph{Tree inference scales linearly with tree count.}
-The tree traversal itself is fast on CPU: 2.6~ms for 1~tree vs.\ 39.3~ms for 10~trees ($15\times$ for $10\times$ more trees), showing near-linear scaling.
-This confirms that the tree traversal is compute-bound on CPU, not memory-bound.
-A fully GPU-resident tree implementation would eliminate the 10.9~ms synchronization overhead but introduce warp divergence; the net effect on performance is an open question.
+\paragraph{Two distinct cost mechanisms.}
+The total cost of a turbulence closure in production is:
+\begin{equation}
+    C_\mathrm{total} = \underbrace{C_\mathrm{step}}_{\text{per-step overhead}} \times \underbrace{N_\mathrm{steps}}_{\text{adaptive } \Delta t \text{ penalty}}
+\end{equation}
+The fixed-$\Delta t$ tables isolate $C_\mathrm{step}$; the adaptive-$\Delta t$ table captures $C_\mathrm{total}$.
+A model can be cheap per step but expensive in total if it produces excessive $\nu_t$ (MLP on cylinder), or expensive per step but cheap in total if its $\nu_t$ is well-calibrated (TBNN-small on duct).
+The Pareto-optimal choice depends on whether the application is accuracy-limited or cost-limited.
 
-\subsection{Why TBNN costs $20\times$ more than the base solver}
+\subsection{Component breakdown}
+\label{sec:cost:breakdown}
 
-The TBNN's 98.4~ms turbulence update on a 4.84~ms base step is the most extreme overhead of any model tested.
-Three factors contribute:
-
-\begin{enumerate}
-    \item \textbf{High per-cell FLOP count}: The TBNN performs $\sim$10{,}300~FLOPs per cell for the NN forward pass, invariant computation, and tensor basis contraction.
-    The base solver's stencil operations (convection + diffusion) require only $\sim$100 FLOPs per cell per field component, and the FFT Poisson solver does $O(\log N)$ work per cell.
-    The TBNN's per-cell cost exceeds the entire base solver step by roughly $100\times$.
-
-    \item \textbf{Layer-sequential execution}: The 4-layer TBNN requires 4 serial matrix-vector products.
-    Within each layer, the parallelism is over (cell, neuron) pairs: at $128^3$ with 64 neurons, this yields 134M parallel work items---sufficient to saturate the H100---but the serial layer dependency means the GPU completes one layer before starting the next.
-
-    \item \textbf{Activation cost}: The TBNN evaluates 192~$\tanh$ functions per cell (64 per hidden layer $\times$ 3 layers).
-    On GPU, $\tanh$ takes $\sim$$20$ cycles versus $\sim$$4$ for a multiply, so the 192 activations cost roughly $192 \times 20 = 3{,}840$ effective cycles per cell---comparable to the matrix-vector products themselves.
-\end{enumerate}
-
-\subsection{Scaling with grid size}
-
-Table~\ref{tab:grid_scaling} shows how the total step time and turbulence update time scale with grid size for the baseline and TBNN on the H100.
+To visualize where the computational time is spent, Table~\ref{tab:breakdown_sphere} provides a complete component breakdown for the sphere case (3.15M cells), which has the highest absolute costs and the clearest separation between components.
 
 \begin{table}[htbp]
 \centering
-\caption{Scaling of total step time and TBNN overhead with grid size (H100, single GPU, channel flow).}
-\label{tab:grid_scaling}
-\begin{tabular}{rrrrr}
+\caption{Complete per-step cost breakdown for sphere Re$=200$ (3.15M cells), NVIDIA H200, fixed $\Delta t = 0.015$. RK3 calls convection, diffusion, Poisson, IBM, and velocity correction 3$\times$ per step; turbulence is called once.}
+\label{tab:breakdown_sphere}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Grid & Cells & Baseline (ms) & TBNN (ms) & TBNN overhead \\
+Model & Total & Turb & Poisson & Conv & Diff & IBM & Other \\
+      & (ms)  & (ms) & (ms)    & (ms) & (ms) & (ms)& (ms) \\
 \midrule
-$32^3$  & 32K    & $\sim$0.3  & $\sim$1.5   & $\sim$400\% \\
-$128^3$ & 2.1M   & 4.84       & 103.3       & 2{,}032\% \\
-$256^3$ & 16.8M  & 27.2       & ---         & --- \\
+Baseline        &  6.03 &  0     & 1.13 & 0.80 & 0.53 & 0.25 & 3.32 \\
+SST             &  6.24 &  0.07  & 1.13 & 0.80 & 0.53 & 0.25 & 3.46 \\
+EARSM-WJ       &  6.32 &  0.08  & 1.13 & 0.80 & 0.53 & 0.25 & 3.53 \\
+TBRF-1t         &  7.72 &  1.59  & 1.13 & 0.80 & 0.53 & 0.25 & 3.42 \\
+MLP ($32^2$)    & 21.98 & 15.83  & 1.13 & 0.80 & 0.53 & 0.25 & 3.44 \\
+TBNN-s ($32^2$) & 52.37 & 46.22  & 1.13 & 0.80 & 0.53 & 0.25 & 3.44 \\
+TBNN ($64^3$)   &149.76 &143.56  & 1.13 & 0.80 & 0.53 & 0.25 & 3.49 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The baseline solver scales roughly as $O(N \log N)$ (dominated by the FFT Poisson solve), while the TBNN scales as $O(N)$ (linear in the number of cells).
-At small grids ($32^3$), the TBNN's relative overhead is lower because the base solver has fixed overheads (kernel launch, FFT plan creation) that become negligible at larger sizes.
-At $128^3$, the TBNN is fully compute-bound and its linear scaling dominates.
+The Poisson solve (1.13~ms $= 3 \times 0.377$~ms/substep), convection (0.80~ms), and diffusion (0.53~ms) are perfectly constant across all models.
+The IBM forcing (0.25~ms) is also constant.
+The ``Other'' column captures the velocity correction, $\nu_\mathrm{eff}$ computation, residual evaluation, boundary conditions, and RK3 bookkeeping.
+The \emph{only} component that varies is the turbulence model evaluation.
 
-\subsection{TBRF cost anatomy}
-\label{sec:tbrf_cost}
-
-The TBRF's cost structure differs fundamentally from the TBNN because its inference engine (decision tree traversal) is not GPU-resident in the current implementation.
-The full execution pipeline per time step is:
-
-\begin{enumerate}
-    \item \textbf{Feature computation on GPU} ($< 1$~ms): Compute velocity gradients, strain/rotation rate tensors, non-dimensionalize by $k/\varepsilon$, compute 5 Pope invariants and 10 tensor basis tensors.
-    This uses the same GPU kernels as the TBNN.
-
-    \item \textbf{GPU$\to$CPU transfer} ($\sim$10~ms): Copy the invariant and tensor basis arrays from GPU to CPU memory.
-    At $128^3$, this transfers $\sim$1.1~GB of data across the PCIe/NVLink bus.
-
-    \item \textbf{Tree traversal on CPU} (2.6--39.3~ms): For each cell, for each of 10 basis coefficients, traverse all trees and average.
-    Each tree traversal is a depth-$\sim$20 sequence of comparison-and-branch operations.
-    The tree data structure (56~MB for 10 trees) fits in CPU L3 cache.
-
-    \item \textbf{Tensor contraction + CPU$\to$GPU transfer}: Reconstruct $b_{ij} = \sum_n g^{(n)} T^{(n)}_{ij}$ and copy results back to GPU.
-\end{enumerate}
-
-The GPU$\to$CPU synchronization in step~2 accounts for 28\% of the TBRF-1 total cost and 14\% of TBRF-10.
-A fully GPU-resident implementation would eliminate this overhead but face the fundamental challenge of warp divergence: cells within the same warp follow different paths through each tree, serializing execution within each 32-thread warp.
-Whether the elimination of data transfer overhead outweighs the warp divergence penalty is an open question that we leave for future work.
-
-\subsection{TBRF tree count vs.\ cost tradeoff}
-
-The TBRF's cost scales linearly with the number of trees per coefficient, as shown in Table~\ref{tab:tbrf_cost_scaling}.
-
-\begin{table}[htbp]
-\centering
-\caption{TBRF cost vs.\ accuracy tradeoff ($128^3$, H100). Val RMSE from a priori evaluation; cost from 3D GPU profiling.}
-\label{tab:tbrf_cost_scaling}
-\begin{tabular}{rrrrrr}
-\toprule
-Trees & Total nodes & Size & Val RMSE$(b)$ & Turb (ms) & Overhead \\
-\midrule
-1   & 283K   & \SI{5.7}{MB}  & 0.0778 & 39.5  & $+816\%$ \\
-5   & 1.4M   & \SI{29}{MB}   & 0.0678 & 52.5  & $+1{,}085\%$ \\
-10  & 2.8M   & \SI{56}{MB}   & 0.0650 & 76.4  & $+1{,}580\%$ \\
-200 & 55M    & \SI{1.1}{GB}  & 0.0637 & ---   & impractical \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Diminishing returns are evident: 10 trees capture 96\% of the full TBRF's accuracy improvement over the TBNN, while 1 tree captures 79\%.
-The cost increase from 1 to 10 trees is $1.9\times$ (76.4 vs.\ 39.5~ms), almost entirely from the tree inference phase (which scales linearly from 2.6 to 39.3~ms).
-The feature computation cost (10.9~ms) is constant across all tree counts.
+This clean decomposition is possible because the solver uses an FFT-based direct Poisson solve with no iterative convergence, and because the fixed-$\Delta t$ protocol ensures identical work in every other solver phase.
+With an iterative Poisson solver (e.g., multigrid), the Poisson cost could vary between models if different $\nu_t$ fields produce differently conditioned pressure equations.
 
 \subsection{Cost-accuracy tradeoff}
 \label{sec:pareto}
 
-\todo{Generate the Pareto plot once a posteriori data is available:
-\begin{itemize}
-    \item $x$-axis: computational cost (total step time overhead \%, or absolute ms/step)
-    \item $y$-axis: a posteriori prediction error (e.g., $L_2$ norm of $u^+(y^+)$ error vs.\ DNS for channel flow)
-    \item Each model is a labeled point
-    \item Identify the Pareto frontier---models not dominated by any other
-\end{itemize}
-This is the central figure of the paper.}
+The per-step cost data from Table~\ref{tab:turb_cost_all} provides the $x$-axis for the Pareto cost-accuracy plot.
+The $y$-axis (a posteriori prediction accuracy) will be populated from the production a posteriori runs (Section~\ref{sec:aposteriori}).
+The combination of per-step overhead (computational architecture) and adaptive-$\Delta t$ penalty (model accuracy) defines the full cost landscape that practitioners must navigate when selecting a closure.

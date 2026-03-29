@@ -351,6 +351,65 @@ int main(int argc, char** argv) {
               << std::setw(15) << "Bulk u"
               << "\n";
 
+    // Warm-up phase: run with SST to develop flow before switching to target model
+    if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
+        TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
+        if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
+
+        auto warmup_turb = create_turbulence_model(warmup_type, "", "");
+        if (warmup_turb) {
+            warmup_turb->set_nu(config.nu);
+            solver.set_turbulence_model(std::move(warmup_turb));
+
+            std::cout << "=== Warm-up phase: " << config.warmup_model
+                      << " for t=" << config.warmup_time << " ===\n";
+
+            for (int ws = 1; ws <= config.max_steps; ++ws) {
+                if (config.adaptive_dt) {
+                    solver.set_dt(solver.compute_adaptive_dt());
+                }
+                double res = solver.step();
+                double t = solver.current_time();
+                if (t >= config.warmup_time) {
+                    std::cout << "Warm-up complete at step " << ws
+                              << ", t=" << t << ", res=" << res << "\n";
+                    break;
+                }
+                if (std::isnan(res) || std::isinf(res) || res > 1e10) {
+                    std::cerr << "Warm-up diverged at step " << ws << "\n";
+                    break;
+                }
+            }
+
+            // Switch to target model
+            if (config.turb_model != TurbulenceModelType::None) {
+                auto target_turb = create_turbulence_model(config.turb_model,
+                                                           config.nn_weights_path,
+                                                           config.nn_scaling_path,
+                                                           config.pope_C1,
+                                                           config.pope_C2);
+                if (target_turb) {
+                    if (!target_turb->uses_transport_equations()) {
+                        auto bg_sst = create_turbulence_model(
+                            TurbulenceModelType::SSTKOmega, "", "");
+                        if (bg_sst) {
+                            bg_sst->set_nu(config.nu);
+                            solver.set_background_transport(std::move(bg_sst));
+                        }
+                    }
+                    target_turb->set_nu(config.nu);
+                    solver.set_turbulence_model(std::move(target_turb));
+                }
+            } else {
+                solver.set_turbulence_model(nullptr);
+            }
+
+            TimingStats::instance().reset();
+            std::cout << "=== Evaluation phase from t="
+                      << solver.current_time() << " ===\n";
+        }
+    }
+
     ScopedTimer total_timer("Total simulation", false);
 
     // Setup VTK snapshots
@@ -381,13 +440,21 @@ int main(int argc, char** argv) {
         }
         residual = solver.step();
 
+        // Physical time limit
+        {
+            double time = solver.current_time();
+            if (config.T_final > 0.0 && time >= config.T_final) {
+                std::cout << "Reached T_final=" << config.T_final
+                          << " at step " << iter << ", t=" << time << "\n";
+                break;
+            }
+        }
+
         // Reset timers after warmup iterations (excluded from reported timing)
         if (config.warmup_steps > 0 && iter == config.warmup_steps) {
             TimingStats::instance().reset();
-            if (config.verbose) {
-                std::cout << "    [Warmup complete: " << config.warmup_steps
-                          << " iterations, timers reset]\n";
-            }
+            std::cout << "=== Timers reset after " << config.warmup_steps
+                      << " warmup steps, t=" << solver.current_time() << " ===\n";
         }
 
         // Write VTK snapshot
@@ -403,7 +470,7 @@ int main(int argc, char** argv) {
         if (iter % progress_interval == 0 || iter == 1) {
             std::cout << "    Step " << std::setw(6) << iter << " / " << config.max_steps
                       << "  (" << std::setw(3) << (100 * iter / config.max_steps) << "%)"
-                      << "  residual = " << std::scientific << std::setprecision(3) << residual
+                      << "  res=" << std::scientific << std::setprecision(3) << residual
                       << std::fixed << "\n" << std::flush;
         } else if (config.verbose && (iter % config.output_freq == 0)) {
 #ifdef USE_GPU_OFFLOAD
@@ -489,8 +556,19 @@ int main(int argc, char** argv) {
     double max_u = compute_max_velocity_3d(mesh, solver.velocity());
     double bulk_u = compute_bulk_velocity_3d(mesh, solver.velocity());
 
+    // Secondary flow diagnostics: max |v| and max |w|
+    double max_v = 0.0, max_w = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                max_v = std::max(max_v, std::abs(solver.velocity().v(i, j, k)));
+                max_w = std::max(max_w, std::abs(solver.velocity().w(i, j, k)));
+            }
+
     std::cout << "Max velocity: " << std::fixed << std::setprecision(6) << max_u << "\n";
     std::cout << "Bulk velocity: " << bulk_u << "\n";
+    std::cout << "Max |v| (secondary): " << std::scientific << std::setprecision(6) << max_v << "\n";
+    std::cout << "Max |w| (secondary): " << max_w << std::fixed << "\n";
 
     // Only compare against analytical solution for steady-state runs
     if (!is_unsteady && config.turb_model == TurbulenceModelType::None) {

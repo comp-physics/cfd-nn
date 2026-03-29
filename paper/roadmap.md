@@ -1,5 +1,26 @@
 # Paper Roadmap: NN Turbulence Closures — Cost-Accuracy Tradeoff
 
+> **NOTE (Mar 28, 2026):** This roadmap is partially outdated. The authoritative sources are:
+> - **`paper/TODO.md`** — current task list, model matrix, case matrix, remaining work
+> - **`memory/ibm_force_fix.md`** — critical IBM bug fixes and validated Cd results
+>
+> **Major updates (Mar 28):**
+> - **ANISOTROPIC STRESS DIVERGENCE**: tau_ij was computed but NEVER used. Fixed with proper decomposition method.
+>   - Cylinder: SST=1.72, EARSM=1.64, TBNN=1.80, TBRF=1.76, GEP=1.66 — ALL DIFFERENT
+>   - Hills: EARSM=0.80, SST=0.73, k-omega=0.65 — three distinct models, all stable
+>   - Key: must use SST nu_t in diffusion, model tau_ij as source (standard decomposition)
+> - IBM force bugs fixed (ghost-cell force=0, bulk velocity controller, momentum-balance Cd)
+> - dp/dx=-1.0 for hills was 8000× too large; config key `body` vs `ibm_body`
+> - Hills Re=5600 (training data Re) now works with SST, k-omega, AND EARSM
+> - All 4 cases validated: cylinder, sphere, duct, hills (with proper Re values)
+> - **SST validated on hills**: reattach x/H=7.63 (DNS 4.83, lit SST 7-8) — solver matches published results
+> - **2D anisotropy tiny**: TBNN/EARSM ≈ SST in 2D. Need 3D for meaningful NN correction.
+> - **3D extension in progress**: Task 1 DONE (9 velocity gradients). Tasks 2-7 remaining.
+> - **Full RSM (SSG/LRR-ω) to be implemented**: 7-eq transport model, most expensive classical RANS.
+>   Provides "expensive traditional" comparison point on Pareto frontier.
+> - **Duct is PRIMARY case**: SST(0) < EARSM(partial) ≤ RSM(partial) < TBNN(≈DNS?)
+> - **Paper hierarchy**: cheap+wrong(SST) → cheap+partial(EARSM) → expensive+partial(RSM) → expensive+right?(TBNN)
+
 ## 1. Paper Narrative
 
 ### Thesis

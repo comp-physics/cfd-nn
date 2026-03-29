@@ -1,120 +1,122 @@
 # Paper Experiment Matrix: NN vs Traditional RANS Cost-Accuracy Tradeoff
 
+**Last updated: Mar 24, 2026**
+
 ## Goal
 
-Determine whether NN-based turbulence closures on coarse grids can match the accuracy of traditional RANS models on fine grids, and at what computational cost.
+Determine whether NN-based turbulence closures can match or exceed the accuracy of traditional RANS models, and at what computational cost. Central deliverable: Pareto plot of cost vs accuracy across 20 models and 8 flow configurations.
 
-## Test Cases
+## A Posteriori Cases (4 geometries, 8 configurations)
 
-### Case 1: Turbulent Channel Flow (Re_tau = 180)
+### Case overview
 
-**Reference:** Moser, Kim & Mansour (1999) DNS — downloadable via `scripts/download_reference_data.sh`
+| Geometry | Re values | Dim | Grid | Cells | Poisson | Training | Config files |
+|----------|-----------|-----|------|-------|---------|----------|-------------|
+| Periodic hills | 10595 | 2D | 384×192×1 | 74K | FFT2D | Trained | `hills_re10595.cfg` |
+| Cylinder | 100, 300, 3900 | 2D | 384×288×1 | 111K | FFT2D | Unseen | `cylinder_re{100,300,3900}.cfg` |
+| Square duct | 3500 | 3D | 96×96×96 | 885K | FFT1D | Trained | `duct_reb3500.cfg` |
+| Sphere | 100, 200, 300 | 3D | 192×128×128 | 3.15M | FFT 3D | Unseen | `sphere_re{100,200,300}.cfg` |
 
-**BCs:** Periodic x/z, no-slip y, stretched grid → **FFT Poisson** (fast)
+**Design rationale:**
+- 2 trained + 2 unseen geometries (tests generalization)
+- 2 2D + 2 3D cases (tests scaling)
+- Re sweeps for IBM bodies (tests Reynolds number generalization)
+- Cylinder is 2D even at Re=3900 — RANS models the turbulence, doesn't resolve it
+- All configs in `examples/paper_experiments/`
 
-**Domain:** [0, 2pi] x [-1, 1] x [0, pi]
+### Physics at each Re
 
-**Why this case:** Cleanest comparison. Every model should "work" — the question is accuracy vs cost.
+**Cylinder:**
+- Re=100: laminar vortex shedding (Cd≈1.35, St≈0.165)
+- Re=300: transitional (Cd≈1.38, St≈0.21)
+- Re=3900: turbulent sub-critical wake (Cd≈0.98, St≈0.21, Parnaudeau et al. 2008)
 
-### Case 2: Periodic Hills (Re_H = 5,600)
+**Sphere:**
+- Re=100: steady axisymmetric (Cd≈1.09, sep≈127°)
+- Re=200: steady non-axisymmetric (Cd≈0.77, sep≈117°, Johnson & Patel 1999)
+- Re=300: unsteady vortex shedding (Cd≈0.66, St≈0.135)
 
-**Reference:** Breuer et al. DNS/LES — available in McConkey dataset
+## Quantities of Interest (QoIs) — ALL IMPLEMENTED
 
-**BCs:** Periodic x/z, no-slip y + IBM hill → **FFT Poisson** (fast)
+### Hills (in `app/main_hills.cpp`)
 
-**Domain:** [0, 9H] x [0, 3.035H] x [0, 4.5H]
+| QoI | Function | Output file |
+|-----|----------|-------------|
+| Separation point x_s/H | `find_separation_reattachment()` | stdout |
+| Reattachment point x_r/H | `find_separation_reattachment()` | stdout |
+| Skin friction Cf(x) | `compute_cf_x_device()` | `cf_x.dat` |
+| Velocity profiles u(y) at x/H=0.5,2,4,6,8 | `extract_velocity_profile_device()` | `profile_xH*.dat` |
 
-**Why this case:** Separation and reattachment. Simple RANS models fail here. Tests whether NN closures generalize to complex physics.
+### Cylinder (in `app/main_cylinder.cpp`)
 
-## Quantities of Interest (QoIs)
+| QoI | Function | Output file |
+|-----|----------|-------------|
+| Mean Cd (2nd half) | IBM `compute_forces()` | `qoi_summary.dat` |
+| Strouhal number St | `compute_strouhal()` (Cl zero-crossings) | `qoi_summary.dat` |
+| Wake profiles u(y) at x/D=1,2,3,5 | `extract_wake_profile()` | `wake_xD*.dat` |
+| Force time series | IBM `compute_forces()` | `forces.dat` |
 
-### Channel flow QoIs (vs MKM DNS):
+### Duct (in `app/main_duct.cpp`)
 
-| QoI | What it tests | Who fails |
-|-----|---------------|-----------|
-| **Q1: Mean velocity u+(y+)** | Basic momentum balance | Nobody (all RANS get this OK) |
-| **Q2: Reynolds shear stress -<u'v'>+(y+)** | Turbulent transport | Mixing length is rough, SST OK |
-| **Q3: Normal stress anisotropy <u'u'>+ - <v'v'>+** | Anisotropy prediction | **All eddy-viscosity models fail** (can't predict by construction). Only EARSM and TBNN can. |
-| **Q4: Wall shear stress (u_tau / Re_tau)** | Integral accuracy | Discriminates model quality |
+| QoI | Function | Output file |
+|-----|----------|-------------|
+| Cross-section (u,v,w)(y,z) | `extract_cross_section_device()` | `duct_cross_section.dat` |
+| Wall shear tau_w(z) | `compute_wall_shear_y_device()` | `wall_shear_y.dat` |
 
-### Periodic hills QoIs (vs Breuer DNS/LES):
+### Sphere (in `app/main_cylinder.cpp`, `ibm_body = sphere`)
 
-| QoI | What it tests | Who fails |
-|-----|---------------|-----------|
-| **Q5: Separation point x_s/H** | Adverse pressure gradient response | Simple RANS overshoots |
-| **Q6: Reattachment length x_r/H** | Recovery prediction | Sensitive to closure |
-| **Q7: Skin friction Cf(x) profile** | Wall-bounded accuracy everywhere | Discriminates all models |
-| **Q8: Mean velocity u(y) at x/H = 2, 4, 6** | Flow field accuracy at key stations | Separation zone accuracy |
+| QoI | Function | Output file |
+|-----|----------|-------------|
+| Mean Cd (2nd half) | IBM `compute_forces()` | `qoi_summary.dat` |
+| Separation angle | `compute_separation_angle_sphere()` | `qoi_summary.dat` |
+| Strouhal number St | `compute_strouhal()` | `qoi_summary.dat` |
+| Wake profiles u(y) at x/D=1,2,3,5 | `extract_wake_profile()` | `wake_xD*.dat` |
+| Force time series | IBM `compute_forces()` | `forces.dat` |
 
-### Error metrics:
+### Error metrics
 
-For each QoI, compute:
-- **L2 relative error** vs DNS reference: `||f_RANS - f_DNS||_2 / ||f_DNS||_2`
-- Report as percentage
+- **L2 relative error** vs reference: `||f_model - f_ref||_2 / ||f_ref||_2`
+- Scalar QoIs (Cd, St, sep angle): relative error `|model - ref| / |ref|`
 
-**Accuracy targets:**
-- Q1 (u+): < 5% L2 error (easy for all models)
-- Q2 (-<u'v'>+): < 10% L2 error
-- Q3 (anisotropy): < 20% L2 error (hard — eddy viscosity models will fail)
-- Q4 (u_tau): < 3% relative error
-- Q5 (x_s): < 10% relative error
-- Q6 (x_r): < 10% relative error
-- Q7 (Cf): < 15% L2 error
-- Q8 (u profiles): < 10% L2 error at each station
+## Turbulence Models (20 total)
 
-## Turbulence Models
+### Classical RANS (8)
 
-| Model | Type | Anisotropy? | Config flag | Pre-trained weights |
-|-------|------|-------------|-------------|-------------------|
-| `baseline` | Algebraic | No | `--model baseline` | None needed |
-| `sst` | Transport (2-eq) | No | `--model sst` | None needed |
-| `earsm_pope` | Transport + EARSM | **Yes** | `--model earsm_pope` | None needed |
-| `nn_mlp` | NN scalar nu_t | No | `--model nn_mlp --nn_preset mlp_*_caseholdout` | Channel + PHLL |
-| `nn_tbnn` | NN anisotropy | **Yes** | `--model nn_tbnn --nn_preset tbnn_*_caseholdout` | Channel + PHLL |
+| Model | Config `turb_model` value | Anisotropy? |
+|-------|--------------------------|-------------|
+| None (laminar) | `baseline` | No |
+| Mixing length | `mixing_length` | No |
+| k-omega | `komega` | No |
+| SST k-omega | `sst` | No |
+| EARSM-WJ | `earsm_wj` | Yes |
+| EARSM-GS | `earsm_gs` | Yes |
+| EARSM-Pope | `earsm_pope` | Yes |
+| GEP | `gep` | Yes |
 
-**Key comparisons:**
-- `baseline` vs `sst`: Does transport equation help?
-- `sst` vs `earsm_pope`: Does anisotropy help?
-- `sst` vs `nn_mlp`: Does NN improve scalar closure?
-- `earsm_pope` vs `nn_tbnn`: NN vs traditional anisotropy model
+### ML (12, size variants)
 
-## Grid Resolution Ladder
-
-### Channel flow grids (3D):
-
-| Grid | Nx x Ny x Nz | Total cells | Role |
-|------|-------------|-------------|------|
-| **D (extra-fine)** | 256 x 192 x 256 | 12,582,912 | Over-resolved reference |
-| **A (fine)** | 128 x 96 x 128 | 1,572,864 | Reference-quality RANS |
-| **B (medium)** | 64 x 64 x 64 | 262,144 | Standard RANS |
-| **C (coarse)** | 32 x 32 x 32 | 32,768 | Can NN compensate? |
-
-### Periodic hills grids (3D):
-
-| Grid | Nx x Ny x Nz | Total cells | Role |
-|------|-------------|-------------|------|
-| **D (extra-fine)** | 256 x 128 x 128 | 4,194,304 | Over-resolved reference |
-| **A (fine)** | 128 x 64 x 64 | 524,288 | Reference-quality RANS |
-| **B (medium)** | 64 x 32 x 32 | 65,536 | Standard RANS |
-| **C (coarse)** | 32 x 16 x 16 | 8,192 | Can NN compensate? |
+| Model | Config value | Weights dir |
+|-------|-------------|-------------|
+| MLP | `nn_mlp` | `data/models/mlp_paper/` |
+| MLP-Medium | `nn_mlp` | `data/models/mlp_med_paper/` |
+| MLP-Large | `nn_mlp` | `data/models/mlp_large_paper/` |
+| TBNN-Small | `nn_tbnn` | `data/models/tbnn_small_paper/` |
+| TBNN | `nn_tbnn` | `data/models/tbnn_paper/` |
+| TBNN-Large | `nn_tbnn` | `data/models/tbnn_large_paper/` |
+| PI-TBNN-Small | `nn_tbnn` | `data/models/pi_tbnn_small_paper/` |
+| PI-TBNN | `nn_tbnn` | `data/models/pi_tbnn_paper/` |
+| PI-TBNN-Large | `nn_tbnn` | `data/models/pi_tbnn_large_paper/` |
+| TBRF-1t | `nn_tbrf` | `data/models/tbrf_paper/` (1 tree) |
+| TBRF-5t | `nn_tbrf` | `data/models/tbrf_paper/` (5 trees) |
+| TBRF-10t | `nn_tbrf` | `data/models/tbrf_paper/` (10 trees) |
 
 ## Full Experiment Matrix
 
-### Channel flow: 5 models x 4 grids = 20 runs
+**20 models × 8 configurations = 160 runs**
 
-| | Grid D (256x192x256) | Grid A (128x96x128) | Grid B (64x64x64) | Grid C (32x32x32) |
-|---|---|---|---|---|
-| baseline | run | run | run | run |
-| sst | run | run | run | run |
-| earsm_pope | run | run | run | run |
-| nn_mlp | run | run | run | run |
-| nn_tbnn | run | run | run | run |
+All on H200 GPU, same compiler (nvc++ Release), same binary per geometry.
 
-### Periodic hills: 5 models x 4 grids = 20 runs
-
-Same matrix with PHLL-trained NN presets.
-
-### Total: 40 runs on H200 GPU
+Turb model set via `turb_model` in config file (NOT via `--turb_model` CLI — that's silently ignored).
 
 ## SLURM Configuration
 
@@ -122,124 +124,47 @@ Same matrix with PHLL-trained NN presets.
 - **Account:** gts-sbryngelson3
 - **QOS:** embers
 - **GPUs:** 1 per job
-- **Max concurrent:** 40 jobs
 
-### Time limits per grid level:
+### Time estimates per case
 
-| Grid | Time limit | max_steps |
-|------|-----------|-----------|
-| D | 6 hours | 50,000 |
-| A | 3 hours | 30,000 |
-| B | 1 hour | 20,000 |
-| C | 30 min | 10,000 |
+| Case | Grid cells | Est. ms/step (baseline) | Steps needed | Wall time |
+|------|-----------|------------------------|-------------|-----------|
+| Hills 2D | 74K | ~3.7 | 15,000 | ~1 min |
+| Cylinder 2D | 111K | ~2.3 | 15,000 | ~1 min |
+| Duct 3D | 885K | ~2.7 | 10,000 | ~0.5 min |
+| Sphere 3D | 3.15M | ~5.6 | 10,000 | ~1 min |
 
-## Runner Infrastructure
+NN models are slower (up to 650 ms/step for MLP-Large on sphere). Worst case: ~2 hours for MLP-Large × sphere. Total for all 160 runs: ~6-8 hours wall time if serialized, ~1 hour with 20 concurrent jobs.
 
-### Config files: `examples/paper_experiments/`
-
-8 config files (case x grid), model specified at runtime via `--model` CLI:
-- `channel_{D,A,B,C}.cfg`
-- `hills_{D,A,B,C}.cfg`
-
-### Submission scripts: `scripts/paper/`
-
-| Script | What it does |
-|--------|-------------|
-| `submit_channel.sh` | Builds solver + submits 20 channel jobs |
-| `submit_hills.sh` | Builds solver + submits 20 hills jobs |
-| `submit_all.sh` | Submits all 40 jobs |
-| `collect_results.sh` | Parses outputs into `results/paper/experiment_results.csv` |
-
-### Output structure:
+## Output Structure
 
 ```
-results/paper/
-  channel/
-    baseline_D/  baseline_A/  baseline_B/  baseline_C/
-    sst_D/       sst_A/       sst_B/       sst_C/
-    ...
-  hills/
-    baseline_D/  ...
-  experiment_results.csv
+results/paper/aposteriori/
+  hills_re10595/{model_name}/qoi/
+  cylinder_re100/{model_name}/qoi/
+  cylinder_re300/{model_name}/qoi/
+  cylinder_re3900/{model_name}/qoi/
+  duct_reb3500/{model_name}/qoi/
+  sphere_re100/{model_name}/qoi/
+  sphere_re200/{model_name}/qoi/
+  sphere_re300/{model_name}/qoi/
 ```
 
-### Usage:
+Each `qoi/` directory contains the case-specific output files listed above.
 
-```bash
-# Submit everything
-./scripts/paper/submit_all.sh
+## H200 Timing Data (ALREADY COLLECTED)
 
-# Or submit one case at a time
-./scripts/paper/submit_channel.sh
-./scripts/paper/submit_hills.sh
+Job 5470248 (Mar 24) collected ms/step for all 20 models × 4 original cases (hills, cylinder Re=100, duct, sphere Re=200). New Re values will produce additional timing data from the production runs.
 
-# After jobs finish, collect results
-./scripts/paper/collect_results.sh
-```
+Results: `results/paper/aposteriori/h200_5470248.out`
 
-## Timing Methodology
+## Paper Figures (planned)
 
-For each run, record:
-1. **Wall-clock per step** (ms) — from `TimingStats::print_summary()`
-2. **Steps to converge** — until QoIs stabilize within tolerance
-3. **Total wall-clock** — steps x cost/step
-4. **Component breakdown** — convection, diffusion, Poisson, turbulence model
-
-All runs on **same GPU (H200), same compiler flags (nvc++ Release), same binary.** Only config changes.
-
-Use `--warmup_steps 50` to exclude GPU init from timing.
-
-## Paper Figures
-
-### Figure 1: Cost vs Accuracy (the money plot)
-- x-axis: Total wall-clock time to converged QoI
-- y-axis: L2 error vs DNS for each QoI
-- Each curve: one model (baseline, SST, EARSM, MLP, TBNN)
-- Each point on curve: different grid resolution
-- Pareto frontier shows optimal cost-accuracy tradeoff
-
-### Figure 2: Per-step cost breakdown (stacked bar)
-- One group per model
-- Stacked bars: convection, diffusion, Poisson, turbulence model
-- Shows where compute time goes
-
-### Figure 3: Accuracy vs grid resolution (convergence)
-- x-axis: 1/N (grid spacing)
-- y-axis: L2 error for each QoI
-- Separate panels for each QoI
-- Shows which models converge faster with refinement
-
-### Figure 4: Reynolds stress profiles
-- u+(y+) for all models at Grid B
-- -<u'v'>+(y+) for all models at Grid B
-- Anisotropy for EARSM and TBNN only (others can't predict it)
-- vs MKM DNS reference
-
-### Figure 5: Periodic hills flow field
-- Streamlines / separation bubble for SST vs EARSM vs TBNN at Grid B
-- Cf(x) comparison vs DNS
-- Velocity profiles at x/H = 2, 4, 6
-
-## Solver Configuration (common to all runs)
-
-```ini
-scheme = skew
-adaptive_dt = true
-CFL_max = 0.5
-simulation_mode = steady
-tol = 1e-8
-stretch_y = true
-stretch_beta = 2.0
-verbose = false
-perf_mode = true
-```
-
-FFT Poisson solver auto-selected for both cases (periodic x/z).
-
-## What This Answers
-
-1. **"Is the NN closure overhead worth it?"** — Compare total cost for same accuracy target
-2. **"When does NN win?"** — For QoIs that require anisotropy (Q3), NN-TBNN may win over EARSM at coarse grids
-3. **"When does NN lose?"** — For simple QoIs (Q1, Q4), traditional models are cheaper
-4. **"What's the overhead?"** — Per-step cost breakdown isolates NN inference cost
-5. **"Does it generalize?"** — Channel (simple) vs periodic hills (complex) tests robustness
+1. **Pareto plot** (THE figure): cost vs accuracy, one curve per architecture, points = size variants
+2. **Per-step cost breakdown**: stacked bar (convection, diffusion, Poisson, turbulence)
+3. **Cd/St vs Re**: cylinder and sphere Re-sweep, all models
+4. **Hills Cf(x)**: all models vs Breuer DNS
+5. **Hills velocity profiles**: at x/H = 2, 4, 6
+6. **Duct cross-section**: secondary flow vectors, all models vs Pinelli DNS
+7. **Wake profiles**: cylinder and sphere, downstream evolution
+8. **Separation angle vs Re**: sphere, all models vs Johnson & Patel
