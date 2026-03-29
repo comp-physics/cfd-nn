@@ -14,6 +14,7 @@
 #include "ibm_forcing.hpp"
 #include "decomposition.hpp"
 #include "turbulence_model.hpp"
+#include "turbulence_earsm.hpp"
 #include "qoi_extraction.hpp"
 
 #include <iostream>
@@ -129,6 +130,9 @@ int main(int argc, char** argv) {
     // Create IBM body
     auto body = std::make_shared<PeriodicHillBody>(h);
     IBMForcing ibm(mesh, body);
+    // Use penalization (ibm_eta) for warm-up stability, then switch to ghost-cell
+    // for evaluation accuracy. Ghost-cell is enabled after warm-up completes.
+    if (config.ibm_eta > 0.0) ibm.set_penalization_eta(config.ibm_eta);
 
     // Create solver
     RANSSolver solver(mesh, config);
@@ -154,18 +158,49 @@ int main(int argc, char** argv) {
         solver.enable_bulk_velocity_control(config.bulk_velocity_target);
     } else {
         solver.set_body_force(-config.dp_dx, 0.0);
+        // Force ramp disabled — penalization at small eta handles transient
+        solver.enable_force_ramp(50.0);
     }
 
-    // Set turbulence model if requested
+    // Set initial turbulence model. For models WITH transport (SST, EARSM, k-omega),
+    // initialize with the TARGET model directly — it can bootstrap k/omega from cold start.
+    // For models WITHOUT transport (NN, algebraic, GEP), initialize with SST for warm-up
+    // so k/omega fields get properly developed before switching.
     if (config.turb_model != TurbulenceModelType::None) {
-        auto turb_model = create_turbulence_model(config.turb_model,
-                                                  config.nn_weights_path,
-                                                  config.nn_scaling_path,
-                                                  config.pope_C1,
-                                                  config.pope_C2);
-        if (turb_model) {
-            turb_model->set_nu(config.nu);
-            solver.set_turbulence_model(std::move(turb_model));
+        auto target_probe = create_turbulence_model(config.turb_model, "", "");
+        bool target_has_transport = target_probe && target_probe->uses_transport_equations();
+
+        if (target_has_transport) {
+            // Transport models: initialize with target directly
+            auto turb_model = create_turbulence_model(config.turb_model,
+                                                      config.nn_weights_path,
+                                                      config.nn_scaling_path,
+                                                      config.pope_C1,
+                                                      config.pope_C2);
+            if (turb_model) {
+                turb_model->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(turb_model));
+            }
+        } else if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
+            // Non-transport models: initialize with warm-up model (SST)
+            TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
+            if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
+            auto warmup_turb = create_turbulence_model(warmup_type, "", "");
+            if (warmup_turb) {
+                warmup_turb->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(warmup_turb));
+            }
+        } else {
+            // No warm-up: initialize with target directly
+            auto turb_model = create_turbulence_model(config.turb_model,
+                                                      config.nn_weights_path,
+                                                      config.nn_scaling_path,
+                                                      config.pope_C1,
+                                                      config.pope_C2);
+            if (turb_model) {
+                turb_model->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(turb_model));
+            }
         }
     }
 
@@ -225,6 +260,92 @@ int main(int argc, char** argv) {
         std::max(1, config.max_steps / config.num_snapshots) : 0;
     int snap_count = 0;
 
+    // Warm-up phase: run steps to develop the flow.
+    // For EARSM models: disable the algebraic closure during warm-up (run as pure SST).
+    // This prevents the EARSM anisotropy from destabilizing the cold-start flow.
+    if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
+        // Disable EARSM closure during warm-up (if applicable)
+        auto* earsm = dynamic_cast<SSTWithEARSM*>(solver.turb_model_ptr());
+        if (earsm) {
+            earsm->set_closure_active(false);
+        }
+        {
+            if (mpi_rank == 0) {
+                std::cout << "=== Warm-up phase: " << config.warmup_model
+                          << " for t=" << config.warmup_time << " ===\n";
+            }
+
+            for (int ws = 1; ws <= config.max_steps; ++ws) {
+                if (config.adaptive_dt) {
+                    solver.set_dt(solver.compute_adaptive_dt());
+                }
+                double res = solver.step();
+                double t = solver.current_time();
+                if (t >= config.warmup_time) {
+                    if (mpi_rank == 0) {
+                        std::cout << "Warm-up complete at step " << ws
+                                  << ", t=" << t << ", res=" << res << "\n";
+                    }
+                    break;
+                }
+                if (std::isnan(res) || std::isinf(res) || res > 1e10) {
+                    if (mpi_rank == 0) {
+                        std::cerr << "Warm-up diverged at step " << ws << "\n";
+                    }
+                    break;
+                }
+            }
+
+            // Switch to target model after warm-up.
+            // Transport models (SST, EARSM, k-omega) were already initialized
+            // at the start and developed during warm-up — skip re-creation.
+            // Non-transport models (NN, algebraic, GEP) need fresh creation
+            // with background SST to keep k/omega alive.
+            {
+                auto probe = create_turbulence_model(config.turb_model, "", "");
+                bool target_has_transport = probe && probe->uses_transport_equations();
+
+                if (!target_has_transport && config.turb_model != TurbulenceModelType::None) {
+                    auto target_turb = create_turbulence_model(config.turb_model,
+                                                               config.nn_weights_path,
+                                                               config.nn_scaling_path,
+                                                               config.pope_C1,
+                                                               config.pope_C2);
+                    if (target_turb) {
+                        auto bg_sst = create_turbulence_model(
+                            TurbulenceModelType::SSTKOmega, "", "");
+                        if (bg_sst) {
+                            bg_sst->set_nu(config.nu);
+                            solver.set_background_transport(std::move(bg_sst));
+                        }
+                        target_turb->set_nu(config.nu);
+                        solver.set_turbulence_model(std::move(target_turb));
+                    }
+                }
+                // else: transport models keep running from warm-up (no switch needed)
+            }
+
+            TimingStats::instance().reset();
+            if (mpi_rank == 0) {
+                std::cout << "=== Evaluation phase from t="
+                          << solver.current_time() << " ===\n";
+            }
+
+            // Re-enable EARSM closure (was disabled during warm-up)
+            if (earsm) {
+                earsm->set_closure_active(true);
+                if (mpi_rank == 0) {
+                    std::cout << "  EARSM closure re-activated\n";
+                }
+            }
+
+            // Switch to ghost-cell IBM now that flow is developed
+            ibm.set_ghost_cell_ibm(true);
+            ibm.set_penalization_eta(0.0);
+            ibm.recompute_and_remap();
+        }
+    }
+
     // Time stepping loop
     ScopedTimer total_timer("Total simulation", false);
 
@@ -238,7 +359,25 @@ int main(int argc, char** argv) {
 
         double residual = solver.step();
 
+        // Reset timers after warmup steps (model stabilization phase)
+        if (config.warmup_steps > 0 && step == config.warmup_steps) {
+            TimingStats::instance().reset();
+            if (mpi_rank == 0) {
+                std::cout << "=== Timers reset after " << config.warmup_steps
+                          << " warmup steps, t=" << solver.current_time() << " ===\n";
+            }
+        }
+
         double time = solver.current_time();
+
+        // Physical time limit
+        if (config.T_final > 0.0 && time >= config.T_final) {
+            if (mpi_rank == 0) {
+                std::cout << "Reached T_final=" << config.T_final
+                          << " at step " << step << ", t=" << time << "\n";
+            }
+            break;
+        }
 
         if (need_forces) {
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());

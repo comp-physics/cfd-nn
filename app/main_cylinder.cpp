@@ -16,6 +16,7 @@
 #include "ibm_forcing.hpp"
 #include "decomposition.hpp"
 #include "turbulence_model.hpp"
+#include "qoi_extraction.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -38,7 +39,7 @@ int main(int argc, char** argv) {
 #endif
 
     if (mpi_rank == 0) {
-        std::cout << "=== Cylinder Flow Solver (IBM) ===\n\n";
+        std::cout << "=== IBM Flow Solver (cylinder/sphere) ===\n\n";
     }
 
     // Parse configuration
@@ -74,19 +75,33 @@ int main(int argc, char** argv) {
     // Parse command line
     config.parse_args(argc, argv);
 
-    // IBM parameters from config or defaults
-    double cyl_x = 10.0;   // Cylinder center x
-    double cyl_y = 0.0;    // Cylinder center y
-    double cyl_r = 0.5;    // Cylinder radius
-    double U_inf = 1.0;    // Free-stream velocity
+    // IBM body parameters: use config values, with sensible defaults
+    double body_r = config.ibm_radius;
+    double body_cx = config.ibm_cx;
+    double body_cy = config.ibm_cy;
+    double body_cz = config.ibm_cz;
+    double U_inf = 1.0;
+
+    // Auto-center: if cx is 0 (default), place body at ~1/3 of domain
+    if (body_cx == 0.0) {
+        body_cx = config.x_min + (config.x_max - config.x_min) / 3.0;
+    }
+    if (body_cy == 0.0) {
+        body_cy = (config.y_min + config.y_max) / 2.0;
+    }
+    if (body_cz == 0.0) {
+        body_cz = (config.z_min + config.z_max) / 2.0;
+    }
 
     // Compute Re based on diameter
-    double Re = U_inf * (2.0 * cyl_r) / config.nu;
+    double Re = U_inf * (2.0 * body_r) / config.nu;
 
     if (mpi_rank == 0) {
         config.print();
-        std::cout << "\nCylinder: center=(" << cyl_x << ", " << cyl_y
-                  << "), radius=" << cyl_r << "\n";
+        std::cout << "\nIBM body: " << config.ibm_body
+                  << ", center=(" << body_cx << ", " << body_cy;
+        if (config.Nz > 1) std::cout << ", " << body_cz;
+        std::cout << "), radius=" << body_r << "\n";
         std::cout << "Re (based on diameter) = " << Re << "\n";
         std::cout << "U_inf = " << U_inf << "\n\n";
     }
@@ -131,9 +146,17 @@ int main(int argc, char** argv) {
     Decomposition decomp(config.Nz);
 #endif
 
-    // Create IBM body
-    auto body = std::make_shared<CylinderBody>(cyl_x, cyl_y, cyl_r);
+    // Create IBM body from config
+    std::shared_ptr<IBMBody> body;
+    if (config.ibm_body == "sphere") {
+        body = std::make_shared<SphereBody>(body_cx, body_cy, body_cz, body_r);
+    } else {
+        body = std::make_shared<CylinderBody>(body_cx, body_cy, body_r);
+    }
     IBMForcing ibm(mesh, body);
+    if (config.ibm_eta > 0.0) ibm.set_penalization_eta(config.ibm_eta);
+    ibm.set_ghost_cell_ibm(true);
+    ibm.recompute_weights();
 
     // Create solver
     RANSSolver solver(mesh, config);
@@ -152,12 +175,10 @@ int main(int argc, char** argv) {
     }
     solver.set_velocity_bc(bc);
 
-    // Body force: use bulk velocity controller if target specified,
-    // otherwise fall back to fixed dp_dx
-    if (config.bulk_velocity_target > 0.0) {
-        solver.set_body_force(0.0, 0.0);
-        solver.enable_bulk_velocity_control(config.bulk_velocity_target);
-    } else {
+    // Body force: fixed dp/dx drives flow in periodic domain.
+    // Cd is computed from momentum balance: Cd = |dp/dx| * V / (0.5 * U_b^2 * A_ref).
+    // The dp/dx determines the Reynolds number; measure U_b to compute Re = U_b*D/nu.
+    if (config.dp_dx != 0.0) {
         solver.set_body_force(-config.dp_dx, 0.0);
     }
 
@@ -178,6 +199,54 @@ int main(int argc, char** argv) {
 
     // Initialize with uniform flow
     solver.initialize_uniform(U_inf, 0.0);
+
+    // Add deterministic perturbation to break symmetry for vortex shedding
+    // Asymmetric v-velocity kick in the near wake — triggers shedding
+    {
+        auto& vel = solver.velocity();
+        double amp_base = config.perturbation_amplitude * U_inf;
+        double wake_len = 5.0 * body_r;  // Perturbation extends 5 radii downstream
+
+        if (is3D) {
+            for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+                for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                    for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                        double xc = mesh.xc[i];
+                        double yc = mesh.yc[j];
+                        double zc = mesh.zc[k];
+                        double dx = xc - body_cx;
+                        double dy = yc - body_cy;
+                        double dz = zc - body_cz;
+                        double r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        // Only perturb in near-wake: downstream of body, within a few radii
+                        if (dx > 0.0 && dx < wake_len && r > body_r) {
+                            double env = std::exp(-dy * dy / (body_r * body_r))
+                                       * std::exp(-dz * dz / (body_r * body_r))
+                                       * (1.0 - std::exp(-dx / body_r));
+                            vel.v(i, j, k) += amp_base * env * std::sin(M_PI * yc / body_r);
+                            vel.w(i, j, k) += amp_base * env * std::sin(M_PI * zc / body_r);
+                        }
+                    }
+                }
+            }
+        } else {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                    double xc = mesh.xc[i];
+                    double yc = mesh.yc[j];
+                    double dx = xc - body_cx;
+                    double dy = yc - body_cy;
+                    double r = std::sqrt(dx * dx + dy * dy);
+                    // Only perturb in near-wake: downstream of body, within a few radii
+                    if (dx > 0.0 && dx < wake_len && r > body_r) {
+                        double env = std::exp(-dy * dy / (body_r * body_r))
+                                   * (1.0 - std::exp(-dx / body_r));
+                        vel.v(i, j) += amp_base * env * std::sin(M_PI * yc / body_r);
+                    }
+                }
+            }
+        }
+    }
 
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
@@ -201,11 +270,94 @@ int main(int argc, char** argv) {
         std::max(1, config.max_steps / config.num_snapshots) : 0;
     int snap_count = 0;
 
+    // Warm-up phase: run with SST to develop flow before switching to target model
+    if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
+        // Parse warmup model type
+        TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
+        if (config.warmup_model == "sst") warmup_type = TurbulenceModelType::SSTKOmega;
+        else if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
+
+        auto warmup_turb = create_turbulence_model(warmup_type, "", "");
+        if (warmup_turb) {
+            warmup_turb->set_nu(config.nu);
+            solver.set_turbulence_model(std::move(warmup_turb));
+
+            if (mpi_rank == 0) {
+                std::cout << "=== Warm-up phase: " << config.warmup_model
+                          << " for t=" << config.warmup_time << " ===\n";
+            }
+
+            for (int ws = 1; ws <= config.max_steps; ++ws) {
+                if (config.adaptive_dt) {
+                    solver.set_dt(solver.compute_adaptive_dt());
+                }
+                double res = solver.step();
+                double t = solver.current_time();
+                if (t >= config.warmup_time) {
+                    if (mpi_rank == 0) {
+                        std::cout << "Warm-up complete at step " << ws
+                                  << ", t=" << t << ", res=" << res << "\n";
+                    }
+                    break;
+                }
+                if (std::isnan(res) || std::isinf(res) || res > 1e10) {
+                    if (mpi_rank == 0) {
+                        std::cerr << "Warm-up diverged at step " << ws << "\n";
+                    }
+                    break;
+                }
+            }
+
+            // Switch to target model (re-create it)
+            if (config.turb_model != TurbulenceModelType::None) {
+                auto target_turb = create_turbulence_model(config.turb_model,
+                                                           config.nn_weights_path,
+                                                           config.nn_scaling_path,
+                                                           config.pope_C1,
+                                                           config.pope_C2);
+                if (target_turb) {
+                    // If target model has no transport (NN, algebraic), keep SST
+                    // running in the background to maintain k/omega fields
+                    if (!target_turb->uses_transport_equations()) {
+                        auto bg_sst = create_turbulence_model(
+                            TurbulenceModelType::SSTKOmega, "", "");
+                        if (bg_sst) {
+                            bg_sst->set_nu(config.nu);
+                            solver.set_background_transport(std::move(bg_sst));
+                        }
+                    }
+                    target_turb->set_nu(config.nu);
+                    solver.set_turbulence_model(std::move(target_turb));
+                }
+            } else {
+                solver.set_turbulence_model(nullptr);
+            }
+
+            // Reset timing stats for the evaluation phase
+            TimingStats::instance().reset();
+            if (mpi_rank == 0) {
+                std::cout << "=== Evaluation phase from t="
+                          << solver.current_time() << " ===\n";
+            }
+        }
+    }
+
     // Time stepping loop
     ScopedTimer total_timer("Total simulation", false);
 
+    // Store force time-series for Strouhal number computation
+    std::vector<double> force_times;
+    std::vector<double> cl_history;
+    std::vector<double> cd_history;
+
     double rho = 1.0;  // Density (incompressible)
-    double A_ref = 2.0 * cyl_r * (is3D ? (config.z_max - config.z_min) : 1.0);
+    // Reference area for force coefficients
+    double A_ref;
+    if (config.ibm_body == "sphere") {
+        A_ref = M_PI * body_r * body_r;  // Frontal area of sphere
+    } else {
+        A_ref = 2.0 * body_r * (is3D ? (config.z_max - config.z_min) : 1.0);
+    }
     double q_inf = 0.5 * rho * U_inf * U_inf;
 
     for (int step = 1; step <= config.max_steps; ++step) {
@@ -218,13 +370,45 @@ int main(int argc, char** argv) {
 
         double residual = solver.step();
 
+        // Reset timers after warmup steps (model stabilization phase)
+        if (config.warmup_steps > 0 && step == config.warmup_steps) {
+            TimingStats::instance().reset();
+            if (mpi_rank == 0) {
+                std::cout << "=== Timers reset after " << config.warmup_steps
+                          << " warmup steps, t=" << solver.current_time() << " ===\n";
+            }
+        }
+
         double time = solver.current_time();
+
+        // Physical time limit
+        if (config.T_final > 0.0 && time >= config.T_final) {
+            if (mpi_rank == 0) {
+                std::cout << "Reached T_final=" << config.T_final
+                          << " at step " << step << ", t=" << time << "\n";
+            }
+            break;
+        }
 
         if (need_forces) {
             auto [Fx, Fy, Fz] = ibm.compute_forces(solver.velocity(), solver.current_dt());
 
-            double Cd = Fx / (q_inf * A_ref);
-            double Cl = Fy / (q_inf * A_ref);
+            // Momentum balance Cd: at stat. steady state, dp/dx * V = Drag.
+            // Cd = |dp/dx| * V_domain / (0.5 * rho * U_bulk^2 * A_ref)
+            // Re = U_bulk * D / nu (computed from actual bulk velocity)
+            double U_b = solver.bulk_velocity();
+            double Lx = config.x_max - config.x_min;
+            double Ly = config.y_max - config.y_min;
+            double Lz = is3D ? (config.z_max - config.z_min) : 1.0;
+            double V_domain = Lx * Ly * Lz;
+            double q_bulk = 0.5 * rho * std::max(U_b, 1e-10) * std::max(U_b, 1e-10);
+            double Cd = std::abs(config.dp_dx) * V_domain / (q_bulk * A_ref);
+            double Cl = Fy / (q_bulk * A_ref);
+
+            // Store for Strouhal computation
+            force_times.push_back(time);
+            cl_history.push_back(Cl);
+            cd_history.push_back(Cd);
 
             if (mpi_rank == 0) {
                 if (force_file.is_open()) {
@@ -254,9 +438,26 @@ int main(int argc, char** argv) {
             solver.write_vtk(vtk_prefix + "_" + std::to_string(snap_count) + ".vtk");
         }
 
-        if (std::isnan(residual) || std::isinf(residual)) {
-            std::cerr << "ERROR: Solver diverged at step " << step << "\n";
+        if (std::isnan(residual) || std::isinf(residual) || residual > 1e10) {
+            if (mpi_rank == 0) {
+                std::cerr << "STOPPING: Solver diverged at step " << step
+                          << " (residual=" << residual << ")\n";
+            }
             break;
+        }
+
+        // Early termination: dt stuck at floor (excessive nu_t from model)
+        if (config.dt_min > 0.0 && solver.current_dt() <= config.dt_min * 1.01) {
+            static int dt_floor_count = 0;
+            dt_floor_count = dt_floor_count + 1;
+            if (dt_floor_count >= 100) {
+                if (mpi_rank == 0) {
+                    std::cerr << "STOPPING: dt stuck at floor (" << config.dt_min
+                              << ") for 100 steps at step " << step
+                              << " — model producing excessive nu_t\n";
+                }
+                break;
+            }
         }
     }
 
@@ -266,6 +467,104 @@ int main(int argc, char** argv) {
     }
 
     total_timer.stop();
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_from_gpu();
+#endif
+
+    // QoI extraction
+    if (config.qoi_freq > 0 && mpi_rank == 0) {
+        std::filesystem::create_directories(config.qoi_output_dir);
+        const auto& vel = solver.velocity();
+        const int Nx = mesh.Nx, Ny = mesh.Ny, Nz = mesh.Nz, Ng = mesh.Nghost;
+        double D = 2.0 * body_r;
+
+        // Strouhal number from Cl time-series
+        double St = qoi::compute_strouhal(force_times, cl_history, D, U_inf);
+        std::cout << "\n--- QoI Summary ---\n";
+        if (St > 0.0) {
+            std::cout << "  Strouhal number St = " << std::fixed
+                      << std::setprecision(4) << St << "\n";
+        } else {
+            std::cout << "  Strouhal number: not enough oscillation cycles\n";
+        }
+
+        // Mean Cd from second half of time series
+        if (cd_history.size() > 1) {
+            int start = static_cast<int>(cd_history.size()) / 2;
+            double cd_mean = 0.0;
+            for (int i = start; i < static_cast<int>(cd_history.size()); ++i) {
+                cd_mean += cd_history[i];
+            }
+            cd_mean /= (cd_history.size() - start);
+            std::cout << "  Mean Cd = " << std::fixed << std::setprecision(4)
+                      << cd_mean << "\n";
+        }
+
+        // Write QoI summary file
+        {
+            std::ofstream qf(config.qoi_output_dir + "/qoi_summary.dat");
+            if (qf) {
+                qf << "# QoI summary\n";
+                qf << "Re " << Re << "\n";
+                qf << "St " << St << "\n";
+                if (!cd_history.empty()) {
+                    int start = static_cast<int>(cd_history.size()) / 2;
+                    double cd_mean = 0.0;
+                    for (int i = start; i < static_cast<int>(cd_history.size()); ++i)
+                        cd_mean += cd_history[i];
+                    cd_mean /= (cd_history.size() - start);
+                    qf << "Cd_mean " << cd_mean << "\n";
+                }
+            }
+        }
+
+        // Separation angle (sphere only)
+        if (config.ibm_body == "sphere") {
+            double probe_offset = 1.5 * mesh.dx;
+            double sep_angle = qoi::compute_separation_angle_sphere(
+                vel.u_data().data(), vel.v_data().data(),
+                vel.u_stride(), vel.v_stride(),
+                is3D ? vel.u_plane_stride() : 0,
+                is3D ? vel.v_plane_stride() : 0,
+                body_cx, body_cy, body_r, probe_offset,
+                mesh.xf.data(), mesh.yf.data(),
+                Nx, Ny, Nz, Ng);
+            if (sep_angle > 0.0) {
+                std::cout << "  Separation angle = " << std::fixed
+                          << std::setprecision(1) << sep_angle << " deg\n";
+            } else {
+                std::cout << "  Separation angle: not detected (flow may not be developed)\n";
+            }
+
+            // Append to summary
+            std::ofstream qf(config.qoi_output_dir + "/qoi_summary.dat",
+                             std::ios::app);
+            if (qf) qf << "sep_angle " << sep_angle << "\n";
+        }
+
+        // Wake velocity profiles at x/D = 1, 2, 3, 5 downstream of body center
+        double wake_stations[] = {1.0, 2.0, 3.0, 5.0};
+        for (double xD : wake_stations) {
+            double x_station = body_cx + xD * D;
+            if (x_station >= config.x_max) continue;
+
+            std::string fname = config.qoi_output_dir + "/wake_xD"
+                                + std::to_string(static_cast<int>(xD * 10)) + ".dat";
+            std::string header = "y U V at x/D=" + std::to_string(xD)
+                                 + " downstream";
+            qoi::extract_wake_profile(
+                vel.u_data().data(), vel.v_data().data(),
+                vel.u_stride(), vel.v_stride(),
+                is3D ? vel.u_plane_stride() : 0,
+                is3D ? vel.v_plane_stride() : 0,
+                Nx, Ny, Nz, Ng,
+                x_station, mesh.xc.data(), mesh.yc.data(),
+                fname, header);
+        }
+
+        std::cout << "QoI written to " << config.qoi_output_dir << "/\n";
+    }
 
     if (mpi_rank == 0) {
         std::cout << "\n=== Simulation complete ===\n";
