@@ -197,7 +197,10 @@ int main(int argc, char** argv) {
 
     solver.print_solver_info();
 
-    // Initialize with uniform flow
+    // Initialize with uniform freestream velocity.
+    // The IBM penalization will damp velocity inside the body to zero
+    // during the first few steps. Using ibm_eta > 0 prevents divergence
+    // from the pressure transient.
     solver.initialize_uniform(U_inf, 0.0);
 
     // Add deterministic perturbation to break symmetry for vortex shedding
