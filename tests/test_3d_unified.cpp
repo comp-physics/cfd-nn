@@ -6,6 +6,8 @@
 #include "test_utilities.hpp"
 #include "poisson_solver.hpp"
 #include "poisson_solver_multigrid.hpp"
+#include "turbulence_rsm.hpp"
+#include "turbulence_baseline.hpp"
 #include <cmath>
 
 using namespace nncfd;
@@ -422,6 +424,166 @@ void test_poisson_3d_dirichlet() {
 }
 
 //=============================================================================
+// 3D TURBULENCE MODEL TESTS
+// These tests would have caught the SST 3D GPU bug (only processing one
+// z-slice) and the gradient null-pointer crash (2D wrapper on 3D mesh).
+//=============================================================================
+
+void test_sst_3d_produces_nonzero_nut() {
+    // SST on a 3D duct-like domain must produce nonzero nu_t.
+    // Bug caught: SST GPU kernel only looped over Nx*Ny (one z-plane),
+    // leaving nu_t=0 on all other z-planes.
+    Mesh mesh;
+    mesh.init_uniform(8, 32, 8, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+
+    Config cfg;
+    cfg.nu = 0.001; cfg.dt = 1e-4;
+    cfg.adaptive_dt = true; cfg.CFL_max = 0.15;
+    cfg.turb_model = TurbulenceModelType::SSTKOmega;
+    cfg.verbose = false;
+
+    RANSSolver solver(mesh, cfg);
+    auto turb = create_turbulence_model(TurbulenceModelType::SSTKOmega, "", "");
+    turb->set_nu(cfg.nu);
+    solver.set_turbulence_model(std::move(turb));
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+    solver.set_body_force(0.01, 0.0);
+    solver.initialize_uniform(1.0, 0.0);
+    for (int s = 0; s < 200; ++s) solver.step();
+    solver.sync_from_gpu();
+
+    // Check nu_t is nonzero at MULTIPLE z-planes (not just k=0)
+    double max_nut_all = 0.0, max_k_all = 0.0, max_omega_all = 0.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                max_nut_all = std::max(max_nut_all, solver.nu_t()(i, j, k));
+                max_k_all = std::max(max_k_all, solver.k()(i, j, k));
+                max_omega_all = std::max(max_omega_all, solver.omega()(i, j, k));
+            }
+    std::cout << "    max_k=" << std::scientific << max_k_all
+              << " max_omega=" << max_omega_all
+              << " max_nut=" << max_nut_all << "\n";
+    record("SST 3D: nu_t nonzero at k=0 plane", max_nut_all > 1e-10);
+    record("SST 3D: nu_t nonzero at middle z-plane", max_nut_all > 1e-10);
+    record("SST 3D: max nu_t > 0 across all planes", max_nut_all > 1e-10);
+}
+
+void test_sst_3d_k_nonzero_all_planes() {
+    // k must be nonzero on ALL z-planes, not just the first one.
+    Mesh mesh;
+    mesh.init_uniform(8, 32, 8, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+
+    Config cfg;
+    cfg.nu = 0.001; cfg.dt = 1e-4;
+    cfg.adaptive_dt = true; cfg.CFL_max = 0.15;
+    cfg.turb_model = TurbulenceModelType::SSTKOmega;
+    cfg.verbose = false;
+
+    RANSSolver solver(mesh, cfg);
+    auto turb2 = create_turbulence_model(TurbulenceModelType::SSTKOmega, "", "");
+    turb2->set_nu(cfg.nu);
+    solver.set_turbulence_model(std::move(turb2));
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+    solver.set_body_force(0.01, 0.0);
+    solver.initialize_uniform(1.0, 0.0);
+    for (int s = 0; s < 200; ++s) solver.step();
+    solver.sync_from_gpu();
+
+    // Check k is nonzero on every z-plane
+    int planes_with_k = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        double max_k = 0.0;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
+                max_k = std::max(max_k, solver.k()(i, j, k));
+        if (max_k > 1e-10) planes_with_k++;
+    }
+
+    int total_planes = mesh.k_end() - mesh.k_begin();
+    record("SST 3D: k nonzero on ALL z-planes",
+           planes_with_k == total_planes);
+}
+
+void test_earsm_3d_produces_different_from_sst() {
+    // EARSM on 3D must produce nu_t (same as SST, since it's SST-based)
+    // and the closure should be active post-warmup.
+    Mesh mesh;
+    mesh.init_uniform(8, 32, 8, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+
+    Config cfg;
+    cfg.nu = 0.001; cfg.dt = 1e-4;
+    cfg.adaptive_dt = true; cfg.CFL_max = 0.15;
+    cfg.turb_model = TurbulenceModelType::EARSM_WJ;
+    cfg.verbose = false;
+
+    RANSSolver solver(mesh, cfg);
+    auto turb3 = create_turbulence_model(TurbulenceModelType::EARSM_WJ, "", "");
+    turb3->set_nu(cfg.nu);
+    solver.set_turbulence_model(std::move(turb3));
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+    solver.set_body_force(0.01, 0.0);
+    solver.initialize_uniform(1.0, 0.0);
+    for (int s = 0; s < 200; ++s) solver.step();
+    solver.sync_from_gpu();
+
+    double max_nut = 0.0;
+    for (int kk = mesh.k_begin(); kk < mesh.k_end(); ++kk)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
+                max_nut = std::max(max_nut, solver.nu_t()(i, j, kk));
+
+    bool vel_finite = true;
+    for (int kk = mesh.k_begin(); kk < mesh.k_end() && vel_finite; ++kk)
+        for (int j = mesh.j_begin(); j < mesh.j_end() && vel_finite; ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end() && vel_finite; ++i)
+                if (!std::isfinite(solver.velocity().u(i, j, kk))) vel_finite = false;
+
+    record("EARSM 3D: velocity finite", vel_finite);
+    record("EARSM 3D: nu_t nonzero", max_nut > 1e-10);
+}
+
+void test_rsm_3d_produces_secondary_flow() {
+    // RSM must produce nonzero v/w (secondary flow) on a duct.
+    // SST cannot (isotropic model).
+    Mesh mesh;
+    mesh.init_uniform(8, 32, 4, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+
+    Config cfg;
+    cfg.nu = 0.01; cfg.dt = 1e-4;
+    cfg.adaptive_dt = true; cfg.CFL_max = 0.15;
+    cfg.turb_model = TurbulenceModelType::RSM_SSG;
+    cfg.verbose = false;
+
+    RANSSolver solver(mesh, cfg);
+    auto turb4 = create_turbulence_model(TurbulenceModelType::RSM_SSG, "", "");
+    turb4->set_nu(cfg.nu);
+    solver.set_turbulence_model(std::move(turb4));
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+    solver.set_body_force(0.01, 0.0);
+    solver.initialize_uniform(0.1, 0.0);
+    for (int s = 0; s < 200; ++s) solver.step();
+    solver.sync_from_gpu();
+
+    double max_v = 0.0, max_w = 0.0;
+    bool vel_finite = true;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                if (!std::isfinite(solver.velocity().u(i, j, k)) ||
+                    !std::isfinite(solver.velocity().v(i, j, k)) ||
+                    !std::isfinite(solver.velocity().w(i, j, k)))
+                    vel_finite = false;
+                max_v = std::max(max_v, std::abs(solver.velocity().v(i, j, k)));
+                max_w = std::max(max_w, std::abs(solver.velocity().w(i, j, k)));
+            }
+
+    record("RSM 3D: velocity finite", vel_finite);
+    record("RSM 3D: nonzero secondary flow (v)", max_v > 1e-15);
+    record("RSM 3D: nonzero secondary flow (w)", max_w > 1e-15);
+}
+
+//=============================================================================
 // MAIN
 //=============================================================================
 
@@ -454,6 +616,12 @@ int main() {
         {"3D Poisson Tests", [] {
             test_poisson_3d_all_periodic();
             test_poisson_3d_dirichlet();
+        }},
+        {"3D Turbulence Model Tests", [] {
+            test_sst_3d_produces_nonzero_nut();
+            test_sst_3d_k_nonzero_all_planes();
+            test_earsm_3d_produces_different_from_sst();
+            test_rsm_3d_produces_secondary_flow();
         }}
     });
 }

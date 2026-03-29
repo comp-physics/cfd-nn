@@ -1024,6 +1024,9 @@ private:
     // All kernels use is_device_ptr to access already-mapped data
     // No temporary map(to:/from:) clauses in kernels - eliminates mapping conflicts
     bool gpu_ready_ = false;
+public:
+    bool is_gpu_ready() const { return gpu_ready_; }
+private:
     
     // Persistent pointers to GPU-resident arrays (mapped for solver lifetime)
     double* velocity_u_ptr_ = nullptr;

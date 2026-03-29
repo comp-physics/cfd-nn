@@ -313,9 +313,13 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     }
 
     // Precompute wall distance (once, then stays on GPU if enabled)
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            wall_distance_(i, j) = mesh.wall_distance(i, j);
+    // For 3D, include z-wall distance: d = min(dy_wall, dz_wall)
+    // Wall distance is recomputed after set_velocity_bc() for correct z-wall handling
+    for (int k = 0; k < mesh.total_Nz(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                wall_distance_(i, j, k) = mesh.wall_distance(i, j);
+            }
         }
     }
     // Set up Poisson solver BCs (periodic in x, Neumann in y for channel)
@@ -673,6 +677,22 @@ void RANSSolver::set_velocity_bc(const VelocityBC& bc) {
 
     // Set z-wall flag for duct geometries (non-periodic z BCs with 3D mesh)
     mesh_->z_has_walls_ = (bc.z_lo != VelocityBC::Periodic && mesh_->Nz > 1);
+
+    // Recompute wall distance including z-walls for duct geometries
+    if (mesh_->z_has_walls_) {
+        for (int k = 0; k < mesh_->total_Nz(); ++k) {
+            double z = mesh_->z(k);
+            double dz_lo = std::abs(z - mesh_->z_min);
+            double dz_hi = std::abs(mesh_->z_max - z);
+            double dz_wall = std::min(dz_lo, dz_hi);
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    double dy_wall = wall_distance_(i, j, k);
+                    wall_distance_(i, j, k) = std::min(dy_wall, dz_wall);
+                }
+            }
+        }
+    }
 
     // Update Poisson BCs based on velocity BCs
     PoissonBC p_x_lo = (bc.x_lo == VelocityBC::Periodic) ? PoissonBC::Periodic : PoissonBC::Neumann;
