@@ -58,9 +58,11 @@ void compute_gradients_from_mac(
     int dyc_size = static_cast<int>(mesh.dyc.size());
 
     // Call the unified implementation (uses CPU path when USE_GPU_OFFLOAD not defined)
+    // 2D wrapper: pass nullptr for 3D gradient outputs
     gpu_kernels::compute_gradients_from_mac_gpu(
         u_face, v_face, w_face,
         dudx_cell, dudy_cell, dvdx_cell, dvdy_cell,
+        nullptr, nullptr, nullptr, nullptr, nullptr,
         Nx, Ny, Nz, Ng,
         mesh.dx, mesh.dy, mesh.dz,
         u_stride, v_stride, cell_stride,
@@ -202,137 +204,178 @@ Features compute_features_tbnn(
 void TensorBasis::compute(
     const VelocityGradient& grad,
     double k, double epsilon,
-    std::array<std::array<double, 3>, NUM_BASIS>& basis) {
-    
+    std::array<std::array<double, NUM_COMPONENTS>, NUM_BASIS>& basis) {
+
     // Avoid division by zero
     double k_safe = std::max(k, 1e-10);
     double eps_safe = std::max(epsilon, 1e-20);
     double tau = k_safe / eps_safe;
-    
-    // Normalized strain and rotation (2D)
-    double Sxx = grad.Sxx() * tau;
-    double Syy = grad.Syy() * tau;
-    double Sxy = grad.Sxy() * tau;
-    double Oxy = grad.Oxy() * tau;
-    
-    // T^(1) = S (normalized)
-    basis[0][0] = Sxx;  // xx
-    basis[0][1] = Sxy;  // xy
-    basis[0][2] = Syy;  // yy
-    
-    // T^(2) = S*Omega - Omega*S
-    // In 2D: [S, Omega] = S*Omega - Omega*S
-    // (S*Omega)_xx = Sxx*0 + Sxy*(-Oxy) = -Sxy*Oxy
-    // (S*Omega)_xy = Sxx*Oxy + Sxy*0 = Sxx*Oxy
-    // etc. (Omega is antisymmetric: Omega_xx = Omega_yy = 0, Omega_xy = Oxy, Omega_yx = -Oxy)
-    
-    // S*Omega:
-    double SOxx = Sxy * (-Oxy);  // = -Sxy*Oxy
-    double SOxy = Sxx * Oxy;      // = Sxx*Oxy
-    double SOyx = Syy * (-Oxy);   // = -Syy*Oxy
-    double SOyy = Sxy * Oxy;      // = Sxy*Oxy
-    
-    // Omega*S:
-    double OSxx = (-Oxy) * Sxy;   // = -Oxy*Sxy
-    double OSxy = (-Oxy) * Syy;   // = -Oxy*Syy
-    double OSyx = Oxy * Sxx;      // = Oxy*Sxx
-    double OSyy = Oxy * Sxy;      // = Oxy*Sxy
-    
-    // Suppress warnings for intermediate calculations
-    (void)SOyx; (void)OSyx;
-    
-    // T^(2) = S*Omega - Omega*S
-    basis[1][0] = SOxx - OSxx;  // = 0
-    basis[1][1] = SOxy - OSxy;  // = Sxx*Oxy + Oxy*Syy = Oxy*(Sxx + Syy)
-    basis[1][2] = SOyy - OSyy;  // = 0
-    
-    // For 2D incompressible: Sxx + Syy = 0 (traceless)
-    // So T^(2)_xy = Oxy * 0 = 0 in this case... Let's recalculate properly
-    
-    // Actually for 2D: S*Omega - Omega*S simplifies
-    // Let's use component form directly
-    // [S, Omega]_ij = S_ik * Omega_kj - Omega_ik * S_kj
-    // In matrix form with S = [[Sxx, Sxy], [Sxy, Syy]] and Omega = [[0, Oxy], [-Oxy, 0]]
-    
-    // Recalculate more carefully:
-    // S*Omega = [[Sxx, Sxy], [Sxy, Syy]] * [[0, Oxy], [-Oxy, 0]]
-    //         = [[-Sxy*Oxy, Sxx*Oxy], [-Syy*Oxy, Sxy*Oxy]]
-    
-    // Omega*S = [[0, Oxy], [-Oxy, 0]] * [[Sxx, Sxy], [Sxy, Syy]]
-    //         = [[Oxy*Sxy, Oxy*Syy], [-Oxy*Sxx, -Oxy*Sxy]]
-    
-    // T^(2) = S*Omega - Omega*S = 
-    //   [[-Sxy*Oxy - Oxy*Sxy, Sxx*Oxy - Oxy*Syy], 
-    //    [-Syy*Oxy + Oxy*Sxx, Sxy*Oxy + Oxy*Sxy]]
-    // = [[-2*Sxy*Oxy, (Sxx-Syy)*Oxy],
-    //    [(Sxx-Syy)*Oxy, 2*Sxy*Oxy]]
-    
-    basis[1][0] = -2.0 * Sxy * Oxy;
-    basis[1][1] = (Sxx - Syy) * Oxy;
-    basis[1][2] = 2.0 * Sxy * Oxy;
-    
-    // T^(3) = S^2 - (1/3)*tr(S^2)*I  (deviatoric part of S^2)
-    // S^2 = [[Sxx^2 + Sxy^2, Sxy*(Sxx+Syy)], [Sxy*(Sxx+Syy), Sxy^2 + Syy^2]]
-    // For incompressible 2D: Sxx + Syy = 0, so Sxy*(Sxx+Syy) = 0
-    // S^2_xx = Sxx^2 + Sxy^2
-    // S^2_yy = Sxy^2 + Syy^2 = Sxy^2 + Sxx^2 (since Syy = -Sxx)
-    // S^2_xy = 0
-    // tr(S^2) = 2*(Sxx^2 + Sxy^2)
-    
-    double S2xx = Sxx*Sxx + Sxy*Sxy;
-    double S2yy = Sxy*Sxy + Syy*Syy;
-    double S2xy = Sxy * (Sxx + Syy);
-    double trS2 = S2xx + S2yy;
-    
-    // In 2D, deviatoric: subtract (1/2)*tr(S^2)*I (not 1/3)
-    basis[2][0] = S2xx - 0.5 * trS2;
-    basis[2][1] = S2xy;
-    basis[2][2] = S2yy - 0.5 * trS2;
-    
-    // T^(4) = Omega^2 - (1/3)*tr(Omega^2)*I
-    // Omega^2 = [[0, Oxy], [-Oxy, 0]] * [[0, Oxy], [-Oxy, 0]]
-    //         = [[-Oxy^2, 0], [0, -Oxy^2]]
-    // tr(Omega^2) = -2*Oxy^2
-    // Deviatoric: Omega^2 - (1/2)*tr(Omega^2)*I = [[-Oxy^2 + Oxy^2, 0], [0, -Oxy^2 + Oxy^2]] = 0
-    // So T^(4) = 0 in 2D
-    
-    basis[3][0] = 0.0;
-    basis[3][1] = 0.0;
-    basis[3][2] = 0.0;
+
+    // Normalized strain rate (symmetric, traceless) — 6 independent components
+    double S[3][3] = {
+        {grad.Sxx() * tau,  grad.Sxy() * tau,  grad.Sxz() * tau},
+        {grad.Sxy() * tau,  grad.Syy() * tau,  grad.Syz() * tau},
+        {grad.Sxz() * tau,  grad.Syz() * tau,  grad.Szz() * tau}
+    };
+
+    // Normalized rotation rate (antisymmetric) — 3 independent components
+    double O[3][3] = {
+        { 0.0,              grad.Oxy() * tau,  grad.Oxz() * tau},
+        {-grad.Oxy() * tau, 0.0,               grad.Oyz() * tau},
+        {-grad.Oxz() * tau,-grad.Oyz() * tau,  0.0}
+    };
+
+    // Helper: 3x3 matrix multiply C = A * B
+    auto mat_mul = [](const double A[3][3], const double B[3][3], double C[3][3]) {
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                C[i][j] = 0.0;
+                for (int m = 0; m < 3; ++m)
+                    C[i][j] += A[i][m] * B[m][j];
+            }
+    };
+
+    // Helper: trace of a 3x3 matrix
+    auto tr = [](const double A[3][3]) { return A[0][0] + A[1][1] + A[2][2]; };
+
+    // Helper: extract symmetric tensor components (xx,xy,xz,yy,yz,zz)
+    auto store_sym = [](const double A[3][3], std::array<double, NUM_COMPONENTS>& out) {
+        out[XX] = A[0][0]; out[XY] = 0.5*(A[0][1]+A[1][0]); out[XZ] = 0.5*(A[0][2]+A[2][0]);
+        out[YY] = A[1][1]; out[YZ] = 0.5*(A[1][2]+A[2][1]); out[ZZ] = A[2][2];
+    };
+
+    // Helper: store symmetric deviatoric (subtract (1/3)*trace*I)
+    auto store_sym_dev = [&tr](const double A[3][3], std::array<double, NUM_COMPONENTS>& out) {
+        double t = tr(A) / 3.0;
+        out[XX] = 0.5*(A[0][0]+A[0][0]) - t;
+        out[XY] = 0.5*(A[0][1]+A[1][0]);
+        out[XZ] = 0.5*(A[0][2]+A[2][0]);
+        out[YY] = 0.5*(A[1][1]+A[1][1]) - t;
+        out[YZ] = 0.5*(A[1][2]+A[2][1]);
+        out[ZZ] = 0.5*(A[2][2]+A[2][2]) - t;
+    };
+
+    // Compute intermediate matrix products
+    double S2[3][3], O2[3][3];
+    double SO[3][3], OS[3][3];
+    mat_mul(S, S, S2);
+    mat_mul(O, O, O2);
+    mat_mul(S, O, SO);
+    mat_mul(O, S, OS);
+
+    // T^(1) = S
+    store_sym(S, basis[0]);
+
+    // T^(2) = SO - OS
+    double T2[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T2[i][j] = SO[i][j] - OS[i][j];
+    store_sym(T2, basis[1]);
+
+    // T^(3) = S^2 - (1/3)*tr(S^2)*I
+    store_sym_dev(S2, basis[2]);
+
+    // T^(4) = O^2 - (1/3)*tr(O^2)*I
+    store_sym_dev(O2, basis[3]);
+
+    // T^(5) = OS^2 - S^2O
+    double OS2[3][3], S2O[3][3];
+    mat_mul(O, S2, OS2);
+    mat_mul(S2, O, S2O);
+    double T5[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T5[i][j] = OS2[i][j] - S2O[i][j];
+    store_sym(T5, basis[4]);
+
+    // T^(6) = O^2S + SO^2 - (2/3)*tr(SO^2)*I
+    double O2S[3][3], SO2[3][3];
+    mat_mul(O2, S, O2S);
+    mat_mul(S, O2, SO2);
+    double T6[3][3];
+    double tr_SO2 = tr(SO2);
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T6[i][j] = O2S[i][j] + SO2[i][j] - (2.0/3.0) * tr_SO2 * (i == j ? 1.0 : 0.0);
+    store_sym(T6, basis[5]);
+
+    // T^(7) = O*S*O^2 - O^2*S*O
+    double OSO2[3][3], O2SO[3][3];
+    mat_mul(O, SO2, OSO2);   // O*(S*O^2)
+    mat_mul(O2, SO, O2SO);   // O^2*(S*O)
+    double T7[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T7[i][j] = OSO2[i][j] - O2SO[i][j];
+    store_sym(T7, basis[6]);
+
+    // T^(8) = S*O*S^2 - S^2*O*S
+    double SOS2[3][3], S2OS[3][3];
+    mat_mul(SO, S2, SOS2);   // (S*O)*S^2
+    mat_mul(S2O, S, S2OS);   // (S^2*O)*S  (reuses S2O from T5)
+    double T8[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T8[i][j] = SOS2[i][j] - S2OS[i][j];
+    store_sym(T8, basis[7]);
+
+    // T^(9) = O^2*S^2 + S^2*O^2 - (2/3)*tr(S^2*O^2)*I
+    double O2S2[3][3], S2O2[3][3];
+    mat_mul(O2, S2, O2S2);
+    mat_mul(S2, O2, S2O2);
+    double tr_S2O2 = tr(S2O2);
+    double T9[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T9[i][j] = O2S2[i][j] + S2O2[i][j] - (2.0/3.0) * tr_S2O2 * (i == j ? 1.0 : 0.0);
+    store_sym(T9, basis[8]);
+
+    // T^(10) = O*S^2*O^2 - O^2*S^2*O
+    double OS2O2[3][3], O2S2O[3][3];
+    mat_mul(O, S2O2, OS2O2);  // O*(S^2*O^2)
+    mat_mul(O2, S2O, O2S2O);  // O^2*(S^2*O)  (reuses S2O from T5)
+    double T10[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            T10[i][j] = OS2O2[i][j] - O2S2O[i][j];
+    store_sym(T10, basis[9]);
 }
 
 void TensorBasis::construct_anisotropy(
     const std::array<double, NUM_BASIS>& G,
-    const std::array<std::array<double, 3>, NUM_BASIS>& basis,
-    double& b_xx, double& b_xy, double& b_yy) {
-    
-    b_xx = 0.0;
-    b_xy = 0.0;
-    b_yy = 0.0;
-    
+    const std::array<std::array<double, NUM_COMPONENTS>, NUM_BASIS>& basis,
+    double& b_xx, double& b_xy, double& b_xz,
+    double& b_yy, double& b_yz, double& b_zz) {
+
+    b_xx = 0.0; b_xy = 0.0; b_xz = 0.0;
+    b_yy = 0.0; b_yz = 0.0; b_zz = 0.0;
+
     for (int n = 0; n < NUM_BASIS; ++n) {
-        b_xx += G[n] * basis[n][0];
-        b_xy += G[n] * basis[n][1];
-        b_yy += G[n] * basis[n][2];
+        b_xx += G[n] * basis[n][XX];
+        b_xy += G[n] * basis[n][XY];
+        b_xz += G[n] * basis[n][XZ];
+        b_yy += G[n] * basis[n][YY];
+        b_yz += G[n] * basis[n][YZ];
+        b_zz += G[n] * basis[n][ZZ];
     }
 }
 
 void TensorBasis::anisotropy_to_reynolds_stress(
-    double b_xx, double b_xy, double b_yy,
+    double b_xx, double b_xy, double b_xz,
+    double b_yy, double b_yz, double b_zz,
     double k,
-    double& tau_xx, double& tau_xy, double& tau_yy) {
-    
-    // R_ij = 2*k*(b_ij + (1/3)*delta_ij)
-    // In 2D: delta_ij contribution is (1/2) for consistency
-    // Actually for the Reynolds stress tensor:
-    // u'_i u'_j = 2*k*(b_ij + (1/3)*delta_ij)
-    // For 2D approximation we use:
-    // tau_ij = -rho * u'_i u'_j (Reynolds stress tensor as appears in RANS)
-    
+    double& tau_xx, double& tau_xy, double& tau_xz,
+    double& tau_yy, double& tau_yz, double& tau_zz) {
+
+    // tau_ij = 2*k*(b_ij + (1/3)*delta_ij)
     double k_safe = std::max(k, 0.0);
     tau_xx = 2.0 * k_safe * (b_xx + 1.0/3.0);
     tau_xy = 2.0 * k_safe * b_xy;
+    tau_xz = 2.0 * k_safe * b_xz;
     tau_yy = 2.0 * k_safe * (b_yy + 1.0/3.0);
+    tau_yz = 2.0 * k_safe * b_yz;
+    tau_zz = 2.0 * k_safe * (b_zz + 1.0/3.0);
 }
 
 FeatureComputer::FeatureComputer(const Mesh& mesh)
@@ -373,7 +416,7 @@ void FeatureComputer::compute_tbnn_features(
     const ScalarField& k,
     const ScalarField& omega,
     std::vector<Features>& features,
-    std::vector<std::array<std::array<double, 3>, TensorBasis::NUM_BASIS>>& basis) {
+    std::vector<std::array<std::array<double, TensorBasis::NUM_COMPONENTS>, TensorBasis::NUM_BASIS>>& basis) {
     
     compute_gradients_from_mac(*mesh_, velocity, dudx_, dudy_, dvdx_, dvdy_);
     

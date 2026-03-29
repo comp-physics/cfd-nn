@@ -35,6 +35,11 @@ void compute_gradients_from_mac_gpu(
     double* dudy_cell,
     double* dvdx_cell,
     double* dvdy_cell,
+    double* dudz_cell,           // Output: 3D gradients (nullptr for 2D)
+    double* dvdz_cell,
+    double* dwdx_cell,
+    double* dwdy_cell,
+    double* dwdz_cell,
     int Nx, int Ny, int Nz,      // Interior dimensions
     int Ng,                      // Ghost cells
     double dx, double dy, double dz, // Grid spacing
@@ -83,7 +88,7 @@ void compute_pope_invariants_gpu(
 // GPU Kernel: Compute TBNN features and tensor basis for all cells
 // ============================================================================
 // Input: gradients (dudx, dudy, dvdx, dvdy) with ghosts, k, omega, wall_distance
-// Output: features (5 per cell), basis (4*3 = 12 per cell) - interior only
+// Output: features (5 per cell), basis (10*6 = 60 per cell) - interior only
 // ============================================================================
 void compute_tbnn_features_gpu(
     const double* dudx, const double* dudy,
@@ -91,7 +96,7 @@ void compute_tbnn_features_gpu(
     const double* k, const double* omega,
     const double* wall_distance,
     double* features,                      // Output: Nx*Ny*Nz * 5
-    double* basis,                         // Output: Nx*Ny*Nz * 12 (4 basis tensors, 3 components each)
+    double* basis,                         // Output: Nx*Ny*Nz * 60 (10 basis tensors, 6 components each)
     int Nx, int Ny, int Nz, int Ng,
     int cell_stride, int cell_plane_stride,
     int total_cells,
@@ -122,7 +127,7 @@ void postprocess_mlp_outputs_gpu(
 // ============================================================================
 void postprocess_nn_outputs_gpu(
     const double* nn_outputs,              // Input: Nx*Ny*Nz * output_dim (interior only)
-    const double* basis,                   // Input: Nx*Ny*Nz * 12 (interior only)
+    const double* basis,                   // Input: Nx*Ny*Nz * 60 (interior only)
     const double* k,                       // Input: total_cells (with ghosts)
     const double* dudx, const double* dudy,
     const double* dvdx, const double* dvdy,
