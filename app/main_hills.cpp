@@ -158,8 +158,9 @@ int main(int argc, char** argv) {
         solver.enable_bulk_velocity_control(config.bulk_velocity_target);
     } else {
         solver.set_body_force(-config.dp_dx, 0.0);
-        // Force ramp disabled — penalization at small eta handles transient
-        solver.enable_force_ramp(50.0);
+        // No force ramp: penalization at ibm_eta handles the transient.
+        // Force ramp (starting at zero body force) caused warm-up divergence
+        // because it combined with penalization to give zero driving force.
     }
 
     // Set initial turbulence model. For models WITH transport (SST, EARSM, k-omega),
@@ -206,10 +207,11 @@ int main(int argc, char** argv) {
 
     solver.print_solver_info();
 
-    // Initialize with quiescent flow (body force will drive it)
-    // Use bulk_velocity_target as reference velocity for perturbation scaling
+    // Initialize from rest — body force will accelerate the flow.
+    // Starting from zero avoids huge pressure transients when the IBM
+    // penalization damps the velocity inside the hill body.
     double U_ref = (config.bulk_velocity_target > 0.0) ? config.bulk_velocity_target : 1.0;
-    solver.initialize_uniform(U_ref, 0.0);
+    solver.initialize_uniform(0.0, 0.0);
 
     if (config.perturbation_amplitude > 0.0) {
         const double amp = config.perturbation_amplitude;
@@ -339,10 +341,12 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Switch to ghost-cell IBM now that flow is developed
-            ibm.set_ghost_cell_ibm(true);
-            ibm.set_penalization_eta(0.0);
-            ibm.recompute_and_remap();
+            // Keep penalization IBM throughout (ghost-cell causes divergence
+            // at the switch point because the penalized flow has nonzero velocity
+            // inside the body which the ghost-cell correction amplifies)
+            // ibm.set_ghost_cell_ibm(true);
+            // ibm.set_penalization_eta(0.0);
+            // ibm.recompute_and_remap();
         }
     }
 
