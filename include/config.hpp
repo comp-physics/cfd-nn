@@ -22,6 +22,8 @@ enum class TurbulenceModelType {
     EARSM_WJ,       ///< SST k-ω + Wallin-Johansson EARSM
     EARSM_GS,       ///< SST k-ω + Gatski-Speziale EARSM
     EARSM_Pope,     ///< SST k-ω + Pope quadratic model
+    // Full Reynolds Stress Model
+    RSM_SSG,        ///< SSG pressure-strain + omega equation (7 transport PDEs)
     // LES SGS models
     Smagorinsky,    ///< Static Smagorinsky (Cs = 0.17)
     DynamicSmagorinsky, ///< Dynamic Smagorinsky (Germano)

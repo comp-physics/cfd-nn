@@ -36,6 +36,7 @@ static std::string model_name(TurbulenceModelType type) {
         case TurbulenceModelType::EARSM_WJ: return "EARSM-WJ";
         case TurbulenceModelType::EARSM_GS: return "EARSM-GS";
         case TurbulenceModelType::EARSM_Pope: return "EARSM-Pope";
+        case TurbulenceModelType::RSM_SSG: return "RSM-SSG";
         default: return "Unknown";
     }
 }
@@ -43,7 +44,7 @@ static std::string model_name(TurbulenceModelType type) {
 static bool is_transport_model(TurbulenceModelType type) {
     return type == TurbulenceModelType::SSTKOmega || type == TurbulenceModelType::KOmega ||
            type == TurbulenceModelType::EARSM_WJ || type == TurbulenceModelType::EARSM_GS ||
-           type == TurbulenceModelType::EARSM_Pope;
+           type == TurbulenceModelType::EARSM_Pope || type == TurbulenceModelType::RSM_SSG;
 }
 
 //=============================================================================

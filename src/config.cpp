@@ -218,6 +218,8 @@ void Config::load(const std::string& filename) {
         turb_model = TurbulenceModelType::EARSM_GS;
     } else if (model_str == "earsm_pope" || model_str == "pope") {
         turb_model = TurbulenceModelType::EARSM_Pope;
+    } else if (model_str == "rsm" || model_str == "rsm_ssg") {
+        turb_model = TurbulenceModelType::RSM_SSG;
     } else if (model_str == "smagorinsky" || model_str == "smag") {
         turb_model = TurbulenceModelType::Smagorinsky;
     } else if (model_str == "dynamic_smagorinsky" || model_str == "dsmag") {
@@ -482,6 +484,8 @@ void Config::parse_args(int argc, char** argv) {
                 turb_model = TurbulenceModelType::EARSM_GS;
             } else if (model == "earsm_pope" || model == "pope") {
                 turb_model = TurbulenceModelType::EARSM_Pope;
+            } else if (model == "rsm" || model == "rsm_ssg") {
+                turb_model = TurbulenceModelType::RSM_SSG;
             } else if (model == "smagorinsky" || model == "smag") {
                 turb_model = TurbulenceModelType::Smagorinsky;
             } else if (model == "dynamic_smagorinsky" || model == "dsmag") {
@@ -620,6 +624,7 @@ void Config::parse_args(int argc, char** argv) {
                       << "                      none, baseline, gep, nn_mlp, nn_tbnn, nn_tbrf\n"
                       << "                      sst, komega (transport models)\n"
                       << "                      earsm_wj, earsm_gs, earsm_pope (EARSM)\n"
+                      << "                      rsm, rsm_ssg (Reynolds Stress Model)\n"
                       << "  --nn_preset NAME  Use preset model from data/models/<NAME>\n"
                       << "  --weights DIR     NN weights directory (overrides preset)\n"
                       << "  --scaling DIR     NN scaling directory (overrides preset)\n"
@@ -840,7 +845,8 @@ void Config::finalize() {
          turb_model == TurbulenceModelType::KOmega ||
          turb_model == TurbulenceModelType::EARSM_WJ ||
          turb_model == TurbulenceModelType::EARSM_GS ||
-         turb_model == TurbulenceModelType::EARSM_Pope);
+         turb_model == TurbulenceModelType::EARSM_Pope ||
+         turb_model == TurbulenceModelType::RSM_SSG);
 
     // NOTE: Transport model Re check is done AFTER Reynolds number computation below,
     // so it catches low-Re cases regardless of whether Re was specified directly
@@ -1123,6 +1129,7 @@ void Config::print() const {
         case TurbulenceModelType::EARSM_WJ: std::cout << "SST + Wallin-Johansson EARSM"; break;
         case TurbulenceModelType::EARSM_GS: std::cout << "SST + Gatski-Speziale EARSM"; break;
         case TurbulenceModelType::EARSM_Pope: std::cout << "SST + Pope Quadratic EARSM (C1=" << pope_C1 << ", C2=" << pope_C2 << ")"; break;
+        case TurbulenceModelType::RSM_SSG: std::cout << "RSM (SSG pressure-strain + omega)"; break;
         case TurbulenceModelType::Smagorinsky: std::cout << "LES Smagorinsky"; break;
         case TurbulenceModelType::DynamicSmagorinsky: std::cout << "LES Dynamic Smagorinsky"; break;
         case TurbulenceModelType::WALE: std::cout << "LES WALE"; break;

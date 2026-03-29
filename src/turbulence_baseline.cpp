@@ -16,6 +16,7 @@
 #include "turbulence_nn_tbrf.hpp"
 #include "turbulence_transport.hpp"
 #include "turbulence_earsm.hpp"
+#include "turbulence_rsm.hpp"
 #include "turbulence_les.hpp"
 #include "gpu_kernels.hpp"
 #include "features.hpp"
@@ -568,7 +569,12 @@ std::unique_ptr<TurbulenceModel> create_turbulence_model(
             model->set_pope_constants(pope_C1, pope_C2);
             return model;
         }
-            
+
+        // Full Reynolds Stress Model
+        case TurbulenceModelType::RSM_SSG: {
+            return std::make_unique<RSMModel>();
+        }
+
         // LES SGS models
         case TurbulenceModelType::Smagorinsky:
             return std::make_unique<SmagorinskyModel>();

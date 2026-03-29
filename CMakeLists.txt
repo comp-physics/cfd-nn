@@ -318,6 +318,7 @@ set(LIB_SOURCES
     src/turbulence_nn_tbrf.cpp
     src/turbulence_transport.cpp
     src/turbulence_earsm.cpp
+    src/turbulence_rsm.cpp
     src/gpu_kernels.cpp
     src/decomposition.cpp
     src/halo_exchange.cpp
@@ -672,6 +673,7 @@ add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS med
     add_nncfd_test(test_mg_manufactured_solution LABELS medium)
     add_nncfd_test(test_nn_integration TEST_NAME_SUFFIX NNIntegrationTest LABELS medium)
     add_nncfd_test(test_turbulence_unified LABELS medium)
+    add_nncfd_test(test_rsm TEST_NAME_SUFFIX RSMTest LABELS medium)
     add_nncfd_test(test_turbulence_cross_geometry TEST_NAME_SUFFIX TurbulenceCrossGeometryTest LABELS medium)
     add_nncfd_test(test_projection_invariants LABELS medium)
     add_nncfd_test(test_perf_sentinel LABELS medium)
