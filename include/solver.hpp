@@ -227,6 +227,8 @@ public:
     const ScalarField& nu_t() const { return nu_t_; }
     const ScalarField& k() const { return k_; }
     const ScalarField& omega() const { return omega_; }
+    ScalarField& k_mutable() { return k_; }
+    ScalarField& omega_mutable() { return omega_; }
     const ScalarField& nu_eff() const { return nu_eff_; }
     const ScalarField& div_velocity() const { return div_velocity_; }  ///< For diagnostics
     const ScalarField& rhs_poisson() const { return rhs_poisson_; }    ///< For diagnostics

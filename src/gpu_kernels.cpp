@@ -53,10 +53,11 @@ void compute_gradients_from_mac_gpu(
     [[maybe_unused]] const double inv_dz = (Nz > 1) ? 1.0 / dz : 0.0;
     const bool use_stretched = (dyc != nullptr && dyc_size > 0);
     const bool is3D = (Nz > 1 && w_face != nullptr);
+    const bool has_3d_grads = (dudz_cell != nullptr);  // 3D gradient outputs provided
     const int n_cells_3d = Nx * Ny * Nz;
 
 #ifdef USE_GPU_OFFLOAD
-    if (is3D && use_stretched) {
+    if (is3D && has_3d_grads && use_stretched) {
         #pragma omp target teams distribute parallel for \
             map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
                          w_face[0:w_total_size], \
@@ -97,7 +98,7 @@ void compute_gradients_from_mac_gpu(
             // dw/dz: w is at z-faces, so dw/dz at cell center = (w[k+1] - w[k]) / dz
             dwdz_cell[idx_cell] = (w_face[(k + 1) * w_plane_stride + j * w_stride + i] - w_face[k * w_plane_stride + j * w_stride + i]) * inv_dz;
         }
-    } else if (is3D) {
+    } else if (is3D && has_3d_grads) {
         #pragma omp target teams distribute parallel for \
             map(present: u_face[0:u_total_size], v_face[0:v_total_size], \
                          w_face[0:w_total_size], \
@@ -208,7 +209,7 @@ void compute_gradients_from_mac_gpu(
         dvdx_cell[idx_cell] = (v_face[v_base + j * v_stride + (i + 1)] - v_face[v_base + j * v_stride + (i - 1)]) * inv_2dx;
         dvdy_cell[idx_cell] = (v_face[v_base + (j + 1) * v_stride + i] - v_face[v_base + (j - 1) * v_stride + i]) * inv_dy_local;
 
-        if (is3D) {
+        if (is3D && dudz_cell != nullptr) {
             dudz_cell[idx_cell] = (u_face[(k + 1) * u_plane_stride + j * u_stride + i] - u_face[(k - 1) * u_plane_stride + j * u_stride + i]) * inv_2dz;
             dvdz_cell[idx_cell] = (v_face[(k + 1) * v_plane_stride + j * v_stride + i] - v_face[(k - 1) * v_plane_stride + j * v_stride + i]) * inv_2dz;
 

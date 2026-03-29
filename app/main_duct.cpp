@@ -14,6 +14,7 @@
 #include "timing.hpp"
 #include "turbulence_model.hpp"
 #include "turbulence_baseline.hpp"
+#include "turbulence_earsm.hpp"
 #include "decomposition.hpp"
 #include "qoi_extraction.hpp"
 
@@ -333,6 +334,26 @@ int main(int argc, char** argv) {
         solver.initialize_uniform(0.1 * std::abs(u_center_approx), 0.0);
     }
 
+    // For RANS transport models: seed k/omega to turbulent values.
+    // Without this, SST k stays at zero on uniform grids because
+    // P_k = nu_t * |S|^2 = 0 when nu_t = 0 (chicken-and-egg problem).
+    // Use 5% turbulence intensity and nu_t/nu ~ 10 as initial condition.
+    if (config.turb_model != TurbulenceModelType::None) {
+        double U_b_est = std::max(std::abs(u_center_approx), 0.1);
+        double Ti = 0.05;
+        double k_seed = std::max(1.5 * (U_b_est * Ti) * (U_b_est * Ti), 1e-4);
+        double nu_t_ratio = 10.0;  // initial nu_t / nu
+        double omega_seed = k_seed / (0.09 * config.nu * nu_t_ratio);
+        omega_seed = std::max(omega_seed, 1.0);
+
+        std::cout << "Seeding turbulence: k=" << std::scientific << k_seed
+                  << " omega=" << omega_seed << " (nu_t/nu~" << std::fixed
+                  << std::setprecision(0) << nu_t_ratio << ")\n";
+
+        std::fill(solver.k_mutable().data().begin(), solver.k_mutable().data().end(), k_seed);
+        std::fill(solver.omega_mutable().data().begin(), solver.omega_mutable().data().end(), omega_seed);
+    }
+
 #ifdef USE_GPU_OFFLOAD
     solver.sync_to_gpu();
 #endif
@@ -351,62 +372,89 @@ int main(int argc, char** argv) {
               << std::setw(15) << "Bulk u"
               << "\n";
 
-    // Warm-up phase: run with SST to develop flow before switching to target model
+    // Warm-up phase: run with SST (or the target model with closure disabled)
+    // to develop the flow before enabling the full anisotropic closure.
+    //
+    // For transport models (SST, EARSM, RSM): initialize with the TARGET model
+    // directly so k/omega state is preserved. Disable EARSM closure during warm-up.
+    // For non-transport models (NN, GEP): initialize with SST warm-up, then switch
+    // to target model with background SST transport to keep k/omega alive.
     if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
-        TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
-        if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
+        // Check if target model has transport equations
+        auto probe = create_turbulence_model(config.turb_model, "", "");
+        bool target_has_transport = probe && probe->uses_transport_equations();
 
-        auto warmup_turb = create_turbulence_model(warmup_type, "", "");
-        if (warmup_turb) {
-            warmup_turb->set_nu(config.nu);
-            solver.set_turbulence_model(std::move(warmup_turb));
-
-            std::cout << "=== Warm-up phase: " << config.warmup_model
-                      << " for t=" << config.warmup_time << " ===\n";
-
-            for (int ws = 1; ws <= config.max_steps; ++ws) {
-                if (config.adaptive_dt) {
-                    solver.set_dt(solver.compute_adaptive_dt());
-                }
-                double res = solver.step();
-                double t = solver.current_time();
-                if (t >= config.warmup_time) {
-                    std::cout << "Warm-up complete at step " << ws
-                              << ", t=" << t << ", res=" << res << "\n";
-                    break;
-                }
-                if (std::isnan(res) || std::isinf(res) || res > 1e10) {
-                    std::cerr << "Warm-up diverged at step " << ws << "\n";
-                    break;
-                }
+        // For transport models: use target model directly during warm-up
+        // For non-transport: use SST warm-up model
+        if (!target_has_transport) {
+            TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
+            if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
+            auto warmup_turb = create_turbulence_model(warmup_type, "", "");
+            if (warmup_turb) {
+                warmup_turb->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(warmup_turb));
             }
+        }
+        // else: target model already set at line 307-316 above
 
-            // Switch to target model
-            if (config.turb_model != TurbulenceModelType::None) {
-                auto target_turb = create_turbulence_model(config.turb_model,
-                                                           config.nn_weights_path,
-                                                           config.nn_scaling_path,
-                                                           config.pope_C1,
-                                                           config.pope_C2);
-                if (target_turb) {
-                    if (!target_turb->uses_transport_equations()) {
-                        auto bg_sst = create_turbulence_model(
-                            TurbulenceModelType::SSTKOmega, "", "");
-                        if (bg_sst) {
-                            bg_sst->set_nu(config.nu);
-                            solver.set_background_transport(std::move(bg_sst));
-                        }
-                    }
-                    target_turb->set_nu(config.nu);
-                    solver.set_turbulence_model(std::move(target_turb));
-                }
-            } else {
-                solver.set_turbulence_model(nullptr);
+        // Disable EARSM closure during warm-up (acts as pure SST)
+        auto* earsm = dynamic_cast<SSTWithEARSM*>(solver.turb_model_ptr());
+        if (earsm) {
+            earsm->set_closure_active(false);
+        }
+
+        std::cout << "=== Warm-up phase: " << config.warmup_model
+                  << " for t=" << config.warmup_time << " ===\n";
+
+        for (int ws = 1; ws <= config.max_steps; ++ws) {
+            if (config.adaptive_dt) {
+                solver.set_dt(solver.compute_adaptive_dt());
             }
+            double res = solver.step();
+            double t = solver.current_time();
+            if (t >= config.warmup_time) {
+                std::cout << "Warm-up complete at step " << ws
+                          << ", t=" << t << ", res=" << res << "\n";
+                break;
+            }
+            if (std::isnan(res) || std::isinf(res) || res > 1e10) {
+                std::cerr << "Warm-up diverged at step " << ws << "\n";
+                break;
+            }
+        }
 
-            TimingStats::instance().reset();
-            std::cout << "=== Evaluation phase from t="
-                      << solver.current_time() << " ===\n";
+        // Switch to target model after warm-up.
+        // Transport models (SST, EARSM, RSM) were already initialized at the start
+        // and developed during warm-up — skip re-creation to preserve k/omega state.
+        // Non-transport models (NN, algebraic, GEP) need fresh creation with
+        // background SST to keep k/omega alive.
+        if (!target_has_transport && config.turb_model != TurbulenceModelType::None) {
+            auto target_turb = create_turbulence_model(config.turb_model,
+                                                       config.nn_weights_path,
+                                                       config.nn_scaling_path,
+                                                       config.pope_C1,
+                                                       config.pope_C2);
+            if (target_turb) {
+                auto bg_sst = create_turbulence_model(
+                    TurbulenceModelType::SSTKOmega, "", "");
+                if (bg_sst) {
+                    bg_sst->set_nu(config.nu);
+                    solver.set_background_transport(std::move(bg_sst));
+                }
+                target_turb->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(target_turb));
+            }
+        }
+        // else: transport models keep running from warm-up (no switch needed)
+
+        TimingStats::instance().reset();
+        std::cout << "=== Evaluation phase from t="
+                  << solver.current_time() << " ===\n";
+
+        // Re-enable EARSM closure after warm-up
+        if (earsm) {
+            earsm->set_closure_active(true);
+            std::cout << "  EARSM closure re-activated\n";
         }
     }
 
@@ -568,7 +616,18 @@ int main(int argc, char** argv) {
     std::cout << "Max velocity: " << std::fixed << std::setprecision(6) << max_u << "\n";
     std::cout << "Bulk velocity: " << bulk_u << "\n";
     std::cout << "Max |v| (secondary): " << std::scientific << std::setprecision(6) << max_v << "\n";
-    std::cout << "Max |w| (secondary): " << max_w << std::fixed << "\n";
+    std::cout << "Max |w| (secondary): " << max_w << "\n";
+
+    // Turbulence diagnostics
+    double max_k = 0.0, max_nut = 0.0;
+    for (int kk = mesh.k_begin(); kk < mesh.k_end(); ++kk)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                max_k = std::max(max_k, solver.k()(i, j, kk));
+                max_nut = std::max(max_nut, solver.nu_t()(i, j, kk));
+            }
+    std::cout << "Max k: " << max_k << "\n";
+    std::cout << "Max nu_t: " << max_nut << std::fixed << "\n";
 
     // Only compare against analytical solution for steady-state runs
     if (!is_unsteady && config.turb_model == TurbulenceModelType::None) {
