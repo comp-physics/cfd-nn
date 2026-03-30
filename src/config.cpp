@@ -653,6 +653,9 @@ void Config::parse_args(int argc, char** argv) {
                       << "  The third is computed from Re = sqrt(|dp_dx|) * H / nu.\n"
                       << "  Default: nu = 1.5e-5 (air viscosity), dp_dx = -1.0\n";
             std::exit(0);
+        } else if (arg[0] == '-') {
+            std::cerr << "WARNING: unrecognized argument '" << arg << "' — ignored.\n"
+                      << "  Use --help to see valid options.\n";
         }
     }
 
