@@ -355,8 +355,11 @@ void SSTClosure::compute_nu_t(
                 // Clipping
                 nu_t_loc = std::clamp(nu_t_loc, 0.0, 1000.0 * nu_);
 
-                if (is3D) nu_t(i, j, kz) = nu_t_loc;
-                else      nu_t(i, j) = nu_t_loc;
+                // Write to both 2D (plane 0) and 3D locations
+                nu_t(i, j) = nu_t_loc;  // plane 0 (always)
+                if (is3D) {
+                    nu_t.data()[kz * mesh.total_Nx() * mesh.total_Ny() + j * mesh.total_Nx() + i] = nu_t_loc;
+                }
             }
         }
     }
@@ -969,8 +972,10 @@ void SSTKOmegaTransport::update(
                     double omega_loc = is3D ? std::max(constants_.omega_min, omega(i, j, kz))
                                             : std::max(constants_.omega_min, omega(i, j));
                     double nt = bounded_ratio(k_loc, omega_loc, OMEGA_FLOOR, NU_T_RATIO_MAX * nu_);
-                    if (is3D) nu_t(i, j, kz) = nt;
-                    else      nu_t(i, j) = nt;
+                    nu_t(i, j) = nt;  // plane 0
+                    if (is3D) {
+                        nu_t.data()[kz * mesh.total_Nx() * mesh.total_Ny() + j * mesh.total_Nx() + i] = nt;
+                    }
                 }
             }
         }

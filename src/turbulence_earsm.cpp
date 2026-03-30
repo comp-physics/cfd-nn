@@ -726,6 +726,21 @@ void SSTWithEARSM::update(
         // Fallback to SST closure
         transport_.update(mesh, velocity, k, omega, nu_t, tau_ij);
     }
+
+    // For 3D CPU path: the closures above only write to plane 0 (2D accessors).
+    // Copy plane 0 nu_t to all interior z-planes so the solver sees consistent values.
+    if (mesh.Nz > 1) {
+        const int plane = mesh.total_Nx() * mesh.total_Ny();
+        for (int kk = 0; kk < mesh.Nz; ++kk) {
+            const int kz = kk + mesh.Nghost;
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    const int idx_2d = j * mesh.total_Nx() + i;
+                    nu_t.data()[kz * plane + idx_2d] = nu_t.data()[idx_2d];
+                }
+            }
+        }
+    }
 }
 
 std::string SSTWithEARSM::name() const {
