@@ -249,6 +249,12 @@ Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for p
 - [x] **All turbulence model 3D GPU bugs fixed** (Mar 29): z-plane indexing consistent across all models
 - [x] **Stale MLP weights removed** (Mar 29): tests use paper models (5 Pope invariant inputs)
 - [x] **CI passing**: 28/28 sanity, 29/29 validation, 23/23 unified
+- [ ] **Refactor turbulence models to single code path** (NEXT TASK):
+  - Baseline, GEP, SST transport, EARSM have separate `#ifdef USE_GPU_OFFLOAD` CPU/GPU paths
+  - Violates CLAUDE.md "single code path" rule — caused the z-plane bug (two paths diverged)
+  - Refactor to one loop with `#pragma omp target` (silently ignored on CPU builds)
+  - Follow LES/RSM pattern which already uses single path correctly
+  - Files: `turbulence_baseline.cpp`, `turbulence_gep.cpp`, `turbulence_transport.cpp`, `turbulence_earsm.cpp`
 - [ ] Run 68+ production runs (4 cases × 17+ models) on H200
 - [ ] Compare QoIs against DNS reference data
 - [ ] Re-collect timing data with RSM + anisotropic stress overhead
