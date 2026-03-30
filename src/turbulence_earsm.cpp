@@ -626,15 +626,14 @@ void SSTWithEARSM::update(
         return;
     }
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: compute EARSM directly on device without touching host arrays
+    // Device-view path: compute EARSM on flat arrays (works on both CPU and GPU)
     if (device_view && device_view->is_valid() && closure_) {
         const int Nx = device_view->Nx;
         const int Ny = device_view->Ny;
         const int Ng = device_view->Ng;
         const int stride = device_view->cell_stride;
-        
-        // First compute gradients on GPU
+
+        // Compute velocity gradients
         gpu_kernels::compute_gradients_from_mac_gpu(
             device_view->u_face,
             device_view->v_face,
@@ -665,12 +664,12 @@ void SSTWithEARSM::update(
             device_view->dyc,
             device_view->dyc_size
         );
-        
+
         // Determine which EARSM model
         auto* wj_model = dynamic_cast<WallinJohanssonEARSM*>(closure_.get());
         auto* gs_model = dynamic_cast<GatskiSpezialeEARSM*>(closure_.get());
         auto* pope_model = dynamic_cast<PopeQuadraticEARSM*>(closure_.get());
-        
+
         const int Nz = device_view->Nz;
         const int cps = device_view->cell_plane_stride;
 
@@ -708,20 +707,17 @@ void SSTWithEARSM::update(
                 nu_, pope_model->C1(), pope_model->C2()
             );
         }
-        
+
         // Decomposition method: restore SST nu_t for the diffusion operator.
         // The EARSM-derived nu_t can be very different from SST near separation,
         // causing instability in explicit solvers. The anisotropic correction
         // enters through tau_div (computed from tau_ij) instead.
-        // Re-compute SST nu_t directly on GPU using the transport update:
+        // Re-compute SST nu_t using the transport update:
         transport_.update(mesh, velocity, k, omega, nu_t, nullptr, device_view);
         return;
     }
-#else
-    (void)device_view;
-#endif
-    
-    // Host path: use EARSM closure for ν_t computation
+
+    // Fallback host path (no device_view): use EARSM closure on ScalarField objects
     if (closure_) {
         closure_->set_nu(nu_);
         closure_->set_delta(delta_);
@@ -781,9 +777,7 @@ std::unique_ptr<EARSMClosure> create_earsm_closure(const std::string& name) {
 // Unified EARSM output kernel - compiles for both CPU and GPU
 // Computes tensor basis, anisotropy, Reynolds stresses, and nu_t from β coefficients
 // ============================================================================
-#ifdef USE_GPU_OFFLOAD
 #pragma omp declare target
-#endif
 
 /// Compute EARSM output (Reynolds stresses and eddy viscosity) from β coefficients
 /// This is the common part of all EARSM variants, called after model-specific β computation.
@@ -1056,13 +1050,11 @@ inline void earsm_pope_cell_kernel(
                          nu_t, idx);
 }
 
-#ifdef USE_GPU_OFFLOAD
 #pragma omp end declare target
-#endif
 // ============================================================================
 
 // ============================================================================
-// GPU Kernels for EARSM (Specialized Versions)
+// EARSM Kernel Drivers (single code path for CPU and GPU)
 // ============================================================================
 
 namespace earsm_kernels {
@@ -1090,8 +1082,6 @@ void compute_earsm_wj_full_gpu(
     const int kz_begin = (Nz > 1) ? Ng : 0;
     const int kz_end = (Nz > 1) ? (Ng + Nz) : 1;
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: parallel execution using unified kernel
     #pragma omp target teams distribute parallel for collapse(3) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
@@ -1110,20 +1100,6 @@ void compute_earsm_wj_full_gpu(
             }
         }
     }
-#else
-    // Host path: sequential execution using same unified kernel
-    for (int kz = kz_begin; kz < kz_end; ++kz) {
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                const int idx = kz * cell_plane_stride + j * stride + i;
-                earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                     A1, A2, A3, A4, C_mu, nu,
-                                     tau_xx, tau_xy, tau_xz,
-                                     tau_yy, tau_yz, tau_zz, nu_t);
-            }
-        }
-    }
-#endif
 }
 
 void compute_earsm_gs_full_gpu(
@@ -1145,8 +1121,6 @@ void compute_earsm_gs_full_gpu(
     const int kz_begin = (Nz > 1) ? Ng : 0;
     const int kz_end = (Nz > 1) ? (Ng + Nz) : 1;
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: parallel execution using unified kernel
     #pragma omp target teams distribute parallel for collapse(3) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
@@ -1165,20 +1139,6 @@ void compute_earsm_gs_full_gpu(
             }
         }
     }
-#else
-    // Host path: sequential execution using same unified kernel
-    for (int kz = kz_begin; kz < kz_end; ++kz) {
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                const int idx = kz * cell_plane_stride + j * stride + i;
-                earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                     C_mu0, C1, C2, eta_max, C_mu_eps, nu,
-                                     tau_xx, tau_xy, tau_xz,
-                                     tau_yy, tau_yz, tau_zz, nu_t);
-            }
-        }
-    }
-#endif
 }
 
 void compute_earsm_pope_full_gpu(
@@ -1196,8 +1156,6 @@ void compute_earsm_pope_full_gpu(
     const int kz_begin = (Nz > 1) ? Ng : 0;
     const int kz_end = (Nz > 1) ? (Ng + Nz) : 1;
 
-#ifdef USE_GPU_OFFLOAD
-    // GPU path: parallel execution using unified kernel
     #pragma omp target teams distribute parallel for collapse(3) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
@@ -1216,20 +1174,6 @@ void compute_earsm_pope_full_gpu(
             }
         }
     }
-#else
-    // Host path: sequential execution using same unified kernel
-    for (int kz = kz_begin; kz < kz_end; ++kz) {
-        for (int j = Ng; j < Ng + Ny; ++j) {
-            for (int i = Ng; i < Ng + Nx; ++i) {
-                const int idx = kz * cell_plane_stride + j * stride + i;
-                earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                       C_mu, C1, C2, nu,
-                                       tau_xx, tau_xy, tau_xz,
-                                       tau_yy, tau_yz, tau_zz, nu_t);
-            }
-        }
-    }
-#endif
 }
 
 } // namespace earsm_kernels

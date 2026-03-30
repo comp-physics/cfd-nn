@@ -197,29 +197,21 @@ void MixingLengthModel::update(
     ScalarField& nu_t,
     TensorField* tau_ij,
     const TurbulenceDeviceView* device_view) {
-    
+
     (void)k;
     (void)omega;
     (void)tau_ij;
-    
-    // PHASE 1 GPU OPTIMIZATION:
-    // If device_view is provided and valid, use GPU path with MAC gradient kernel
-    // Otherwise fall back to CPU path
-    
-#ifdef USE_GPU_OFFLOAD
-    if (device_view && device_view->is_valid()) {
-        // ==================================================================
-        // GPU PATH: Use solver-owned device buffers and MAC gradient kernel
-        // ==================================================================
-        
-        // Compute mixing length eddy viscosity on GPU
-        const int Nx = device_view->Nx;
-        const int Ny = device_view->Ny;
-        const int Ng = device_view->Ng;
-        
-        const int cell_total_size = device_view->cell_total;
 
-        // Compute gradients on GPU using MAC-aware kernel
+    // ======================================================================
+    // Single code path: #pragma omp target is silently ignored on CPU builds.
+    // When device_view is valid, use solver-owned GPU buffers.
+    // When device_view is null, compute gradients on host and run locally.
+    // ======================================================================
+
+    const bool use_device = device_view && device_view->is_valid();
+
+    // --- Gradient computation (once) ---
+    if (use_device) {
         gpu_kernels::compute_gradients_from_mac_gpu(
             device_view->u_face,
             device_view->v_face,
@@ -233,7 +225,7 @@ void MixingLengthModel::update(
             device_view->dwdx,
             device_view->dwdy,
             device_view->dwdz,
-            Nx, Ny, device_view->Nz, Ng,
+            device_view->Nx, device_view->Ny, device_view->Nz, device_view->Ng,
             device_view->dx,
             device_view->dy,
             device_view->dz,
@@ -252,164 +244,90 @@ void MixingLengthModel::update(
             device_view->dyc,
             device_view->dyc_size
         );
-
-        // Compute u_tau from GPU-resident dudy field via reduction
-        // (avoids reading stale HOST velocity arrays)
-        double u_tau = 0.0;
-        {
-            const double* dudy_d = device_view->dudy;
-            const int Ng_ut = Ng;
-            const int Nx_ut = Nx;
-            const int stride_ut = device_view->cell_stride;
-            const int j_wall = Ng_ut;  // First interior row
-            const double nu_ut = nu_;
-            double dudy_sum = 0.0;
-
-            #pragma omp target teams distribute parallel for \
-                map(present: dudy_d[0:cell_total_size]) reduction(+:dudy_sum)
-            for (int i = 0; i < Nx_ut; ++i) {
-                int idx = j_wall * stride_ut + (i + Ng_ut);
-                double val = dudy_d[idx];
-                if (val < 0.0) val = -val;
-                dudy_sum += val;
-            }
-            dudy_sum /= Nx_ut;
-            double tau_w = nu_ut * dudy_sum;
-            u_tau = std::sqrt(tau_w);
+    } else {
+        // Lazy-initialize gradient fields for CPU path
+        if (dudx_.data().empty()) {
+            dudx_ = ScalarField(mesh);
+            dudy_ = ScalarField(mesh);
+            dvdx_ = ScalarField(mesh);
+            dvdy_ = ScalarField(mesh);
         }
-        u_tau = std::max(u_tau, 1e-10);
-
-        const int stride = device_view->cell_stride;
-        const int n_cells = Nx * Ny;
-
-        // Copy member variables to local scope (NVHPC workaround)
-        const double nu_local = nu_;
-        const double kappa_local = kappa_;
-        const double A_plus_local = A_plus_;
-        const double delta_local = delta_;
-        
-        // Get device pointers (already on GPU via device_view)
-        double* dudx_ptr = device_view->dudx;
-        double* dudy_ptr = device_view->dudy;
-        double* dvdx_ptr = device_view->dvdx;
-        double* dvdy_ptr = device_view->dvdy;
-        double* nu_t_ptr = device_view->nu_t;
-        double* wall_dist_ptr = device_view->wall_distance;
-        
-        // GPU kernel: compute mixing length eddy viscosity using unified kernel
-        // Use map(present:...) since these are solver-mapped host pointers
-        #pragma omp target teams distribute parallel for \
-            map(present: dudx_ptr[0:cell_total_size], dudy_ptr[0:cell_total_size], \
-                         dvdx_ptr[0:cell_total_size], dvdy_ptr[0:cell_total_size], \
-                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
-        for (int idx = 0; idx < n_cells; ++idx) {
-            const int i = idx % Nx + Ng;  // interior i (add ghost offset)
-            const int j = idx / Nx + Ng;  // interior j (add ghost offset)
-            const int cell_idx = j * stride + i;
-
-            // Call unified kernel (same code path as CPU)
-            mixing_length_cell_kernel(
-                cell_idx, u_tau, nu_local,
-                kappa_local, A_plus_local, delta_local,
-                wall_dist_ptr[cell_idx],
-                dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
-                nu_t_ptr);
-        }
-        
-        // Done! nu_t is now on GPU, will be synced by solver when needed
-        return;
+        compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     }
-#else
-    (void)device_view;  // Unused in host build
-#endif
-    
-    // ==================================================================
-    // CPU PATH: MAC-aware gradient computation (matches GPU)
-    // ==================================================================
-    
-    // Initialize gradient fields if needed (lazy initialization)
-    if (dudx_.data().empty()) {
-        dudx_ = ScalarField(mesh);
-        dudy_ = ScalarField(mesh);
-        dvdx_ = ScalarField(mesh);
-        dvdy_ = ScalarField(mesh);
-    }
-    
-    // Compute velocity gradients on CPU using MAC-aware function
-    // This matches the GPU kernel's indexing for consistent results
-    compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
-    
-    // Mixing length model with van Driest damping:
-    // l_m = kappa * y * (1 - exp(-y+/A+))
-    // nu_t = l_m^2 * |S|
-    
-    // First, estimate u_tau from wall gradient
-    // Use same formula as GPU path for bit-for-bit consistency
-    double u_tau = 0.0;
-    {
-        int j = mesh.j_begin();
-        // Use local cell spacing for stretched grids (center-to-center)
-        double dy_local = mesh.dy;
-        if (!mesh.dyv.empty()) {
-            dy_local = 0.5 * (mesh.dyv[j] + mesh.dyv[j + 1]);
-        }
-        double dudy_wall = 0.0;
-        int count = 0;
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double u_wall = velocity.u(i, j);
-            double u_next = velocity.u(i, j+1);
-            dudy_wall += std::abs((u_next - u_wall) / dy_local);
-            ++count;
-        }
-        dudy_wall /= count;
-        double tau_w = nu_ * dudy_wall;
-        u_tau = std::sqrt(tau_w);
-    }
-    
-    u_tau = std::max(u_tau, 1e-10);  // Avoid division by zero
 
-    // Host execution using unified kernel
-    const int stride = mesh.total_Nx();
-    const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
-    const int Nx = mesh.Nx;
-    const int Ng = mesh.Nghost;
+    // --- Set up pointers and dimensions ---
+    // These point to either device_view buffers (GPU) or local fields (CPU).
+    const int Nx = use_device ? device_view->Nx : mesh.Nx;
+    const int Ny = use_device ? device_view->Ny : mesh.Ny;
+    const int Ng = use_device ? device_view->Ng : mesh.Nghost;
+    const int stride = use_device ? device_view->cell_stride : mesh.total_Nx();
+    const int n_cells = Nx * Ny;
 
-    // Get raw pointers from gradient fields
-    const double* dudx_ptr = dudx_.data().data();
-    const double* dudy_ptr = dudy_.data().data();
-    const double* dvdx_ptr = dvdx_.data().data();
-    const double* dvdy_ptr = dvdy_.data().data();
-    double* nu_t_ptr = nu_t.data().data();
+    double* dudx_ptr = use_device ? device_view->dudx : dudx_.data().data();
+    double* dudy_ptr = use_device ? device_view->dudy : dudy_.data().data();
+    double* dvdx_ptr = use_device ? device_view->dvdx : dvdx_.data().data();
+    double* dvdy_ptr = use_device ? device_view->dvdy : dvdy_.data().data();
+    double* nu_t_ptr = use_device ? device_view->nu_t : nu_t.data().data();
 
-    // Cache wall distances in member variable (computed once, reused each call)
-    // Use 3D buffer to match gradient/nu_t 3D indexing
-    const int total_cells_3d = mesh.total_cells();
-    if (y_wall_flat_.empty() || static_cast<int>(y_wall_flat_.size()) != total_cells_3d) {
-        y_wall_flat_.resize(total_cells_3d, 0.0);
-        for (int k = 0; k < mesh.total_Nz(); ++k) {
-            for (int j = 0; j < mesh.total_Ny(); ++j) {
-                for (int i = 0; i < mesh.total_Nx(); ++i) {
-                    const int idx = k * plane_stride + j * stride + i;
-                    y_wall_flat_[idx] = mesh.wall_distance(i, j);
+    // Wall distance: use device_view buffer or cache in member variable
+    double* wall_dist_ptr = nullptr;
+    if (use_device) {
+        wall_dist_ptr = device_view->wall_distance;
+    } else {
+        const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
+        const int total_cells_3d = mesh.total_cells();
+        if (y_wall_flat_.empty() || static_cast<int>(y_wall_flat_.size()) != total_cells_3d) {
+            y_wall_flat_.resize(total_cells_3d, 0.0);
+            for (int kk = 0; kk < mesh.total_Nz(); ++kk) {
+                for (int jj = 0; jj < mesh.total_Ny(); ++jj) {
+                    for (int ii = 0; ii < mesh.total_Nx(); ++ii) {
+                        const int idx = kk * plane_stride + jj * stride + ii;
+                        y_wall_flat_[idx] = mesh.wall_distance(ii, jj);
+                    }
                 }
             }
         }
+        wall_dist_ptr = y_wall_flat_.data();
     }
-    const double* wall_dist_ptr = y_wall_flat_.data();
 
-    // Model constants for kernel
+    // Size for map(present:) clauses — only used by GPU pragma
+    [[maybe_unused]] const int buf_sz = use_device ? device_view->cell_total : 0;
+
+    // --- Compute u_tau via wall-gradient reduction ---
+    double u_tau = 0.0;
+    {
+        const int j_wall = Ng;  // First interior row
+        double dudy_sum = 0.0;
+
+        #pragma omp target teams distribute parallel for \
+            map(present: dudy_ptr[0:buf_sz]) reduction(+:dudy_sum)
+        for (int i = 0; i < Nx; ++i) {
+            int idx = j_wall * stride + (i + Ng);
+            double val = dudy_ptr[idx];
+            if (val < 0.0) val = -val;
+            dudy_sum += val;
+        }
+        dudy_sum /= Nx;
+        double tau_w = nu_ * dudy_sum;
+        u_tau = std::sqrt(tau_w);
+    }
+    u_tau = std::max(u_tau, 1e-10);
+
+    // --- Mixing length kernel (single loop for CPU and GPU) ---
+    // Copy member variables to local scope (NVHPC workaround: avoids this transfer)
     const double nu_local = nu_;
     const double kappa_local = kappa_;
     const double A_plus_local = A_plus_;
     const double delta_local = delta_;
 
-    // Single pass using unified kernel
-    // 2D: plane 0, 3D: plane Ng (matching gradient computation)
-    const int n_cells = Nx * mesh.Ny;
+    #pragma omp target teams distribute parallel for \
+        map(present: dudx_ptr[0:buf_sz], dudy_ptr[0:buf_sz], \
+                     dvdx_ptr[0:buf_sz], dvdy_ptr[0:buf_sz], \
+                     nu_t_ptr[0:buf_sz], wall_dist_ptr[0:buf_sz])
     for (int idx = 0; idx < n_cells; ++idx) {
         const int i = idx % Nx + Ng;
         const int j = idx / Nx + Ng;
-        const int cell_idx = j * stride + i;  // plane 0 for 2D
+        const int cell_idx = j * stride + i;
 
         mixing_length_cell_kernel(
             cell_idx, u_tau, nu_local,

@@ -149,16 +149,41 @@ void TurbulenceGEP::update(const Mesh& mesh,
     
     ensure_initialized(mesh);
     feature_computer_.set_reference(nu_, delta_, u_ref_);
-    
-#ifdef USE_GPU_OFFLOAD
-    // GPU path using device_view (like Baseline/EARSM)
+
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+    const int cell_stride = mesh.total_Nx();
+    const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
+    const int Nz_eff = (Nz > 1) ? Nz : 1;
+    const int total = Nx * Ny * Nz_eff;
+
+    const double kappa = numerics::KAPPA;
+    const double A_plus = numerics::A_PLUS;
+    const double nu_val = nu_;
+    const int variant_val = static_cast<int>(variant_);
+    const bool is2D = (Nz <= 1);
+
+    // ---- Gradient computation + pointer setup ----
+    // If device_view is available, compute gradients on GPU and use its pointers.
+    // Otherwise, compute on CPU and use ScalarField pointers.
+    // The kernel loop below is identical in both cases.
+
+    ScalarField dudx_field, dudy_field, dvdx_field, dvdy_field;
+    std::vector<double> wall_dist_buf;
+
+    const double* dudx_ptr = nullptr;
+    const double* dudy_ptr = nullptr;
+    const double* dvdx_ptr = nullptr;
+    const double* dvdy_ptr = nullptr;
+    const double* wall_dist_ptr = nullptr;
+    double* nu_t_ptr = nullptr;
+    [[maybe_unused]] int map_size = 0;
+    bool use_gpu = false;
+
     if (device_view && device_view->is_valid()) {
-        const int Nx = mesh.Nx;
-        const int Ny = mesh.Ny;
-        const int Ng = mesh.Nghost;
-        const int cell_stride = mesh.total_Nx();
-        const int cell_total_size = device_view->cell_total;
-        // First compute gradients on GPU
+        // Compute gradients on GPU
         gpu_kernels::compute_gradients_from_mac_gpu(
             device_view->u_face, device_view->v_face, device_view->w_face,
             device_view->dudx, device_view->dudy,
@@ -176,86 +201,75 @@ void TurbulenceGEP::update(const Mesh& mesh,
             device_view->dyc,
             device_view->dyc_size
         );
-        
-        // Then run GEP algebraic model on GPU
-        const double kappa = numerics::KAPPA;
-        const double A_plus = numerics::A_PLUS;
-        const double nu_val = nu_;
-        const int variant_val = static_cast<int>(variant_);
-        
-        const double* dudx_ptr = device_view->dudx;
-        const double* dudy_ptr = device_view->dudy;
-        const double* dvdx_ptr = device_view->dvdx;
-        const double* dvdy_ptr = device_view->dvdy;
-        const double* wall_dist_ptr = device_view->wall_distance;
-        double* nu_t_ptr = device_view->nu_t;
-        
-        // GPU kernel: compute GEP eddy viscosity using unified kernel
-        #pragma omp target teams distribute parallel for \
-            map(present: dudx_ptr[0:cell_total_size], dudy_ptr[0:cell_total_size], \
-                         dvdx_ptr[0:cell_total_size], dvdy_ptr[0:cell_total_size], \
-                         wall_dist_ptr[0:cell_total_size], nu_t_ptr[0:cell_total_size])
-        for (int idx = 0; idx < Nx * Ny; ++idx) {
-            const int i = idx % Nx + Ng;
-            const int j = idx / Nx + Ng;
-            const int cell_idx = j * cell_stride + i;
 
-            // Call unified kernel (same code path as CPU)
+        dudx_ptr = device_view->dudx;
+        dudy_ptr = device_view->dudy;
+        dvdx_ptr = device_view->dvdx;
+        dvdy_ptr = device_view->dvdy;
+        wall_dist_ptr = device_view->wall_distance;
+        nu_t_ptr = device_view->nu_t;
+        map_size = device_view->cell_total;
+        use_gpu = true;
+    } else {
+        // CPU path: compute gradients from MAC velocity
+        dudx_field = ScalarField(mesh);
+        dudy_field = ScalarField(mesh);
+        dvdx_field = ScalarField(mesh);
+        dvdy_field = ScalarField(mesh);
+        compute_gradients_from_mac(mesh, velocity, dudx_field, dudy_field,
+                                   dvdx_field, dvdy_field);
+
+        dudx_ptr = dudx_field.data().data();
+        dudy_ptr = dudy_field.data().data();
+        dvdx_ptr = dvdx_field.data().data();
+        dvdy_ptr = dvdy_field.data().data();
+        nu_t_ptr = nu_t.data().data();
+
+        // Build 3D wall distance buffer so the kernel can use the same
+        // linear index as the gradient/nu_t fields.
+        const size_t total_cells_3d = static_cast<size_t>(mesh.total_cells());
+        wall_dist_buf.resize(total_cells_3d, 0.0);
+        for (int kk = 0; kk < mesh.total_Nz(); ++kk) {
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    const int idx = kk * plane_stride + j * cell_stride + i;
+                    wall_dist_buf[idx] = mesh.wall_distance(i, j);
+                }
+            }
+        }
+        wall_dist_ptr = wall_dist_buf.data();
+    }
+
+    // ---- Single kernel loop (pragma silently ignored on CPU builds) ----
+    if (use_gpu) {
+        #pragma omp target teams distribute parallel for \
+            map(present: dudx_ptr[0:map_size], dudy_ptr[0:map_size], \
+                         dvdx_ptr[0:map_size], dvdy_ptr[0:map_size], \
+                         wall_dist_ptr[0:map_size], nu_t_ptr[0:map_size])
+        for (int idx = 0; idx < total; ++idx) {
+            const int kk = idx / (Nx * Ny);
+            const int rem = idx % (Nx * Ny);
+            const int j = rem / Nx + Ng;
+            const int i = rem % Nx + Ng;
+            const int kz = is2D ? 0 : (kk + Ng);
+            const int cell_idx = kz * plane_stride + j * cell_stride + i;
+
             gep_cell_kernel(cell_idx, variant_val, nu_val, kappa, A_plus,
                             dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
                             wall_dist_ptr, nu_t_ptr);
         }
-        
-        // Done - nu_t computed entirely on GPU
-        return;
-    }
-#else
-    (void)device_view;
-#endif
-    
-    // Host path - use same unified kernel as GPU
-    ScalarField dudx_field(mesh), dudy_field(mesh), dvdx_field(mesh), dvdy_field(mesh);
-    compute_gradients_from_mac(mesh, velocity, dudx_field, dudy_field, dvdx_field, dvdy_field);
+    } else {
+        for (int idx = 0; idx < total; ++idx) {
+            const int kk = idx / (Nx * Ny);
+            const int rem = idx % (Nx * Ny);
+            const int j = rem / Nx + Ng;
+            const int i = rem % Nx + Ng;
+            const int kz = is2D ? 0 : (kk + Ng);
+            const int cell_idx = kz * plane_stride + j * cell_stride + i;
 
-    constexpr double kappa = numerics::KAPPA;
-    constexpr double A_plus = numerics::A_PLUS;
-    const int variant_val = static_cast<int>(variant_);
-    const int cell_stride = mesh.total_Nx();
-
-    // Get raw pointers for unified kernel
-    const double* dudx_ptr = dudx_field.data().data();
-    const double* dudy_ptr = dudy_field.data().data();
-    const double* dvdx_ptr = dvdx_field.data().data();
-    const double* dvdy_ptr = dvdy_field.data().data();
-    double* nu_t_ptr = nu_t.data().data();
-
-    // Gradient and nu_t fields use 3D indexing; wall distance is y-only
-    // Create 3D wall distance buffer so the unified kernel can use 3D cell_idx
-    const int plane_stride = mesh.total_Nx() * mesh.total_Ny();
-    const size_t total_cells_3d = (size_t)mesh.total_cells();
-    std::vector<double> wall_dist_buf(total_cells_3d, 0.0);
-    for (int k = 0; k < mesh.total_Nz(); ++k) {
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                const int idx = k * plane_stride + j * cell_stride + i;
-                wall_dist_buf[idx] = mesh.wall_distance(i, j);
-            }
-        }
-    }
-    const double* wall_dist_ptr = wall_dist_buf.data();
-
-    // 2D: plane 0, 3D: plane Ng
-    const int Nz = mesh.Nz;
-    for (int kk = 0; kk < Nz; ++kk) {
-        const int kz = (Nz > 1) ? (kk + mesh.Nghost) : 0;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                const int cell_idx = kz * plane_stride + j * cell_stride + i;
-
-                gep_cell_kernel(cell_idx, variant_val, nu_, kappa, A_plus,
-                                dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
-                                wall_dist_ptr, nu_t_ptr);
-            }
+            gep_cell_kernel(cell_idx, variant_val, nu_val, kappa, A_plus,
+                            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+                            wall_dist_ptr, nu_t_ptr);
         }
     }
 }
