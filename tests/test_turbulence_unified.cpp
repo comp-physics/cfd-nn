@@ -58,7 +58,7 @@ static SmokeResult run_smoke_test(TurbulenceModelType type, int num_iter = 100) 
 
     std::string nn_path;
     if (type == TurbulenceModelType::NNMLP) {
-        nn_path = resolve_nn_path("mlp_channel_caseholdout");
+        nn_path = resolve_nn_path("mlp_paper");
         if (nn_path.empty()) { result.skipped = true; result.message = "MLP weights not found"; return result; }
     } else if (type == TurbulenceModelType::NNTBNN) {
         nn_path = resolve_nn_path("tbnn_channel_caseholdout");
@@ -219,7 +219,9 @@ static bool test_earsm_closures_trace_free() {
 
         FOR_INTERIOR_2D(mesh, i, j) {
             if (k(i, j) < 1e-10) continue;
-            double b_trace = tau_ij.trace(i, j) / (2.0 * k(i, j)) - 2.0/3.0;
+            // Full 3D trace: xx + yy + zz (not just xx + yy)
+            double tau_trace = tau_ij.xx(i, j) + tau_ij.yy(i, j) + tau_ij.zz(i, j, 0);
+            double b_trace = tau_trace / (2.0 * k(i, j)) - 1.0;  // trace(tau) = 2k for traceless b
             if (std::abs(b_trace) > 1e-10) return false;
         }
     }
