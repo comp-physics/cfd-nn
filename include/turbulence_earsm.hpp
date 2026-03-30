@@ -366,6 +366,9 @@ private:
     std::unique_ptr<EARSMClosure> closure_;
     ScalarField sst_nu_t_for_transport_;  ///< SST nu_t used for transport production (not EARSM nu_t)
     bool closure_active_ = true;          ///< When false, acts as pure SST (for warm-up)
+
+    // Gradient work arrays for CPU path (lazily initialized)
+    ScalarField dudx_, dudy_, dvdx_, dvdy_;
 };
 
 // ============================================================================

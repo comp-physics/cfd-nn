@@ -626,14 +626,24 @@ void SSTWithEARSM::update(
         return;
     }
 
-    // Device-view path: compute EARSM on flat arrays (works on both CPU and GPU)
-    if (device_view && device_view->is_valid() && closure_) {
-        const int Nx = device_view->Nx;
-        const int Ny = device_view->Ny;
-        const int Ng = device_view->Ng;
-        const int stride = device_view->cell_stride;
+    if (!closure_) {
+        // No closure — fall back to SST
+        transport_.update(mesh, velocity, k, omega, nu_t, tau_ij, device_view);
+        return;
+    }
 
-        // Compute velocity gradients
+    // Single code path: select pointers from device_view (GPU) or ScalarField (CPU)
+    const bool use_device = (device_view && device_view->is_valid());
+
+    const int Nx = mesh.Nx;
+    const int Ny = mesh.Ny;
+    const int Nz = mesh.Nz;
+    const int Ng = mesh.Nghost;
+    const int stride = mesh.total_Nx();
+    const int cps = mesh.total_Nx() * mesh.total_Ny();
+
+    // --- Gradient computation ---
+    if (use_device) {
         gpu_kernels::compute_gradients_from_mac_gpu(
             device_view->u_face,
             device_view->v_face,
@@ -664,83 +674,102 @@ void SSTWithEARSM::update(
             device_view->dyc,
             device_view->dyc_size
         );
-
-        // Determine which EARSM model
-        auto* wj_model = dynamic_cast<WallinJohanssonEARSM*>(closure_.get());
-        auto* gs_model = dynamic_cast<GatskiSpezialeEARSM*>(closure_.get());
-        auto* pope_model = dynamic_cast<PopeQuadraticEARSM*>(closure_.get());
-
-        const int Nz = device_view->Nz;
-        const int cps = device_view->cell_plane_stride;
-
-        if (wj_model) {
-            earsm_kernels::compute_earsm_wj_full_gpu(
-                device_view->dudx, device_view->dudy,
-                device_view->dvdx, device_view->dvdy,
-                device_view->k, device_view->omega,
-                device_view->nu_t,
-                device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
-                device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
-                Nx, Ny, Nz, Ng, stride, cps,
-                nu_, wj_model->constants()
-            );
-        } else if (gs_model) {
-            earsm_kernels::compute_earsm_gs_full_gpu(
-                device_view->dudx, device_view->dudy,
-                device_view->dvdx, device_view->dvdy,
-                device_view->k, device_view->omega,
-                device_view->nu_t,
-                device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
-                device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
-                Nx, Ny, Nz, Ng, stride, cps,
-                nu_, gs_model->constants()
-            );
-        } else if (pope_model) {
-            earsm_kernels::compute_earsm_pope_full_gpu(
-                device_view->dudx, device_view->dudy,
-                device_view->dvdx, device_view->dvdy,
-                device_view->k, device_view->omega,
-                device_view->nu_t,
-                device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
-                device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
-                Nx, Ny, Nz, Ng, stride, cps,
-                nu_, pope_model->C1(), pope_model->C2()
-            );
-        }
-
-        // Decomposition method: restore SST nu_t for the diffusion operator.
-        // The EARSM-derived nu_t can be very different from SST near separation,
-        // causing instability in explicit solvers. The anisotropic correction
-        // enters through tau_div (computed from tau_ij) instead.
-        // Re-compute SST nu_t using the transport update:
-        transport_.update(mesh, velocity, k, omega, nu_t, nullptr, device_view);
-        return;
-    }
-
-    // Fallback host path (no device_view): use EARSM closure on ScalarField objects
-    if (closure_) {
-        closure_->set_nu(nu_);
-        closure_->set_delta(delta_);
-        closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
-        // Fallback to SST closure
-        transport_.update(mesh, velocity, k, omega, nu_t, tau_ij);
+        // CPU path: compute gradients into local ScalarFields
+        if (dudx_.data().empty()) {
+            dudx_ = ScalarField(mesh);
+            dudy_ = ScalarField(mesh);
+            dvdx_ = ScalarField(mesh);
+            dvdy_ = ScalarField(mesh);
+        }
+        compute_gradients_from_mac(mesh, velocity, dudx_, dudy_, dvdx_, dvdy_);
     }
 
-    // For 3D CPU path: the closures above only write to plane 0 (2D accessors).
-    // Copy plane 0 nu_t to all interior z-planes so the solver sees consistent values.
-    if (mesh.Nz > 1) {
-        const int plane = mesh.total_Nx() * mesh.total_Ny();
-        for (int kk = 0; kk < mesh.Nz; ++kk) {
-            const int kz = kk + mesh.Nghost;
-            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                    const int idx_2d = j * mesh.total_Nx() + i;
-                    nu_t.data()[kz * plane + idx_2d] = nu_t.data()[idx_2d];
-                }
-            }
-        }
+    // --- Select pointers ---
+    const double* dudx_ptr = use_device ? device_view->dudx : dudx_.data().data();
+    const double* dudy_ptr = use_device ? device_view->dudy : dudy_.data().data();
+    const double* dvdx_ptr = use_device ? device_view->dvdx : dvdx_.data().data();
+    const double* dvdy_ptr = use_device ? device_view->dvdy : dvdy_.data().data();
+    const double* k_ptr    = use_device ? device_view->k    : k.data().data();
+    const double* omega_ptr = use_device ? device_view->omega : omega.data().data();
+    double* nu_t_ptr       = use_device ? device_view->nu_t : nu_t.data().data();
+
+    // tau_ij pointers: device_view buffers or ScalarField data (may be null if no tau_ij)
+    double* tau_xx_ptr = nullptr;
+    double* tau_xy_ptr = nullptr;
+    double* tau_xz_ptr = nullptr;
+    double* tau_yy_ptr = nullptr;
+    double* tau_yz_ptr = nullptr;
+    double* tau_zz_ptr = nullptr;
+    if (use_device) {
+        tau_xx_ptr = device_view->tau_xx;
+        tau_xy_ptr = device_view->tau_xy;
+        tau_xz_ptr = device_view->tau_xz;
+        tau_yy_ptr = device_view->tau_yy;
+        tau_yz_ptr = device_view->tau_yz;
+        tau_zz_ptr = device_view->tau_zz;
+    } else if (tau_ij) {
+        tau_xx_ptr = tau_ij->xx_data().data();
+        tau_xy_ptr = tau_ij->xy_data().data();
+        tau_xz_ptr = tau_ij->xz_data().data();
+        tau_yy_ptr = tau_ij->yy_data().data();
+        tau_yz_ptr = tau_ij->yz_data().data();
+        tau_zz_ptr = tau_ij->zz_data().data();
     }
+
+    // If tau_ij pointers are null (CPU path without tau_ij), allocate scratch buffers
+    // since the kernel drivers always write to tau arrays
+    const size_t total_cells = (size_t)cps * mesh.total_Nz();
+    std::vector<double> tau_scratch;
+    if (!tau_xx_ptr) {
+        tau_scratch.resize(total_cells * 6, 0.0);
+        tau_xx_ptr = tau_scratch.data();
+        tau_xy_ptr = tau_scratch.data() + total_cells;
+        tau_xz_ptr = tau_scratch.data() + total_cells * 2;
+        tau_yy_ptr = tau_scratch.data() + total_cells * 3;
+        tau_yz_ptr = tau_scratch.data() + total_cells * 4;
+        tau_zz_ptr = tau_scratch.data() + total_cells * 5;
+    }
+
+    // --- Call EARSM kernel driver (same function for CPU and GPU) ---
+    auto* wj_model = dynamic_cast<WallinJohanssonEARSM*>(closure_.get());
+    auto* gs_model = dynamic_cast<GatskiSpezialeEARSM*>(closure_.get());
+    auto* pope_model = dynamic_cast<PopeQuadraticEARSM*>(closure_.get());
+
+    if (wj_model) {
+        earsm_kernels::compute_earsm_wj_full_gpu(
+            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+            k_ptr, omega_ptr, nu_t_ptr,
+            tau_xx_ptr, tau_xy_ptr, tau_xz_ptr,
+            tau_yy_ptr, tau_yz_ptr, tau_zz_ptr,
+            Nx, Ny, Nz, Ng, stride, cps,
+            nu_, wj_model->constants()
+        );
+    } else if (gs_model) {
+        earsm_kernels::compute_earsm_gs_full_gpu(
+            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+            k_ptr, omega_ptr, nu_t_ptr,
+            tau_xx_ptr, tau_xy_ptr, tau_xz_ptr,
+            tau_yy_ptr, tau_yz_ptr, tau_zz_ptr,
+            Nx, Ny, Nz, Ng, stride, cps,
+            nu_, gs_model->constants()
+        );
+    } else if (pope_model) {
+        earsm_kernels::compute_earsm_pope_full_gpu(
+            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+            k_ptr, omega_ptr, nu_t_ptr,
+            tau_xx_ptr, tau_xy_ptr, tau_xz_ptr,
+            tau_yy_ptr, tau_yz_ptr, tau_zz_ptr,
+            Nx, Ny, Nz, Ng, stride, cps,
+            nu_, pope_model->C1(), pope_model->C2()
+        );
+    }
+
+    // Decomposition method: restore SST nu_t for the diffusion operator.
+    // The EARSM-derived nu_t can be very different from SST near separation,
+    // causing instability in explicit solvers. The anisotropic correction
+    // enters through tau_div (computed from tau_ij) instead.
+    transport_.update(mesh, velocity, k, omega, nu_t, nullptr, device_view);
 }
 
 std::string SSTWithEARSM::name() const {
@@ -848,13 +877,18 @@ inline void earsm_compute_output(
     const double b_xy = beta1 * S_star_xy + beta2 * comm_xy + beta3 * S2_xy;
     const double b_yy = beta1 * S_star_yy + beta2 * comm_yy + beta3 * S2_yy;
 
-    // Reynolds stresses: τ_ij = -2k b_ij
-    tau_xx_ptr[idx] = -2.0 * k_loc * b_xx;
-    tau_xy_ptr[idx] = -2.0 * k_loc * b_xy;
+    // Enforce trace-free anisotropy: b_zz = -(b_xx + b_yy)
+    // Even in 2D, the z-normal stress is nonzero for realizability
+    const double b_zz = -(b_xx + b_yy);
+
+    // Reynolds stresses: τ_ij = 2k (b_ij + 1/3 δ_ij)
+    // Consistent with TensorBasis::anisotropy_to_reynolds_stress convention
+    tau_xx_ptr[idx] = 2.0 * k_loc * (b_xx + 1.0/3.0);
+    tau_xy_ptr[idx] = 2.0 * k_loc * b_xy;
     tau_xz_ptr[idx] = 0.0;   // Zero in 2D EARSM (no z-gradients in algebraic model)
-    tau_yy_ptr[idx] = -2.0 * k_loc * b_yy;
+    tau_yy_ptr[idx] = 2.0 * k_loc * (b_yy + 1.0/3.0);
     tau_yz_ptr[idx] = 0.0;   // Zero in 2D EARSM
-    tau_zz_ptr[idx] = 0.0;   // Zero in 2D EARSM
+    tau_zz_ptr[idx] = 2.0 * k_loc * (b_zz + 1.0/3.0);
 
     // Equivalent eddy viscosity from τ_xy = -2ν_t S_xy
     double nu_t_loc = 0.0;
