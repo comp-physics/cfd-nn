@@ -321,32 +321,43 @@ void SSTClosure::compute_nu_t(
     // with device_view pointers and map(present:). This CPU path is the
     // fallback for non-GPU builds or custom closures.
 
-    // CPU path
+    // Single code path for 2D and 3D
     using namespace numerics;
+    const int Nz = mesh.Nz;
+    const bool is3D = (Nz > 1);
 
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            double k_loc = std::max(constants_.k_min, k(i, j));
-            double omega_loc = std::max(constants_.omega_min, omega(i, j));
-            double y_wall = mesh.wall_distance(i, j);
+    for (int kk = 0; kk < Nz; ++kk) {
+        const int kz = is3D ? (kk + mesh.Nghost) : 0;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                double k_loc = is3D ? std::max(constants_.k_min, k(i, j, kz))
+                                    : std::max(constants_.k_min, k(i, j));
+                double omega_loc = is3D ? std::max(constants_.omega_min, omega(i, j, kz))
+                                        : std::max(constants_.omega_min, omega(i, j));
+                double y_wall = mesh.wall_distance(i, j);
 
-            // Strain rate magnitude
-            double Sxx = dudx_(i, j);
-            double Syy = dvdy_(i, j);
-            double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
-            double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
+                // Strain rate magnitude (gradients from 2D wrapper — plane 0 for 2D)
+                // For 3D, gradients should ideally come from the 3D kernel, but
+                // this CPU path uses the 2D wrapper which only fills plane 0.
+                // The GPU path (compute_sst_closure_gpu) handles 3D correctly.
+                double Sxx = dudx_(i, j);
+                double Syy = dvdy_(i, j);
+                double Sxy = 0.5 * (dudy_(i, j) + dvdx_(i, j));
+                double S_mag = std::sqrt(2.0 * (Sxx*Sxx + Syy*Syy + 2.0*Sxy*Sxy));
 
-            // F2 blending function
-            double F2 = compute_F2(k_loc, omega_loc, y_wall);
+                // F2 blending function
+                double F2 = compute_F2(k_loc, omega_loc, y_wall);
 
-            // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
-            double denom = std::max(a1 * omega_loc, S_mag * F2);
-            double nu_t_loc = safe_divide(a1 * k_loc, denom, K_FLOOR);
+                // SST eddy viscosity: ν_t = a₁k / max(a₁ω, SF₂)
+                double denom = std::max(a1 * omega_loc, S_mag * F2);
+                double nu_t_loc = safe_divide(a1 * k_loc, denom, K_FLOOR);
 
-            // Clipping
-            nu_t_loc = std::clamp(nu_t_loc, 0.0, 1000.0 * nu_);
+                // Clipping
+                nu_t_loc = std::clamp(nu_t_loc, 0.0, 1000.0 * nu_);
 
-            nu_t(i, j) = nu_t_loc;
+                if (is3D) nu_t(i, j, kz) = nu_t_loc;
+                else      nu_t(i, j) = nu_t_loc;
+            }
         }
     }
 }
@@ -945,13 +956,22 @@ void SSTKOmegaTransport::update(
     if (closure_) {
         closure_->compute_nu_t(mesh, velocity, k, omega, nu_t, tau_ij);
     } else {
-        // Fallback: simple k/omega on CPU
+        // Fallback: simple k/omega on CPU (2D and 3D)
         using namespace numerics;
-        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-                double k_loc = std::max(constants_.k_min, k(i, j));
-                double omega_loc = std::max(constants_.omega_min, omega(i, j));
-                nu_t(i, j) = bounded_ratio(k_loc, omega_loc, OMEGA_FLOOR, NU_T_RATIO_MAX * nu_);
+        const int Nz = mesh.Nz;
+        const bool is3D = (Nz > 1);
+        for (int kk = 0; kk < Nz; ++kk) {
+            const int kz = is3D ? (kk + mesh.Nghost) : 0;
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    double k_loc = is3D ? std::max(constants_.k_min, k(i, j, kz))
+                                        : std::max(constants_.k_min, k(i, j));
+                    double omega_loc = is3D ? std::max(constants_.omega_min, omega(i, j, kz))
+                                            : std::max(constants_.omega_min, omega(i, j));
+                    double nt = bounded_ratio(k_loc, omega_loc, OMEGA_FLOOR, NU_T_RATIO_MAX * nu_);
+                    if (is3D) nu_t(i, j, kz) = nt;
+                    else      nu_t(i, j) = nt;
+                }
             }
         }
     }
