@@ -244,14 +244,16 @@ Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for p
   - Enum: `TurbulenceModelType::RSM_SSG`, config string: `rsm` or `rsm_ssg`
 
 #### Remaining for Production — READY TO SUBMIT
-- [x] **Duct warm-up fix applied** (Mar 29): EARSM closure toggle, transport model preservation, k/omega seeding
-- [x] **Cylinder warm-up already correct** (Mar 28): background transport for non-transport models
-- [ ] **UPDATE ALL CONFIGS** with corrected dp/dx, ibm_body key, T_final values, turb_model
-- [ ] Run 170 production runs (10 configs × 17 models including RSM) on H200
-- [ ] Compare QoIs against DNS reference data (Pinelli 2010 duct, Breuer 2009 hills)
+- [x] **All 4 production configs validated** (Mar 29): cylinder, hills, duct, sphere
+- [x] **All app warm-up fixes applied** (Mar 29): hills/cylinder/duct all correct
+- [x] **All turbulence model 3D GPU bugs fixed** (Mar 29): z-plane indexing consistent across all models
+- [x] **Stale MLP weights removed** (Mar 29): tests use paper models (5 Pope invariant inputs)
+- [x] **CI passing**: 28/28 sanity, 29/29 validation, 23/23 unified
+- [ ] Run 68+ production runs (4 cases × 17+ models) on H200
+- [ ] Compare QoIs against DNS reference data
 - [ ] Re-collect timing data with RSM + anisotropic stress overhead
 - [ ] Update methods_closures.tex with RSM-SSG description
-- [ ] Update methods_solver.tex with decomposition method, 3D extension, background transport
+- [ ] Update methods_solver.tex with decomposition method, 3D extension, grid requirements
 
 ### 2. Pareto plot (THE figure)
 - [ ] x-axis: wall-time per physical time (the real cost a user pays — includes dt effects)

@@ -72,8 +72,35 @@ RSM produces nonzero secondary flow on duct (max|w|=2.3e-4 on 16×32×16 CPU, no
 - Launder, Reece & Rodi (1975): LRR pressure-strain model
 - NASA TMR: turbmodels.larc.nasa.gov/rsm-ssglrr.html
 
+## Post-Implementation Fixes (Mar 29)
+
+### 2D/3D z-plane indexing bug (CRITICAL)
+After implementing the 3D extensions, discovered that ALL turbulence model GPU kernels had a systemic 2D-only bug:
+- GPU kernels used `n_cells = Nx * Ny` (one z-plane) instead of `Nx * Ny * Nz`
+- Cell indexing used `j * stride + i` (plane 0) instead of `kz * plane_stride + j * stride + i`
+- For 2D (Nz=1), the solver stores data at plane 0 and z-ghost cells are NEVER synced
+- The SST 3D fix inadvertently changed to plane Ng, breaking consistency with other models
+- **Fix**: plane 0 for 2D, plane Ng for 3D — applied to ALL models (Baseline, GEP, EARSM, SST, Boussinesq, k-omega transport)
+
+### Files affected by 3D z-plane fix:
+- `src/gpu_kernels.cpp` — gradient CPU path, SST closure, Boussinesq closure, k-omega transport
+- `src/turbulence_transport.cpp` — SST transport 2D/3D branching
+- `src/turbulence_baseline.cpp` — MixingLength CPU+GPU paths
+- `src/turbulence_gep.cpp` — GEP CPU path
+- `src/turbulence_earsm.cpp` — EARSM GPU wall BC kernels
+- `include/gpu_kernels.hpp`, `include/turbulence_earsm.hpp` — updated signatures
+
+### Test fixes:
+- MLP tests: pointed at `mlp_paper` (5 Pope inputs) instead of stale `mlp_channel_caseholdout` (6 physical features)
+- EARSM trace-free: use 3D trace (xx+yy+zz) not 2D (xx+yy) — deviatoric uses 1/3 in 3D
+- RANSChannelSanity: relaxed thresholds for corrected SST behavior
+- Stale 6-input MLP models deleted from repo
+
+### CLAUDE.md violation noted:
+Many turbulence models have separate `#ifdef USE_GPU_OFFLOAD` CPU and GPU code paths doing the same computation. This violates the "single code path" rule and was the root cause of the z-plane bug (two paths to maintain, they diverged). Future refactor should unify these.
+
 ## Self-Review
 
-1. **Spec coverage**: All 7 tasks covered (gradients, basis, TBNN, tau_div, duct validation, RSM, RSM validation)
-2. **Placeholder scan**: Task details are high-level — detailed code during execution
-3. **Dependencies**: Task 1→2→3 (sequential). Task 4 after Task 1. Task 5 requires 1-4. Task 6 independent. Task 7 requires 5+6.
+1. **Spec coverage**: All 7 tasks complete + post-implementation z-plane fix
+2. **Test coverage**: 26 tensor basis tests, 14 RSM tests, 4 new 3D turbulence model tests in test_3d_unified
+3. **CI status**: All tests passing (28 sanity, 29 validation, 23 unified)
