@@ -382,7 +382,7 @@ void compute_earsm_wj_full_gpu(
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_xz,
     double* tau_yy, double* tau_yz, double* tau_zz,
-    int Nx, int Ny, int Ng, int stride,
+    int Nx, int Ny, int Nz, int Ng, int stride, int cell_plane_stride,
     double nu, const WJConstants& constants
 );
 
@@ -394,7 +394,7 @@ void compute_earsm_gs_full_gpu(
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_xz,
     double* tau_yy, double* tau_yz, double* tau_zz,
-    int Nx, int Ny, int Ng, int stride,
+    int Nx, int Ny, int Nz, int Ng, int stride, int cell_plane_stride,
     double nu, const GSConstants& constants
 );
 
@@ -406,7 +406,7 @@ void compute_earsm_pope_full_gpu(
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_xz,
     double* tau_yy, double* tau_yz, double* tau_zz,
-    int Nx, int Ny, int Ng, int stride,
+    int Nx, int Ny, int Nz, int Ng, int stride, int cell_plane_stride,
     double nu, double C1, double C2
 );
 

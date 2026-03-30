@@ -244,14 +244,18 @@ void TurbulenceGEP::update(const Mesh& mesh,
     }
     const double* wall_dist_ptr = wall_dist_buf.data();
 
-    const int k_offset = mesh.Nghost * plane_stride;
-    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
-        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
-            const int cell_idx = k_offset + j * cell_stride + i;
+    // 2D: plane 0, 3D: plane Ng
+    const int Nz = mesh.Nz;
+    for (int kk = 0; kk < Nz; ++kk) {
+        const int kz = (Nz > 1) ? (kk + mesh.Nghost) : 0;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                const int cell_idx = kz * plane_stride + j * cell_stride + i;
 
-            gep_cell_kernel(cell_idx, variant_val, nu_, kappa, A_plus,
-                            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
-                            wall_dist_ptr, nu_t_ptr);
+                gep_cell_kernel(cell_idx, variant_val, nu_, kappa, A_plus,
+                                dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
+                                wall_dist_ptr, nu_t_ptr);
+            }
         }
     }
 }

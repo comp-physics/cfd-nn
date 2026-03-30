@@ -671,6 +671,9 @@ void SSTWithEARSM::update(
         auto* gs_model = dynamic_cast<GatskiSpezialeEARSM*>(closure_.get());
         auto* pope_model = dynamic_cast<PopeQuadraticEARSM*>(closure_.get());
         
+        const int Nz = device_view->Nz;
+        const int cps = device_view->cell_plane_stride;
+
         if (wj_model) {
             earsm_kernels::compute_earsm_wj_full_gpu(
                 device_view->dudx, device_view->dudy,
@@ -679,7 +682,7 @@ void SSTWithEARSM::update(
                 device_view->nu_t,
                 device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
                 device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
-                Nx, Ny, Ng, stride,
+                Nx, Ny, Nz, Ng, stride, cps,
                 nu_, wj_model->constants()
             );
         } else if (gs_model) {
@@ -690,7 +693,7 @@ void SSTWithEARSM::update(
                 device_view->nu_t,
                 device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
                 device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
-                Nx, Ny, Ng, stride,
+                Nx, Ny, Nz, Ng, stride, cps,
                 nu_, gs_model->constants()
             );
         } else if (pope_model) {
@@ -701,7 +704,7 @@ void SSTWithEARSM::update(
                 device_view->nu_t,
                 device_view->tau_xx, device_view->tau_xy, device_view->tau_xz,
                 device_view->tau_yy, device_view->tau_yz, device_view->tau_zz,
-                Nx, Ny, Ng, stride,
+                Nx, Ny, Nz, Ng, stride, cps,
                 nu_, pope_model->C1(), pope_model->C2()
             );
         }
@@ -1073,7 +1076,7 @@ void compute_earsm_wj_full_gpu(
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_xz,
     double* tau_yy, double* tau_yz, double* tau_zz,
-    int Nx, int Ny, int Ng, int stride,
+    int Nx, int Ny, int Nz, int Ng, int stride, int cell_plane_stride,
     double nu, const WJConstants& constants)
 {
     const double A1 = constants.A1();
@@ -1081,35 +1084,43 @@ void compute_earsm_wj_full_gpu(
     const double A3 = constants.A3();
     const double A4 = constants.A4();
     const double C_mu = numerics::C_MU;
-    [[maybe_unused]] const size_t total_size = stride * (Ny + 2*Ng);
+    [[maybe_unused]] const size_t total_size = (size_t)cell_plane_stride * (Nz + 2*Ng);
+    // For 2D (Nz==1): kz_begin=0, kz_end=1 (single plane, no ghost offset)
+    // For 3D (Nz>1): kz_begin=Ng, kz_end=Ng+Nz (interior z-planes only)
+    const int kz_begin = (Nz > 1) ? Ng : 0;
+    const int kz_end = (Nz > 1) ? (Ng + Nz) : 1;
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallel execution using unified kernel
-    #pragma omp target teams distribute parallel for collapse(2) \
+    #pragma omp target teams distribute parallel for collapse(3) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
                      tau_xx[0:total_size], tau_xy[0:total_size], tau_xz[0:total_size], \
                      tau_yy[0:total_size], tau_yz[0:total_size], tau_zz[0:total_size])
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * stride + i;
-            earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                 A1, A2, A3, A4, C_mu, nu,
-                                 tau_xx, tau_xy, tau_xz,
-                                 tau_yy, tau_yz, tau_zz, nu_t);
+    for (int kz = kz_begin; kz < kz_end; ++kz) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = kz * cell_plane_stride + j * stride + i;
+                earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                     A1, A2, A3, A4, C_mu, nu,
+                                     tau_xx, tau_xy, tau_xz,
+                                     tau_yy, tau_yz, tau_zz, nu_t);
+            }
         }
     }
 #else
     // Host path: sequential execution using same unified kernel
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * stride + i;
-            earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                 A1, A2, A3, A4, C_mu, nu,
-                                 tau_xx, tau_xy, tau_xz,
-                                 tau_yy, tau_yz, tau_zz, nu_t);
+    for (int kz = kz_begin; kz < kz_end; ++kz) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = kz * cell_plane_stride + j * stride + i;
+                earsm_wj_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                     A1, A2, A3, A4, C_mu, nu,
+                                     tau_xx, tau_xy, tau_xz,
+                                     tau_yy, tau_yz, tau_zz, nu_t);
+            }
         }
     }
 #endif
@@ -1122,7 +1133,7 @@ void compute_earsm_gs_full_gpu(
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_xz,
     double* tau_yy, double* tau_yz, double* tau_zz,
-    int Nx, int Ny, int Ng, int stride,
+    int Nx, int Ny, int Nz, int Ng, int stride, int cell_plane_stride,
     double nu, const GSConstants& constants)
 {
     const double C_mu0 = constants.C_mu;
@@ -1130,35 +1141,41 @@ void compute_earsm_gs_full_gpu(
     const double C2 = constants.C2;
     const double eta_max = constants.eta_max;
     const double C_mu_eps = numerics::C_MU;
-    [[maybe_unused]] const size_t total_size = stride * (Ny + 2*Ng);
+    [[maybe_unused]] const size_t total_size = (size_t)cell_plane_stride * (Nz + 2*Ng);
+    const int kz_begin = (Nz > 1) ? Ng : 0;
+    const int kz_end = (Nz > 1) ? (Ng + Nz) : 1;
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallel execution using unified kernel
-    #pragma omp target teams distribute parallel for collapse(2) \
+    #pragma omp target teams distribute parallel for collapse(3) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
                      tau_xx[0:total_size], tau_xy[0:total_size], tau_xz[0:total_size], \
                      tau_yy[0:total_size], tau_yz[0:total_size], tau_zz[0:total_size])
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * stride + i;
-            earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                 C_mu0, C1, C2, eta_max, C_mu_eps, nu,
-                                 tau_xx, tau_xy, tau_xz,
-                                 tau_yy, tau_yz, tau_zz, nu_t);
+    for (int kz = kz_begin; kz < kz_end; ++kz) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = kz * cell_plane_stride + j * stride + i;
+                earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                     C_mu0, C1, C2, eta_max, C_mu_eps, nu,
+                                     tau_xx, tau_xy, tau_xz,
+                                     tau_yy, tau_yz, tau_zz, nu_t);
+            }
         }
     }
 #else
     // Host path: sequential execution using same unified kernel
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * stride + i;
-            earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                 C_mu0, C1, C2, eta_max, C_mu_eps, nu,
-                                 tau_xx, tau_xy, tau_xz,
-                                 tau_yy, tau_yz, tau_zz, nu_t);
+    for (int kz = kz_begin; kz < kz_end; ++kz) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = kz * cell_plane_stride + j * stride + i;
+                earsm_gs_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                     C_mu0, C1, C2, eta_max, C_mu_eps, nu,
+                                     tau_xx, tau_xy, tau_xz,
+                                     tau_yy, tau_yz, tau_zz, nu_t);
+            }
         }
     }
 #endif
@@ -1171,39 +1188,45 @@ void compute_earsm_pope_full_gpu(
     double* nu_t,
     double* tau_xx, double* tau_xy, double* tau_xz,
     double* tau_yy, double* tau_yz, double* tau_zz,
-    int Nx, int Ny, int Ng, int stride,
+    int Nx, int Ny, int Nz, int Ng, int stride, int cell_plane_stride,
     double nu, double C1, double C2)
 {
     const double C_mu = numerics::C_MU;
-    [[maybe_unused]] const size_t total_size = stride * (Ny + 2*Ng);
+    [[maybe_unused]] const size_t total_size = (size_t)cell_plane_stride * (Nz + 2*Ng);
+    const int kz_begin = (Nz > 1) ? Ng : 0;
+    const int kz_end = (Nz > 1) ? (Ng + Nz) : 1;
 
 #ifdef USE_GPU_OFFLOAD
     // GPU path: parallel execution using unified kernel
-    #pragma omp target teams distribute parallel for collapse(2) \
+    #pragma omp target teams distribute parallel for collapse(3) \
         map(present: dudx[0:total_size], dudy[0:total_size], \
                      dvdx[0:total_size], dvdy[0:total_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t[0:total_size], \
                      tau_xx[0:total_size], tau_xy[0:total_size], tau_xz[0:total_size], \
                      tau_yy[0:total_size], tau_yz[0:total_size], tau_zz[0:total_size])
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * stride + i;
-            earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                   C_mu, C1, C2, nu,
-                                   tau_xx, tau_xy, tau_xz,
-                                   tau_yy, tau_yz, tau_zz, nu_t);
+    for (int kz = kz_begin; kz < kz_end; ++kz) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = kz * cell_plane_stride + j * stride + i;
+                earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                       C_mu, C1, C2, nu,
+                                       tau_xx, tau_xy, tau_xz,
+                                       tau_yy, tau_yz, tau_zz, nu_t);
+            }
         }
     }
 #else
     // Host path: sequential execution using same unified kernel
-    for (int j = Ng; j < Ng + Ny; ++j) {
-        for (int i = Ng; i < Ng + Nx; ++i) {
-            const int idx = j * stride + i;
-            earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
-                                   C_mu, C1, C2, nu,
-                                   tau_xx, tau_xy, tau_xz,
-                                   tau_yy, tau_yz, tau_zz, nu_t);
+    for (int kz = kz_begin; kz < kz_end; ++kz) {
+        for (int j = Ng; j < Ng + Ny; ++j) {
+            for (int i = Ng; i < Ng + Nx; ++i) {
+                const int idx = kz * cell_plane_stride + j * stride + i;
+                earsm_pope_cell_kernel(idx, dudx, dudy, dvdx, dvdy, k, omega,
+                                       C_mu, C1, C2, nu,
+                                       tau_xx, tau_xy, tau_xz,
+                                       tau_yy, tau_yz, tau_zz, nu_t);
+            }
         }
     }
 #endif

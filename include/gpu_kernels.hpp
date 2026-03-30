@@ -151,9 +151,10 @@ void compute_boussinesq_closure_gpu(
     const double* k,                    // TKE field (cell-centered, with ghost cells)
     const double* omega,                // Specific dissipation rate (cell-centered, with ghost cells)
     double* nu_t,                       // Output: eddy viscosity (cell-centered, with ghost cells)
-    int Nx, int Ny,                     // Interior dimensions
+    int Nx, int Ny, int Nz,             // Interior dimensions (Nz=1 for 2D)
     int Ng,                             // Ghost cells
     int stride,                         // Row stride = Nx+2Ng
+    int cell_plane_stride,              // Plane stride = (Nx+2Ng)*(Ny+2Ng)
     int total_size,                     // Total array size
     double nu,                          // Laminar viscosity
     double k_min, double omega_min,     // Minimum values for clipping
@@ -200,9 +201,11 @@ void komega_transport_step_gpu(
     double* k, double* omega,           // k and omega (modified in-place)
     const double* nu_t_prev,            // Previous eddy viscosity (cell-centered, with ghost cells)
     // Mesh parameters
-    int Nx, int Ny, int Ng,             // Interior dims and ghost cells
+    int Nx, int Ny, int Nz, int Ng,     // Interior dims and ghost cells (Nz=1 for 2D)
     int stride,                         // Row stride = Nx+2Ng
+    int cell_plane_stride,              // Plane stride = (Nx+2Ng)*(Ny+2Ng)
     int u_stride, int v_stride,         // Strides for staggered velocity
+    int u_plane_stride, int v_plane_stride, // Plane strides for staggered velocity
     int total_size,                     // Total size for k/omega/nu_t (with ghosts)
     int vel_u_size, int vel_v_size,     // Total sizes for u/v
     double dx, double dy, double dt,    // Grid spacing and timestep

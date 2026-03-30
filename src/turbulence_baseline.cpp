@@ -404,14 +404,12 @@ void MixingLengthModel::update(
     const double delta_local = delta_;
 
     // Single pass using unified kernel
-    // All fields (gradients, wall_dist, nu_t) use 3D indexing
-    // Read from interior z-plane at k=Ng
-    const int k_offset = mesh.Nghost * plane_stride;
+    // 2D: plane 0, 3D: plane Ng (matching gradient computation)
     const int n_cells = Nx * mesh.Ny;
     for (int idx = 0; idx < n_cells; ++idx) {
         const int i = idx % Nx + Ng;
         const int j = idx / Nx + Ng;
-        const int cell_idx = k_offset + j * stride + i;
+        const int cell_idx = j * stride + i;  // plane 0 for 2D
 
         mixing_length_cell_kernel(
             cell_idx, u_tau, nu_local,

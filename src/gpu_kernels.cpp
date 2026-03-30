@@ -193,7 +193,9 @@ void compute_gradients_from_mac_gpu(
         const int kk = idx / (Nx * Ny);
         const int i = ii + Ng;
         const int j = jj + Ng;
-        const int k = kk + Ng;
+        // 2D (Nz=1): use plane 0 to match solver's 2D convention
+        // 3D (Nz>1): use interior plane at kk + Ng
+        const int k = is3D ? (kk + Ng) : 0;
         const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
 
         const int u_base = k * u_plane_stride;
@@ -925,9 +927,10 @@ void compute_boussinesq_closure_gpu(
     const double* k,
     const double* omega,
     double* nu_t,
-    int Nx, int Ny,
+    int Nx, int Ny, int Nz,
     int Ng,
     int stride,
+    int cell_plane_stride,
     int total_size,
     double nu,
     double k_min, double omega_min,
@@ -936,16 +939,18 @@ void compute_boussinesq_closure_gpu(
     NVTX_SCOPE_CLOSURE("kernel:boussinesq_closure");
 
 #ifdef USE_GPU_OFFLOAD
-    const int n_cells = Nx * Ny;
-    
+    const int n_cells = Nx * Ny * Nz;
+    const int NxNy = Nx * Ny;
+
     // CRITICAL: map(present:...) for solver-managed device buffers
     #pragma omp target teams distribute parallel for \
         map(present: k[0:total_size], omega[0:total_size], nu_t[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {
-        // Convert flat index to (i,j) including ghost cells
+        // Convert flat index to (i,j,k) including ghost cells
         const int i = idx % Nx + Ng;
-        const int j = idx / Nx + Ng;
-        const int cell_idx = j * stride + i;
+        const int j = (idx / Nx) % Ny + Ng;
+        const int kz = (Nz > 1) ? (idx / NxNy + Ng) : 0;
+        const int cell_idx = kz * cell_plane_stride + j * stride + i;
         
         // Read k and omega
         double k_val = k[cell_idx];
@@ -969,7 +974,7 @@ void compute_boussinesq_closure_gpu(
     }
 #else
     (void)k; (void)omega; (void)nu_t;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride; (void)total_size;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng; (void)stride; (void)cell_plane_stride; (void)total_size;
     (void)nu; (void)k_min; (void)omega_min; (void)nu_t_max;
 #endif
 }
@@ -1014,9 +1019,10 @@ void compute_sst_closure_gpu(
                      nu_t[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {
         // Convert flat index to (i,j,k) including ghost cells
+        // For 2D (Nz==1): use plane 0 (no Ng offset) to match solver's 2D kernels
         const int i = idx % Nx + Ng;
         const int j = (idx / Nx) % Ny + Ng;
-        const int kz = idx / NxNy + Ng;
+        const int kz = (Nz > 1) ? (idx / NxNy + Ng) : 0;
         const int cell_idx = kz * cell_plane_stride + j * stride + i;
 
         // Read fields (all use stride-based indexing with ghosts)
@@ -1079,9 +1085,11 @@ void komega_transport_step_gpu(
     const double* u, const double* v,
     double* k, double* omega,
     const double* nu_t_prev,
-    int Nx, int Ny, int Ng,
+    int Nx, int Ny, int Nz, int Ng,
     int stride,
+    int cell_plane_stride,
     int u_stride, int v_stride,
+    int u_plane_stride, int v_plane_stride,
     int total_size,
     int vel_u_size, int vel_v_size,
     double dx, double dy, double dt,
@@ -1093,44 +1101,50 @@ void komega_transport_step_gpu(
     NVTX_SCOPE_TURB("kernel:komega_transport");
 
 #ifdef USE_GPU_OFFLOAD
-    const int n_cells = Nx * Ny;
+    const int n_cells = Nx * Ny * Nz;
+    const int NxNy = Nx * Ny;
     const double inv_2dx = 1.0 / (2.0 * dx);
     const double inv_2dy = 1.0 / (2.0 * dy);
     const double inv_dx2 = 1.0 / (dx * dx);
     const double inv_dy2 = 1.0 / (dy * dy);
-    
+
     // CRITICAL: map(present:...) for all solver-managed device buffers
     #pragma omp target teams distribute parallel for \
         map(present: u[0:vel_u_size], v[0:vel_v_size], \
                      k[0:total_size], omega[0:total_size], \
                      nu_t_prev[0:total_size])
     for (int idx = 0; idx < n_cells; ++idx) {
-        // Convert flat index to (i,j) including ghost cells
+        // Convert flat index to (i,j,k) including ghost cells
         const int i = idx % Nx + Ng;
-        const int j = idx / Nx + Ng;
-        const int cell_idx = j * stride + i;
-        
+        const int j = (idx / Nx) % Ny + Ng;
+        const int kk = idx / NxNy;
+        const int kz = (Nz > 1) ? (kk + Ng) : 0;
+        const int z_cell_off = kz * cell_plane_stride;
+        const int z_u_off = kz * u_plane_stride;
+        const int z_v_off = kz * v_plane_stride;
+        const int cell_idx = z_cell_off + j * stride + i;
+
         // Read current values (nu_t_prev now uses same ghost+stride layout as k/omega)
         double k_val = k[cell_idx];
         double omega_val = omega[cell_idx];
         double nu_t_val = nu_t_prev[cell_idx];  // Now uses ghost+stride indexing
-        
+
         // Clamp to valid range
         k_val = (k_val > k_min) ? k_val : k_min;
         omega_val = (omega_val > omega_min) ? omega_val : omega_min;
         nu_t_val = (nu_t_val > 0.0) ? nu_t_val : 0.0;
-        
+
         // Compute velocity gradients from staggered MAC grid
         // u is at x-faces, v is at y-faces
-        const int u_idx_ip = j * u_stride + (i + 1);
-        const int u_idx_im = j * u_stride + (i - 1);
-        const int u_idx_jp = (j + 1) * u_stride + i;
-        const int u_idx_jm = (j - 1) * u_stride + i;
-        
-        const int v_idx_ip = j * v_stride + (i + 1);
-        const int v_idx_im = j * v_stride + (i - 1);
-        const int v_idx_jp = (j + 1) * v_stride + i;
-        const int v_idx_jm = (j - 1) * v_stride + i;
+        const int u_idx_ip = z_u_off + j * u_stride + (i + 1);
+        const int u_idx_im = z_u_off + j * u_stride + (i - 1);
+        const int u_idx_jp = z_u_off + (j + 1) * u_stride + i;
+        const int u_idx_jm = z_u_off + (j - 1) * u_stride + i;
+
+        const int v_idx_ip = z_v_off + j * v_stride + (i + 1);
+        const int v_idx_im = z_v_off + j * v_stride + (i - 1);
+        const int v_idx_jp = z_v_off + (j + 1) * v_stride + i;
+        const int v_idx_jm = z_v_off + (j - 1) * v_stride + i;
         
         double dudx_val = (u[u_idx_ip] - u[u_idx_im]) * inv_2dx;
         double dudy_val = (u[u_idx_jp] - u[u_idx_jm]) * inv_2dy;
@@ -1151,15 +1165,15 @@ void komega_transport_step_gpu(
         double nu_omega_eff = nu + sigma_omega * nu_t_val;
         
         // Get velocity at cell center (approximate from faces)
-        double u_c = 0.5 * (u[j * u_stride + i] + u[j * u_stride + (i+1)]);
-        double v_c = 0.5 * (v[j * v_stride + i] + v[(j+1) * v_stride + i]);
-        
+        double u_c = 0.5 * (u[z_u_off + j * u_stride + i] + u[z_u_off + j * u_stride + (i+1)]);
+        double v_c = 0.5 * (v[z_v_off + j * v_stride + i] + v[z_v_off + (j+1) * v_stride + i]);
+
         // Advection terms (upwind scheme)
         double adv_k, adv_omega;
-        const int k_idx_ip = j * stride + (i + 1);
-        const int k_idx_im = j * stride + (i - 1);
-        const int k_idx_jp = (j + 1) * stride + i;
-        const int k_idx_jm = (j - 1) * stride + i;
+        const int k_idx_ip = z_cell_off + j * stride + (i + 1);
+        const int k_idx_im = z_cell_off + j * stride + (i - 1);
+        const int k_idx_jp = z_cell_off + (j + 1) * stride + i;
+        const int k_idx_jm = z_cell_off + (j - 1) * stride + i;
         
         if (u_c >= 0.0) {
             adv_k = u_c * (k_val - k[k_idx_im]) / dx;
@@ -1205,8 +1219,8 @@ void komega_transport_step_gpu(
     }
 #else
     (void)u; (void)v; (void)k; (void)omega; (void)nu_t_prev;
-    (void)Nx; (void)Ny; (void)Ng; (void)stride;
-    (void)u_stride; (void)v_stride;
+    (void)Nx; (void)Ny; (void)Nz; (void)Ng; (void)stride; (void)cell_plane_stride;
+    (void)u_stride; (void)v_stride; (void)u_plane_stride; (void)v_plane_stride;
     (void)total_size; (void)vel_u_size; (void)vel_v_size;
     (void)dx; (void)dy; (void)dt;
     (void)nu; (void)sigma_k; (void)sigma_omega;
