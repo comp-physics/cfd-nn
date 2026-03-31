@@ -160,7 +160,9 @@ With our explicit RK3 time integrator, negative effective diffusion is unconditi
 This was verified by testing CFL numbers from 0.15 down to 0.01 and grid resolutions from $32^3$ to $192^3$; all configurations diverged within ${\sim}155$ steps.
 The issue is specific to the combination of (i) explicit time integration, (ii) nonlinear algebraic closures that do not guarantee positive-definite effective viscosity, and (iii) three-dimensional corner flows with large strain-rotation ratios.
 EARSM is stable on the two-dimensional cases (hills, cylinder) where the corner singularity is absent, and on the sphere where the geometry is smooth.
-The literature exclusively uses implicit pressure-velocity coupling (SIMPLE/SIMPLEC) for EARSM on duct flows \citep{WallinJohansson2000, Hellsten2005}, which naturally stabilizes negative diffusion through the implicit matrix solve.
+While EARSM has been paired with explicit Runge-Kutta methods in compressible density-based solvers \citep{Bassi2015,Furst2019} using local time stepping, these are steady-state iterations rather than physical-time integration.
+For incompressible duct flows, the literature exclusively uses implicit pressure-velocity coupling (SIMPLE/SIMPLEC) \citep{WallinJohansson2000, Hellsten2005, Baungaard2022}, which naturally stabilizes negative diffusion through the implicit matrix solve.
+The combination of incompressible fractional-step projection, physical-time explicit RK, and EARSM on three-dimensional corner flows appears untested in the literature; our results confirm it is unstable, consistent with the broader finding of \citet{CarpenterKennedy2005} that RANS problems with turbulence generally require fully implicit schemes.
 All other anisotropic models---RSM-SSG (which solves transport equations for each stress component) and the data-driven tensor-basis models (TBNN, PI-TBNN, TBRF)---remain stable on the duct because their anisotropic corrections enter via the decomposition method (Section~\ref{sec:solver}), where the stabilizing SST eddy viscosity dominates the diffusion operator.
 
 \subsubsection{Secondary flow cross-section}
