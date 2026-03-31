@@ -77,15 +77,59 @@ transient from the initial condition requires sufficient resolution.
 - Hills Re=5600: reattach x/H≈4.83 (Breuer 2009 DNS), SST x/H≈7-8 (literature)
 - Duct: secondary flows from Pinelli et al. (2010)
 
-### Key physics notes:
-- Cylinder Re=100 IS laminar — tests if NN models "do no harm"
-- Hills Re=5600 requires SST dissipation — laminar diverges (flow physically turbulent)
-- Sphere Re=200 at onset of non-axisymmetric flow
-- Duct: SST gives zero secondary flow (isotropic), EARSM/RSM nonzero
-- The explicit RK3 solver cannot handle separated flows without turbulent dissipation
-  (literature uses implicit SIMPLE for RANS hills). Grid refinement is the alternative.
+### What each case tests (training data context):
 
-**Total: 4 validated cases × 17+ models = 68+ runs**
+**Cylinder Re=100 (LAMINAR, unseen geometry)**
+- Training data: none (cylinder not in McConkey dataset)
+- Tests: "do no harm" — does the NN closure destabilize a laminar flow it's never seen?
+- Expected: all models should match laminar Cd≈1.35. Any deviation is NN interference.
+- QoI: Cd (momentum balance), St (shedding frequency)
+
+**Hills Re=5600 (TRAINED geometry, 2D)**
+- Training data: periodic hills at α={0.5, 1.0, 1.5} (Re=5600 is the McConkey training Re)
+- Tests: can NN closures improve SST reattachment prediction on a trained geometry?
+- Expected: SST overpredicts reattachment by ~58% (x/H≈7.6 vs DNS 4.83). TBNN/EARSM may improve.
+- Training data is 2D (homogeneous spanwise). Models see familiar flow.
+- QoI: reattachment x/H, separation x/H, U_b profile
+
+**Duct Re_b=3500 (TRAINED geometry, 3D — THE critical test)**
+- Training data: square duct at 14 Re (including Re=3500). Dataset is y-z cross-section.
+- Tests: can models trained on RANS fields with near-zero V,W predict secondary flow
+  when coupled to the solver? This is a feedback loop NOT tested in a priori evaluation.
+- Key insight from McConkey (2021): the RANS k-ω SST input has V≈W≈0 (can't predict
+  secondary flow), but DNS labels have nonzero b_13, b_23. The NN learns the correction
+  from Pope invariants alone. When coupled, the predicted τ_ij drives V,W which were
+  absent in training — genuine extrapolation in the coupled sense.
+- Expected: SST gives zero secondary flow (Boussinesq). EARSM/RSM give nonzero.
+  TBNN/TBRF are the open question — trained on 3D data but never coupled.
+- QoI: secondary flow magnitude max(V,W)/U_b, wall shear τ_w(z) profile
+
+**Sphere Re=200 (UNSEEN geometry, 3D)**
+- Training data: none (sphere not in McConkey dataset)
+- Tests: generalization to unseen 3D geometry with IBM
+- Expected: laminar/transitional regime. Tests if 3D NN closures remain stable on a
+  geometry never seen during training with IBM forcing.
+- QoI: Cd (momentum balance)
+
+### Grid resolution requirements (explicit RK3 + IBM):
+IBM cases need finer grids than body-fitted for stability with explicit solver.
+The penalization (ibm_eta=0.1) damps body-interior velocity, but the pressure
+transient from the initial condition requires sufficient resolution.
+
+| Case | Min stable grid | Diverges at | Factor over body-fitted |
+|------|----------------|-------------|------------------------|
+| Cylinder 2D | 384×288 | — (stable) | ~1× (sufficient) |
+| Hills 2D | **1536×768** | 384×192, 768×384 | **~4×** |
+| Sphere 3D | **384×256×256** | 192×128×128 | **~2×** per direction |
+| Duct 3D (no IBM) | 96³ | — (stable) | 1× |
+
+### Reference values:
+- Cylinder Re=100: Cd≈1.35, St≈0.165 (Tritton 1959, Williamson 1996)
+- Sphere Re=200: Cd≈0.77, sep≈117° (Johnson & Patel 1999)
+- Hills Re=5600: reattach x/H≈4.83 (Breuer 2009 DNS), SST x/H≈7-8 (literature)
+- Duct: secondary flows from Pinelli et al. (2010)
+
+**Total: 4 validated cases × 20 models = 80 runs**
 
 ---
 

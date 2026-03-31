@@ -147,8 +147,11 @@ The wake deficit depth and recovery rate are sensitive indicators of how well ea
 
 Turbulent flow in a square duct generates Prandtl's secondary flow of the second kind: streamwise-aligned vortices driven by Reynolds stress anisotropy near the duct corners.
 This secondary flow is absent in any isotropic (Boussinesq) closure and can only be predicted by models that produce anisotropic Reynolds stresses.
-The duct geometry was included in the training data.
 The reference is the DNS of \citet{Pinelli2010} at $\Rey_b = 3{,}500$.
+
+The duct geometry was included in the training data (14 Reynolds numbers, Section~\ref{sec:training}), making this a trained-geometry evaluation.
+However, the a~posteriori test probes a capability the a~priori evaluation cannot: whether models trained on RANS fields with near-zero cross-plane velocities (the $k$-$\omega$ SST cannot predict secondary flow) can, when coupled to the solver, generate the secondary motion from the anisotropic stress correction alone.
+During training, the DNS labels contain nonzero $b_{13}$ and $b_{23}$, but the RANS inputs have near-zero $V$ and $W$; in the coupled solver, the predicted anisotropic stresses drive cross-plane velocities that were absent in the training input---a feedback loop not tested offline.
 
 \subsubsection{Secondary flow cross-section}
 

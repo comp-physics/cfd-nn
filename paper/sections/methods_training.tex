@@ -6,6 +6,12 @@
 All models are trained on the curated turbulence modelling dataset of \citet{McConkey2021}, which contains 902{,}601 spatial points across 38 flow cases in four geometries: square duct (14 Reynolds numbers), periodic hills (5 slope angles), converging-diverging channel, and curved backward-facing step.
 Each point provides RANS fields from a $k$-$\omega$ SST \citep{Menter1994} simulation (velocity gradients, $k$, $\varepsilon$, $\omega$, $\nut$) and DNS/LES reference data (Reynolds stress anisotropy tensor $b_{ij}$).
 
+An important characteristic of this dataset: the square duct is the only genuinely three-dimensional flow.
+Its DNS reference data \citep{Pinelli2010} contains nonzero cross-plane Reynolds stresses ($\overline{u'w'}$, $\overline{v'w'}$, i.e., $b_{13}$ and $b_{23}$) that drive Prandtl's secondary flow of the second kind.
+However, the RANS input fields for the duct are effectively two-dimensional: the linear eddy viscosity model ($k$-$\omega$ SST) cannot predict the secondary vortices, so the RANS cross-plane velocities $V$ and $W$ remain near zero \citep{McConkey2021}.
+The remaining three geometries (hills, CDC, CBFS) have homogeneous spanwise directions and strictly two-dimensional mean flow.
+The models therefore learn the 3D anisotropy correction ($b_{13}$, $b_{23}$) from the duct cases while receiving near-zero RANS cross-plane velocity gradient inputs---the correction is driven entirely by the Pope invariants and tensor basis, not by RANS-predicted secondary flow.
+
 \subsection{Feature engineering}
 \label{sec:features}
 
