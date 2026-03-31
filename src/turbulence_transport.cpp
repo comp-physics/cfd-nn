@@ -239,6 +239,201 @@ inline void sst_transport_cell_kernel(
 // ============================================================================
 
 // ============================================================================
+// Free function for SST transport GPU dispatch
+// All #pragma omp target kernels live here — NOT in a member function — so
+// nvc++ does not capture `this` (which contains CPU-only members like
+// std::vector and std::unique_ptr that are invalid on GPU).
+// ============================================================================
+namespace {
+
+void sst_transport_gpu_dispatch(
+    const double* u_ptr, const double* v_ptr,
+    const double* w_ptr,
+    double* k_ptr, double* omega_ptr,
+    const double* nu_t_ptr, const double* wall_dist_ptr,
+    int Nx, int Ny, int Nz, int Ng, int n_cells,
+    int cell_stride, int cell_plane_stride,
+    int u_stride, int v_stride, int w_stride,
+    int u_plane_stride, int v_plane_stride, int w_plane_stride,
+    [[maybe_unused]] size_t u_total_size,
+    [[maybe_unused]] size_t v_total_size,
+    [[maybe_unused]] size_t w_map_size,
+    [[maybe_unused]] size_t cell_total_size,
+    double dx, double dy, double dz, double dt,
+    double inv_2dx, double inv_2dy, double inv_2dz,
+    double dx2, double dy2, double dz2,
+    bool is_3d,
+    double nu, double beta_star, double beta1, double beta2,
+    double alpha1, double alpha2,
+    double sigma_k1, double sigma_k2,
+    double sigma_omega1, double sigma_omega2,
+    double k_min, double k_max, double omega_min, double omega_max,
+    double CD_min,
+    int total_Nz)
+{
+    // ---- Transport kernel: single code path, one flat loop ----
+    // The pragma is silently ignored in CPU builds.
+    // 2D uses plane-0 indexing (kkz=0); 3D uses ghost offset (kkz=kk+Ng).
+    // For 2D, w_ptr is aliased to u_ptr (since w_face is nullptr) so we must
+    // NOT include it in the map clause — having the same device pointer appear
+    // twice in map(present:) causes nvc++ CUDA error 719.
+    if (is_3d) {
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], \
+                         w_ptr[0:w_map_size], \
+                         k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size], \
+                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
+        for (int flat_idx = 0; flat_idx < n_cells; ++flat_idx) {
+            const int i = flat_idx % Nx;
+            const int j = (flat_idx / Nx) % Ny;
+            const int kk = flat_idx / (Nx * Ny);
+            const int ii = i + Ng;
+            const int jj = j + Ng;
+            const int kkz = kk + Ng;
+
+            const int idx_c  = kkz * cell_plane_stride + jj * cell_stride + ii;
+            const int idx_ip = kkz * cell_plane_stride + jj * cell_stride + (ii + 1);
+            const int idx_im = kkz * cell_plane_stride + jj * cell_stride + (ii - 1);
+            const int idx_jp = kkz * cell_plane_stride + (jj + 1) * cell_stride + ii;
+            const int idx_jm = kkz * cell_plane_stride + (jj - 1) * cell_stride + ii;
+            const int idx_kp = (kkz + 1) * cell_plane_stride + jj * cell_stride + ii;
+            const int idx_km = (kkz - 1) * cell_plane_stride + jj * cell_stride + ii;
+
+            const int u_idx_ip = kkz * u_plane_stride + jj * u_stride + (ii + 1);
+            const int u_idx_im = kkz * u_plane_stride + jj * u_stride + (ii - 1);
+            const int u_idx_jp = kkz * u_plane_stride + (jj + 1) * u_stride + ii;
+            const int u_idx_jm = kkz * u_plane_stride + (jj - 1) * u_stride + ii;
+            const int v_idx_ip = kkz * v_plane_stride + jj * v_stride + (ii + 1);
+            const int v_idx_im = kkz * v_plane_stride + jj * v_stride + (ii - 1);
+            const int v_idx_jp = kkz * v_plane_stride + (jj + 1) * v_stride + ii;
+            const int v_idx_jm = kkz * v_plane_stride + (jj - 1) * v_stride + ii;
+            const int u_idx_c  = kkz * u_plane_stride + jj * u_stride + ii;
+            const int u_idx_c1 = kkz * u_plane_stride + jj * u_stride + (ii + 1);
+            const int v_idx_c  = kkz * v_plane_stride + jj * v_stride + ii;
+            const int v_idx_c1 = kkz * v_plane_stride + (jj + 1) * v_stride + ii;
+            const int w_idx_c  = kkz * w_plane_stride + jj * w_stride + ii;
+            const int w_idx_c1 = (kkz + 1) * w_plane_stride + jj * w_stride + ii;
+
+            double k_new, omega_new;
+            sst_transport_cell_kernel(
+                idx_c, idx_ip, idx_im, idx_jp, idx_jm, idx_kp, idx_km,
+                u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
+                v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
+                u_idx_c, u_idx_c1, v_idx_c, v_idx_c1, w_idx_c, w_idx_c1,
+                u_ptr, v_ptr, w_ptr,
+                k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+                dx, dy, dz, dt, inv_2dx, inv_2dy, inv_2dz, dx2, dy2, dz2,
+                true,
+                nu, beta_star, beta1, beta2, alpha1, alpha2,
+                sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
+                k_min, k_max, omega_min, omega_max, CD_min,
+                k_new, omega_new);
+            k_ptr[idx_c] = k_new;
+            omega_ptr[idx_c] = omega_new;
+        }
+    } else {
+        // 2D path: no w_ptr in map clause (it aliases u_ptr when w_face is null)
+        #pragma omp target teams distribute parallel for \
+            map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], \
+                         k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size], \
+                         nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
+        for (int flat_idx = 0; flat_idx < n_cells; ++flat_idx) {
+            const int i = flat_idx % Nx;
+            const int j = (flat_idx / Nx) % Ny;
+            const int ii = i + Ng;
+            const int jj = j + Ng;
+
+            const int idx_c  = jj * cell_stride + ii;
+            const int idx_ip = jj * cell_stride + (ii + 1);
+            const int idx_im = jj * cell_stride + (ii - 1);
+            const int idx_jp = (jj + 1) * cell_stride + ii;
+            const int idx_jm = (jj - 1) * cell_stride + ii;
+
+            const int u_idx_ip = jj * u_stride + (ii + 1);
+            const int u_idx_im = jj * u_stride + (ii - 1);
+            const int u_idx_jp = (jj + 1) * u_stride + ii;
+            const int u_idx_jm = (jj - 1) * u_stride + ii;
+            const int v_idx_ip = jj * v_stride + (ii + 1);
+            const int v_idx_im = jj * v_stride + (ii - 1);
+            const int v_idx_jp = (jj + 1) * v_stride + ii;
+            const int v_idx_jm = (jj - 1) * v_stride + ii;
+            const int u_idx_c  = jj * u_stride + ii;
+            const int u_idx_c1 = jj * u_stride + (ii + 1);
+            const int v_idx_c  = jj * v_stride + ii;
+            const int v_idx_c1 = (jj + 1) * v_stride + ii;
+
+            double k_new, omega_new;
+            sst_transport_cell_kernel(
+                idx_c, idx_ip, idx_im, idx_jp, idx_jm, idx_c, idx_c,
+                u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
+                v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
+                u_idx_c, u_idx_c1, v_idx_c, v_idx_c1, 0, 0,
+                u_ptr, v_ptr, nullptr,
+                k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+                dx, dy, dz, dt, inv_2dx, inv_2dy, inv_2dz, dx2, dy2, dz2,
+                false,
+                nu, beta_star, beta1, beta2, alpha1, alpha2,
+                sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
+                k_min, k_max, omega_min, omega_max, CD_min,
+                k_new, omega_new);
+            k_ptr[idx_c] = k_new;
+            omega_ptr[idx_c] = omega_new;
+        }
+    }
+
+    // ---- Wall boundary conditions ----
+    // k BC: ghost = -interior (linear extrapolation gives k=0 at wall)
+    const int total_Nx_bc = cell_stride;
+    const int bc_count = total_Nx_bc * total_Nz;
+    #pragma omp target teams distribute parallel for \
+        map(present: k_ptr[0:cell_total_size])
+    for (int bc_idx = 0; bc_idx < bc_count; ++bc_idx) {
+        const int i_bc = bc_idx % total_Nx_bc;
+        const int kz = bc_idx / total_Nx_bc;
+        for (int g = 0; g < Ng; ++g) {
+            k_ptr[kz * cell_plane_stride + g * cell_stride + i_bc]
+                = -k_ptr[kz * cell_plane_stride + Ng * cell_stride + i_bc];
+            k_ptr[kz * cell_plane_stride + (Ny + Ng + g) * cell_stride + i_bc]
+                = -k_ptr[kz * cell_plane_stride + (Ny + Ng - 1) * cell_stride + i_bc];
+        }
+    }
+
+    // omega BC: ghost = 2*omega_wall - interior, where omega_wall = 60*nu/(beta1*y1^2)
+    const int omega_bc_count = Nx * total_Nz;
+    #pragma omp target teams distribute parallel for \
+        map(present: omega_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
+    for (int bc_idx = 0; bc_idx < omega_bc_count; ++bc_idx) {
+        const int ix = bc_idx % Nx;
+        const int kz = bc_idx / Nx;
+        const int i_bc = ix + Ng;
+        for (int g = 0; g < Ng; ++g) {
+            // Bottom wall
+            {
+                const int idx_ghost = kz * cell_plane_stride + g * cell_stride + i_bc;
+                const int idx_int   = kz * cell_plane_stride + Ng * cell_stride + i_bc;
+                double y1 = wall_dist_ptr[idx_int];
+                y1 = (y1 > 1e-10) ? y1 : 1e-10;
+                double ow = 60.0 * nu / (beta1 * y1 * y1);
+                ow = (ow < omega_max) ? ow : omega_max;
+                omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
+            }
+            // Top wall
+            {
+                const int idx_ghost = kz * cell_plane_stride + (Ny + Ng + g) * cell_stride + i_bc;
+                const int idx_int   = kz * cell_plane_stride + (Ny + Ng - 1) * cell_stride + i_bc;
+                double y1 = wall_dist_ptr[idx_int];
+                y1 = (y1 > 1e-10) ? y1 : 1e-10;
+                double ow = 60.0 * nu / (beta1 * y1 * y1);
+                ow = (ow < omega_max) ? ow : omega_max;
+                omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
+            }
+        }
+    }
+}
+
+} // anonymous namespace
+
+// ============================================================================
 // Boussinesq Closure Implementation
 // ============================================================================
 
@@ -752,126 +947,24 @@ void SSTKOmegaTransport::advance_turbulence(
     // For 2D, w_ptr is aliased to u_ptr — use u_total_size for the map clause
     [[maybe_unused]] const size_t w_map_size = w_raw ? w_total_size : u_total_size;
 
-    // ---- Transport kernel: single code path, one flat loop ----
-    // The pragma is silently ignored in CPU builds. For 2D, w_ptr mapping
-    // uses size 1 (harmless no-op) since w may not be GPU-mapped for Nz=1.
-    // 2D uses plane-0 indexing (kkz=0); 3D uses ghost offset (kkz=kk+Ng).
-    #pragma omp target teams distribute parallel for \
-        map(present: u_ptr[0:u_total_size], v_ptr[0:v_total_size], \
-                     w_ptr[0:w_map_size], \
-                     k_ptr[0:cell_total_size], omega_ptr[0:cell_total_size], \
-                     nu_t_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
-    for (int flat_idx = 0; flat_idx < n_cells; ++flat_idx) {
-        const int i = flat_idx % Nx;
-        const int j = (flat_idx / Nx) % Ny;
-        const int kk = flat_idx / (Nx * Ny);
-        const int ii = i + Ng;
-        const int jj = j + Ng;
-        // 2D: kz=0 (plane-0), 3D: kz=kk+Ng (ghost offset)
-        const int kkz = is_3d ? (kk + Ng) : 0;
-
-        // Cell indices
-        const int idx_c  = kkz * cell_plane_stride + jj * cell_stride + ii;
-        const int idx_ip = kkz * cell_plane_stride + jj * cell_stride + (ii + 1);
-        const int idx_im = kkz * cell_plane_stride + jj * cell_stride + (ii - 1);
-        const int idx_jp = kkz * cell_plane_stride + (jj + 1) * cell_stride + ii;
-        const int idx_jm = kkz * cell_plane_stride + (jj - 1) * cell_stride + ii;
-        const int idx_kp = is_3d ? (kkz + 1) * cell_plane_stride + jj * cell_stride + ii : idx_c;
-        const int idx_km = is_3d ? (kkz - 1) * cell_plane_stride + jj * cell_stride + ii : idx_c;
-
-        // Velocity face indices for gradients (u at x-faces)
-        const int u_idx_ip = kkz * u_plane_stride + jj * u_stride + (ii + 1);
-        const int u_idx_im = kkz * u_plane_stride + jj * u_stride + (ii - 1);
-        const int u_idx_jp = kkz * u_plane_stride + (jj + 1) * u_stride + ii;
-        const int u_idx_jm = kkz * u_plane_stride + (jj - 1) * u_stride + ii;
-        // v at y-faces
-        const int v_idx_ip = kkz * v_plane_stride + jj * v_stride + (ii + 1);
-        const int v_idx_im = kkz * v_plane_stride + jj * v_stride + (ii - 1);
-        const int v_idx_jp = kkz * v_plane_stride + (jj + 1) * v_stride + ii;
-        const int v_idx_jm = kkz * v_plane_stride + (jj - 1) * v_stride + ii;
-
-        // Velocity face indices for cell-center interpolation
-        const int u_idx_c  = kkz * u_plane_stride + jj * u_stride + ii;
-        const int u_idx_c1 = kkz * u_plane_stride + jj * u_stride + (ii + 1);
-        const int v_idx_c  = kkz * v_plane_stride + jj * v_stride + ii;
-        const int v_idx_c1 = kkz * v_plane_stride + (jj + 1) * v_stride + ii;
-        // w at z-faces (dummy for 2D)
-        const int w_idx_c  = is_3d ? (kkz * w_plane_stride + jj * w_stride + ii) : 0;
-        const int w_idx_c1 = is_3d ? ((kkz + 1) * w_plane_stride + jj * w_stride + ii) : 0;
-
-        double k_new, omega_new;
-        sst_transport_cell_kernel(
-            idx_c, idx_ip, idx_im, idx_jp, idx_jm,
-            idx_kp, idx_km,
-            u_idx_ip, u_idx_im, u_idx_jp, u_idx_jm,
-            v_idx_ip, v_idx_im, v_idx_jp, v_idx_jm,
-            u_idx_c, u_idx_c1, v_idx_c, v_idx_c1,
-            w_idx_c, w_idx_c1,
-            u_ptr, v_ptr, is_3d ? w_ptr : nullptr,
-            k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
-            dx, dy, dz, dt, inv_2dx, inv_2dy, inv_2dz, dx2, dy2, dz2,
-            is_3d,
-            nu, beta_star, beta1, beta2, alpha1, alpha2,
-            sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
-            k_min, k_max, omega_min, omega_max, CD_min,
-            k_new, omega_new);
-
-        k_ptr[idx_c] = k_new;
-        omega_ptr[idx_c] = omega_new;
-    }
-
-    // ---- Wall boundary conditions ----
-    // k BC: ghost = -interior (linear extrapolation gives k=0 at wall)
-    const int total_Nx_bc = cell_stride;
-    const int total_Nz_bc = mesh.total_Nz();
-    const int bc_count = total_Nx_bc * total_Nz_bc;
-    #pragma omp target teams distribute parallel for \
-        map(present: k_ptr[0:cell_total_size])
-    for (int bc_idx = 0; bc_idx < bc_count; ++bc_idx) {
-        const int i_bc = bc_idx % total_Nx_bc;
-        const int kz = bc_idx / total_Nx_bc;
-        for (int g = 0; g < Ng; ++g) {
-            k_ptr[kz * cell_plane_stride + g * cell_stride + i_bc]
-                = -k_ptr[kz * cell_plane_stride + Ng * cell_stride + i_bc];
-            k_ptr[kz * cell_plane_stride + (Ny + Ng + g) * cell_stride + i_bc]
-                = -k_ptr[kz * cell_plane_stride + (Ny + Ng - 1) * cell_stride + i_bc];
-        }
-    }
-
-    // omega BC: ghost = 2*omega_wall - interior, where omega_wall = 60*nu/(beta1*y1^2)
-    const double nu_bc = nu;
-    const double beta1_bc = beta1;
-    const double omega_max_bc = omega_max;
-    const int omega_bc_count = Nx * total_Nz_bc;
-    #pragma omp target teams distribute parallel for \
-        map(present: omega_ptr[0:cell_total_size], wall_dist_ptr[0:cell_total_size])
-    for (int bc_idx = 0; bc_idx < omega_bc_count; ++bc_idx) {
-        const int ix = bc_idx % Nx;
-        const int kz = bc_idx / Nx;
-        const int i_bc = ix + Ng;
-        for (int g = 0; g < Ng; ++g) {
-            // Bottom wall
-            {
-                const int idx_ghost = kz * cell_plane_stride + g * cell_stride + i_bc;
-                const int idx_int   = kz * cell_plane_stride + Ng * cell_stride + i_bc;
-                double y1 = wall_dist_ptr[idx_int];
-                y1 = (y1 > 1e-10) ? y1 : 1e-10;
-                double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
-                ow = (ow < omega_max_bc) ? ow : omega_max_bc;
-                omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
-            }
-            // Top wall
-            {
-                const int idx_ghost = kz * cell_plane_stride + (Ny + Ng + g) * cell_stride + i_bc;
-                const int idx_int   = kz * cell_plane_stride + (Ny + Ng - 1) * cell_stride + i_bc;
-                double y1 = wall_dist_ptr[idx_int];
-                y1 = (y1 > 1e-10) ? y1 : 1e-10;
-                double ow = 60.0 * nu_bc / (beta1_bc * y1 * y1);
-                ow = (ow < omega_max_bc) ? ow : omega_max_bc;
-                omega_ptr[idx_ghost] = 2.0 * ow - omega_ptr[idx_int];
-            }
-        }
-    }
+    // Dispatch all GPU kernels (transport + wall BCs) via free function
+    // to avoid nvc++ capturing `this` for GPU kernels in member functions.
+    sst_transport_gpu_dispatch(
+        u_ptr, v_ptr, w_ptr,
+        k_ptr, omega_ptr, nu_t_ptr, wall_dist_ptr,
+        Nx, Ny, Nz, Ng, n_cells,
+        cell_stride, cell_plane_stride,
+        u_stride, v_stride, w_stride,
+        u_plane_stride, v_plane_stride, w_plane_stride,
+        u_total_size, v_total_size, w_map_size, cell_total_size,
+        dx, dy, dz, dt,
+        inv_2dx, inv_2dy, inv_2dz,
+        dx2, dy2, dz2,
+        is_3d,
+        nu, beta_star, beta1, beta2, alpha1, alpha2,
+        sigma_k1, sigma_k2, sigma_omega1, sigma_omega2,
+        k_min, k_max, omega_min, omega_max, CD_min,
+        mesh.total_Nz());
 }
 
 void SSTKOmegaTransport::update(
