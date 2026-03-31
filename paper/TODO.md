@@ -320,6 +320,7 @@ Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for p
   - 23 min total wall time for all 48 runs (build + run)
 - [x] **Unused parameter warnings fixed** (Mar 31): turbulence_transport, turbulence_rsm, ibm_forcing
 - [x] **EARSM duct limitation documented in paper** with literature: Bassi+Botti (compressible explicit RK), Fürst 2019, Baungaard 2022 (WJ-EARSM on duct with SIMPLE), Carpenter-Kennedy (RANS needs implicit)
+- [ ] **CRITICAL: Fix NN model activation on duct** — NN models (TBNN, PI-TBNN, TBRF) produce ZERO secondary flow from cold start because Pope invariants are near zero without developed gradients. RSM works (has own transport). Need: gradual tau_div ramp after warmup (0→1 over ~200 steps) to prevent transition divergence while allowing NN to activate.
 - [ ] Run 75 LONG production runs (4 cases × 18-20 models, full T_final) on H200
 - [ ] Re-collect timing data on H200
 - [ ] Compare QoIs against DNS reference data
