@@ -595,6 +595,7 @@ void SSTWithEARSM::advance_turbulence(
     const ScalarField& nu_t_prev,
     const TurbulenceDeviceView* device_view)
 {
+    (void)nu_t_prev;  // SST transport uses its own nu_t, not this
     // Use SST transport for k, ω evolution.
     // Important: use SST's own nu_t = k/max(omega, S*F2/a1) for production,
     // NOT the EARSM closure nu_t. The EARSM closure can return zero nu_t
