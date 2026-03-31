@@ -304,8 +304,16 @@ Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for p
 - [x] **Model cleanup** (Mar 30): deleted stale 6-input MLP, 4-output TBNN, 200-tree TBRF. Rewrote models README. 20 models in repo.
 - [x] **Unrecognized CLI args now warn** (Mar 30): prevents silent `--body`/`--nn_weights` mistakes
 - [x] **Paper sections updated** (Mar 30-31): methods_closures (RSM #9, 21 models), methods_solver (grid table, IBM stability), methods_training (2D/3D data), results_aposteriori (case table, Re fix), results_cost (grid fix), conclusions (21 models)
+- [ ] **BUG: EARSM-WJ diverges on 3D duct with short warmup (2s)**
+  - Residual explodes to 1e+10 within 5000 steps. SST/RSM/MLP/TBNN/TBRF all stable.
+  - 2D hills with EARSM is stable. Problem is specific to 3D duct + EARSM.
+  - Production config uses warmup_time=20s — may stabilize, but needs verification.
+  - Likely cause: EARSM closure produces destabilizing nu_t during the warm-up→closure transition on 3D mesh. The EARSM nu_t can be very small near separation/corners, allowing the explicit solver to blow up.
+  - **Must fix or document before production runs.**
+- [x] **Regression tests added** (Mar 31): 3 P0 tests (tau_div velocity effect, duct secondary flow contrast, warm-up model switch) + TBRF validation + 6 cross-backend turbulence scenarios
+- [x] **V100 GPU runs** (Mar 31): hills 5K steps shows TBNN gives U_b=0.297 vs SST 0.393 — tensor correction has measurable effect on trained geometry
 - [ ] Run 84 production runs (4 cases × 21 models) on H200
-- [ ] Re-collect timing data on H200 (old data predates tau_div, 3D basis, z-plane fix, this-capture fix)
+- [ ] Re-collect timing data on H200
 - [ ] Compare QoIs against DNS reference data
 - [ ] Fill results_aposteriori TODOs with production data
 
