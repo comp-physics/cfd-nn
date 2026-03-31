@@ -1,0 +1,41 @@
+========== CYLINDER Re=100 (500 steps, no warmup) ==========
+Model                            Cd           Cl
+none                         4.7268       0.0006
+baseline                     4.7268       0.0006
+gep                          4.7268       0.0006
+sst                          4.7845      -0.0001
+earsm_wj                     4.7814      -0.0001
+earsm_gs                     4.7814      -0.0001
+earsm_pope                   4.7814      -0.0001
+rsm                          4.7268       0.0006
+mlp_paper                    4.7268       0.0006
+mlp_med_paper                4.7268       0.0006
+mlp_large_paper              4.7268       0.0006
+tbnn_paper                   4.7268       0.0006
+tbnn_small_paper             4.7268       0.0006
+tbnn_large_paper             4.7268       0.0006
+pi_tbnn_paper                4.7268       0.0006
+pi_tbnn_small_paper          4.7268       0.0006
+pi_tbnn_large_paper          4.7268       0.0006
+tbrf_1t_paper                4.7268       0.0006
+tbrf_5t_paper                4.7268       0.0006
+tbrf_10t_paper               4.7268       0.0006
+========== DUCT Re_b=3500 (500 steps, no warmup, skip EARSM) ==========
+Model                      Residual
+none                      7.891e-05
+baseline                  7.891e-05
+gep                       7.954e-05
+sst                       8.123e-05
+rsm                       8.673e-05
+mlp_paper                 8.942e-05
+mlp_med_paper             8.949e-05
+mlp_large_paper           1.783e-04
+tbnn_paper                7.891e-05
+tbnn_small_paper          7.891e-05
+tbnn_large_paper          1.058e-04
+pi_tbnn_paper             7.891e-05
+pi_tbnn_small_paper       7.891e-05
+pi_tbnn_large_paper       1.058e-04
+tbrf_1t_paper             7.891e-05
+tbrf_5t_paper             7.891e-05
+tbrf_10t_paper            7.891e-05
