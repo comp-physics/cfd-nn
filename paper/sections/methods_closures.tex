@@ -1,13 +1,13 @@
 \section{Turbulence Closure Models}
 \label{sec:closures}
 
-We evaluate 20 turbulence closure models spanning the full hierarchy from zero-equation algebraic to random forest, organized into 8 classical RANS models and 12 data-driven models (the latter comprising 2--3 size variants per architecture).
+We evaluate 21 turbulence closure models spanning the full hierarchy from zero-equation algebraic to random forest, organized into 9 classical RANS models and 12 data-driven models (the latter comprising 3 size variants per architecture).
 All models are implemented in the same solver and share the same spatial discretization, time integration, and Poisson solver, ensuring that performance and accuracy differences reflect the closure alone rather than numerical artifacts.
 Table~\ref{tab:model_summary} summarizes their key properties.
 
 \begin{table}[htbp]
 \centering
-\caption{Summary of the 20 turbulence closure models evaluated. All classical models have zero learned parameters; all NN/RF models are trained on the McConkey et al.\ (2021) dataset with case-holdout cross-validation. FLOPs/cell counts are for the turbulence update only (excluding shared solver operations). PI-TBNN variants have identical architecture and inference cost to their TBNN counterparts; the physics-informed realizability penalty applies at training time only. Validation RMSE is on the held-out case (anisotropy tensor prediction).}
+\caption{Summary of the 21 turbulence closure models evaluated. All classical models have zero learned parameters; all NN/RF models are trained on the McConkey et al.\ (2021) dataset with case-holdout cross-validation. PI-TBNN variants have identical architecture and inference cost to their TBNN counterparts; the physics-informed realizability penalty applies at training time only. Validation RMSE is on the held-out case (anisotropy tensor prediction).}
 \label{tab:model_summary}
 \small
 \begin{tabular}{llllrll}
@@ -23,34 +23,33 @@ Table~\ref{tab:model_summary} summarizes their key properties.
 6  & EARSM-GS           & Transport+NLEV & SST + GS algebraic & 0 & Tensor $b_{ij}$ & --- \\
 7  & EARSM-Pope          & Transport+NLEV & SST + quadratic & 0 & Tensor $b_{ij}$ & --- \\
 8  & GEP                & Algebraic RS & Symbolic regression & 0 & Tensor $b_{ij}$ & --- \\
+9  & RSM-SSG            & Transport (7-eq) & SSG pressure-strain & 0 & Full $R_{ij}$ & --- \\
 \midrule
 \multicolumn{7}{l}{\textit{Data-driven: MLP (scalar eddy viscosity)}} \\
-9  & MLP                & NN (scalar) & $5 \to 32^2 \to 1$ & 1.2K & Scalar $|b|$ & 0.110 \\
-10 & MLP-med            & NN (scalar) & $5 \to 64^2 \to 1$ & 4.4K & Scalar $|b|$ & 0.108 \\
-11 & MLP-large          & NN (scalar) & $5 \to 128^4 \to 1$ & 50K & Scalar $|b|$ & 0.105 \\
+10 & MLP                & NN (scalar) & $5 \to 32^2 \to 1$ & 1.2K & Scalar $|b|$ & 0.110 \\
+11 & MLP-med            & NN (scalar) & $5 \to 64^2 \to 1$ & 4.4K & Scalar $|b|$ & 0.108 \\
+12 & MLP-large          & NN (scalar) & $5 \to 128^4 \to 1$ & 50K & Scalar $|b|$ & 0.105 \\
 \midrule
 \multicolumn{7}{l}{\textit{Data-driven: TBNN (tensor basis neural network)}} \\
-12 & TBNN-small         & NN (tensor) & $5 \to 32^2 \to 10$ & 1.4K & 10 coefficients & 0.085 \\
-13 & TBNN               & NN (tensor) & $5 \to 64^3 \to 10$ & 9.4K & 10 coefficients & 0.085 \\
-14 & TBNN-large         & NN (tensor) & $5 \to 128^3 \to 10$ & 35K & 10 coefficients & 0.086 \\
+13 & TBNN-small         & NN (tensor) & $5 \to 32^2 \to 10$ & 1.4K & 10 coefficients & 0.085 \\
+14 & TBNN               & NN (tensor) & $5 \to 64^3 \to 10$ & 9.4K & 10 coefficients & 0.085 \\
+15 & TBNN-large         & NN (tensor) & $5 \to 128^3 \to 10$ & 35K & 10 coefficients & 0.086 \\
 \midrule
 \multicolumn{7}{l}{\textit{Data-driven: PI-TBNN (physics-informed TBNN)}} \\
-15 & PI-TBNN-small      & NN (tensor) & $5 \to 32^2 \to 10$ & 1.4K & 10 coefficients & 0.090 \\
-16 & PI-TBNN            & NN (tensor) & $5 \to 64^3 \to 10$ & 9.4K & 10 coefficients & 0.120 \\
-17 & PI-TBNN-large      & NN (tensor) & $5 \to 128^3 \to 10$ & 35K & 10 coefficients & 0.089 \\
+16 & PI-TBNN-small      & NN (tensor) & $5 \to 32^2 \to 10$ & 1.4K & 10 coefficients & 0.090 \\
+17 & PI-TBNN            & NN (tensor) & $5 \to 64^3 \to 10$ & 9.4K & 10 coefficients & 0.120 \\
+18 & PI-TBNN-large      & NN (tensor) & $5 \to 128^3 \to 10$ & 35K & 10 coefficients & 0.089 \\
 \midrule
 \multicolumn{7}{l}{\textit{Data-driven: TBRF (tensor basis random forest)}} \\
-18 & TBRF-1t            & RF (tensor) & 1 tree/coeff.  & 283K nodes & 10 coefficients & 0.078 \\
-19 & TBRF-5t            & RF (tensor) & 5 trees/coeff. & 1.4M nodes & 10 coefficients & 0.068 \\
-20 & TBRF-10t           & RF (tensor) & 10 trees/coeff. & 2.8M nodes & 10 coefficients & $\sim$0.064 \\
+19 & TBRF-1t            & RF (tensor) & 1 tree/coeff.  & 283K nodes & 10 coefficients & 0.078 \\
+20 & TBRF-5t            & RF (tensor) & 5 trees/coeff. & 1.4M nodes & 10 coefficients & 0.068 \\
+21 & TBRF-10t           & RF (tensor) & 10 trees/coeff. & 2.8M nodes & 10 coefficients & $\sim$0.064 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Of these 20 models, 15 form the production set used in the full 4-case a posteriori sweep (Section~\ref{sec:aposteriori}): models 1--10 and 12--13 (MLP, MLP-med, TBNN-small, TBNN) plus models 15--16 (PI-TBNN-small, PI-TBNN), model 18 (TBRF-1t), and model 8 (GEP).
-The remaining 5 ``large'' variants---MLP-large, TBNN-large, PI-TBNN-large, TBRF-5t, and TBRF-10t---are included in the a priori evaluation (Section~\ref{sec:apriori}) and selected cost comparisons, but are omitted from the full a posteriori sweep due to their high computational cost.
-The TBNN-large, for example, requires 144~ms per step on the 3.15M-cell sphere grid, making a full production run prohibitively expensive.
-Including these large variants allows us to isolate the effect of model capacity on a priori accuracy and to construct Pareto frontiers of cost versus accuracy (Section~\ref{sec:pareto}).
+All 20 models are evaluated on all 4 a~posteriori cases (Section~\ref{sec:aposteriori}), providing a complete picture of how model capacity, architecture choice, and physics-informed constraints affect coupled solver predictions.
+The size variants within each architecture (small/medium/large) trace out cost--accuracy curves that reveal the returns to scaling for each approach.
 
 \subsection{Classical models}
 

@@ -148,6 +148,36 @@ These results are consistent with the $O(h)$ convergence rate reported in the IB
 For the cylinder, 24 cells/$D$ provides sufficient resolution for quantitative $C_D$ comparison (${<}10\%$ error).
 For the sphere, while absolute $C_D$ values have not converged at affordable resolutions, relative comparisons between turbulence models at a fixed grid resolution remain meaningful---any model-to-model differences are attributable to the closure rather than to IBM discretization error.
 
+\subsubsection{Grid resolution requirements for IBM stability}
+\label{sec:ibm_grid_requirements}
+
+The combination of the explicit RK3 time integrator with the ghost-cell IBM imposes minimum grid resolution requirements that are substantially higher than those for body-fitted solvers.
+The IBM introduces a pressure transient at the fluid--solid interface during the initial time steps: the penalization term damps the body-interior velocity toward zero, creating a localized divergence source that the Poisson solver must correct.
+With insufficient resolution, this transient produces oscillations that grow exponentially and diverge within a few hundred steps.
+
+Table~\ref{tab:ibm_min_grid} reports the minimum stable grid for each a~posteriori case, determined empirically by testing progressively finer grids until long-time stability is achieved (${>}2000$ steps without divergence).
+The periodic hills geometry requires approximately $4\times$ the resolution that would be sufficient for a body-fitted solver, while the sphere requires $2\times$ refinement in each direction.
+This overhead is a direct consequence of the explicit time integrator: implicit solvers (e.g., OpenFOAM's SIMPLE algorithm, commonly used for RANS periodic hills at Re${=}5{,}600$) can accommodate the IBM pressure transient without excessive resolution.
+
+\begin{table}[htbp]
+\centering
+\caption{Minimum stable grid resolution for each IBM case with the explicit RK3 solver. The duct uses wall-fitted boundaries (no IBM). The ``factor'' column indicates the grid refinement relative to an initial estimate based on cell-count matching with body-fitted RANS literature.}
+\label{tab:ibm_min_grid}
+\begin{tabular}{lrrrr}
+\toprule
+Case & Grid & Cells & Cells/$D$ & Factor \\
+\midrule
+Cylinder Re${=}100$ & $384 \times 288$ & 0.1M & 24 & $1\times$ \\
+Hills Re${=}5{,}600$ & $1{,}536 \times 768$ & 1.2M & --- & $4\times$ \\
+Duct Re$_b{=}3{,}500$ & $96^3$ & 0.9M & --- & $1\times$ \\
+Sphere Re${=}200$ & $384 \times 256^2$ & 25.2M & 48 & $2\times$/dir \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The volume penalization (Eq.~\ref{eq:volume_penalization}) with $\eta = 0.1$ is applied during the SST warm-up phase for all IBM cases to stabilize the initial transient.
+After warm-up, the solver switches to ghost-cell forcing for higher accuracy.
+
 \subsection{SST warm-up initialization}
 \label{sec:sst_warmup}
 

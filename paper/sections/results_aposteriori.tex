@@ -23,21 +23,21 @@ Table~\ref{tab:aposteriori_cases} summarizes the computational setup.
 \toprule
 Case & Geometry & Grid & Cells & Reference & Training \\
 \midrule
-Hills $\Rey_H=10{,}595$ & Periodic hills (IBM) & $\todo{X}$ & \todo{X} & \citet{Breuer2009} LES & Trained \\
-Cylinder $\Rey=100$ & Circular cylinder (IBM) & $\todo{X}$ & \todo{X} & Literature & Unseen \\
-Duct $\Rey_b=3{,}500$ & Square duct & $\todo{X}$ & \todo{X} & \citet{Pinelli2010} DNS & Trained \\
-Sphere $\Rey=200$ & Sphere (IBM) & $\todo{X}$ & \todo{X} & \citet{Johnson1999} & Unseen \\
+Cylinder $\Rey=100$ & Circular cylinder (IBM) & $384 \times 288$ & 0.1M & \citet{Tritton1959, Williamson1996} & Unseen \\
+Hills $\Rey_H=5{,}600$ & Periodic hills (IBM) & $1{,}536 \times 768$ & 1.2M & \citet{Breuer2009} LES & Trained \\
+Duct $\Rey_b=3{,}500$ & Square duct (walls) & $96^3$ & 0.9M & \citet{Pinelli2010} DNS & Trained \\
+Sphere $\Rey=200$ & Sphere (IBM) & $384 \times 256^2$ & 25.2M & \citet{Johnson1999} & Unseen \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 % =====================================================================
-\subsection{Periodic hills at $\Rey_H = 10{,}595$}
+\subsection{Periodic hills at $\Rey_H = 5{,}600$}
 \label{sec:aposteriori:hills}
 % =====================================================================
 
 The periodic hills geometry generates a large separation bubble on the lee side of each hill, with reattachment on the flat channel floor.
-This case appeared in the training data at lower Reynolds numbers; the $\Rey_H = 10{,}595$ configuration tests whether the models generalize across Reynolds number within a known geometry class.
+This case appeared in the training data at lower Reynolds numbers; the $\Rey_H = 5{,}600$ configuration tests whether the models generalize across Reynolds number within a known geometry class.
 The reference data are the wall-resolved LES of \citet{Breuer2009}.
 
 \subsubsection{Skin friction coefficient}
@@ -48,7 +48,7 @@ The sign change in $C_f$ identifies the separation and reattachment points, and 
 \begin{figure}[htbp]
 \centering
 \todo{Insert $C_f(x/H)$ plot for 6 representative models vs.\ Breuer LES.}
-\caption{Skin friction coefficient $C_f$ along the lower wall of the periodic hills at $\Rey_H = 10{,}595$. The sign change from negative to positive marks the reattachment point. Reference: \citet{Breuer2009} LES.}
+\caption{Skin friction coefficient $C_f$ along the lower wall of the periodic hills at $\Rey_H = 5{,}600$. The sign change from negative to positive marks the reattachment point. Reference: \citet{Breuer2009} LES.}
 \label{fig:hills_cf}
 \end{figure}
 
@@ -60,7 +60,7 @@ Accurate prediction of these locations is the most demanding test: errors in the
 
 \begin{table}[htbp]
 \centering
-\caption{Separation and reattachment locations on the periodic hills lower wall at $\Rey_H = 10{,}595$. The error is the absolute deviation from the Breuer LES reference values ($x_\mathrm{sep}/H = \todo{X}$, $x_\mathrm{re}/H = \todo{X}$).}
+\caption{Separation and reattachment locations on the periodic hills lower wall at $\Rey_H = 5{,}600$. The error is the absolute deviation from the Breuer LES reference values ($x_\mathrm{sep}/H = \todo{X}$, $x_\mathrm{re}/H = \todo{X}$).}
 \label{tab:hills_sep}
 \begin{tabular}{lrrrr}
 \toprule
@@ -84,7 +84,7 @@ These profiles reveal both the recirculation bubble shape and the rate of bounda
 \begin{figure}[htbp]
 \centering
 \todo{Insert $u/U_b$ vs.\ $y/H$ profiles at $x/H = 0.5, 2, 4, 6, 8$ for 6 representative models vs.\ Breuer LES.}
-\caption{Streamwise velocity profiles $u/U_b$ at five stations along the periodic hills lower wall. Reference: \citet{Breuer2009} LES at $\Rey_H = 10{,}595$.}
+\caption{Streamwise velocity profiles $u/U_b$ at five stations along the periodic hills lower wall. Reference: \citet{Breuer2009} LES at $\Rey_H = 5{,}600$.}
 \label{fig:hills_profiles}
 \end{figure}
 
