@@ -37,7 +37,7 @@ Sphere $\Rey=200$ & Sphere (IBM) & $384 \times 256^2$ & 25.2M & \citet{Johnson19
 % =====================================================================
 
 The periodic hills geometry generates a large separation bubble on the lee side of each hill, with reattachment on the flat channel floor.
-This case appeared in the training data at lower Reynolds numbers; the $\Rey_H = 5{,}600$ configuration tests whether the models generalize across Reynolds number within a known geometry class.
+This case appeared in the training data at the same Reynolds number ($\Rey_H = 5{,}600$ matches the McConkey dataset), making this a trained-geometry, trained-Re evaluation.
 The reference data are the wall-resolved LES of \citet{Breuer2009}.
 
 \subsubsection{Skin friction coefficient}
@@ -55,12 +55,12 @@ The sign change in $C_f$ identifies the separation and reattachment points, and 
 \subsubsection{Separation and reattachment}
 
 Table~\ref{tab:hills_sep} reports the predicted separation and reattachment locations for all models.
-The reference separation point is $x_\mathrm{sep}/H \approx \todo{X}$ and the reattachment point is $x_\mathrm{re}/H \approx \todo{X}$ \citep{Breuer2009}.
+The reference separation point is $x_\mathrm{sep}/H \approx 0.22$ and the reattachment point is $x_\mathrm{re}/H \approx 4.83$ \citep{Breuer2009}.
 Accurate prediction of these locations is the most demanding test: errors in the turbulent transport within the shear layer directly affect the recirculation zone length.
 
 \begin{table}[htbp]
 \centering
-\caption{Separation and reattachment locations on the periodic hills lower wall at $\Rey_H = 5{,}600$. The error is the absolute deviation from the Breuer LES reference values ($x_\mathrm{sep}/H = \todo{X}$, $x_\mathrm{re}/H = \todo{X}$).}
+\caption{Separation and reattachment locations on the periodic hills lower wall at $\Rey_H = 5{,}600$. The error is the absolute deviation from the Breuer LES reference values ($x_\mathrm{sep}/H = 0.22$, $x_\mathrm{re}/H = 4.83$).}
 \label{tab:hills_sep}
 \begin{tabular}{lrrrr}
 \toprule
