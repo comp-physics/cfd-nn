@@ -153,6 +153,16 @@ The duct geometry was included in the training data (14 Reynolds numbers, Sectio
 However, the a~posteriori test probes a capability the a~priori evaluation cannot: whether models trained on RANS fields with near-zero cross-plane velocities (the $k$-$\omega$ SST cannot predict secondary flow) can, when coupled to the solver, generate the secondary motion from the anisotropic stress correction alone.
 During training, the DNS labels contain nonzero $b_{13}$ and $b_{23}$, but the RANS inputs have near-zero $V$ and $W$; in the coupled solver, the predicted anisotropic stresses drive cross-plane velocities that were absent in the training input---a feedback loop not tested offline.
 
+\paragraph{EARSM exclusion.}
+The three EARSM variants (WJ, GS, Pope) are excluded from the duct evaluation.
+The EARSM's explicit algebraic coefficients $G_1$--$G_6$ \citep{GatskiSpeziale1993, WallinJohansson2000} can produce locally negative contributions to the effective viscosity tensor near the duct corners, where the strain and rotation invariants are large.
+With our explicit RK3 time integrator, negative effective diffusion is unconditionally unstable---no time step restriction can prevent exponential growth at the grid scale.
+This was verified by testing CFL numbers from 0.15 down to 0.01 and grid resolutions from $32^3$ to $192^3$; all configurations diverged within ${\sim}155$ steps.
+The issue is specific to the combination of (i) explicit time integration, (ii) nonlinear algebraic closures that do not guarantee positive-definite effective viscosity, and (iii) three-dimensional corner flows with large strain-rotation ratios.
+EARSM is stable on the two-dimensional cases (hills, cylinder) where the corner singularity is absent, and on the sphere where the geometry is smooth.
+The literature exclusively uses implicit pressure-velocity coupling (SIMPLE/SIMPLEC) for EARSM on duct flows \citep{WallinJohansson2000, Hellsten2005}, which naturally stabilizes negative diffusion through the implicit matrix solve.
+All other anisotropic models---RSM-SSG (which solves transport equations for each stress component) and the data-driven tensor-basis models (TBNN, PI-TBNN, TBRF)---remain stable on the duct because their anisotropic corrections enter via the decomposition method (Section~\ref{sec:solver}), where the stabilizing SST eddy viscosity dominates the diffusion operator.
+
 \subsubsection{Secondary flow cross-section}
 
 Figure~\ref{fig:duct_secondary} compares the secondary flow pattern $(v, w)$ in the $y$--$z$ cross-section for each model.
