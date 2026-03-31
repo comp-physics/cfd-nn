@@ -79,9 +79,9 @@ ModelResult run_model(TurbulenceModelType type) {
     // Check for NN weights
     std::string nn_path;
     if (type == TurbulenceModelType::NNMLP) {
-        nn_path = "data/models/mlp_channel_caseholdout";
+        nn_path = "data/models/mlp_paper";
         if (!file_exists(nn_path + "/layer0_W.txt")) {
-            nn_path = "../data/models/mlp_channel_caseholdout";
+            nn_path = "../data/models/mlp_paper";
             if (!file_exists(nn_path + "/layer0_W.txt")) {
                 result.skipped = true;
                 result.skip_reason = "MLP weights not found";
@@ -89,9 +89,9 @@ ModelResult run_model(TurbulenceModelType type) {
             }
         }
     } else if (type == TurbulenceModelType::NNTBNN) {
-        nn_path = "data/models/tbnn_channel_caseholdout";
+        nn_path = "data/models/tbnn_paper";
         if (!file_exists(nn_path + "/layer0_W.txt")) {
-            nn_path = "../data/models/tbnn_channel_caseholdout";
+            nn_path = "../data/models/tbnn_paper";
             if (!file_exists(nn_path + "/layer0_W.txt")) {
                 result.skipped = true;
                 result.skip_reason = "TBNN weights not found";

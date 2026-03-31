@@ -266,7 +266,7 @@ void test_nn_models() {
         record("MLP: velocity bounded", mlp.vel_bounded);
     }
 
-    std::string tbnn_path = resolve_nn_path("tbnn_channel_caseholdout");
+    std::string tbnn_path = resolve_nn_path("tbnn_paper");
     if (tbnn_path.empty()) {
         std::cout << "  [SKIP] TBNN weights not found\n";
         record("TBNN: weights found", false, true);

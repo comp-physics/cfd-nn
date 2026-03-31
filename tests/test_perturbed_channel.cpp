@@ -383,7 +383,7 @@ TestResult test_single_model(TurbulenceModelType model_type) {
     if (model_type != TurbulenceModelType::None) {
         std::string model_path = "";
         if (model_type == TurbulenceModelType::NNTBNN) {
-            model_path = resolve_model_dir("data/models/tbnn_channel_caseholdout");
+            model_path = resolve_model_dir("data/models/tbnn_paper");
         } else if (model_type == TurbulenceModelType::NNMLP) {
             return {true, true};  // Skip - no checkpoint available
         }

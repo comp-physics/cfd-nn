@@ -62,7 +62,7 @@ void test_mlp_forward() {
 }
 
 void test_load_weights() {
-    std::string model_path = resolve_model_path("mlp_channel_caseholdout");
+    std::string model_path = resolve_model_path("mlp_paper");
     if (model_path.empty()) {
         record("Weight loading", true, true);  // skip
         return;

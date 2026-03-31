@@ -41,10 +41,10 @@ bool is_velocity_valid(const VectorField& vel, const Mesh& mesh) {
 
 // Test 1: NN-MLP model produces valid output
 void test_nn_mlp_validity() {
-    // Use trained MLP model from data/models/mlp_channel_caseholdout
-    std::string model_path = "data/models/mlp_channel_caseholdout";
+    // Use trained MLP model from data/models/mlp_paper
+    std::string model_path = "data/models/mlp_paper";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/mlp_channel_caseholdout";
+        model_path = "../data/models/mlp_paper";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             record("NN-MLP model validity", true, true);  // skip
             return;
@@ -197,9 +197,9 @@ void test_nn_mlp_validity() {
 // Test 2: NN-TBNN model produces valid output
 void test_nn_tbnn_validity() {
     // Use trained TBNN model
-    std::string model_path = "data/models/tbnn_channel_caseholdout";
+    std::string model_path = "data/models/tbnn_paper";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/tbnn_channel_caseholdout";
+        model_path = "../data/models/tbnn_paper";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             record("NN-TBNN model validity", true, true);  // skip
             return;
@@ -335,9 +335,9 @@ void test_nn_tbnn_validity() {
 
 // Test 3: NN-TBNN with solver integration
 void test_nn_tbnn_solver_integration() {
-    std::string model_path = "data/models/tbnn_channel_caseholdout";
+    std::string model_path = "data/models/tbnn_paper";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/tbnn_channel_caseholdout";
+        model_path = "../data/models/tbnn_paper";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             record("NN-TBNN solver integration", true, true);  // skip
             return;
@@ -385,9 +385,9 @@ void test_nn_tbnn_solver_integration() {
 
 // Test 4: Multiple NN updates don't cause memory issues
 void test_nn_repeated_updates() {
-    std::string model_path = "data/models/tbnn_channel_caseholdout";
+    std::string model_path = "data/models/tbnn_paper";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/tbnn_channel_caseholdout";
+        model_path = "../data/models/tbnn_paper";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             record("Repeated NN updates", true, true);  // skip
             return;
@@ -524,9 +524,9 @@ void test_nn_repeated_updates() {
 
 // Test 5: NN model with different grid sizes
 void test_nn_different_grid_sizes() {
-    std::string model_path = "data/models/tbnn_channel_caseholdout";
+    std::string model_path = "data/models/tbnn_paper";
     if (!file_exists(model_path + "/layer0_W.txt")) {
-        model_path = "../data/models/tbnn_channel_caseholdout";
+        model_path = "../data/models/tbnn_paper";
         if (!file_exists(model_path + "/layer0_W.txt")) {
             record("NN different grid sizes", true, true);  // skip
             return;

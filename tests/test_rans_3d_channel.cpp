@@ -94,8 +94,8 @@ static Result3D run_3d_rans_model(TurbulenceModelType type,
         // 3. Create solver and set turbulence model
         RANSSolver solver(mesh, config);
 
-        std::string nn_mlp_path = resolve_nn_path("mlp_channel_caseholdout");
-        std::string nn_tbnn_path = resolve_nn_path("tbnn_channel_caseholdout");
+        std::string nn_mlp_path = resolve_nn_path("mlp_paper");
+        std::string nn_tbnn_path = resolve_nn_path("tbnn_paper");
         auto turb = create_turbulence_model(type, nn_mlp_path, nn_tbnn_path);
         solver.set_turbulence_model(std::move(turb));
 

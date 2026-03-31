@@ -198,7 +198,7 @@ void test_turbulence_nn(bool gpu_available) {
     // This test validates CPU path; GPU path is validated by test_turbulence_unified via solver.
     // Try paper model first (5 Pope invariants), then legacy model
     std::string mlp_path = resolve_model_dir("data/models/mlp_paper");
-    if (mlp_path.empty()) mlp_path = resolve_model_dir("data/models/mlp_channel_caseholdout");
+    if (mlp_path.empty()) mlp_path = resolve_model_dir("data/models/mlp_paper");
     if (mlp_path.empty()) {
         record("TurbulenceNNMLP", true, true);
     } else {
@@ -225,7 +225,7 @@ void test_turbulence_nn(bool gpu_available) {
 
     // Test TBNN
     std::string tbnn_path = resolve_model_dir("data/models/tbnn_paper");
-    if (tbnn_path.empty()) tbnn_path = resolve_model_dir("data/models/tbnn_channel_caseholdout");
+    if (tbnn_path.empty()) tbnn_path = resolve_model_dir("data/models/tbnn_paper");
     if (tbnn_path.empty()) {
         record("TurbulenceNNTBNN", true, true);
     } else {

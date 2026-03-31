@@ -71,10 +71,10 @@ static SmokeResult run_3d_smoke(TurbulenceModelType type, const Mesh& mesh,
 
     std::string nn_path;
     if (type == TurbulenceModelType::NNMLP) {
-        nn_path = resolve_nn_path("mlp_channel_caseholdout");
+        nn_path = resolve_nn_path("mlp_paper");
         if (nn_path.empty()) { result.skipped = true; result.message = "MLP weights not found"; return result; }
     } else if (type == TurbulenceModelType::NNTBNN) {
-        nn_path = resolve_nn_path("tbnn_channel_caseholdout");
+        nn_path = resolve_nn_path("tbnn_paper");
         if (nn_path.empty()) { result.skipped = true; result.message = "TBNN weights not found"; return result; }
     }
 

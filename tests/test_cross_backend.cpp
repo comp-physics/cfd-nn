@@ -1154,17 +1154,17 @@ ScenarioSignature run_mixing_length() {
 
 bool nn_mlp_available() {
     // Check if model files exist
-    std::string path = "data/models/mlp_channel_caseholdout";
+    std::string path = "data/models/mlp_paper";
     if (file_exists(path + "/layer0_W.txt")) return true;
-    path = "../data/models/mlp_channel_caseholdout";
+    path = "../data/models/mlp_paper";
     if (file_exists(path + "/layer0_W.txt")) return true;
     return false;
 }
 
 std::string get_nn_mlp_model_path() {
-    std::string path = "data/models/mlp_channel_caseholdout";
+    std::string path = "data/models/mlp_paper";
     if (file_exists(path + "/layer0_W.txt")) return path;
-    path = "../data/models/mlp_channel_caseholdout";
+    path = "../data/models/mlp_paper";
     if (file_exists(path + "/layer0_W.txt")) return path;
     return "";
 }

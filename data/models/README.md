@@ -63,14 +63,6 @@ Predicts 10 tensor basis coefficients using random forests (Kaandorp & Dwight
 The full 200-tree forest (~1.1 GB binary, 3.3 GB pickle) is too large for the
 repo. The 1/5/10 tree variants are subsampled to match the MLP/TBNN size sweep.
 
-### Legacy models (case-holdout splits)
-Trained with case-holdout split instead of random split. Used by some tests.
-
-| Directory | Type |
-|-----------|------|
-| `tbnn_channel_caseholdout` | TBNN, channel holdout |
-| `tbnn_phll_caseholdout` | TBNN, periodic hills holdout |
-
 ## File Formats
 
 ### MLP / TBNN / PI-TBNN
