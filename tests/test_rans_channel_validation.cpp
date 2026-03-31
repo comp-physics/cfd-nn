@@ -32,7 +32,8 @@ using nncfd::test::harness::record;
 static std::string resolve_nn_path(const std::string& subdir) {
     for (const auto& prefix : {"data/models/", "../data/models/"}) {
         std::string path = std::string(prefix) + subdir;
-        if (nncfd::test::file_exists(path + "/layer0_W.txt")) return path;
+        if (nncfd::test::file_exists(path + "/layer0_W.txt") ||
+            nncfd::test::file_exists(path + "/trees.bin")) return path;
     }
     return "";
 }
@@ -276,6 +277,18 @@ void test_nn_models() {
                   << " max_nut=" << std::scientific << tbnn.max_nut << "\n";
         record("TBNN: no NaN", tbnn.no_nan);
         record("TBNN: velocity bounded", tbnn.vel_bounded);
+    }
+
+    std::string tbrf_path = resolve_nn_path("tbrf_1t_paper");
+    if (tbrf_path.empty()) {
+        std::cout << "  [SKIP] TBRF weights not found\n";
+        record("TBRF: weights found", false, true);
+    } else {
+        auto tbrf = run_model(TurbulenceModelType::NNTBRF, "NN-TBRF", tbrf_path);
+        std::cout << "  NN-TBRF:  max_vel=" << std::fixed << std::setprecision(1) << tbrf.max_vel
+                  << " max_nut=" << std::scientific << tbrf.max_nut << "\n";
+        record("TBRF: no NaN", tbrf.no_nan);
+        record("TBRF: velocity bounded", tbrf.vel_bounded);
     }
 
     std::cout << "\n";
