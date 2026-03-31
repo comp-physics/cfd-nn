@@ -401,7 +401,9 @@ static void test_earsm_trace_free() {
             double max_trace_err = 0.0;
             FOR_INTERIOR_2D(mesh, i, j) {
                 if (k_field(i, j) < 1e-10) continue;
-                double b_trace = tau_ij.trace(i, j) / (2.0 * k_field(i, j)) - 2.0 / 3.0;
+                // Full 3D trace: xx + yy + zz (deviatoric uses 1/3 in 3D basis)
+                double tau_trace = tau_ij.xx(i, j) + tau_ij.yy(i, j) + tau_ij.zz(i, j, 0);
+                double b_trace = tau_trace / (2.0 * k_field(i, j)) - 1.0;
                 max_trace_err = std::max(max_trace_err, std::abs(b_trace));
             }
 

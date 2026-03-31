@@ -180,7 +180,7 @@ void TurbulenceGEP::update(const Mesh& mesh,
     const double* wall_dist_ptr = nullptr;
     double* nu_t_ptr = nullptr;
     [[maybe_unused]] int map_size = 0;
-    bool use_gpu = false;
+    // Pointer selection done below (device_view vs CPU ScalarField)
 
     if (device_view && device_view->is_valid()) {
         // Compute gradients on GPU
@@ -209,7 +209,6 @@ void TurbulenceGEP::update(const Mesh& mesh,
         wall_dist_ptr = device_view->wall_distance;
         nu_t_ptr = device_view->nu_t;
         map_size = device_view->cell_total;
-        use_gpu = true;
     } else {
         // CPU path: compute gradients from MAC velocity
         dudx_field = ScalarField(mesh);
@@ -241,11 +240,10 @@ void TurbulenceGEP::update(const Mesh& mesh,
     }
 
     // ---- Single kernel loop (pragma silently ignored on CPU builds) ----
-    if (use_gpu) {
-        #pragma omp target teams distribute parallel for \
-            map(present: dudx_ptr[0:map_size], dudy_ptr[0:map_size], \
-                         dvdx_ptr[0:map_size], dvdy_ptr[0:map_size], \
-                         wall_dist_ptr[0:map_size], nu_t_ptr[0:map_size])
+    #pragma omp target teams distribute parallel for \
+        map(present: dudx_ptr[0:map_size], dudy_ptr[0:map_size], \
+                     dvdx_ptr[0:map_size], dvdy_ptr[0:map_size], \
+                     wall_dist_ptr[0:map_size], nu_t_ptr[0:map_size])
         for (int idx = 0; idx < total; ++idx) {
             const int kk = idx / (Nx * Ny);
             const int rem = idx % (Nx * Ny);
@@ -258,20 +256,6 @@ void TurbulenceGEP::update(const Mesh& mesh,
                             dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
                             wall_dist_ptr, nu_t_ptr);
         }
-    } else {
-        for (int idx = 0; idx < total; ++idx) {
-            const int kk = idx / (Nx * Ny);
-            const int rem = idx % (Nx * Ny);
-            const int j = rem / Nx + Ng;
-            const int i = rem % Nx + Ng;
-            const int kz = is2D ? 0 : (kk + Ng);
-            const int cell_idx = kz * plane_stride + j * cell_stride + i;
-
-            gep_cell_kernel(cell_idx, variant_val, nu_val, kappa, A_plus,
-                            dudx_ptr, dudy_ptr, dvdx_ptr, dvdy_ptr,
-                            wall_dist_ptr, nu_t_ptr);
-        }
-    }
 }
 
 } // namespace nncfd
