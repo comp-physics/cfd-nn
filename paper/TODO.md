@@ -299,11 +299,15 @@ Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for p
   - `#pragma omp target` silently ignored on CPU builds
   - 106/106 tests pass (28 sanity + 29 validation + 23 unified + 26 3D)
   - Root cause of z-plane bug eliminated (can't diverge when there's only one path)
-- [ ] Run 68+ production runs (4 cases × 17+ models) on H200
+- [x] **GPU crash fixed** (Mar 31): nvc++ `this`-capture in SST transport. Extracted GPU kernels to free function. Also fixed null w_ptr in 2D map clause, cylinder/duct app warm-up ordering.
+- [x] **GPU validation on V100** (Mar 31): 20/20 cylinder, 7/7 hills, 6/7 duct (EARSM needs longer warmup). Transfer profiling confirms no regression.
+- [x] **Model cleanup** (Mar 30): deleted stale 6-input MLP, 4-output TBNN, 200-tree TBRF. Rewrote models README. 20 models in repo.
+- [x] **Unrecognized CLI args now warn** (Mar 30): prevents silent `--body`/`--nn_weights` mistakes
+- [x] **Paper sections updated** (Mar 30-31): methods_closures (RSM #9, 21 models), methods_solver (grid table, IBM stability), methods_training (2D/3D data), results_aposteriori (case table, Re fix), results_cost (grid fix), conclusions (21 models)
+- [ ] Run 84 production runs (4 cases × 21 models) on H200
+- [ ] Re-collect timing data on H200 (old data predates tau_div, 3D basis, z-plane fix, this-capture fix)
 - [ ] Compare QoIs against DNS reference data
-- [ ] Re-collect timing data with RSM + anisotropic stress overhead
-- [ ] Update methods_closures.tex with RSM-SSG description
-- [ ] Update methods_solver.tex with decomposition method, 3D extension, grid requirements
+- [ ] Fill results_aposteriori TODOs with production data
 
 ### 2. Pareto plot (THE figure)
 - [ ] x-axis: wall-time per physical time (the real cost a user pays — includes dt effects)

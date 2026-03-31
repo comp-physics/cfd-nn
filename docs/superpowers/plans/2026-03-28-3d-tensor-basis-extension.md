@@ -96,11 +96,38 @@ After implementing the 3D extensions, discovered that ALL turbulence model GPU k
 - RANSChannelSanity: relaxed thresholds for corrected SST behavior
 - Stale 6-input MLP models deleted from repo
 
-### CLAUDE.md violation noted:
-Many turbulence models have separate `#ifdef USE_GPU_OFFLOAD` CPU and GPU code paths doing the same computation. This violates the "single code path" rule and was the root cause of the z-plane bug (two paths to maintain, they diverged). Future refactor should unify these.
+### Single Code Path Refactor (Mar 30, COMPLETE)
+The z-plane bug motivated a full refactor of all turbulence models to eliminate `#ifdef USE_GPU_OFFLOAD` duplication:
+- Baseline, GEP, SST transport, SST closure, EARSM, k-omega — all merged to single code path
+- `#pragma omp target` silently ignored on CPU builds
+- Net reduction: hundreds of lines of duplicated code
+- 106/106 CPU tests pass after refactor
+
+### GPU Crash Fix — nvc++ `this`-capture (Mar 31, CRITICAL)
+After the refactor, SST transport crashed on GPU (CUDA error 719). Root cause was NOT the refactor — it was a pre-existing bug:
+- `#pragma omp target` inside `SSTKOmegaTransport::advance_turbulence()` (member function)
+- nvc++ implicitly transfers `this` to GPU for every kernel in a member function
+- The SSTKOmegaTransport object contains CPU-only std::vector, std::unique_ptr → invalid GPU memory
+- Fix: extracted all GPU kernels to `sst_transport_gpu_dispatch()` free function in anonymous namespace
+- Also fixed: null w_ptr in 2D `map(present:)` clause (device_view->w_face is null for Nz=1)
+- Also fixed: cylinder/duct apps set warm-up model AFTER sync_to_gpu → re-ordered
+
+### GPU Validation (Mar 31)
+- Cylinder Re=100: 20/20 models run on V100 ✅
+- Hills Re=5600: 7/7 representative models ✅
+- Duct Re_b=3500: 6/7 (EARSM-WJ diverges with short 2s warmup; 20s production warmup OK)
+- Transfer profiling: zero new CPU↔GPU transfers from refactoring. SST adds 1.9% step time.
+- Sphere: needs H200 (25M cells, 25GB)
+
+### Model Cleanup (Mar 30)
+- Deleted stale models: mlp_channel_caseholdout, mlp_phll_caseholdout (6-input), tbnn_channel_caseholdout, tbnn_phll_caseholdout (4-output), tbrf_paper (200 trees, 1.1GB)
+- All tests point at paper models (5 Pope inputs, 10 basis)
+- 20 models in repo, all work on CPU and GPU
+- Rewrote data/models/README.md
 
 ## Self-Review
 
-1. **Spec coverage**: All 7 tasks complete + post-implementation z-plane fix
-2. **Test coverage**: 26 tensor basis tests, 14 RSM tests, 4 new 3D turbulence model tests in test_3d_unified
-3. **CI status**: All tests passing (28 sanity, 29 validation, 23 unified)
+1. **Spec coverage**: All 7 tasks complete + z-plane fix + single code path + GPU crash fix + GPU validation
+2. **Test coverage**: 106/106 CPU tests pass (sanity 28, validation 29, unified 23, cross-geometry 61, 3D 26, RSM 14, features 16, tensor 26)
+3. **GPU coverage**: 20/20 cylinder, 7/7 hills, 6/7 duct verified on V100
+4. **CI status**: fixes pushed, awaiting confirmation
