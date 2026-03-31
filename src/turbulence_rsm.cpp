@@ -52,7 +52,7 @@ inline void rsm_cell_kernel(
     // Previous nu_t for diffusion
     const double* nu_t_ptr,
     // Grid parameters
-    double dx, double dy, double dz, double dt,
+    [[maybe_unused]] double dx, [[maybe_unused]] double dy, [[maybe_unused]] double dz, double dt,
     double inv_dx2, double inv_dy2, double inv_dz2,
     bool is3D,
     // Model constants

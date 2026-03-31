@@ -251,7 +251,7 @@ void sst_transport_gpu_dispatch(
     const double* w_ptr,
     double* k_ptr, double* omega_ptr,
     const double* nu_t_ptr, const double* wall_dist_ptr,
-    int Nx, int Ny, int Nz, int Ng, int n_cells,
+    int Nx, int Ny, [[maybe_unused]] int Nz, int Ng, int n_cells,
     int cell_stride, int cell_plane_stride,
     int u_stride, int v_stride, int w_stride,
     int u_plane_stride, int v_plane_stride, int w_plane_stride,

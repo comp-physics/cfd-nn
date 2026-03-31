@@ -269,7 +269,7 @@ void IBMForcing::compute_ghost_cell_interp() {
 
     // Helper: find a fluid neighbor in direction (di, dj, dk) within ±2 steps
     // Returns flat index of the fluid neighbor, or -1 if not found
-    auto find_fluid_nbr = [&](const std::vector<IBMCellType>& ct, int idx, int stride,
+    auto find_fluid_nbr = [&](const std::vector<IBMCellType>& ct, [[maybe_unused]] int idx, int stride,
                                int i, int j, int k, int di, int dj, int dk,
                                int i_max, int j_max, int k_max,
                                int plane_stride) -> std::pair<int, double> {
@@ -620,7 +620,8 @@ void IBMForcing::compute_ghost_cell_interp_2nd() {
 }
 
 void IBMForcing::exclude_wall_cells(bool y_lo_wall, bool y_hi_wall,
-                                     bool z_lo_wall, bool z_hi_wall) {
+                                     [[maybe_unused]] bool z_lo_wall,
+                                     [[maybe_unused]] bool z_hi_wall) {
     const int Nx = mesh_->Nx;
     const int Ny = mesh_->Ny;
     const int Ng = mesh_->Nghost;
