@@ -182,16 +182,34 @@ int main(int argc, char** argv) {
         solver.set_body_force(-config.dp_dx, 0.0);
     }
 
-    // Set turbulence model if requested
+    // Set initial turbulence model — must be set BEFORE sync_to_gpu()
+    // so GPU buffers are mapped for the model that actually runs first.
+    bool needs_warmup_swap = false;
     if (config.turb_model != TurbulenceModelType::None) {
-        auto turb_model = create_turbulence_model(config.turb_model,
-                                                  config.nn_weights_path,
-                                                  config.nn_scaling_path,
-                                                  config.pope_C1,
-                                                  config.pope_C2);
-        if (turb_model) {
-            turb_model->set_nu(config.nu);
-            solver.set_turbulence_model(std::move(turb_model));
+        auto probe = create_turbulence_model(config.turb_model, "", "");
+        bool target_has_transport = probe && probe->uses_transport_equations();
+        bool has_warmup = !config.warmup_model.empty() && config.warmup_time > 0.0;
+
+        if (has_warmup && !target_has_transport) {
+            // Non-transport target: start with SST warm-up model
+            TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
+            if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
+            auto warmup_turb = create_turbulence_model(warmup_type, "", "");
+            if (warmup_turb) {
+                warmup_turb->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(warmup_turb));
+                needs_warmup_swap = true;
+            }
+        } else {
+            auto turb_model = create_turbulence_model(config.turb_model,
+                                                      config.nn_weights_path,
+                                                      config.nn_scaling_path,
+                                                      config.pope_C1,
+                                                      config.pope_C2);
+            if (turb_model) {
+                turb_model->set_nu(config.nu);
+                solver.set_turbulence_model(std::move(turb_model));
+            }
         }
     }
 
@@ -273,19 +291,9 @@ int main(int argc, char** argv) {
         std::max(1, config.max_steps / config.num_snapshots) : 0;
     int snap_count = 0;
 
-    // Warm-up phase: run with SST to develop flow before switching to target model
+    // Warm-up phase: model already set above (warm-up SST or target transport).
     if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
-        // Parse warmup model type
-        TurbulenceModelType warmup_type = TurbulenceModelType::SSTKOmega;
-        if (config.warmup_model == "sst") warmup_type = TurbulenceModelType::SSTKOmega;
-        else if (config.warmup_model == "komega") warmup_type = TurbulenceModelType::KOmega;
-
-        auto warmup_turb = create_turbulence_model(warmup_type, "", "");
-        if (warmup_turb) {
-            warmup_turb->set_nu(config.nu);
-            solver.set_turbulence_model(std::move(warmup_turb));
-            solver.sync_to_gpu();  // Re-map after model change
-
+        {
             if (mpi_rank == 0) {
                 std::cout << "=== Warm-up phase: " << config.warmup_model
                           << " for t=" << config.warmup_time << " ===\n";
@@ -312,16 +320,14 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Switch to target model (re-create it)
-            if (config.turb_model != TurbulenceModelType::None) {
+            // Switch to target model after warm-up
+            if (needs_warmup_swap && config.turb_model != TurbulenceModelType::None) {
                 auto target_turb = create_turbulence_model(config.turb_model,
                                                            config.nn_weights_path,
                                                            config.nn_scaling_path,
                                                            config.pope_C1,
                                                            config.pope_C2);
                 if (target_turb) {
-                    // If target model has no transport (NN, algebraic), keep SST
-                    // running in the background to maintain k/omega fields
                     if (!target_turb->uses_transport_equations()) {
                         auto bg_sst = create_turbulence_model(
                             TurbulenceModelType::SSTKOmega, "", "");
@@ -332,8 +338,9 @@ int main(int argc, char** argv) {
                     }
                     target_turb->set_nu(config.nu);
                     solver.set_turbulence_model(std::move(target_turb));
+                    solver.sync_to_gpu();  // Re-map for new model
                 }
-            } else {
+            } else if (config.turb_model == TurbulenceModelType::None) {
                 solver.set_turbulence_model(nullptr);
             }
 
