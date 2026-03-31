@@ -313,7 +313,14 @@ Non-turb cost is rock-solid across all models (±0.3ms). Need H200 numbers for p
   - **Decision: skip EARSM on duct in production. Use RSM and TBNN for 3D anisotropy.**
 - [x] **Regression tests added** (Mar 31): 3 P0 tests (tau_div velocity effect, duct secondary flow contrast, warm-up model switch) + TBRF validation + 6 cross-backend turbulence scenarios
 - [x] **V100 GPU runs** (Mar 31): hills 5K steps shows TBNN gives U_b=0.297 vs SST 0.393 — tensor correction has measurable effect on trained geometry
-- [ ] Run 84 production runs (4 cases × 21 models) on H200
+- [x] **H200 validation COMPLETE** (Mar 31, job 6107316): 48 model runs across all 4 cases, all OK
+  - Cylinder 20/20, Duct 17/17, Hills 7/7, Sphere 4/4 (none/SST/RSM/MLP)
+  - Sphere 384×256×256 (25M cells) confirmed stable on H200 80GB
+  - Results match V100 for cylinder/duct
+  - 23 min total wall time for all 48 runs (build + run)
+- [x] **Unused parameter warnings fixed** (Mar 31): turbulence_transport, turbulence_rsm, ibm_forcing
+- [x] **EARSM duct limitation documented in paper** with literature: Bassi+Botti (compressible explicit RK), Fürst 2019, Baungaard 2022 (WJ-EARSM on duct with SIMPLE), Carpenter-Kennedy (RANS needs implicit)
+- [ ] Run 75 LONG production runs (4 cases × 18-20 models, full T_final) on H200
 - [ ] Re-collect timing data on H200
 - [ ] Compare QoIs against DNS reference data
 - [ ] Fill results_aposteriori TODOs with production data
