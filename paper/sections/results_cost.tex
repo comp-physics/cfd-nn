@@ -2,7 +2,7 @@
 \label{sec:cost}
 
 We now turn to the central question of this paper: what does each turbulence closure cost to evaluate in a GPU-accelerated solver?
-All 15 models are implemented in the same solver, use the same spatial discretization (second-order finite differences on a staggered MAC grid), the same time integration (SSP-RK3), and the same Poisson solver (cuFFT-based direct solve).
+All 21 models are implemented in the same solver, use the same spatial discretization (second-order finite differences on a staggered MAC grid), the same time integration (SSP-RK3), and the same Poisson solver (cuFFT-based direct solve).
 All timing is measured on a single NVIDIA H200 GPU using the solver's internal instrumentation (one \texttt{TIMED\_SCOPE} per component per RK3 substep).
 This eliminates confounding factors that arise when comparing models across different codes, compilers, or hardware.
 
@@ -19,10 +19,10 @@ We measure per-step cost on four representative flow configurations spanning 2D 
 \toprule
 Case & Geometry & Grid & Cells & Poisson & Training \\
 \midrule
-Hills Re$_H=10{,}595$ & Periodic hills (IBM) & $384 \times 192 \times 1$ & 74K & FFT2D & Trained \\
-Cylinder Re$=100$ & Circular cylinder (IBM) & $384 \times 288 \times 1$ & 111K & FFT2D & Unseen \\
-Duct Re$_b=3{,}500$ & Square duct & $96^3$ & 885K & FFT1D & Trained \\
-Sphere Re$=200$ & Sphere (IBM) & $192 \times 128^2$ & 3.15M & FFT 3D & Unseen \\
+Cylinder Re$=100$ & Circular cylinder (IBM) & $384 \times 288$ & 0.1M & FFT2D & Unseen \\
+Hills Re$_H=5{,}600$ & Periodic hills (IBM) & $1{,}536 \times 768$ & 1.2M & FFT2D & Trained \\
+Duct Re$_b=3{,}500$ & Square duct & $96^3$ & 0.9M & MG & Trained \\
+Sphere Re$=200$ & Sphere (IBM) & $384 \times 256^2$ & 25.2M & FFT 3D & Unseen \\
 \bottomrule
 \end{tabular}
 \end{table}
