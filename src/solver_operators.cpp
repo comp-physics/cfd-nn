@@ -1092,10 +1092,15 @@ void RANSSolver::compute_tau_divergence() {
 
     if (!turb_model_ || !turb_model_->provides_reynolds_stresses()) return;
 
-    // tau_div_scale: fixed multiplier on the anisotropic correction.
-    // 0.0 = disabled, 0.1 = 10% correction, 1.0 = full correction.
-    // Values < 1.0 can stabilize explicit solvers on separated flows.
-    const double scale = config_.tau_div_scale;
+    // tau_div_scale: multiplier on the anisotropic correction.
+    // Includes optional ramp from 0→1 after model switch to prevent
+    // divergence when transitioning from SST warm-up to tensor model.
+    double ramp_factor = 1.0;
+    if (tau_div_ramp_total_ > 0 && tau_div_ramp_step_ < tau_div_ramp_total_) {
+        ramp_factor = static_cast<double>(tau_div_ramp_step_) / tau_div_ramp_total_;
+        ++tau_div_ramp_step_;
+    }
+    const double scale = config_.tau_div_scale * ramp_factor;
     if (scale <= 0.0) return;
 
     const int Nx = mesh_->Nx;
@@ -1136,6 +1141,22 @@ void RANSSolver::compute_tau_divergence() {
             txx[idx] -= 2.0 * nu_t_val * dudx[idx];
             txy[idx] -= nu_t_val * (dudy[idx] + dvdx[idx]);
             tyy[idx] -= 2.0 * nu_t_val * dvdy[idx];
+
+            // Per-cell limiter: cap |tau_nl| at scale * 2 * nu_eff * |S|
+            // This ensures the nonlinear correction cannot exceed the
+            // stabilizing Boussinesq diffusion (prevents anti-diffusion).
+            double S_mag = sqrt(dudx[idx]*dudx[idx] + dvdy[idx]*dvdy[idx]
+                              + 0.5*(dudy[idx]+dvdx[idx])*(dudy[idx]+dvdx[idx]));
+            double nu_eff_local = nu_t_val + 1e-10;  // molecular nu not available here
+            double tau_limit = scale * 2.0 * nu_eff_local * S_mag;
+            double tau_nl_mag = sqrt(txx[idx]*txx[idx] + 2.0*txy[idx]*txy[idx]
+                                   + tyy[idx]*tyy[idx]);
+            if (tau_nl_mag > tau_limit && tau_limit > 0.0) {
+                double clip = tau_limit / tau_nl_mag;
+                txx[idx] *= clip;
+                txy[idx] *= clip;
+                tyy[idx] *= clip;
+            }
         }
 
         // Step 2: Compute divergence of the nonlinear correction at velocity faces.
@@ -1211,6 +1232,30 @@ void RANSSolver::compute_tau_divergence() {
             tyy[idx] -= 2.0 * nu_t_val * dvdy[idx];
             tyz[idx] -= nu_t_val * (dvdz[idx] + dwdy[idx]);
             tzz[idx] -= 2.0 * nu_t_val * dwdz[idx];
+
+            // Per-cell limiter: cap |tau_nl| at scale * 2 * nu_eff * |S|.
+            // Prevents the nonlinear correction from exceeding the stabilizing
+            // Boussinesq diffusion, which would cause anti-diffusion and divergence
+            // in explicit solvers. This is the standard stabilization for EARSM and
+            // data-driven closures in fractional-step codes (cf. Hellsten 2005).
+            double S2 = dudx[idx]*dudx[idx] + dvdy[idx]*dvdy[idx] + dwdz[idx]*dwdz[idx]
+                      + 0.5*((dudy[idx]+dvdx[idx])*(dudy[idx]+dvdx[idx])
+                           + (dudz[idx]+dwdx[idx])*(dudz[idx]+dwdx[idx])
+                           + (dvdz[idx]+dwdy[idx])*(dvdz[idx]+dwdy[idx]));
+            double S_mag = (S2 > 0.0) ? sqrt(S2) : 0.0;
+            double tau_limit = scale * 2.0 * (nu_t_val + 1e-10) * S_mag;
+            double tau_nl_sq = txx[idx]*txx[idx] + tyy[idx]*tyy[idx] + tzz[idx]*tzz[idx]
+                             + 2.0*(txy[idx]*txy[idx] + txz[idx]*txz[idx] + tyz[idx]*tyz[idx]);
+            double tau_nl_mag = (tau_nl_sq > 0.0) ? sqrt(tau_nl_sq) : 0.0;
+            if (tau_nl_mag > tau_limit && tau_limit > 0.0) {
+                double clip = tau_limit / tau_nl_mag;
+                txx[idx] *= clip;
+                txy[idx] *= clip;
+                txz[idx] *= clip;
+                tyy[idx] *= clip;
+                tyz[idx] *= clip;
+                tzz[idx] *= clip;
+            }
         }
 
         // Step 2: Compute divergence of the nonlinear correction at velocity faces.

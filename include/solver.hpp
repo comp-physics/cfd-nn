@@ -115,6 +115,13 @@ public:
     /// does NOT call update() (the main model handles nu_t).
     void set_background_transport(std::unique_ptr<TurbulenceModel> model);
 
+    /// Start a ramp on tau_div_scale from 0→1 over n_steps after a model switch.
+    /// Prevents divergence when switching from SST warm-up to a tensor model.
+    void start_tau_div_ramp(int n_steps) {
+        tau_div_ramp_step_ = 0;
+        tau_div_ramp_total_ = n_steps;
+    }
+
     /// Set velocity boundary conditions
     void set_velocity_bc(const VelocityBC& bc);
     
@@ -1072,6 +1079,8 @@ private:
     std::vector<double> tau_div_v_buf_;
     std::vector<double> tau_div_w_buf_;
     bool tau_div_frozen_ = false;       // frozen stress: tau_div computed once, then fixed
+    int tau_div_ramp_step_ = 0;         // current step in ramp (0 = start)
+    int tau_div_ramp_total_ = 0;        // total ramp steps (0 = no ramp, immediate full strength)
 
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;
