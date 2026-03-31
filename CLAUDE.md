@@ -149,21 +149,22 @@ Same pattern: header in `include/`, impl in `src/`, enum in `PoissonSolverType`,
 
 The `RANSSolver::step()` method implements a fractional-step projection method in this order:
 
-1. **Turbulence update** — `turb_model_->advance_turbulence()` then `turb_model_->update()` (compute `nu_t`). LES models use fused GPU kernels via `update_gpu(TurbulenceDeviceView*)`.
-2. **Effective viscosity** — `nu_eff_ = nu + nu_t`
-3. **Convective + diffusive terms** — computed from current velocity
-4. **Predictor** — `u* = u^n + dt·(-conv + diff + body_force)` (explicit)
-5. **IBM forcing (if enabled)** — `apply_forcing_device()`: multiply u* by pre-computed weight arrays (0=solid, 1=fluid)
-6. **Recycling inlet** (if enabled) — apply recycling BC, correct divergence
-7. **IBM RHS masking (if enabled)** — `mask_rhs_device()`: zero Poisson RHS at solid cells (GPU kernel, no CPU sync)
-8. **Pressure Poisson** — `∇²p' = (1/dt)·∇·u*`, warm-started from previous `p'`
-9. **Velocity correction** — `u^{n+1} = u* - dt·∇p'`
-10. **IBM re-forcing (if enabled)** — re-apply weight multiplication to corrected velocity
-11. **Boundary conditions** — periodic halos, no-slip walls
-12. **Recycle plane extraction** (if enabled) — save for next step
-13. **Residual** — `max|u^{n+1} - u^n|` via GPU reduction
+1. **Turbulence update** — `turb_model_->advance_turbulence()` then `turb_model_->update()` (compute `nu_t` and optionally `tau_ij`). Background transport (if set) restores SST `nu_t` after tensor model update.
+2. **Anisotropic stress divergence** (if model provides Reynolds stresses) — `compute_tau_divergence()`: decomposition `tau_nl = tau_ij - 2·nu_t·S_ij`, then `tau_div = div(tau_nl)` added as source in predictor. Per-cell limiter caps `|tau_nl| ≤ scale·2·nu_eff·|S|` to prevent anti-diffusion. Optional ramp from 0→1 after model switch via `start_tau_div_ramp(N)`.
+3. **Effective viscosity** — `nu_eff_ = nu + nu_t`
+4. **Convective + diffusive terms** — computed from current velocity
+5. **Predictor** — `u* = u^n + dt·(-conv + diff + body_force + tau_div)` (explicit)
+6. **IBM forcing (if enabled)** — `apply_forcing_device()`: multiply u* by pre-computed weight arrays (0=solid, 1=fluid)
+7. **Recycling inlet** (if enabled) — apply recycling BC, correct divergence
+8. **IBM RHS masking (if enabled)** — `mask_rhs_device()`: zero Poisson RHS at solid cells (GPU kernel, no CPU sync)
+9. **Pressure Poisson** — `∇²p' = (1/dt)·∇·u*`, warm-started from previous `p'`
+10. **Velocity correction** — `u^{n+1} = u* - dt·∇p'`
+11. **IBM re-forcing (if enabled)** — re-apply weight multiplication to corrected velocity
+12. **Boundary conditions** — periodic halos, no-slip walls
+13. **Recycle plane extraction** (if enabled) — save for next step
+14. **Residual** — `max|u^{n+1} - u^n|` via GPU reduction
 
-For RK2/RK3, steps 3-7 repeat per stage with SSP weights.
+For RK2/RK3, steps 4-8 repeat per stage with SSP weights.
 
 The velocity filter (when enabled) is applied BEFORE step 1 in the application's time loop, not inside `step()` itself.
 
