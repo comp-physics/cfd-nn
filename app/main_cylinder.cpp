@@ -284,6 +284,7 @@ int main(int argc, char** argv) {
         if (warmup_turb) {
             warmup_turb->set_nu(config.nu);
             solver.set_turbulence_model(std::move(warmup_turb));
+            solver.sync_to_gpu();  // Re-map after model change
 
             if (mpi_rank == 0) {
                 std::cout << "=== Warm-up phase: " << config.warmup_model

@@ -395,6 +395,7 @@ int main(int argc, char** argv) {
             if (warmup_turb) {
                 warmup_turb->set_nu(config.nu);
                 solver.set_turbulence_model(std::move(warmup_turb));
+                solver.sync_to_gpu();  // Re-map after model change
             }
         }
         // else: target model already set at line 307-316 above
