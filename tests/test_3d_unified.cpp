@@ -8,6 +8,8 @@
 #include "poisson_solver_multigrid.hpp"
 #include "turbulence_rsm.hpp"
 #include "turbulence_baseline.hpp"
+#include "turbulence_earsm.hpp"
+#include "turbulence_transport.hpp"
 #include <cmath>
 
 using namespace nncfd;
@@ -584,6 +586,234 @@ void test_rsm_3d_produces_secondary_flow() {
 }
 
 //=============================================================================
+// REGRESSION TESTS (catch previously-shipped bugs)
+//=============================================================================
+
+void test_tau_div_affects_velocity() {
+    // Regression: tau_ij was computed but never used in momentum equation.
+    // SST (Boussinesq scalar) and EARSM-WJ (anisotropic tensor) must produce
+    // different velocity fields if the tau_div code path is working.
+
+    // --- Helper lambda: run a model for 200 steps, return u-velocity profile ---
+    auto run_model = [](TurbulenceModelType type) -> std::vector<double> {
+        Mesh mesh;
+        mesh.init_uniform(32, 64, 1, 0.0, 2.0, -1.0, 1.0, 0.0, 0.0625);
+
+        Config cfg;
+        cfg.nu = 0.001; cfg.dt = 0.001; cfg.dp_dx = -0.001;
+        cfg.adaptive_dt = false;
+        cfg.turb_model = type;
+        cfg.verbose = false;
+
+        RANSSolver solver(mesh, cfg);
+        auto turb = create_turbulence_model(type, "", "");
+        turb->set_nu(cfg.nu);
+        solver.set_turbulence_model(std::move(turb));
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+        solver.set_body_force(-cfg.dp_dx, 0.0);
+        solver.initialize_uniform(1.0, 0.0);
+
+        // Seed k and omega for transport models
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    solver.k_mutable()(i, j, k) = 0.01;
+                    solver.omega_mutable()(i, j, k) = 10.0;
+                }
+
+#ifdef USE_GPU_OFFLOAD
+        solver.sync_to_gpu();
+#endif
+        for (int s = 0; s < 200; ++s) solver.step();
+        solver.sync_from_gpu();
+
+        // Extract u profile at mid-x for the interior z-plane
+        int i_mid = mesh.i_begin() + (mesh.i_end() - mesh.i_begin()) / 2;
+        int k0 = mesh.is2D() ? 0 : mesh.k_begin();
+        std::vector<double> profile;
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            profile.push_back(solver.velocity().u(i_mid, j, k0));
+        return profile;
+    };
+
+    auto u_sst = run_model(TurbulenceModelType::SSTKOmega);
+    auto u_earsm = run_model(TurbulenceModelType::EARSM_WJ);
+
+    // Compute L2 norm of difference
+    double sum_sq = 0.0;
+    int n = static_cast<int>(std::min(u_sst.size(), u_earsm.size()));
+    for (int j = 0; j < n; ++j) {
+        double d = u_earsm[j] - u_sst[j];
+        sum_sq += d * d;
+    }
+    double diff = std::sqrt(sum_sq / std::max(1, n));
+
+    std::cout << "    tau_div velocity diff L2 = " << std::scientific << diff << "\n";
+    record("tau_div affects velocity (SST != EARSM)", diff > 1e-6);
+}
+
+void test_duct_secondary_flow_contrast() {
+    // Regression: z-plane bug caused all turbulence models to only process
+    // one z-slice on 3D meshes. To detect this, we check that RSM produces
+    // nonzero nu_t on ALL z-planes (not just the first one), and that RSM
+    // secondary flow components (v, w) are nonzero.
+
+    auto run_duct = [](TurbulenceModelType type)
+        -> std::pair<double, int> {
+        Mesh mesh;
+        mesh.init_uniform(8, 32, 8, 0.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+
+        Config cfg;
+        cfg.nu = 0.001; cfg.dt = 0.0005;
+        cfg.adaptive_dt = false;
+        cfg.turb_model = type;
+        cfg.verbose = false;
+
+        RANSSolver solver(mesh, cfg);
+        auto turb = create_turbulence_model(type, "", "");
+        turb->set_nu(cfg.nu);
+        solver.set_turbulence_model(std::move(turb));
+        solver.set_velocity_bc(create_velocity_bc(BCPattern::Duct));
+        solver.set_body_force(0.01, 0.0);
+        solver.initialize_uniform(1.0, 0.0);
+
+        // Seed k and omega
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    solver.k_mutable()(i, j, k) = 0.01;
+                    solver.omega_mutable()(i, j, k) = 10.0;
+                }
+
+#ifdef USE_GPU_OFFLOAD
+        solver.sync_to_gpu();
+#endif
+        for (int s = 0; s < 200; ++s) solver.step();
+        solver.sync_from_gpu();
+
+        // Measure max secondary flow: max(|v|, |w|)
+        double max_secondary = 0.0;
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                    max_secondary = std::max(max_secondary,
+                        std::abs(solver.velocity().v(i, j, k)));
+                    max_secondary = std::max(max_secondary,
+                        std::abs(solver.velocity().w(i, j, k)));
+                }
+
+        // Count z-planes with nonzero nu_t (catches z-plane bug)
+        int planes_with_nut = 0;
+        for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+            double max_nut = 0.0;
+            for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+                for (int i = mesh.i_begin(); i < mesh.i_end(); ++i)
+                    max_nut = std::max(max_nut, solver.nu_t()(i, j, k));
+            if (max_nut > 1e-10) planes_with_nut++;
+        }
+
+        return {max_secondary, planes_with_nut};
+    };
+
+    auto [sst_secondary, sst_planes] = run_duct(TurbulenceModelType::SSTKOmega);
+    auto [rsm_secondary, rsm_planes] = run_duct(TurbulenceModelType::RSM_SSG);
+
+    int total_planes = 8; // Nz = 8
+    std::cout << "    SST secondary = " << std::scientific << sst_secondary
+              << " planes_with_nut=" << sst_planes
+              << "  RSM secondary = " << rsm_secondary
+              << " planes_with_nut=" << rsm_planes << "\n";
+
+    record("Duct SST: nu_t active on all z-planes",
+           sst_planes == total_planes);
+    record("Duct RSM: secondary flow nonzero",
+           rsm_secondary > 1e-10);
+    record("Duct RSM: nu_t active on all z-planes",
+           rsm_planes == total_planes);
+}
+
+void test_warmup_model_switch_preserves_fields() {
+    // Regression: set_turbulence_model() must preserve solver-owned k/omega.
+    // If model switch destroys k/omega, EARSM warm-up init fails.
+    Mesh mesh;
+    mesh.init_uniform(16, 32, 1, 0.0, 2.0, -1.0, 1.0, 0.0, 0.0625);
+
+    Config cfg;
+    cfg.nu = 0.001; cfg.dt = 0.001;
+    cfg.adaptive_dt = false;
+    cfg.turb_model = TurbulenceModelType::SSTKOmega;
+    cfg.verbose = false;
+
+    RANSSolver solver(mesh, cfg);
+    auto turb_sst = create_turbulence_model(TurbulenceModelType::SSTKOmega, "", "");
+    turb_sst->set_nu(cfg.nu);
+    solver.set_turbulence_model(std::move(turb_sst));
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+    solver.set_body_force(0.001, 0.0);
+    solver.initialize_uniform(1.0, 0.0);
+
+    // Seed k and omega
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                solver.k_mutable()(i, j, k) = 0.01;
+                solver.omega_mutable()(i, j, k) = 10.0;
+            }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    // Step 50 times with SST — k/omega evolve
+    for (int s = 0; s < 50; ++s) solver.step();
+    solver.sync_from_gpu();
+
+    // Record k, omega at a midpoint
+    int i_mid = 8, j_mid = 16;
+    int k0 = mesh.is2D() ? 0 : mesh.k_begin();
+    double k_before = solver.k()(i_mid, j_mid, k0);
+    double omega_before = solver.omega()(i_mid, j_mid, k0);
+
+    std::cout << "    Before switch: k=" << std::scientific << k_before
+              << " omega=" << omega_before << "\n";
+
+    // Switch to EARSM
+    auto turb_earsm = create_turbulence_model(TurbulenceModelType::EARSM_WJ, "", "");
+    turb_earsm->set_nu(cfg.nu);
+    solver.set_turbulence_model(std::move(turb_earsm));
+
+    // k and omega must be preserved (solver-owned, not model-owned)
+    solver.sync_from_gpu();
+    double k_after_switch = solver.k()(i_mid, j_mid, k0);
+    double omega_after_switch = solver.omega()(i_mid, j_mid, k0);
+
+    record("Warm-up switch: k preserved", k_after_switch == k_before);
+    record("Warm-up switch: omega preserved", omega_after_switch == omega_before);
+
+    // Step 10 more with EARSM — must not crash or produce NaN
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+    for (int s = 0; s < 10; ++s) solver.step();
+    solver.sync_from_gpu();
+
+    bool has_nan = false;
+    bool k_positive = true;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k)
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j)
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                if (!std::isfinite(solver.velocity().u(i, j, k)) ||
+                    !std::isfinite(solver.velocity().v(i, j, k)) ||
+                    !std::isfinite(solver.k()(i, j, k)))
+                    has_nan = true;
+                if (solver.k()(i, j, k) < 0.0)
+                    k_positive = false;
+            }
+
+    record("Warm-up switch: stable after 10 steps", !has_nan && k_positive);
+}
+
+//=============================================================================
 // MAIN
 //=============================================================================
 
@@ -622,6 +852,11 @@ int main() {
             test_sst_3d_k_nonzero_all_planes();
             test_earsm_3d_produces_different_from_sst();
             test_rsm_3d_produces_secondary_flow();
+        }},
+        {"Regression Tests", [] {
+            test_tau_div_affects_velocity();
+            test_duct_secondary_flow_contrast();
+            test_warmup_model_switch_preserves_fields();
         }}
     });
 }
