@@ -729,7 +729,9 @@ void SSTKOmegaTransport::advance_turbulence(
     // Select pointers — device_view when GPU-resident, ScalarField otherwise
     const double* u_ptr = use_device ? device_view->u_face : velocity.u_data().data();
     const double* v_ptr = use_device ? device_view->v_face : velocity.v_data().data();
-    const double* w_ptr = use_device ? device_view->w_face : velocity.w_data().data();
+    // For 2D, w_face may be null (not GPU-mapped). Use u_ptr as dummy for map clause.
+    const double* w_raw = use_device ? device_view->w_face : velocity.w_data().data();
+    const double* w_ptr = w_raw ? w_raw : u_ptr;
     double* k_ptr       = use_device ? device_view->k : k.data().data();
     double* omega_ptr   = use_device ? device_view->omega : omega.data().data();
     const double* nu_t_ptr = use_device ? device_view->nu_t : nu_t_prev.data().data();
@@ -747,8 +749,8 @@ void SSTKOmegaTransport::advance_turbulence(
     [[maybe_unused]] const size_t u_total_size = use_device ? (size_t)device_view->u_total : 1;
     [[maybe_unused]] const size_t v_total_size = use_device ? (size_t)device_view->v_total : 1;
     [[maybe_unused]] const size_t w_total_size = use_device ? (size_t)device_view->w_total : 1;
-    // For 2D, w may not be GPU-mapped — use size 1 (harmless) to avoid bad map
-    [[maybe_unused]] const size_t w_map_size = is_3d ? w_total_size : 1;
+    // For 2D, w_ptr is aliased to u_ptr — use u_total_size for the map clause
+    [[maybe_unused]] const size_t w_map_size = w_raw ? w_total_size : u_total_size;
 
     // ---- Transport kernel: single code path, one flat loop ----
     // The pragma is silently ignored in CPU builds. For 2D, w_ptr mapping
