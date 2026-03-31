@@ -15,6 +15,8 @@
 #include "config.hpp"
 #include "turbulence_nn_mlp.hpp"
 #include "turbulence_baseline.hpp"
+#include "turbulence_transport.hpp"
+#include "turbulence_earsm.hpp"
 #include "test_utilities.hpp"
 #include "test_harness.hpp"
 #include <iostream>
@@ -1256,6 +1258,614 @@ ScenarioSignature run_nn_mlp() {
 }
 
 //=============================================================================
+// Scenario: SST k-omega transport (2D channel)
+//=============================================================================
+
+ScenarioSignature run_sst_2d() {
+    const int NX = 24, NY = 32;
+    const int NUM_STEPS = 10;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, 0.0, 2.0);
+
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::SSTKOmega;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+
+    // Initialize parabolic profile
+    double H = 1.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j) - H;
+        double u_base = H * H - y * y;
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_base;
+        }
+    }
+
+    // Seed k and omega for transport equations
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            solver.k_mutable()(i, j) = 0.01;
+            solver.omega_mutable()(i, j) = 10.0;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    ScenarioSignature sig;
+    sig.name = "sst_2d";
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // nu_t statistics
+    const ScalarField& nu_t = solver.nu_t();
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            nu_t_sum += nu_t(i, j);
+            nu_t_max = std::max(nu_t_max, nu_t(i, j));
+            ++count;
+        }
+    }
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    // Transport variable probes (k and omega at quarter/mid/three-quarter y)
+    int pi = mesh.i_begin() + NX / 2;
+    int pj_quarter = mesh.j_begin() + NY / 4;
+    int pj_mid = mesh.j_begin() + NY / 2;
+    int pj_three_quarter = mesh.j_begin() + 3 * NY / 4;
+
+    Probe k_probe;
+    k_probe.values = {
+        solver.k_mutable()(pi, pj_quarter),
+        solver.k_mutable()(pi, pj_mid),
+        solver.k_mutable()(pi, pj_three_quarter)
+    };
+    sig.probes["k_profile"] = k_probe;
+
+    Probe omega_probe;
+    omega_probe.values = { solver.omega_mutable()(pi, pj_mid) };
+    sig.probes["omega_mid"] = omega_probe;
+
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: SST k-omega transport (3D — catches z-plane bug)
+//=============================================================================
+
+ScenarioSignature run_sst_3d() {
+    const int NX = 8, NY = 16, NZ = 8;
+    const int NUM_STEPS = 10;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, NZ, 0.0, 2.0, 0.0, 2.0, 0.0, 1.0);
+
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::SSTKOmega;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel3D));
+
+    // Initialize parabolic profile
+    double H = 1.0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            double y = mesh.y(j) - H;
+            double u_val = H * H - y * y;
+            for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+                solver.velocity().u(i, j, k) = u_val;
+            }
+        }
+    }
+
+    // Seed k and omega
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                solver.k_mutable()(i, j, k) = 0.01;
+                solver.omega_mutable()(i, j, k) = 10.0;
+            }
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    ScenarioSignature sig;
+    sig.name = "sst_3d";
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // nu_t statistics
+    const ScalarField& nu_t = solver.nu_t();
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
+    for (int k = mesh.k_begin(); k < mesh.k_end(); ++k) {
+        for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+            for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+                nu_t_sum += nu_t(i, j, k);
+                nu_t_max = std::max(nu_t_max, nu_t(i, j, k));
+                ++count;
+            }
+        }
+    }
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    // Transport variable probes at midplane z
+    int pi = mesh.i_begin() + NX / 2;
+    int pk = mesh.k_begin() + NZ / 2;
+    int pj_quarter = mesh.j_begin() + NY / 4;
+    int pj_mid = mesh.j_begin() + NY / 2;
+    int pj_three_quarter = mesh.j_begin() + 3 * NY / 4;
+
+    Probe k_probe;
+    k_probe.values = {
+        solver.k_mutable()(pi, pj_quarter, pk),
+        solver.k_mutable()(pi, pj_mid, pk),
+        solver.k_mutable()(pi, pj_three_quarter, pk)
+    };
+    sig.probes["k_profile"] = k_probe;
+
+    Probe omega_probe;
+    omega_probe.values = { solver.omega_mutable()(pi, pj_mid, pk) };
+    sig.probes["omega_mid"] = omega_probe;
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: EARSM Wallin-Johansson (SST transport + anisotropic closure)
+//=============================================================================
+
+ScenarioSignature run_earsm_wj() {
+    const int NX = 24, NY = 32;
+    const int NUM_STEPS = 10;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, 0.0, 2.0);
+
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::EARSM_WJ;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+
+    // Initialize parabolic profile
+    double H = 1.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j) - H;
+        double u_base = H * H - y * y;
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_base;
+        }
+    }
+
+    // Seed k and omega for SST transport
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            solver.k_mutable()(i, j) = 0.01;
+            solver.omega_mutable()(i, j) = 10.0;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    ScenarioSignature sig;
+    sig.name = "earsm_wj";
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // nu_t statistics
+    const ScalarField& nu_t = solver.nu_t();
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            nu_t_sum += nu_t(i, j);
+            nu_t_max = std::max(nu_t_max, nu_t(i, j));
+            ++count;
+        }
+    }
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    // Transport variable probes
+    int pi = mesh.i_begin() + NX / 2;
+    int pj_quarter = mesh.j_begin() + NY / 4;
+    int pj_mid = mesh.j_begin() + NY / 2;
+    int pj_three_quarter = mesh.j_begin() + 3 * NY / 4;
+
+    Probe k_probe;
+    k_probe.values = {
+        solver.k_mutable()(pi, pj_quarter),
+        solver.k_mutable()(pi, pj_mid),
+        solver.k_mutable()(pi, pj_three_quarter)
+    };
+    sig.probes["k_profile"] = k_probe;
+
+    Probe omega_probe;
+    omega_probe.values = { solver.omega_mutable()(pi, pj_mid) };
+    sig.probes["omega_mid"] = omega_probe;
+
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: GEP algebraic model (needs background SST)
+//=============================================================================
+
+ScenarioSignature run_gep() {
+    const int NX = 24, NY = 32;
+    const int NUM_STEPS = 10;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, 0.0, 2.0);
+
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::GEP;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+
+    // Initialize parabolic profile
+    double H = 1.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j) - H;
+        double u_base = H * H - y * y;
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_base;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    ScenarioSignature sig;
+    sig.name = "gep";
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // nu_t statistics
+    const ScalarField& nu_t = solver.nu_t();
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            nu_t_sum += nu_t(i, j);
+            nu_t_max = std::max(nu_t_max, nu_t(i, j));
+            ++count;
+        }
+    }
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    int pi = mesh.i_begin() + NX / 2;
+
+    Probe vel_probe;
+    vel_probe.values = {
+        0.5 * (solver.velocity().u(pi, mesh.j_begin() + NY / 4) +
+               solver.velocity().u(pi + 1, mesh.j_begin() + NY / 4)),
+        0.5 * (solver.velocity().v(pi, mesh.j_begin() + NY / 4) +
+               solver.velocity().v(pi, mesh.j_begin() + NY / 4 + 1))
+    };
+    sig.probes["vel_quarter"] = vel_probe;
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: RSM-SSG (7 transport equations)
+//=============================================================================
+
+ScenarioSignature run_rsm_ssg() {
+    const int NX = 24, NY = 32;
+    const int NUM_STEPS = 10;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, 0.0, 2.0);
+
+    Config config;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::RSM_SSG;
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+
+    // Initialize parabolic profile
+    double H = 1.0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j) - H;
+        double u_base = H * H - y * y;
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_base;
+        }
+    }
+
+    // Seed k and omega for RSM transport
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            solver.k_mutable()(i, j) = 0.01;
+            solver.omega_mutable()(i, j) = 10.0;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    ScenarioSignature sig;
+    sig.name = "rsm_ssg";
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // nu_t statistics
+    const ScalarField& nu_t = solver.nu_t();
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            nu_t_sum += nu_t(i, j);
+            nu_t_max = std::max(nu_t_max, nu_t(i, j));
+            ++count;
+        }
+    }
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    // Transport variable probes
+    int pi = mesh.i_begin() + NX / 2;
+    int pj_quarter = mesh.j_begin() + NY / 4;
+    int pj_mid = mesh.j_begin() + NY / 2;
+    int pj_three_quarter = mesh.j_begin() + 3 * NY / 4;
+
+    Probe k_probe;
+    k_probe.values = {
+        solver.k_mutable()(pi, pj_quarter),
+        solver.k_mutable()(pi, pj_mid),
+        solver.k_mutable()(pi, pj_three_quarter)
+    };
+    sig.probes["k_profile"] = k_probe;
+
+    Probe omega_probe;
+    omega_probe.values = { solver.omega_mutable()(pi, pj_mid) };
+    sig.probes["omega_mid"] = omega_probe;
+
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
+
+    return sig;
+}
+
+//=============================================================================
+// Scenario: TBNN tensor basis neural network
+//=============================================================================
+
+bool nn_tbnn_available() {
+    std::string path = "data/models/tbnn_paper";
+    if (file_exists(path + "/layer0_W.txt")) return true;
+    path = "../data/models/tbnn_paper";
+    if (file_exists(path + "/layer0_W.txt")) return true;
+    return false;
+}
+
+std::string get_nn_tbnn_model_path() {
+    std::string path = "data/models/tbnn_paper";
+    if (file_exists(path + "/layer0_W.txt")) return path;
+    path = "../data/models/tbnn_paper";
+    if (file_exists(path + "/layer0_W.txt")) return path;
+    return "";
+}
+
+ScenarioSignature run_nn_tbnn() {
+    const int NX = 24, NY = 32;
+    const int NUM_STEPS = 5;
+
+    Mesh mesh;
+    mesh.init_uniform(NX, NY, 0.0, 4.0, -1.0, 1.0);
+
+    Config config;
+    config.Nx = NX;
+    config.Ny = NY;
+    config.nu = 0.001;
+    config.dt = 0.001;
+    config.adaptive_dt = false;
+    config.max_steps = NUM_STEPS;
+    config.tol = 1e-6;
+    config.turb_model = TurbulenceModelType::NNTBNN;
+    config.nn_weights_path = get_nn_tbnn_model_path();
+    config.nn_scaling_path = get_nn_tbnn_model_path();
+    config.verbose = false;
+    config.poisson_solver = PoissonSolverType::MG;
+
+    RANSSolver solver(mesh, config);
+    solver.set_body_force(0.01, 0.0, 0.0);
+    solver.set_velocity_bc(create_velocity_bc(BCPattern::Channel2D));
+
+    // Initialize parabolic profile
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        double y = mesh.y(j);
+        double u_base = 1.0 - y * y;
+        for (int i = mesh.i_begin(); i <= mesh.i_end(); ++i) {
+            solver.velocity().u(i, j) = u_base;
+        }
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_to_gpu();
+#endif
+
+    for (int step = 0; step < NUM_STEPS; ++step) {
+        solver.step();
+    }
+
+#ifdef USE_GPU_OFFLOAD
+    solver.sync_solution_from_gpu();
+#endif
+
+    ScenarioSignature sig;
+    sig.name = "nn_tbnn";
+
+    sig.metrics["ke"] = Metric(compute_kinetic_energy(mesh, solver.velocity()));
+    sig.metrics["div_max"] = Metric(compute_max_divergence(mesh, solver.velocity()), 1e-8, 1e-6);
+    sig.metrics["mean_u"] = Metric(compute_mean_u(mesh, solver.velocity()));
+
+    auto cs = compute_weighted_checksum(mesh, solver.velocity());
+    sig.metrics["checksum_u"] = Metric(cs.u_weighted);
+    sig.metrics["checksum_u2"] = Metric(cs.u_sq_weighted);
+
+    // nu_t statistics
+    const ScalarField& nu_t = solver.nu_t();
+    double nu_t_sum = 0.0, nu_t_max = 0.0;
+    int count = 0;
+    for (int j = mesh.j_begin(); j < mesh.j_end(); ++j) {
+        for (int i = mesh.i_begin(); i < mesh.i_end(); ++i) {
+            nu_t_sum += nu_t(i, j);
+            nu_t_max = std::max(nu_t_max, nu_t(i, j));
+            ++count;
+        }
+    }
+    sig.metrics["nu_t_mean"] = Metric(nu_t_sum / count);
+    sig.metrics["nu_t_max"] = Metric(nu_t_max);
+
+    int pi = mesh.i_begin() + NX / 2;
+
+    Probe nu_t_profile;
+    nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + NY / 4));
+    nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + NY / 2));
+    nu_t_profile.values.push_back(nu_t(pi, mesh.j_begin() + 3 * NY / 4));
+    sig.probes["nu_t_profile"] = nu_t_profile;
+
+    sig.probes["vel_distributed"] = collect_distributed_probes_2d(mesh, solver.velocity());
+
+    return sig;
+}
+
+//=============================================================================
 // Scenario registry
 //=============================================================================
 
@@ -1302,6 +1912,48 @@ std::vector<Scenario> get_scenarios() {
         "NN-MLP turbulence model",
         nn_mlp_available,
         run_nn_mlp
+    });
+
+    scenarios.push_back({
+        "sst_2d",
+        "SST k-omega transport (2D channel)",
+        []() { return true; },
+        run_sst_2d
+    });
+
+    scenarios.push_back({
+        "sst_3d",
+        "SST k-omega transport (3D — z-plane regression)",
+        []() { return true; },
+        run_sst_3d
+    });
+
+    scenarios.push_back({
+        "earsm_wj",
+        "EARSM Wallin-Johansson (SST + anisotropic closure)",
+        []() { return true; },
+        run_earsm_wj
+    });
+
+    scenarios.push_back({
+        "gep",
+        "GEP algebraic turbulence model",
+        []() { return true; },
+        run_gep
+    });
+
+    scenarios.push_back({
+        "rsm_ssg",
+        "RSM-SSG (7 transport equations)",
+        []() { return true; },
+        run_rsm_ssg
+    });
+
+    scenarios.push_back({
+        "nn_tbnn",
+        "NN-TBNN tensor basis neural network",
+        nn_tbnn_available,
+        run_nn_tbnn
     });
 
     return scenarios;
