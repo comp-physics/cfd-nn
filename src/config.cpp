@@ -507,6 +507,10 @@ void Config::parse_args(int argc, char** argv) {
             nn_scaling_path = val;
         } else if ((val = get_value(i, arg, "--nn_preset")) != "") {
             nn_preset = val;
+        } else if ((val = get_value(i, arg, "--qoi_output_dir")) != "") {
+            qoi_output_dir = val;
+        } else if ((val = get_value(i, arg, "--qoi_freq")) != "") {
+            qoi_freq = std::stoi(val);
         } else if ((val = get_value(i, arg, "--output")) != "") {
             output_dir = val;
         } else if ((val = get_value(i, arg, "--num_snapshots")) != "") {
@@ -545,6 +549,10 @@ void Config::parse_args(int argc, char** argv) {
             perturbation_amplitude = std::stod(val);
         } else if ((val = get_value(i, arg, "--warmup_steps")) != "") {
             warmup_steps = std::stoi(val);
+        } else if ((val = get_value(i, arg, "--warmup_time")) != "") {
+            warmup_time = std::stod(val);
+        } else if ((val = get_value(i, arg, "--T_final")) != "") {
+            T_final = std::stod(val);
         } else if (is_flag(arg, "--benchmark")) {
             // Benchmark mode: optimized for timing 3D duct flow
             benchmark = true;
