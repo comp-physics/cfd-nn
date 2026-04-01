@@ -73,7 +73,8 @@ void compute_gradients_from_mac_gpu(
             const int kk = idx / (Nx * Ny);
             const int i = ii + Ng;
             const int j = jj + Ng;
-            const int k = kk + Ng;
+            // 2D (Nz=1): use plane 0; 3D (Nz>1): interior at kk + Ng
+            const int k = (Nz > 1) ? (kk + Ng) : 0;
             const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
 
             const int u_base = k * u_plane_stride;
@@ -113,7 +114,7 @@ void compute_gradients_from_mac_gpu(
             const int kk = idx / (Nx * Ny);
             const int i = ii + Ng;
             const int j = jj + Ng;
-            const int k = kk + Ng;
+            const int k = (Nz > 1) ? (kk + Ng) : 0;
             const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
 
             const int u_base = k * u_plane_stride;
@@ -144,14 +145,14 @@ void compute_gradients_from_mac_gpu(
         for (int idx = 0; idx < n_cells_3d; ++idx) {
             const int ii = idx % Nx;
             const int jj = (idx / Nx) % Ny;
-            const int kk = idx / (Nx * Ny);
             const int i = ii + Ng;
             const int j = jj + Ng;
-            const int k = kk + Ng;
-            const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
+            // 2D: always plane 0
+            const int k = 0;
+            const int idx_cell = j * cell_stride + i;
 
-            const int u_base = k * u_plane_stride;
-            const int v_base = k * v_plane_stride;
+            const int u_base = 0;
+            const int v_base = 0;
 
             dudx_cell[idx_cell] = (u_face[u_base + j * u_stride + (i + 1)] - u_face[u_base + j * u_stride + (i - 1)]) * inv_2dx;
             dvdx_cell[idx_cell] = (v_face[v_base + j * v_stride + (i + 1)] - v_face[v_base + j * v_stride + (i - 1)]) * inv_2dx;
@@ -170,11 +171,11 @@ void compute_gradients_from_mac_gpu(
         for (int idx = 0; idx < n_cells_3d; ++idx) {
             const int ii = idx % Nx;
             const int jj = (idx / Nx) % Ny;
-            const int kk = idx / (Nx * Ny);
             const int i = ii + Ng;
             const int j = jj + Ng;
-            const int k = kk + Ng;
-            const int idx_cell = k * cell_plane_stride + j * cell_stride + i;
+            // 2D: always plane 0
+            const int k = 0;
+            const int idx_cell = j * cell_stride + i;
 
             const int u_base = k * u_plane_stride;
             const int v_base = k * v_plane_stride;
