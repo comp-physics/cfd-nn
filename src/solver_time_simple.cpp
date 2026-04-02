@@ -308,16 +308,21 @@ double RANSSolver::simple_step() {
         if (u_max < 1e-6) u_max = 1e-6;
         double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
                               : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
-        // Use FIXED pseudo_dt based on initial conditions, NOT adaptive.
-        // Adaptive pseudo_dt oscillates: large u → small dt → small u → large dt → ...
-        // Fixed dt ensures monotone convergence of the outer SIMPLE loop.
+        // Pseudo_dt controls under-relaxation strength.
         double pseudo_dt;
-        if (step_count_ == 0) {
-            pseudo_dt = std::min(dx_min / std::max(u_max, 1.0),
-                                 0.25 * dx_min * dx_min / nu_eff_max);
-            simple_pseudo_dt_fixed_ = pseudo_dt;  // Store for subsequent iterations
+        if (config_.simple_jacobi_sweeps > 0) {
+            // RB-GS path: fixed pseudo_dt from first iteration
+            if (simple_pseudo_dt_fixed_ > 0) {
+                pseudo_dt = simple_pseudo_dt_fixed_;
+            } else {
+                pseudo_dt = std::min(dx_min / std::max(u_max, 1.0),
+                                     0.25 * dx_min * dx_min / nu_eff_max);
+                simple_pseudo_dt_fixed_ = pseudo_dt;
+            }
         } else {
-            pseudo_dt = simple_pseudo_dt_fixed_;   // Reuse fixed value
+            // Diagonal-approx path: adaptive (recomputed each step)
+            pseudo_dt = std::min(dx_min / u_max,
+                                 0.25 * dx_min * dx_min / nu_eff_max);
         }
         if (pseudo_dt < 1e-15) pseudo_dt = 1e-15;
         double pseudo_dt_inv = 1.0 / pseudo_dt;
@@ -332,48 +337,9 @@ double RANSSolver::simple_step() {
         const int n_sweeps = config_.simple_jacobi_sweeps;
 
         if (n_sweeps > 0) {
-        // Jacobi path: implicit convection + diffusion
-        double* u_src = velocity_u_ptr_;
-        double* v_src = velocity_v_ptr_;
-        double* u_dst = velocity_star_u_ptr_;
-        double* v_dst = velocity_star_v_ptr_;
-
-        for (int sweep = 0; sweep < n_sweeps; ++sweep) {
-            if (is_2d) {
-                time_kernels::simple_jacobi_momentum_2d(
-                    u_dst, v_dst,           // write
-                    u_src, v_src,           // read (iterate)
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,  // frozen for coefficients
-                    nu_eff_ptr_,
-                    pressure_ptr_,          // frozen pressure from previous outer iteration
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, mesh_->dx, mesh_->dy,
-                    pseudo_dt_inv,
-                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
-            } else {
-                // TODO: 3D Jacobi kernel (use explicit predictor fallback for now)
-                break;
-            }
-
-            // Apply BCs to output buffer: swap into velocity_ position, apply, swap back
-            std::swap(velocity_u_ptr_, u_dst);
-            std::swap(velocity_v_ptr_, v_dst);
-            std::swap(velocity_, velocity_star_);
-            apply_velocity_bc();
-            std::swap(velocity_, velocity_star_);
-            std::swap(velocity_u_ptr_, u_dst);
-            std::swap(velocity_v_ptr_, v_dst);
-
-            // Ping-pong for next sweep
-            std::swap(u_src, u_dst);
-            std::swap(v_src, v_dst);
-        }
-
-        // After sweeps: result is in u_src (last swap). Need it in velocity_star_.
-        // If n_sweeps is even, result is in velocity_; if odd, in velocity_star_.
-        // Copy to velocity_star_ if needed.
-        if (n_sweeps % 2 == 0 && n_sweeps > 0) {
-            // Result in velocity_, need to copy to velocity_star_
+        // Red-Black Gauss-Seidel: in-place update on velocity_star_
+        // First copy velocity_ → velocity_star_ as initial guess
+        {
             [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
             [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
             time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_star_u_ptr_,
@@ -382,8 +348,42 @@ double RANSSolver::simple_step() {
                                      u_total, v_total);
         }
 
-        // Under-relaxation is now built into the Jacobi kernel via the
-        // pseudo-transient source term: (vol/dt)*u_frozen. No post-blend needed.
+        for (int sweep = 0; sweep < n_sweeps; ++sweep) {
+            if (is_2d) {
+                // Red pass (color=0): update faces where (i+j) % 2 == 0
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,  // in-place
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, mesh_->dx, mesh_->dy,
+                    pseudo_dt_inv, /*color=*/0,
+                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+
+                // Black pass (color=1): update faces where (i+j) % 2 == 1
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,  // in-place
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, mesh_->dx, mesh_->dy,
+                    pseudo_dt_inv, /*color=*/1,
+                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+            } else {
+                break;  // TODO: 3D RB-GS
+            }
+
+            // Apply BCs between sweeps (in-place on velocity_star_)
+            std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+            std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+            std::swap(velocity_, velocity_star_);
+            apply_velocity_bc();
+            std::swap(velocity_, velocity_star_);
+            std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+            std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+        }
+
+        // Result is in velocity_star_ (in-place). No copy needed.
 
         // Compute a_P for pressure correction (still needed for u = u* - (1/a_P)*grad(p'))
         if (is_2d) {
@@ -561,7 +561,8 @@ double RANSSolver::simple_step() {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int idx = (j + Ng) * stride + (i + Ng);
-                    rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
+                    rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv
+                            * (config_.simple_jacobi_sweeps > 0 ? config_.simple_alpha_u : 1.0);
                 }
             }
         } else {
@@ -583,7 +584,8 @@ double RANSSolver::simple_step() {
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
                         int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
-                        rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
+                        rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv
+                            * (config_.simple_jacobi_sweeps > 0 ? config_.simple_alpha_u : 1.0);
                     }
                 }
             }

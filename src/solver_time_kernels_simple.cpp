@@ -525,20 +525,23 @@ void simple_varcoeff_residual_2d(
 }
 
 // ============================================================================
-// Jacobi momentum sweep: implicit convection + diffusion + pressure from
-// PREVIOUS outer iteration. The Poisson correction provides the incremental
-// pressure update; the frozen pressure provides the feedback for body force.
+// Red-Black Gauss-Seidel momentum sweep: implicit convection + diffusion
+// + pressure from PREVIOUS outer iteration.
+// Two passes per iteration: red (i+j even) then black (i+j odd).
+// In-place update — each pass reads from the same array including
+// already-updated values from the opposite color. This gives 2x faster
+// information propagation compared to Jacobi (critical for SIMPLE stability).
 // ============================================================================
 
-void simple_jacobi_momentum_2d(
-    double* u_new, double* v_new,
-    const double* u_iter, const double* v_iter,
-    const double* u_frozen, const double* v_frozen,
+void simple_rbgs_momentum_2d(
+    double* u, double* v,                             // IN-PLACE update
+    const double* u_frozen, const double* v_frozen,   // frozen for mass flux coefficients
     const double* nu_eff,
     const double* p_old,
     const double* tau_div_u, const double* tau_div_v,
     double fx, double fy, double dx, double dy,
     double pseudo_dt_inv,
+    int color,                                         // 0 = red, 1 = black
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride) {
 
@@ -551,14 +554,16 @@ void simple_jacobi_momentum_2d(
     [[maybe_unused]] const size_t nu_sz = static_cast<size_t>((Ny + 2 * Ng) * cell_stride);
     [[maybe_unused]] const size_t p_sz = nu_sz;
 
-    // u-momentum Jacobi sweep
+    // u-momentum RB-GS sweep (single color pass, IN-PLACE)
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: u_new[0:u_sz], u_iter[0:u_sz], u_frozen[0:u_sz], \
+        map(present: u[0:u_sz], u_frozen[0:u_sz], \
                      v_frozen[0:v_sz], nu_eff[0:nu_sz], tau_div_u[0:u_sz], p_old[0:p_sz])
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i <= Nx; ++i) {
             int jg = j + Ng;
             int ig = i + Ng;
+            // Red-black coloring: skip faces that don't match this color
+            if ((ig + jg) % 2 != color) continue;
             int u_idx = jg * u_stride + ig;
 
             // Cell centers left/right of this u-face
@@ -604,32 +609,30 @@ void simple_jacobi_momentum_2d(
                 + vol * pseudo_dt_inv;
             if (a_P_val < 1e-20) a_P_val = 1e-20;
 
-            // Neighbor sum (using ITERATE values, not frozen)
-            double sum_nb = a_W * u_iter[jg * u_stride + (ig-1)]
-                          + a_E * u_iter[jg * u_stride + (ig+1)]
-                          + a_S * u_iter[(jg-1) * u_stride + ig]
-                          + a_N * u_iter[(jg+1) * u_stride + ig];
+            // Neighbor sum: reads from SAME array (in-place GS)
+            // Opposite-color neighbors already have updated values
+            double sum_nb = a_W * u[jg * u_stride + (ig-1)]
+                          + a_E * u[jg * u_stride + (ig+1)]
+                          + a_S * u[(jg-1) * u_stride + ig]
+                          + a_N * u[(jg+1) * u_stride + ig];
 
-            // Source: body force + anisotropic stress + pressure + pseudo-transient
             double source = (tau_div_u[u_idx] + fx) * vol;
-            // Pressure gradient from frozen (previous outer iteration) pressure
             double dp_dx = (p_old[cr] - p_old[cl]) / dx * vol;
-            // Pseudo-transient source: drives solution toward u_frozen (previous outer iter)
-            // This is the (vol/dt) * u_old term that matches the vol/dt in the diagonal
             double transient_src = vol * pseudo_dt_inv * u_frozen[u_idx];
 
-            u_new[u_idx] = (sum_nb + source - dp_dx + transient_src) / a_P_val;
+            u[u_idx] = (sum_nb + source - dp_dx + transient_src) / a_P_val;
         }
     }
 
-    // v-momentum Jacobi sweep (pressure from previous outer iteration)
+    // v-momentum RB-GS sweep (single color pass, IN-PLACE)
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: v_new[0:v_sz], v_iter[0:v_sz], v_frozen[0:v_sz], \
+        map(present: v[0:v_sz], v_frozen[0:v_sz], \
                      u_frozen[0:u_sz], nu_eff[0:nu_sz], tau_div_v[0:v_sz], p_old[0:p_sz])
     for (int j = 0; j <= Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             int jg = j + Ng;
             int ig = i + Ng;
+            if ((ig + jg) % 2 != color) continue;
             int v_idx = jg * v_stride + ig;
 
             int cb = (jg - 1) * cell_stride + ig;
@@ -669,16 +672,17 @@ void simple_jacobi_momentum_2d(
                 + vol * pseudo_dt_inv;
             if (a_P_val < 1e-20) a_P_val = 1e-20;
 
-            double sum_nb = a_W * v_iter[jg * v_stride + (ig-1)]
-                          + a_E * v_iter[jg * v_stride + (ig+1)]
-                          + a_S * v_iter[(jg-1) * v_stride + ig]
-                          + a_N * v_iter[(jg+1) * v_stride + ig];
+            // In-place GS: reads from same array (opposite color already updated)
+            double sum_nb = a_W * v[jg * v_stride + (ig-1)]
+                          + a_E * v[jg * v_stride + (ig+1)]
+                          + a_S * v[(jg-1) * v_stride + ig]
+                          + a_N * v[(jg+1) * v_stride + ig];
 
             double source = (tau_div_v[v_idx] + fy) * vol;
             double dp_dy = (p_old[ct] - p_old[cb]) / dy * vol;
             double transient_src = vol * pseudo_dt_inv * v_frozen[v_idx];
 
-            v_new[v_idx] = (sum_nb + source - dp_dy + transient_src) / a_P_val;
+            v[v_idx] = (sum_nb + source - dp_dy + transient_src) / a_P_val;
         }
     }
 }

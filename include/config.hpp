@@ -233,7 +233,7 @@ struct Config {
 
     // SIMPLE steady-state solver parameters
     double simple_alpha_u = 0.7;       ///< Velocity under-relaxation factor
-    double simple_alpha_p = 1.0;       ///< Pressure under-relaxation (1.0 = SIMPLEC, 0.3 = classic SIMPLE)
+    double simple_alpha_p = 0.3;       ///< Pressure under-relaxation factor
     double simple_Ti = 0.05;           ///< Freestream turbulence intensity for k/ω cold-start
     double simple_nu_t_ratio = 100.0;  ///< Initial ν_t/ν ratio for ω cold-start
     int simple_jacobi_sweeps = 0;      ///< Inner Jacobi sweeps per SIMPLE iteration (0 = diagonal approx, >0 = Jacobi WIP)
