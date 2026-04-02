@@ -85,6 +85,8 @@ static SmokeResult run_3d_smoke(TurbulenceModelType type, const Mesh& mesh,
         config.turb_model = type;
         config.verbose = false;
         config.turb_guard_enabled = true;
+        // Duct has z-walls: FFT auto-selection assumes periodic z, so force MG
+        if (bc == BCPattern::Duct) config.poisson_solver = PoissonSolverType::MG;
         if (!nn_path.empty()) { config.nn_weights_path = nn_path; config.nn_scaling_path = nn_path; }
 
         RANSSolver solver(mesh, config);
