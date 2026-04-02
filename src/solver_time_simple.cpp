@@ -778,6 +778,28 @@ double RANSSolver::simple_step() {
         }
 
         if (max_res != max_res) max_res = 1e30;  // NaN guard
+
+        // SER (Switched Evolution/Relaxation): adapt pseudo_dt based on residual
+        // If residual decreases: increase pseudo_dt (less damping, faster convergence)
+        // If residual increases: decrease pseudo_dt (more damping, stability)
+        if (config_.simple_jacobi_sweeps > 0 && simple_pseudo_dt_fixed_ > 0) {
+            static double prev_residual = -1.0;
+            if (prev_residual > 0 && max_res > 0 && max_res < 1e20) {
+                double ratio = prev_residual / max_res;
+                // Clamp ratio to prevent wild swings
+                if (ratio > 2.0) ratio = 2.0;
+                if (ratio < 0.5) ratio = 0.5;
+                simple_pseudo_dt_fixed_ *= ratio;
+                // Cap pseudo_dt growth to prevent over-relaxation
+                double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
+                                      : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
+                double max_pseudo_dt = 10.0 * dx_min;  // 10× CFL=1
+                if (simple_pseudo_dt_fixed_ > max_pseudo_dt)
+                    simple_pseudo_dt_fixed_ = max_pseudo_dt;
+            }
+            prev_residual = max_res;
+        }
+
         return max_res;
     }
 }
