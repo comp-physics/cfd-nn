@@ -1091,6 +1091,7 @@ private:
     double* a_p_u_ptr_ = nullptr;
     double* a_p_v_ptr_ = nullptr;
     double* a_p_w_ptr_ = nullptr;
+    double simple_pseudo_dt_fixed_ = 0.0;  ///< Fixed pseudo-dt for SIMPLE outer loop stability
 
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;

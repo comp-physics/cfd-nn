@@ -308,8 +308,17 @@ double RANSSolver::simple_step() {
         if (u_max < 1e-6) u_max = 1e-6;
         double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
                               : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
-        double pseudo_dt = std::min(dx_min / u_max,
-                                    0.25 * dx_min * dx_min / nu_eff_max);
+        // Use FIXED pseudo_dt based on initial conditions, NOT adaptive.
+        // Adaptive pseudo_dt oscillates: large u → small dt → small u → large dt → ...
+        // Fixed dt ensures monotone convergence of the outer SIMPLE loop.
+        double pseudo_dt;
+        if (step_count_ == 0) {
+            pseudo_dt = std::min(dx_min / std::max(u_max, 1.0),
+                                 0.25 * dx_min * dx_min / nu_eff_max);
+            simple_pseudo_dt_fixed_ = pseudo_dt;  // Store for subsequent iterations
+        } else {
+            pseudo_dt = simple_pseudo_dt_fixed_;   // Reuse fixed value
+        }
         if (pseudo_dt < 1e-15) pseudo_dt = 1e-15;
         double pseudo_dt_inv = 1.0 / pseudo_dt;
         // Store for Rhie-Chow correction (used in correct_velocity_simple)
