@@ -419,7 +419,7 @@ If more info is needed after a packet: ask for **ONE** additional item only.
 - `head -N` in a pipe kills the background process via SIGPIPE
 - `nohup` blocks stdout buffering — use periodic log file checks instead
 - Always set `OMP_TARGET_OFFLOAD=MANDATORY` for GPU test runs to prevent silent CPU fallback
-- Poisson solver auto-selects: FFT > HYPRE > Multigrid (based on BCs and available backends)
+- Poisson solver auto-selects: FFT > FFT1D > HYPRE > Multigrid. 3D FFT requires periodic x AND z — auto-selection uses `stretch_z` to detect z-walls (when `stretch_z=true`, FFT is skipped, FFT1D or MG selected instead). For 3D cases with z-walls but no stretching, explicitly set `poisson_solver = mg` in the config
 - The `benchmark` and `perf_mode` flags reduce diagnostics/GPU sync for production speed
 - `accumulate_statistics()` and `validate_turbulence_realism()` read fields on CPU — must call `sync_solution_from_gpu()` first
 - CUDA Graphs are auto-recaptured if BCs change, but must be manually disabled for recycling inflow (`poisson_use_vcycle_graph = false`)
@@ -435,6 +435,7 @@ If more info is needed after a packet: ask for **ONE** additional item only.
 - `[[maybe_unused]]` is required on size variables used only in `map(present: ptr[0:size])` clauses in LES kernels — they are genuinely unused in CPU builds
 - `assert()` compiles out under `-DNDEBUG` (Release) — never use it as the sole correctness check in tests; use explicit `if`/`throw` instead
 - **EARSM diverges on 3D duct** (unconditionally unstable with explicit RK3): EARSM G-coefficients produce locally negative effective viscosity near duct corners → NaN at step ~155 regardless of CFL or grid. Works on 2D hills/cylinder. For 3D duct, use RSM or TBNN instead. Skip EARSM in duct production runs.
-- **Duct warm-up causes tensor model divergence**: SST warm-up develops velocity gradients → tensor model (TBNN, EARSM, GEP) produces huge anisotropic correction on first eval step → NaN. Use `warmup_time = 0` for duct. All models start from cold with seeded k/omega.
+- **Duct warm-up causes tensor model divergence**: SST warm-up develops velocity gradients → tensor model (TBNN, EARSM, GEP) produces huge anisotropic correction on first eval step → NaN. Fixed with `start_tau_div_ramp(5000)` after model switch — all 3 apps (duct, hills, cylinder) now have this.
+- **Tensor models diverge on separated flows (hills)**: Even with tau_div ramp, TBNN/PI-TBNN/TBRF/EARSM-WJ/GS diverge at ~4500 steps on hills Re=5600. The anisotropic correction produces anti-diffusion in the separated region. This is a fundamental limitation of tensor closures + explicit solver. Scalar models (MLP, Baseline, GEP) and RSM survive. Only EARSM-Pope is marginally stable.
 - **nvc++ transfers `this` for GPU kernels in member functions** — extract GPU kernels to free functions in anonymous namespaces (see `sst_transport_gpu_dispatch`). The SST transport crash (CUDA 719) was caused by this.
 - `map(present: nullptr[0:N])` crashes nvc++ — alias null pointers to a valid mapped buffer (e.g., w_ptr = w_raw ? w_raw : u_ptr for 2D where w_face is null)
