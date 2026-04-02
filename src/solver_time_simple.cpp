@@ -401,7 +401,10 @@ double RANSSolver::simple_step() {
                 mesh_->dx, mesh_->dy, pseudo_dt_inv);
         }
         } else {
-        // Diagonal-approximation path (fallback, works for laminar)
+        // Diagonal-approximation predictor: u* = u + (H - dp/dx) / a_P
+        // Works for laminar flows. For turbulent flows (SST), use time_integrator=euler
+        // with solve_steady() instead — the SIMPLE diagonal approx is equivalent to
+        // explicit Euler when a_P includes the pseudo-transient term.
         {
             TIMED_SCOPE("convective_term");
             compute_convective_term(velocity_, conv_);
