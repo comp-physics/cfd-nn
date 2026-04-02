@@ -353,7 +353,6 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
                                 const double* p_corr,
                                 const double* a_p_u, const double* a_p_v,
                                 double alpha_p, double dx, double dy,
-                                double pseudo_dt_inv, double vol,
                                 int Nx, int Ny, int Ng,
                                 int u_stride, int v_stride, int cell_stride) {
     [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
@@ -370,10 +369,7 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
             int u_idx = jg * u_stride + ig;
             double dp_dx = (p_corr[jg * cell_stride + ig] -
                             p_corr[jg * cell_stride + (ig - 1)]) / dx;
-            // Rhie-Chow: use undamped a_P for correction (remove pseudo-transient term)
-            double a_p_undamped = a_p_u[u_idx] - vol * pseudo_dt_inv;
-            if (a_p_undamped < 1e-20) a_p_undamped = a_p_u[u_idx];  // fallback if undamped is tiny
-            u[u_idx] = u_star[u_idx] - dp_dx / a_p_undamped;
+            u[u_idx] = u_star[u_idx] - dp_dx / a_p_u[u_idx];
         }
     }
 
@@ -387,9 +383,7 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
             int v_idx = jg * v_stride + ig;
             double dp_dy = (p_corr[jg * cell_stride + ig] -
                             p_corr[(jg - 1) * cell_stride + ig]) / dy;
-            double a_p_v_undamped = a_p_v[v_idx] - vol * pseudo_dt_inv;
-            if (a_p_v_undamped < 1e-20) a_p_v_undamped = a_p_v[v_idx];
-            v[v_idx] = v_star[v_idx] - dp_dy / a_p_v_undamped;
+            v[v_idx] = v_star[v_idx] - dp_dy / a_p_v[v_idx];
         }
     }
 
@@ -616,13 +610,15 @@ void simple_jacobi_momentum_2d(
                           + a_S * u_iter[(jg-1) * u_stride + ig]
                           + a_N * u_iter[(jg+1) * u_stride + ig];
 
-            // Source: body force + anisotropic stress + pressure from PREVIOUS iteration
+            // Source: body force + anisotropic stress + pressure + pseudo-transient
             double source = (tau_div_u[u_idx] + fx) * vol;
             // Pressure gradient from frozen (previous outer iteration) pressure
-            // cl, cr already defined above for nu_eff
             double dp_dx = (p_old[cr] - p_old[cl]) / dx * vol;
+            // Pseudo-transient source: drives solution toward u_frozen (previous outer iter)
+            // This is the (vol/dt) * u_old term that matches the vol/dt in the diagonal
+            double transient_src = vol * pseudo_dt_inv * u_frozen[u_idx];
 
-            u_new[u_idx] = (sum_nb + source - dp_dx) / a_P_val;
+            u_new[u_idx] = (sum_nb + source - dp_dx + transient_src) / a_P_val;
         }
     }
 
@@ -680,8 +676,9 @@ void simple_jacobi_momentum_2d(
 
             double source = (tau_div_v[v_idx] + fy) * vol;
             double dp_dy = (p_old[ct] - p_old[cb]) / dy * vol;
+            double transient_src = vol * pseudo_dt_inv * v_frozen[v_idx];
 
-            v_new[v_idx] = (sum_nb + source - dp_dy) / a_P_val;
+            v_new[v_idx] = (sum_nb + source - dp_dy + transient_src) / a_P_val;
         }
     }
 }

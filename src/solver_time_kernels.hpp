@@ -221,7 +221,6 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
                                 const double* p_corr,
                                 const double* a_p_u, const double* a_p_v,
                                 double alpha_p, double dx, double dy,
-                                double pseudo_dt_inv, double vol,
                                 int Nx, int Ny, int Ng,
                                 int u_stride, int v_stride, int cell_stride);
 

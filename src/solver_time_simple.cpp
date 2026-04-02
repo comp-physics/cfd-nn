@@ -373,27 +373,8 @@ double RANSSolver::simple_step() {
                                      u_total, v_total);
         }
 
-        // Under-relax: velocity_star = alpha * jacobi_result + (1-alpha) * velocity_old
-        {
-            [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
-            [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
-            const double alpha = config_.simple_alpha_u;
-            const double one_m_alpha = 1.0 - alpha;
-            double* us = velocity_star_u_ptr_;
-            double* vs = velocity_star_v_ptr_;
-            const double* uo = velocity_old_u_ptr_;
-            const double* vo = velocity_old_v_ptr_;
-            #pragma omp target teams distribute parallel for \
-                map(present: us[0:u_sz], uo[0:u_sz])
-            for (size_t i = 0; i < u_sz; ++i) {
-                us[i] = alpha * us[i] + one_m_alpha * uo[i];
-            }
-            #pragma omp target teams distribute parallel for \
-                map(present: vs[0:v_sz], vo[0:v_sz])
-            for (size_t i = 0; i < v_sz; ++i) {
-                vs[i] = alpha * vs[i] + one_m_alpha * vo[i];
-            }
-        }
+        // Under-relaxation is now built into the Jacobi kernel via the
+        // pseudo-transient source term: (vol/dt)*u_frozen. No post-blend needed.
 
         // Compute a_P for pressure correction (still needed for u = u* - (1/a_P)*grad(p'))
         if (is_2d) {
@@ -740,13 +721,6 @@ void RANSSolver::correct_velocity_simple() {
     const int v_stride = Nx + 2 * Ng;
     const int cell_stride = Nx + 2 * Ng;
 
-    // For Jacobi path: Rhie-Chow uses undamped a_P for correction
-    // pseudo_dt_inv stored in current_dt_ as 1/pseudo_dt from the momentum section
-    double pdt_inv = (config_.simple_jacobi_sweeps > 0 && current_dt_ > 0)
-                     ? 1.0 / current_dt_ : 0.0;  // 0 = no Rhie-Chow (diagonal approx path)
-    double vol = is_2d ? mesh_->dx * mesh_->dy
-                       : mesh_->dx * mesh_->dy * mesh_->dz;
-
     if (is_2d) {
         time_kernels::simple_correct_velocity_2d(
             velocity_u_ptr_, velocity_v_ptr_, pressure_ptr_,
@@ -754,7 +728,6 @@ void RANSSolver::correct_velocity_simple() {
             pressure_corr_ptr_,
             a_p_u_ptr_, a_p_v_ptr_,
             config_.simple_alpha_p, mesh_->dx, mesh_->dy,
-            pdt_inv, vol,
             Nx, Ny, Ng, u_stride, v_stride, cell_stride);
     } else {
         const int u_plane = u_stride * (Ny + 2 * Ng);
