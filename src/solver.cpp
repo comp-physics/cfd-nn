@@ -3905,6 +3905,25 @@ void RANSSolver::extract_field_pointers() {
         a_p_u_ptr_ = a_p_u_buf_.data();
         a_p_v_ptr_ = a_p_v_buf_.data();
         a_p_w_ptr_ = a_p_w_buf_.data();
+
+        // BiCGSTAB scratch buffers (u-component only for now)
+        if (config_.simple_jacobi_sweeps > 0) {
+            const size_t u_sz = velocity_.u_total_size();
+            bicg_r_buf_.resize(u_sz, 0.0);
+            bicg_rhat_buf_.resize(u_sz, 0.0);
+            bicg_v_buf_.resize(u_sz, 0.0);
+            bicg_p_buf_.resize(u_sz, 0.0);
+            bicg_s_buf_.resize(u_sz, 0.0);
+            bicg_t_buf_.resize(u_sz, 0.0);
+            bicg_z_buf_.resize(u_sz, 0.0);
+            bicg_r_ptr_ = bicg_r_buf_.data();
+            bicg_rhat_ptr_ = bicg_rhat_buf_.data();
+            bicg_v_ptr_ = bicg_v_buf_.data();
+            bicg_p_ptr_ = bicg_p_buf_.data();
+            bicg_s_ptr_ = bicg_s_buf_.data();
+            bicg_t_ptr_ = bicg_t_buf_.data();
+            bicg_z_ptr_ = bicg_z_buf_.data();
+        }
     }
 
     // Gradient scratch buffers for turbulence models

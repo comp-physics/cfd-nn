@@ -687,5 +687,77 @@ void simple_rbgs_momentum_2d(
     }
 }
 
+// ============================================================================
+// Momentum matrix-vector product: y = A*x (for BiCGSTAB)
+// A = Patankar-relaxed momentum matrix: a_P_eff*x_P - sum(a_nb*x_nb)
+// where a_P_eff = a_P_phys / alpha_u (Patankar diagonal)
+// Matrix-free: computes stencil inline, no sparse matrix needed.
+// ============================================================================
+
+void simple_momentum_matvec_u_2d(
+    double* y,              // output: A*x
+    const double* x,        // input: velocity to multiply
+    const double* u_frozen, const double* v_frozen,  // for mass flux coefficients
+    const double* nu_eff,
+    double alpha_u, double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride) {
+
+    const double inv_dx2 = 1.0 / (dx * dx);
+    const double inv_dy2 = 1.0 / (dy * dy);
+    const double vol = dx * dy;
+
+    [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
+    [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Ny + 2 * Ng + 1) * v_stride);
+    [[maybe_unused]] const size_t nu_sz = static_cast<size_t>((Ny + 2 * Ng) * cell_stride);
+
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: y[0:u_sz], x[0:u_sz], u_frozen[0:u_sz], v_frozen[0:v_sz], nu_eff[0:nu_sz])
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i <= Nx; ++i) {
+            int jg = j + Ng;
+            int ig = i + Ng;
+            int u_idx = jg * u_stride + ig;
+
+            int cl = jg * cell_stride + (ig - 1);
+            int cr = jg * cell_stride + ig;
+
+            double nu_L = nu_eff[cl];
+            double nu_R = nu_eff[cr];
+            double nu_S = 0.25 * (nu_eff[cl] + nu_eff[cr]
+                + nu_eff[(jg-1)*cell_stride+(ig-1)] + nu_eff[(jg-1)*cell_stride+ig]);
+            double nu_N = 0.25 * (nu_eff[cl] + nu_eff[cr]
+                + nu_eff[(jg+1)*cell_stride+(ig-1)] + nu_eff[(jg+1)*cell_stride+ig]);
+
+            double a_W_d = nu_L * inv_dx2 * vol;
+            double a_E_d = nu_R * inv_dx2 * vol;
+            double a_S_d = nu_S * inv_dy2 * vol;
+            double a_N_d = nu_N * inv_dy2 * vol;
+
+            double F_w = u_frozen[jg * u_stride + (ig-1)] * dy;
+            double F_e = u_frozen[jg * u_stride + (ig+1)] * dy;
+            double F_s = 0.5*(v_frozen[jg*v_stride+(ig-1)] + v_frozen[jg*v_stride+ig]) * dx;
+            double F_n = 0.5*(v_frozen[(jg+1)*v_stride+(ig-1)] + v_frozen[(jg+1)*v_stride+ig]) * dx;
+
+            double a_W = a_W_d + (F_w > 0 ? F_w : 0);
+            double a_E = a_E_d + (F_e < 0 ? -F_e : 0);
+            double a_S = a_S_d + (F_s > 0 ? F_s : 0);
+            double a_N = a_N_d + (F_n < 0 ? -F_n : 0);
+
+            double a_P_phys = (a_W_d + a_E_d + a_S_d + a_N_d)
+                + ((F_w<0?-F_w:0) + (F_e>0?F_e:0) + (F_s<0?-F_s:0) + (F_n>0?F_n:0));
+            if (a_P_phys < 1e-20) a_P_phys = 1e-20;
+            double a_P_eff = a_P_phys / alpha_u;
+
+            // y = A*x: diagonal * x_P - sum(off_diag * x_nb)
+            y[u_idx] = a_P_eff * x[u_idx]
+                     - a_W * x[jg * u_stride + (ig-1)]
+                     - a_E * x[jg * u_stride + (ig+1)]
+                     - a_S * x[(jg-1) * u_stride + ig]
+                     - a_N * x[(jg+1) * u_stride + ig];
+        }
+    }
+}
+
 } // namespace time_kernels
 } // namespace nncfd

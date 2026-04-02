@@ -1093,6 +1093,17 @@ private:
     double* a_p_w_ptr_ = nullptr;
     double simple_pseudo_dt_fixed_ = 0.0;  ///< Fixed pseudo-dt for SIMPLE outer loop stability
 
+    // BiCGSTAB scratch buffers for momentum solve (u-component, velocity-face sized)
+    std::vector<double> bicg_r_buf_, bicg_rhat_buf_, bicg_v_buf_, bicg_p_buf_;
+    std::vector<double> bicg_s_buf_, bicg_t_buf_, bicg_z_buf_;
+    double* bicg_r_ptr_ = nullptr;
+    double* bicg_rhat_ptr_ = nullptr;
+    double* bicg_v_ptr_ = nullptr;
+    double* bicg_p_ptr_ = nullptr;
+    double* bicg_s_ptr_ = nullptr;
+    double* bicg_t_ptr_ = nullptr;
+    double* bicg_z_ptr_ = nullptr;
+
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;
     double* dudy_ptr_ = nullptr;

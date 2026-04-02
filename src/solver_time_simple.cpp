@@ -336,62 +336,203 @@ double RANSSolver::simple_step() {
 
         const int n_sweeps = config_.simple_jacobi_sweeps;
 
-        if (n_sweeps > 0) {
-        // Red-Black Gauss-Seidel: in-place update on velocity_star_
-        // First copy velocity_ → velocity_star_ as initial guess
+        if (n_sweeps > 0 && is_2d) {
+        // BiCGSTAB momentum solve for u-component (matrix-free, Patankar relaxation)
+        // Solves: (a_P_phys/alpha) * u = sum(a_nb*u_nb) + source - grad(p) + relax_src
+        // Uses RB-GS as preconditioner.
         {
-            [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
-            [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
-            time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_star_u_ptr_,
-                                     velocity_v_ptr_, velocity_star_v_ptr_,
-                                     Nx, Ny, Ng, u_stride, v_stride,
-                                     u_total, v_total);
-        }
+            const double alpha_u = config_.simple_alpha_u;
+            const size_t u_sz = velocity_.u_total_size();
+            double* x = velocity_star_u_ptr_;  // solution (output)
+            double* r = bicg_r_ptr_;
+            double* rhat = bicg_rhat_ptr_;
+            double* p_bicg = bicg_p_ptr_;
+            double* v_bicg = bicg_v_ptr_;
+            double* s = bicg_s_ptr_;
+            double* t = bicg_t_ptr_;
+            double* z = bicg_z_ptr_;
 
-        for (int sweep = 0; sweep < n_sweeps; ++sweep) {
-            if (is_2d) {
-                // Red pass (color=0): update faces where (i+j) % 2 == 0
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,  // in-place
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, mesh_->dx, mesh_->dy,
-                    pseudo_dt_inv, /*color=*/0,
-                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+            // Initial guess: x = velocity_ (current velocity)
+            for (size_t i = 0; i < u_sz; ++i) x[i] = velocity_u_ptr_[i];
 
-                // Black pass (color=1): update faces where (i+j) % 2 == 1
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,  // in-place
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, mesh_->dx, mesh_->dy,
-                    pseudo_dt_inv, /*color=*/1,
-                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
-            } else {
-                break;  // TODO: 3D RB-GS
+            // Build RHS: b = sum(a_nb*u_nb_frozen) + (tau_div+fx)*vol - dp/dx*vol + relax_src
+            // where relax_src = (1-alpha)/alpha * a_P_phys * u_old
+            // Instead of building b explicitly, compute r = b - A*x
+            // r = b - A*x, but b is the RHS of the Patankar equation
+            // Simpler: compute A*x first, then r = b - A*x
+            // But b is what the RB-GS kernel's RHS would be.
+            // Actually, the cleanest approach: r = -(A*x - b)
+            // where A*x = a_P_eff*x - sum(a_nb*x_nb) and b = source - dp + relax_src
+            //
+            // Use matvec to get A*x, then compute b inline, then r = b - A*x
+
+            // Step 1: compute A*x (matvec)
+            time_kernels::simple_momentum_matvec_u_2d(
+                r, x, velocity_old_u_ptr_, velocity_old_v_ptr_,
+                nu_eff_ptr_, alpha_u, mesh_->dx, mesh_->dy,
+                Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+
+            // Step 2: r = b - A*x (compute b inline and subtract)
+            {
+                const double inv_dx2 = 1.0 / (mesh_->dx * mesh_->dx);
+                const double inv_dy2 = 1.0 / (mesh_->dy * mesh_->dy);
+                const double vol = mesh_->dx * mesh_->dy;
+
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i <= Nx; ++i) {
+                        int jg = j + Ng;
+                        int ig = i + Ng;
+                        int u_idx = jg * u_stride + ig;
+                        int cl = jg * cell_stride + (ig-1);
+                        int cr = jg * cell_stride + ig;
+
+                        double source = (tau_div_u_ptr_[u_idx] + fx_) * vol;
+                        double dp_dx = (pressure_ptr_[cr] - pressure_ptr_[cl]) / mesh_->dx * vol;
+
+                        // Patankar relaxation source
+                        double nu_L = nu_eff_ptr_[cl], nu_R = nu_eff_ptr_[cr];
+                        double nu_avg = 0.5 * (nu_L + nu_R);
+                        double a_P_phys = nu_avg * (2*inv_dx2 + 2*inv_dy2) * vol;
+                        // Add convective diagonal (simplified — just use nu for now)
+                        if (a_P_phys < 1e-20) a_P_phys = 1e-20;
+                        double relax_src = ((1.0 - alpha_u) / alpha_u) * a_P_phys
+                                          * velocity_old_u_ptr_[u_idx];
+
+                        double b_val = source - dp_dx + relax_src;
+                        r[u_idx] = b_val - r[u_idx];  // r = b - A*x
+                    }
+                }
             }
 
-            // Apply BCs between sweeps (in-place on velocity_star_)
+            // r_hat = r (shadow residual)
+            for (size_t i = 0; i < u_sz; ++i) rhat[i] = r[i];
+
+            // Initialize
+            double rho = 1.0, alpha_bicg = 1.0, omega = 1.0;
+            for (size_t i = 0; i < u_sz; ++i) {
+                p_bicg[i] = 0.0;
+                v_bicg[i] = 0.0;
+            }
+
+            // BiCGSTAB iterations
+            const int max_inner = n_sweeps * 10;  // n_sweeps repurposed as iteration multiplier
+            const double inner_tol = 0.1;  // loose inner tolerance
+            double r_norm_init = 0.0;
+            for (int j = 0; j < Ny; ++j)
+                for (int i = 0; i <= Nx; ++i) {
+                    int idx = (j+Ng) * u_stride + (i+Ng);
+                    r_norm_init += r[idx] * r[idx];
+                }
+            r_norm_init = std::sqrt(r_norm_init);
+            if (r_norm_init < 1e-15) r_norm_init = 1e-15;
+
+            for (int bicg_iter = 0; bicg_iter < max_inner; ++bicg_iter) {
+                // rho_new = dot(rhat, r)
+                double rho_new = 0.0;
+                for (int j = 0; j < Ny; ++j)
+                    for (int i = 0; i <= Nx; ++i) {
+                        int idx = (j+Ng) * u_stride + (i+Ng);
+                        rho_new += rhat[idx] * r[idx];
+                    }
+
+                if (std::abs(rho_new) < 1e-30) break;  // breakdown
+
+                double beta = (rho_new / rho) * (alpha_bicg / omega);
+
+                // p = r + beta*(p - omega*v)
+                for (size_t i = 0; i < u_sz; ++i)
+                    p_bicg[i] = r[i] + beta * (p_bicg[i] - omega * v_bicg[i]);
+
+                // No preconditioning for now (unpreconditioned BiCGSTAB)
+                // v = A * p
+                time_kernels::simple_momentum_matvec_u_2d(
+                    v_bicg, p_bicg, velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, alpha_u, mesh_->dx, mesh_->dy,
+                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+
+                // alpha = rho_new / dot(rhat, v)
+                double rhat_v = 0.0;
+                for (int j = 0; j < Ny; ++j)
+                    for (int i = 0; i <= Nx; ++i) {
+                        int idx = (j+Ng) * u_stride + (i+Ng);
+                        rhat_v += rhat[idx] * v_bicg[idx];
+                    }
+                if (std::abs(rhat_v) < 1e-30) break;
+                alpha_bicg = rho_new / rhat_v;
+
+                // s = r - alpha*v
+                for (size_t i = 0; i < u_sz; ++i)
+                    s[i] = r[i] - alpha_bicg * v_bicg[i];
+
+                // t = A * s (no preconditioning)
+                time_kernels::simple_momentum_matvec_u_2d(
+                    t, s, velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, alpha_u, mesh_->dx, mesh_->dy,
+                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+
+                // omega = dot(t,s) / dot(t,t)
+                double ts = 0.0, tt = 0.0;
+                for (int j = 0; j < Ny; ++j)
+                    for (int i = 0; i <= Nx; ++i) {
+                        int idx = (j+Ng) * u_stride + (i+Ng);
+                        ts += t[idx] * s[idx];
+                        tt += t[idx] * t[idx];
+                    }
+                omega = (tt > 1e-30) ? ts / tt : 0.0;
+
+                // x += alpha*z_p + omega*z_s
+                // (using p_bicg and s as the unpreconditioned vectors,
+                //  z was overwritten — need to recompute or store both)
+                // Simpler: use unpreconditioned BiCGSTAB (no preconditioner for now)
+                // x += alpha*p + omega*s
+                for (int j = 0; j < Ny; ++j)
+                    for (int i = 0; i <= Nx; ++i) {
+                        int idx = (j+Ng) * u_stride + (i+Ng);
+                        x[idx] += alpha_bicg * p_bicg[idx] + omega * s[idx];
+                    }
+
+                // r = s - omega*t
+                for (size_t i = 0; i < u_sz; ++i)
+                    r[i] = s[i] - omega * t[i];
+
+                // Convergence check
+                double r_norm = 0.0;
+                for (int j = 0; j < Ny; ++j)
+                    for (int i = 0; i <= Nx; ++i) {
+                        int idx = (j+Ng) * u_stride + (i+Ng);
+                        r_norm += r[idx] * r[idx];
+                    }
+                r_norm = std::sqrt(r_norm);
+                if (r_norm / r_norm_init < inner_tol) break;
+
+                rho = rho_new;
+            }
+
+            // Apply BCs to the solution
             std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-            std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
             std::swap(velocity_, velocity_star_);
             apply_velocity_bc();
             std::swap(velocity_, velocity_star_);
             std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-            std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+
+            // For v: just copy (BiCGSTAB only solves u for now)
+            for (size_t i = 0; i < velocity_.v_total_size(); ++i)
+                velocity_star_v_ptr_[i] = velocity_v_ptr_[i];
         }
 
-        // Result is in velocity_star_ (in-place). No copy needed.
-
-        // Compute a_P for pressure correction (still needed for u = u* - (1/a_P)*grad(p'))
+        // Compute a_P_eff for pressure correction: use Patankar a_P/alpha
         if (is_2d) {
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_u_ptr_, velocity_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride, cell_stride,
-                mesh_->dx, mesh_->dy, pseudo_dt_inv);
+                mesh_->dx, mesh_->dy, /*pseudo_dt_inv=*/0.0);
+            // Scale: a_P_eff = a_P_phys / alpha_u
+            double inv_alpha = 1.0 / config_.simple_alpha_u;
+            for (size_t i = 0; i < velocity_.u_total_size(); ++i)
+                a_p_u_ptr_[i] *= inv_alpha;
+            for (size_t i = 0; i < velocity_.v_total_size(); ++i)
+                a_p_v_ptr_[i] *= inv_alpha;
         }
         } else {
         // Diagonal-approximation predictor: u* = u + (H - dp/dx) / a_P

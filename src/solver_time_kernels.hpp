@@ -258,5 +258,14 @@ void simple_rbgs_momentum_2d(
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride);
 
+// Momentum matrix-vector product y = A*x for u-velocity (BiCGSTAB)
+void simple_momentum_matvec_u_2d(
+    double* y, const double* x,
+    const double* u_frozen, const double* v_frozen,
+    const double* nu_eff,
+    double alpha_u, double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride);
+
 } // namespace time_kernels
 } // namespace nncfd
