@@ -169,6 +169,7 @@ void thomas_y_diffusion_3d_stretched(double* u, double* v, double* w, double* nu
 
 void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
                           const double* nu_eff,
+                          const double* u_face, const double* v_face,
                           int Nx, int Ny, int Ng,
                           int u_stride, int v_stride, int cell_stride,
                           double dx, double dy,
@@ -176,6 +177,7 @@ void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
 
 void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
                           const double* nu_eff,
+                          const double* u_face, const double* v_face, const double* w_face,
                           int Nx, int Ny, int Nz, int Ng,
                           int u_stride, int u_plane,
                           int v_stride, int v_plane,

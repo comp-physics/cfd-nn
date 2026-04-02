@@ -102,9 +102,34 @@ double RANSSolver::simple_step() {
                 device_view_ptr = &device_view;
             }
 #endif
-            // Use a pseudo-dt for transport: large enough for RANS convergence
-            // but within stability for explicit k/omega transport
-            double transport_dt = current_dt_ > 0 ? current_dt_ : 0.001;
+            // Transport dt: must respect SST stability (omega can be O(1000) at walls).
+            // Compute CFL-like dt from current velocity + diffusion stability.
+            double u_max_t = 0.0;
+            double nu_max_t = config_.nu;
+            for (size_t idx = 0; idx < field_total_size_; ++idx) {
+                if (nu_eff_ptr_[idx] > nu_max_t) nu_max_t = nu_eff_ptr_[idx];
+            }
+            double dx_min_t = is_2d ? std::min(mesh_->dx, mesh_->dy)
+                                    : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
+            // Quick u_max from a few sample points (avoid full scan)
+            {
+                const int us = Nx + 2 * Ng + 1;
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); j += std::max(1, Ny/8))
+                    for (int i = mesh_->i_begin(); i <= mesh_->i_end(); i += std::max(1, Nx/8)) {
+                        double val = velocity_u_ptr_[j * us + i];
+                        if (val < 0) val = -val;
+                        if (val > u_max_t) u_max_t = val;
+                    }
+            }
+            if (u_max_t < 1e-6) u_max_t = 1e-6;
+            double dt_c = dx_min_t / u_max_t;
+            double dt_d = 0.25 * dx_min_t * dx_min_t / nu_max_t;
+            double transport_dt = std::min(dt_c, dt_d);
+            if (transport_dt > 0.1) transport_dt = 0.1;  // cap for safety
+            if (config_.verbose && step_count_ < 5) {
+                std::cerr << "[SIMPLE] transport_dt=" << transport_dt
+                          << " nu_max=" << nu_max_t << " u_max=" << u_max_t << "\n";
+            }
             transport_to_advance->advance_turbulence(
                 *mesh_, velocity_, transport_dt, k_, omega_, nu_t_,
                 device_view_ptr);
@@ -294,12 +319,23 @@ double RANSSolver::simple_step() {
         if (u_max < 1e-6) u_max = 1e-6;  // floor for initial zero/small velocity
         double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
                               : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
-        double pseudo_dt = dx_min / u_max;  // CFL=1 pseudo-timestep
+        // Pseudo-dt: min of convective CFL and diffusion stability
+        // The diffusion limit prevents blowup when nu_t is large (SST, MLP)
+        double dt_conv = dx_min / u_max;
+        double nu_eff_max = config_.nu;
+        // Quick scan for max nu_eff (already computed this step)
+        for (size_t idx = 0; idx < field_total_size_; ++idx) {
+            if (nu_eff_ptr_[idx] > nu_eff_max) nu_eff_max = nu_eff_ptr_[idx];
+        }
+        double dt_diff = (nu_eff_max > 0) ? 0.25 * dx_min * dx_min / nu_eff_max : 1e10;
+        double pseudo_dt = std::min(dt_conv, dt_diff);
+        if (pseudo_dt < 1e-15) pseudo_dt = 1e-15;
         double pseudo_dt_inv = 1.0 / pseudo_dt;
 
         if (is_2d) {
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
+                velocity_u_ptr_, velocity_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride, cell_stride,
                 mesh_->dx, mesh_->dy, pseudo_dt_inv);
         } else {
@@ -311,6 +347,7 @@ double RANSSolver::simple_step() {
 
             time_kernels::simple_compute_aP_3d(
                 a_p_u_ptr_, a_p_v_ptr_, a_p_w_ptr_, nu_eff_ptr_,
+                velocity_u_ptr_, velocity_v_ptr_, velocity_w_ptr_,
                 Nx, Ny, Nz, Ng,
                 u_stride, u_plane, v_stride, v_plane,
                 w_stride, w_plane, cell_stride, cell_plane,

@@ -16,6 +16,7 @@ namespace time_kernels {
 
 void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
                           const double* nu_eff,
+                          const double* u_face, const double* v_face,
                           int Nx, int Ny, int Ng,
                           int u_stride, int v_stride, int cell_stride,
                           double dx, double dy,
@@ -29,31 +30,44 @@ void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
     [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
     [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Ny + 2 * Ng + 1) * v_stride);
 
-    // a_P for u-faces: average nu_eff from cells left and right of face
+    // a_P for u-faces: diffusion + convective diagonal + pseudo-transient
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: a_p_u[0:u_sz], nu_eff[0:nu_sz])
+        map(present: a_p_u[0:u_sz], nu_eff[0:nu_sz], u_face[0:u_sz], v_face[0:v_sz])
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i <= Nx; ++i) {
             int jg = j + Ng;
             int ig = i + Ng;
             int u_idx = jg * u_stride + ig;
 
-            // Average nu_eff at u-face from adjacent cells
             int c_left  = jg * cell_stride + (ig - 1);
             int c_right = jg * cell_stride + ig;
-            // Clamp index for boundary faces
             int cl = (ig > 0) ? c_left : c_right;
             int cr = (ig < Nx + 2 * Ng - 1) ? c_right : c_left;
             double nu_avg = 0.5 * (nu_eff[cl] + nu_eff[cr]);
 
-            double aP = nu_avg * (2.0 * inv_dx2 + 2.0 * inv_dy2) * vol + vol * pseudo_dt_inv;
+            // Diffusion diagonal
+            double aP_diff = nu_avg * (2.0 * inv_dx2 + 2.0 * inv_dy2) * vol;
+
+            // Convective diagonal (upwind-like): sum of absolute face fluxes
+            // At u-face (ig, jg), the cell around it has faces at ig-1/2, ig+1/2, jg-1/2, jg+1/2
+            double u_e = u_face[jg * u_stride + (ig + 1)];
+            double u_w = u_face[jg * u_stride + (ig - 1)];
+            double v_n = v_face[(jg + 1) * v_stride + ig];
+            double v_s = v_face[jg * v_stride + ig];
+            // Upwind: max(F,0) + max(-F,0) = |F|/2 for each face, summed
+            double aP_conv = 0.5 * ((u_e > 0 ? u_e : -u_e) * dy
+                                  + (u_w > 0 ? u_w : -u_w) * dy
+                                  + (v_n > 0 ? v_n : -v_n) * dx
+                                  + (v_s > 0 ? v_s : -v_s) * dx);
+
+            double aP = aP_diff + aP_conv + vol * pseudo_dt_inv;
             a_p_u[u_idx] = (aP > 1e-20) ? aP : 1e-20;
         }
     }
 
-    // a_P for v-faces: average nu_eff from cells below and above face
+    // a_P for v-faces
     #pragma omp target teams distribute parallel for collapse(2) \
-        map(present: a_p_v[0:v_sz], nu_eff[0:nu_sz])
+        map(present: a_p_v[0:v_sz], nu_eff[0:nu_sz], u_face[0:u_sz], v_face[0:v_sz])
     for (int j = 0; j <= Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             int jg = j + Ng;
@@ -66,7 +80,18 @@ void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
             int ct = (jg < Ny + 2 * Ng - 1) ? c_top : c_bot;
             double nu_avg = 0.5 * (nu_eff[cb] + nu_eff[ct]);
 
-            double aP = nu_avg * (2.0 * inv_dx2 + 2.0 * inv_dy2) * vol + vol * pseudo_dt_inv;
+            double aP_diff = nu_avg * (2.0 * inv_dx2 + 2.0 * inv_dy2) * vol;
+
+            double u_e = u_face[jg * u_stride + (ig + 1)];
+            double u_w = u_face[jg * u_stride + ig];
+            double v_n = v_face[(jg + 1) * v_stride + ig];
+            double v_s = v_face[(jg - 1) * v_stride + ig];
+            double aP_conv = 0.5 * ((u_e > 0 ? u_e : -u_e) * dy
+                                  + (u_w > 0 ? u_w : -u_w) * dy
+                                  + (v_n > 0 ? v_n : -v_n) * dx
+                                  + (v_s > 0 ? v_s : -v_s) * dx);
+
+            double aP = aP_diff + aP_conv + vol * pseudo_dt_inv;
             a_p_v[v_idx] = (aP > 1e-20) ? aP : 1e-20;
         }
     }
@@ -74,6 +99,7 @@ void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
 
 void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
                           const double* nu_eff,
+                          const double* u_face, const double* v_face, const double* w_face,
                           int Nx, int Ny, int Nz, int Ng,
                           int u_stride, int u_plane,
                           int v_stride, int v_plane,
@@ -92,10 +118,14 @@ void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
     [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Nz + 2 * Ng) * v_plane);
     [[maybe_unused]] const size_t w_sz = static_cast<size_t>((Nz + 2 * Ng + 1) * w_plane);
 
-    // a_P for u-faces
+    const double Ay = dx * dz;  // face area normal to y
+    const double Ax = dy * dz;  // face area normal to x
+    const double Az = dx * dy;  // face area normal to z
+
+    // a_P for u-faces (diffusion + convection + pseudo-transient)
     const int n_u = (Nx + 1) * Ny * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: a_p_u[0:u_sz], nu_eff[0:nu_sz])
+        map(present: a_p_u[0:u_sz], nu_eff[0:nu_sz], u_face[0:u_sz], v_face[0:v_sz], w_face[0:w_sz])
     for (int idx = 0; idx < n_u; ++idx) {
         int i = idx % (Nx + 1) + Ng;
         int j = (idx / (Nx + 1)) % Ny + Ng;
@@ -104,15 +134,27 @@ void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
         int c_left  = k * cell_plane + j * cell_stride + (i - 1);
         int c_right = k * cell_plane + j * cell_stride + i;
         double nu_avg = 0.5 * (nu_eff[c_left] + nu_eff[c_right]);
+        double aP_diff = nu_avg * diff_diag * vol;
 
-        double aP = nu_avg * diff_diag * vol + vol * pseudo_dt_inv;
+        // Convective diagonal: sum of |face flux * face area|
+        double ue = u_face[k * u_plane + j * u_stride + (i+1)];
+        double uw = u_face[k * u_plane + j * u_stride + (i-1)];
+        double vn = v_face[k * v_plane + (j+1) * v_stride + i];
+        double vs = v_face[k * v_plane + j * v_stride + i];
+        double wf = w_face[(k+1) * w_plane + j * w_stride + i];
+        double wb = w_face[k * w_plane + j * w_stride + i];
+        double aP_conv = 0.5 * ((ue>0?ue:-ue)*Ax + (uw>0?uw:-uw)*Ax
+                              + (vn>0?vn:-vn)*Ay + (vs>0?vs:-vs)*Ay
+                              + (wf>0?wf:-wf)*Az + (wb>0?wb:-wb)*Az);
+
+        double aP = aP_diff + aP_conv + vol * pseudo_dt_inv;
         a_p_u[k * u_plane + j * u_stride + i] = (aP > 1e-20) ? aP : 1e-20;
     }
 
     // a_P for v-faces
     const int n_v = Nx * (Ny + 1) * Nz;
     #pragma omp target teams distribute parallel for \
-        map(present: a_p_v[0:v_sz], nu_eff[0:nu_sz])
+        map(present: a_p_v[0:v_sz], nu_eff[0:nu_sz], u_face[0:u_sz], v_face[0:v_sz], w_face[0:w_sz])
     for (int idx = 0; idx < n_v; ++idx) {
         int i = idx % Nx + Ng;
         int j = (idx / Nx) % (Ny + 1) + Ng;
@@ -121,15 +163,26 @@ void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
         int c_bot = k * cell_plane + (j - 1) * cell_stride + i;
         int c_top = k * cell_plane + j * cell_stride + i;
         double nu_avg = 0.5 * (nu_eff[c_bot] + nu_eff[c_top]);
+        double aP_diff = nu_avg * diff_diag * vol;
 
-        double aP = nu_avg * diff_diag * vol + vol * pseudo_dt_inv;
+        double ue = u_face[k * u_plane + j * u_stride + (i+1)];
+        double uw = u_face[k * u_plane + j * u_stride + i];
+        double vn = v_face[k * v_plane + (j+1) * v_stride + i];
+        double vs = v_face[k * v_plane + (j-1) * v_stride + i];
+        double wf = w_face[(k+1) * w_plane + j * w_stride + i];
+        double wb = w_face[k * w_plane + j * w_stride + i];
+        double aP_conv = 0.5 * ((ue>0?ue:-ue)*Ax + (uw>0?uw:-uw)*Ax
+                              + (vn>0?vn:-vn)*Ay + (vs>0?vs:-vs)*Ay
+                              + (wf>0?wf:-wf)*Az + (wb>0?wb:-wb)*Az);
+
+        double aP = aP_diff + aP_conv + vol * pseudo_dt_inv;
         a_p_v[k * v_plane + j * v_stride + i] = (aP > 1e-20) ? aP : 1e-20;
     }
 
     // a_P for w-faces
     const int n_w = Nx * Ny * (Nz + 1);
     #pragma omp target teams distribute parallel for \
-        map(present: a_p_w[0:w_sz], nu_eff[0:nu_sz])
+        map(present: a_p_w[0:w_sz], nu_eff[0:nu_sz], u_face[0:u_sz], v_face[0:v_sz], w_face[0:w_sz])
     for (int idx = 0; idx < n_w; ++idx) {
         int i = idx % Nx + Ng;
         int j = (idx / Nx) % Ny + Ng;
@@ -138,8 +191,19 @@ void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
         int c_lo = (k - 1) * cell_plane + j * cell_stride + i;
         int c_hi = k * cell_plane + j * cell_stride + i;
         double nu_avg = 0.5 * (nu_eff[c_lo] + nu_eff[c_hi]);
+        double aP_diff = nu_avg * diff_diag * vol;
 
-        double aP = nu_avg * diff_diag * vol + vol * pseudo_dt_inv;
+        double ue = u_face[k * u_plane + j * u_stride + (i+1)];
+        double uw = u_face[k * u_plane + j * u_stride + i];
+        double vn = v_face[k * v_plane + (j+1) * v_stride + i];
+        double vs = v_face[k * v_plane + j * v_stride + i];
+        double wf = w_face[(k+1) * w_plane + j * w_stride + i];
+        double wb = w_face[(k-1) * w_plane + j * w_stride + i];
+        double aP_conv = 0.5 * ((ue>0?ue:-ue)*Ax + (uw>0?uw:-uw)*Ax
+                              + (vn>0?vn:-vn)*Ay + (vs>0?vs:-vs)*Ay
+                              + (wf>0?wf:-wf)*Az + (wb>0?wb:-wb)*Az);
+
+        double aP = aP_diff + aP_conv + vol * pseudo_dt_inv;
         a_p_w[k * w_plane + j * w_stride + i] = (aP > 1e-20) ? aP : 1e-20;
     }
 }
