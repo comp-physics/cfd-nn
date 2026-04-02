@@ -322,6 +322,13 @@ int main(int argc, char** argv) {
                         }
                         target_turb->set_nu(config.nu);
                         solver.set_turbulence_model(std::move(target_turb));
+                        solver.sync_to_gpu();  // Re-map for new model
+
+                        // Ramp tau_div from 0→1 over 5000 steps to prevent divergence
+                        // from sudden anisotropic correction on SST-developed flow.
+                        solver.start_tau_div_ramp(5000);
+                        if (mpi_rank == 0)
+                            std::cout << "  tau_div ramp: 0→1 over 5000 steps\n";
                     }
                 }
                 // else: transport models keep running from warm-up (no switch needed)
