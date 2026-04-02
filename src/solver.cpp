@@ -1367,12 +1367,12 @@ double RANSSolver::step() {
                            turb_model_->provides_reynolds_stresses() ? &tau_ij_ : nullptr,
                            device_view_ptr);
 
-        // Decomposition method: for models with background transport, restore
-        // SST's nu_t for the diffusion operator. The model's tau_ij (if it
-        // provides Reynolds stresses) enters via tau_div source term, while
-        // SST's nu_t provides the stable linear closure in the diffusion.
-        // For scalar models (MLP, GEP), this ensures SST-level stability.
-        if (bg_transport_) {
+        // Decomposition method: for TENSOR models with background transport,
+        // restore SST's nu_t for the diffusion operator. The model's tau_ij
+        // enters via tau_div source term, while SST's nu_t provides the stable
+        // linear closure in the diffusion.
+        // For SCALAR models (MLP, GEP), keep the model's nu_t — it IS the output.
+        if (bg_transport_ && turb_model_->provides_reynolds_stresses()) {
             bg_transport_->update(*mesh_, velocity_, k_, omega_, nu_t_, nullptr, device_view_ptr);
         }
 
