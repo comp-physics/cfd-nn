@@ -343,8 +343,9 @@ RANSSolver::RANSSolver(const Mesh& mesh, const Config& config)
     bool fft1d_applicable = false;
 
     // Check which FFT solver is applicable (actual BCs set later via set_velocity_bc)
-    // For now, assume defaults: periodic x,z - will be updated in set_velocity_bc
-    bool periodic_xz = true;  // Default for channel: periodic x/z
+    // 3D FFT requires periodic x AND z, but z-BC isn't known at construction time.
+    // Only assume periodic z if the mesh is NOT stretched in z (stretch_z implies walls).
+    bool periodic_xz = !config.stretch_z;  // stretch_z implies z-walls, not periodic
     bool uniform_xz = true;   // Default for channel: uniform x/z spacing
 
     // FFT solvers use tridiagonal solves in y that assume uniform spacing
