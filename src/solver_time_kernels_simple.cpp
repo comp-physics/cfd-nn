@@ -525,17 +525,17 @@ void simple_varcoeff_residual_2d(
 }
 
 // ============================================================================
-// Jacobi momentum sweep: implicit convection + diffusion
-// u_new_P = [sum_nb(a_nb * u_iter_nb) + source - dp/dx * vol] / a_P
-// Coefficients use frozen mass flux (from velocity_old), iterate values
-// from previous Jacobi sweep. a_P recomputed inline for consistency.
+// Jacobi momentum sweep: implicit convection + diffusion + pressure from
+// PREVIOUS outer iteration. The Poisson correction provides the incremental
+// pressure update; the frozen pressure provides the feedback for body force.
 // ============================================================================
 
 void simple_jacobi_momentum_2d(
     double* u_new, double* v_new,
     const double* u_iter, const double* v_iter,
     const double* u_frozen, const double* v_frozen,
-    const double* p, const double* nu_eff,
+    const double* nu_eff,
+    const double* p_old,
     const double* tau_div_u, const double* tau_div_v,
     double fx, double fy, double dx, double dy,
     double pseudo_dt_inv,
@@ -554,7 +554,7 @@ void simple_jacobi_momentum_2d(
     // u-momentum Jacobi sweep
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: u_new[0:u_sz], u_iter[0:u_sz], u_frozen[0:u_sz], \
-                     v_frozen[0:v_sz], p[0:p_sz], nu_eff[0:nu_sz], tau_div_u[0:u_sz])
+                     v_frozen[0:v_sz], nu_eff[0:nu_sz], tau_div_u[0:u_sz], p_old[0:p_sz])
     for (int j = 0; j < Ny; ++j) {
         for (int i = 0; i <= Nx; ++i) {
             int jg = j + Ng;
@@ -597,7 +597,7 @@ void simple_jacobi_momentum_2d(
             double a_S = a_S_diff + a_S_conv;
             double a_N = a_N_diff + a_N_conv;
 
-            // Diagonal: sum of off-diag diffusion + convection self-contribution + damping
+            // Diagonal: diffusion + convection + pseudo-transient (for Jacobi stability)
             double a_P_val = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
                 + ((F_w < 0.0 ? -F_w : 0.0) + (F_e > 0.0 ? F_e : 0.0)
                  + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0))
@@ -610,38 +610,20 @@ void simple_jacobi_momentum_2d(
                           + a_S * u_iter[(jg-1) * u_stride + ig]
                           + a_N * u_iter[(jg+1) * u_stride + ig];
 
+            // Source: body force + anisotropic stress + pressure from PREVIOUS iteration
             double source = (tau_div_u[u_idx] + fx) * vol;
-            double dp_dx = (p[cr] - p[cl]) / dx * vol;
+            // Pressure gradient from frozen (previous outer iteration) pressure
+            // cl, cr already defined above for nu_eff
+            double dp_dx = (p_old[cr] - p_old[cl]) / dx * vol;
 
-            double result = (sum_nb + source - dp_dx) / a_P_val;
-            // NaN debug trap (CPU only, remove for production)
-            if (result != result) {
-                // Print first NaN location
-                static bool printed = false;
-                if (!printed) {
-                    printed = false; // always print for debugging
-                    std::fprintf(stderr, "[Jacobi NaN] u at ig=%d jg=%d: sum_nb=%.6e source=%.6e dp=%.6e aP=%.6e\n"
-                                         "  a_W=%.4e a_E=%.4e a_S=%.4e a_N=%.4e\n"
-                                         "  u_W=%.4e u_E=%.4e u_S=%.4e u_N=%.4e\n"
-                                         "  F_w=%.4e F_e=%.4e F_s=%.4e F_n=%.4e\n"
-                                         "  nu_L=%.4e nu_R=%.4e nu_S=%.4e nu_N=%.4e\n",
-                                 ig, jg, sum_nb, source, dp_dx, a_P_val,
-                                 a_W, a_E, a_S, a_N,
-                                 u_iter[jg*u_stride+(ig-1)], u_iter[jg*u_stride+(ig+1)],
-                                 u_iter[(jg-1)*u_stride+ig], u_iter[(jg+1)*u_stride+ig],
-                                 F_w, F_e, F_s, F_n,
-                                 nu_L, nu_R, nu_S, nu_N);
-                    printed = true;
-                }
-            }
-            u_new[u_idx] = result;
+            u_new[u_idx] = (sum_nb + source - dp_dx) / a_P_val;
         }
     }
 
-    // v-momentum Jacobi sweep
+    // v-momentum Jacobi sweep (pressure from previous outer iteration)
     #pragma omp target teams distribute parallel for collapse(2) \
         map(present: v_new[0:v_sz], v_iter[0:v_sz], v_frozen[0:v_sz], \
-                     u_frozen[0:u_sz], p[0:p_sz], nu_eff[0:nu_sz], tau_div_v[0:v_sz])
+                     u_frozen[0:u_sz], nu_eff[0:nu_sz], tau_div_v[0:v_sz], p_old[0:p_sz])
     for (int j = 0; j <= Ny; ++j) {
         for (int i = 0; i < Nx; ++i) {
             int jg = j + Ng;
@@ -691,7 +673,7 @@ void simple_jacobi_momentum_2d(
                           + a_N * v_iter[(jg+1) * v_stride + ig];
 
             double source = (tau_div_v[v_idx] + fy) * vol;
-            double dp_dy = (p[ct] - p[cb]) / dy * vol;
+            double dp_dy = (p_old[ct] - p_old[cb]) / dy * vol;
 
             v_new[v_idx] = (sum_nb + source - dp_dy) / a_P_val;
         }

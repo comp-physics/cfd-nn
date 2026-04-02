@@ -334,6 +334,7 @@ void Config::load(const std::string& filename) {
     simple_Ti = get_double("simple_Ti", simple_Ti);
     simple_nu_t_ratio = get_double("simple_nu_t_ratio", simple_nu_t_ratio);
     simple_jacobi_sweeps = get_int("simple_jacobi_sweeps", simple_jacobi_sweeps);
+    simple_defect_corrections = get_int("simple_defect_corrections", simple_defect_corrections);
 
     // Recycling inflow parameters
     recycling_inflow = get_bool("recycling_inflow", recycling_inflow);

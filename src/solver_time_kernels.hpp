@@ -245,12 +245,13 @@ void simple_varcoeff_residual_2d(
     int Nx, int Ny, int Ng,
     int cell_stride, int u_stride, int v_stride);
 
-// Jacobi momentum sweep: implicit convection + diffusion
+// Jacobi momentum sweep: implicit convection + diffusion + frozen pressure
 void simple_jacobi_momentum_2d(
     double* u_new, double* v_new,
     const double* u_iter, const double* v_iter,
     const double* u_frozen, const double* v_frozen,
-    const double* p, const double* nu_eff,
+    const double* nu_eff,
+    const double* p_old,
     const double* tau_div_u, const double* tau_div_v,
     double fx, double fy, double dx, double dy,
     double pseudo_dt_inv,

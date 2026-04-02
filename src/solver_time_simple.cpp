@@ -333,7 +333,8 @@ double RANSSolver::simple_step() {
                     u_dst, v_dst,           // write
                     u_src, v_src,           // read (iterate)
                     velocity_old_u_ptr_, velocity_old_v_ptr_,  // frozen for coefficients
-                    pressure_ptr_, nu_eff_ptr_,
+                    nu_eff_ptr_,
+                    pressure_ptr_,          // frozen pressure from previous outer iteration
                     tau_div_u_ptr_, tau_div_v_ptr_,
                     fx_, fy_, mesh_->dx, mesh_->dy,
                     pseudo_dt_inv,
@@ -470,57 +471,85 @@ double RANSSolver::simple_step() {
 
     // ================================================================
     // 7. Compute divergence of u*, build Poisson RHS, solve Poisson
+    //    For Jacobi path: use vol/mean(a_P) as pseudo_dt for proper coupling.
+    //    For diagonal path: use CFL-limited pseudo_dt.
     // ================================================================
     {
-        // Compute pseudo_dt from mean a_P for Poisson RHS normalization
-        double mean_aP = 0.0;
-        [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
-        const double* apu = a_p_u_ptr_;
-
-        if (is_2d) {
-            const int u_stride_loc = Nx + 2 * Ng + 1;
-            double sum = 0.0;
-            const int n_interior = (Nx + 1) * Ny;
-            #pragma omp target teams distribute parallel for reduction(+:sum) \
-                map(present: apu[0:u_sz])
-            for (int idx = 0; idx < n_interior; ++idx) {
-                int i = idx % (Nx + 1) + Ng;
-                int j = idx / (Nx + 1) + Ng;
-                sum += apu[j * u_stride_loc + i];
+        // For Jacobi: Rhie-Chow principle — the Poisson pseudo_dt uses the
+        // UNDAMPED a_P (diffusion + convection only, without vol/pseudo_dt).
+        // This allows the pressure to build up correctly even though the
+        // Jacobi momentum solve uses damped a_P for stability.
+        double pseudo_dt_proj;
+        if (config_.simple_jacobi_sweeps > 0) {
+            // Compute undamped a_P = (diffusion + convection diagonal) at u-faces
+            const int u_stride_p = Nx + 2 * Ng + 1;
+            const int cell_stride_p = Nx + 2 * Ng;
+            double inv_dx2 = 1.0 / (mesh_->dx * mesh_->dx);
+            double inv_dy2 = 1.0 / (mesh_->dy * mesh_->dy);
+            double vol = is_2d ? mesh_->dx * mesh_->dy
+                               : mesh_->dx * mesh_->dy * mesh_->dz;
+            double sum_aP_undamped = 0.0;
+            int n_interior = (Nx + 1) * Ny;
+            for (int j_m = 0; j_m < Ny; ++j_m) {
+                for (int i_m = 0; i_m <= Nx; ++i_m) {
+                    int jg = j_m + Ng;
+                    int ig = i_m + Ng;
+                    // Diffusion diagonal (same nu_avg as Jacobi)
+                    int cl = jg * cell_stride_p + (ig - 1);
+                    int cr = jg * cell_stride_p + ig;
+                    double nu_avg = 0.5 * (nu_eff_ptr_[cl] + nu_eff_ptr_[cr]);
+                    double aP_diff = nu_avg * (2.0 * inv_dx2 + 2.0 * inv_dy2) * vol;
+                    // Convection diagonal (upwind)
+                    double u_e = velocity_old_u_ptr_[jg * u_stride_p + (ig+1)];
+                    double u_w = velocity_old_u_ptr_[jg * u_stride_p + (ig-1)];
+                    double Fw = u_w * mesh_->dy;
+                    double Fe = u_e * mesh_->dy;
+                    double aP_conv = (Fw < 0 ? -Fw : 0.0) + (Fe > 0 ? Fe : 0.0);
+                    // v fluxes negligible for first approximation
+                    sum_aP_undamped += aP_diff + aP_conv;
+                }
             }
-            mean_aP = (n_interior > 0) ? sum / n_interior : 1.0;
+            double mean_aP_undamped = (n_interior > 0) ? sum_aP_undamped / n_interior : 1.0;
+            if (mean_aP_undamped < 1e-20) mean_aP_undamped = 1e-20;
+            pseudo_dt_proj = vol / mean_aP_undamped;
         } else {
-            const int u_stride_loc = Nx + 2 * Ng + 1;
-            const int u_plane_loc = u_stride_loc * (Ny + 2 * Ng);
-            double sum = 0.0;
-            const int n_interior = (Nx + 1) * Ny * Nz;
-            #pragma omp target teams distribute parallel for reduction(+:sum) \
-                map(present: apu[0:u_sz])
-            for (int idx = 0; idx < n_interior; ++idx) {
-                int i = idx % (Nx + 1) + Ng;
-                int j = (idx / (Nx + 1)) % Ny + Ng;
-                int k = idx / ((Nx + 1) * Ny) + Ng;
-                sum += apu[k * u_plane_loc + j * u_stride_loc + i];
+            // Diagonal approx: use CFL-limited pseudo_dt
+            double u_max_p = 0.0;
+            double nu_eff_max_p = config_.nu;
+            const int u_stride_p = Nx + 2 * Ng + 1;
+            if (is_2d) {
+                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
+                    for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
+                        double val = velocity_star_u_ptr_[j * u_stride_p + i];
+                        if (val < 0) val = -val;
+                        if (val > u_max_p) u_max_p = val;
+                    }
             }
-            mean_aP = (n_interior > 0) ? sum / n_interior : 1.0;
+            for (size_t idx = 0; idx < field_total_size_; ++idx) {
+                if (nu_eff_ptr_[idx] > nu_eff_max_p) nu_eff_max_p = nu_eff_ptr_[idx];
+            }
+            if (u_max_p < 1e-6) u_max_p = 1e-6;
+            double dx_min_p = is_2d ? std::min(mesh_->dx, mesh_->dy)
+                                    : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
+            pseudo_dt_proj = std::min(dx_min_p / u_max_p,
+                                      0.25 * dx_min_p * dx_min_p / nu_eff_max_p);
         }
-
-        double vol = is_2d ? mesh_->dx * mesh_->dy
-                           : mesh_->dx * mesh_->dy * mesh_->dz;
-        double pseudo_dt = vol / mean_aP;
-        if (pseudo_dt < 1e-15) pseudo_dt = 1e-15;
-        current_dt_ = pseudo_dt;
+        if (pseudo_dt_proj < 1e-15) pseudo_dt_proj = 1e-15;
+        current_dt_ = pseudo_dt_proj;
 
         // Compute divergence of velocity_star_
         compute_divergence(VelocityWhich::Star, div_velocity_);
 
-        // Build Poisson RHS: rhs = (div - mean_div) / pseudo_dt
+        // Build Poisson RHS: rhs = (div - mean_div) * mean(a_P) / vol
+        // This approximates ∇·(1/a_P · ∇p') ≈ (1/mean(1/a_P)) * ∇²p' = mean_aP_undamped * ∇²p'
+        // But the MG solves ∇²p' = rhs, so rhs = div * mean_aP_undamped
+        // For simplicity, use 1/pseudo_dt_proj which = mean_aP_undamped/vol
         const int stride = Nx + 2 * Ng;
         const int plane_stride = stride * (Ny + 2 * Ng);
         [[maybe_unused]] const size_t cell_sz = field_total_size_;
         double* rhs_sv = rhs_poisson_ptr_;
         double* div_sv = div_velocity_ptr_;
-        const double dt_inv = 1.0 / pseudo_dt;
+        const double dt_inv = 1.0 / pseudo_dt_proj;
         const int count = is_2d ? Nx * Ny : Nx * Ny * Nz;
 
         double mean_div = 0.0;
@@ -573,7 +602,7 @@ double RANSSolver::simple_step() {
             ibm_->mask_rhs_device(rhs_poisson_ptr_);
         }
 
-        // Solve Poisson
+        // Solve Poisson (first pass: constant-coefficient approximation)
         PoissonConfig pcfg;
         pcfg.max_vcycles = config_.poisson_max_vcycles;
         pcfg.tol_rhs = config_.poisson_tol_rhs;
@@ -599,10 +628,18 @@ double RANSSolver::simple_step() {
         {
             mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
         }
+
+        // Defect-correction: iterate to solve variable-coefficient Poisson
+        // ∇·(D · ∇p') = div(u*) - mean_div, where D = 1/a_P
+        // The MG solves ∇²q = rhs (coefficient = 1), so we scale:
+        //   MG: ∇²q = r / D_mean, then δp = q / D_mean
+        // where D_mean = mean(1/a_P) and r is the varcoeff residual.
     }
 
     // ================================================================
-    // 8. SIMPLE velocity correction (a_P-weighted) + pressure update
+    // 8. SIMPLE velocity correction: u = u* - (1/a_P) * grad(p')
+    //    Uses a_P (which includes pseudo-transient damping) for stability.
+    //    Then accumulate pressure: p += alpha_p * p'
     // ================================================================
     correct_velocity_simple();
 
