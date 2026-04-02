@@ -236,6 +236,15 @@ void simple_correct_velocity_3d(double* u, double* v, double* w, double* p,
                                 int w_stride, int w_plane,
                                 int cell_stride, int cell_plane);
 
+// Variable-coefficient Poisson residual: r = rhs - ∇·(1/a_P · ∇p')
+// Used in defect-correction loop with constant-coefficient MG as preconditioner
+void simple_varcoeff_residual_2d(
+    double* residual, const double* p, const double* rhs,
+    const double* a_p_u, const double* a_p_v,
+    double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int cell_stride, int u_stride, int v_stride);
+
 // Jacobi momentum sweep: implicit convection + diffusion
 void simple_jacobi_momentum_2d(
     double* u_new, double* v_new,

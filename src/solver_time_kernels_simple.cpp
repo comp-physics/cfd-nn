@@ -470,6 +470,61 @@ void simple_correct_velocity_3d(double* u, double* v, double* w, double* p,
 }
 
 // ============================================================================
+// Variable-coefficient Poisson residual for SIMPLE defect-correction
+// r = rhs - ∇·(1/a_P · ∇p')
+// The divergence uses 1/a_P at velocity faces as the coefficient
+// ============================================================================
+
+void simple_varcoeff_residual_2d(
+    double* residual, const double* p, const double* rhs,
+    const double* a_p_u, const double* a_p_v,
+    double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int cell_stride, int u_stride, int v_stride) {
+
+    [[maybe_unused]] const size_t p_sz = static_cast<size_t>((Ny + 2 * Ng) * cell_stride);
+    [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
+    [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Ny + 2 * Ng + 1) * v_stride);
+
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: residual[0:p_sz], p[0:p_sz], rhs[0:p_sz], a_p_u[0:u_sz], a_p_v[0:v_sz])
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i < Nx; ++i) {
+            int jg = j + Ng;
+            int ig = i + Ng;
+            int idx = jg * cell_stride + ig;
+
+            // East/west velocity faces for this cell
+            int u_e = jg * u_stride + (ig + 1);  // u-face at east (i+1, j)
+            int u_w = jg * u_stride + ig;         // u-face at west (i, j)
+            // North/south velocity faces
+            int v_n = (jg + 1) * v_stride + ig;   // v-face at north (i, j+1)
+            int v_s = jg * v_stride + ig;          // v-face at south (i, j)
+
+            // Variable-coefficient Laplacian: ∇·(D · ∇p)
+            // D_e = 1/a_P_u at east face, etc.
+            double D_e = 1.0 / a_p_u[u_e];
+            double D_w = 1.0 / a_p_u[u_w];
+            double D_n = 1.0 / a_p_v[v_n];
+            double D_s = 1.0 / a_p_v[v_s];
+
+            double p_P = p[idx];
+            double p_E = p[jg * cell_stride + (ig + 1)];
+            double p_W = p[jg * cell_stride + (ig - 1)];
+            double p_N = p[(jg + 1) * cell_stride + ig];
+            double p_S = p[(jg - 1) * cell_stride + ig];
+
+            double lap = D_e * (p_E - p_P) / (dx * dx)
+                       - D_w * (p_P - p_W) / (dx * dx)
+                       + D_n * (p_N - p_P) / (dy * dy)
+                       - D_s * (p_P - p_S) / (dy * dy);
+
+            residual[idx] = rhs[idx] - lap;
+        }
+    }
+}
+
+// ============================================================================
 // Jacobi momentum sweep: implicit convection + diffusion
 // u_new_P = [sum_nb(a_nb * u_iter_nb) + source - dp/dx * vol] / a_P
 // Coefficients use frozen mass flux (from velocity_old), iterate values
