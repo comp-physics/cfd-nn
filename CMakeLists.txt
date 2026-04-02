@@ -303,6 +303,8 @@ set(LIB_SOURCES
     src/solver_time_kernels_implicit.cpp
     src/solver_time_kernels_periodic.cpp
     src/solver_time_kernels_projection.cpp
+    src/solver_time_kernels_simple.cpp
+    src/solver_time_simple.cpp
     src/solver_periodic_halos.cpp
     src/solver_energy_diagnostics.cpp
     src/solver_turbulence_diagnostics.cpp
@@ -695,6 +697,7 @@ add_nncfd_test(test_cylinder_re100 TEST_NAME_SUFFIX CylinderRe100Test LABELS med
     add_nncfd_test(test_rans_3d_channel TEST_NAME_SUFFIX RANS3DChannelTest LABELS medium)
     add_nncfd_test(test_duct_poiseuille TEST_NAME_SUFFIX DuctPoiseuilleTest LABELS medium)
     add_nncfd_test(test_duct_validation TEST_NAME_SUFFIX DuctValidationTest LABELS fast)
+    add_nncfd_test(test_simple_solver TEST_NAME_SUFFIX SimpleSolverTest LABELS fast)
 
     # =========================================================================
     # Slow tests (>120s) - exclude with: ctest -LE slow

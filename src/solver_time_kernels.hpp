@@ -163,5 +163,76 @@ void thomas_y_diffusion_3d_stretched(double* u, double* v, double* w, double* nu
                                      double dt,
                                      const double* dyv, const double* dyc);
 
+// ============================================================================
+// SIMPLE steady-state solver kernels
+// ============================================================================
+
+void simple_compute_aP_2d(double* a_p_u, double* a_p_v,
+                          const double* nu_eff,
+                          int Nx, int Ny, int Ng,
+                          int u_stride, int v_stride, int cell_stride,
+                          double dx, double dy,
+                          double pseudo_dt_inv);
+
+void simple_compute_aP_3d(double* a_p_u, double* a_p_v, double* a_p_w,
+                          const double* nu_eff,
+                          int Nx, int Ny, int Nz, int Ng,
+                          int u_stride, int u_plane,
+                          int v_stride, int v_plane,
+                          int w_stride, int w_plane,
+                          int cell_stride, int cell_plane,
+                          double dx, double dy, double dz,
+                          double pseudo_dt_inv);
+
+void simple_predictor_2d(double* u_star, double* v_star,
+                         const double* u, const double* v,
+                         const double* u_old, const double* v_old,
+                         const double* conv_u, const double* conv_v,
+                         const double* diff_u, const double* diff_v,
+                         const double* tau_div_u, const double* tau_div_v,
+                         const double* a_p_u, const double* a_p_v,
+                         const double* p,
+                         double fx, double fy, double dx, double dy,
+                         double alpha_u,
+                         int Nx, int Ny, int Ng,
+                         int u_stride, int v_stride, int cell_stride);
+
+void simple_predictor_3d(double* u_star, double* v_star, double* w_star,
+                         const double* u, const double* v, const double* w,
+                         const double* u_old, const double* v_old, const double* w_old,
+                         const double* conv_u, const double* conv_v, const double* conv_w,
+                         const double* diff_u, const double* diff_v, const double* diff_w,
+                         const double* tau_div_u, const double* tau_div_v, const double* tau_div_w,
+                         const double* a_p_u, const double* a_p_v, const double* a_p_w,
+                         const double* p,
+                         double fx, double fy, double fz,
+                         double dx, double dy, double dz,
+                         double alpha_u,
+                         int Nx, int Ny, int Nz, int Ng,
+                         int u_stride, int u_plane,
+                         int v_stride, int v_plane,
+                         int w_stride, int w_plane,
+                         int cell_stride, int cell_plane);
+
+void simple_correct_velocity_2d(double* u, double* v, double* p,
+                                const double* u_star, const double* v_star,
+                                const double* p_corr,
+                                const double* a_p_u, const double* a_p_v,
+                                double alpha_p, double dx, double dy,
+                                int Nx, int Ny, int Ng,
+                                int u_stride, int v_stride, int cell_stride);
+
+void simple_correct_velocity_3d(double* u, double* v, double* w, double* p,
+                                const double* u_star, const double* v_star,
+                                const double* w_star, const double* p_corr,
+                                const double* a_p_u, const double* a_p_v,
+                                const double* a_p_w,
+                                double alpha_p, double dx, double dy, double dz,
+                                int Nx, int Ny, int Nz, int Ng,
+                                int u_stride, int u_plane,
+                                int v_stride, int v_plane,
+                                int w_stride, int w_plane,
+                                int cell_stride, int cell_plane);
+
 } // namespace time_kernels
 } // namespace nncfd

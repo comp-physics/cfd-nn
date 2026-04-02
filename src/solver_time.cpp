@@ -764,7 +764,7 @@ void RANSSolver::implicit_y_diffusion_step(VectorField& vel, double dt) {
     }
 }
 
-void RANSSolver::project_velocity(VectorField& vel, double dt) {
+void RANSSolver::project_velocity(VectorField& vel, double dt, bool skip_correction) {
     VelFieldId vel_id = VelFieldId::Velocity;
     if (&vel == &velocity_star_) vel_id = VelFieldId::VelocityStar;
     else if (&vel == &velocity_old_) vel_id = VelFieldId::VelocityOld;
@@ -1073,7 +1073,7 @@ void RANSSolver::project_velocity(VectorField& vel, double dt) {
                                   velocity_.w_total_size());
     }
 
-    {
+    if (!skip_correction) {
         TIMED_SCOPE("velocity_correction");
         correct_velocity();
     }

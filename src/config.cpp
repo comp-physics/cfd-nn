@@ -59,6 +59,8 @@ static TimeIntegrator parse_time_integrator(const std::string& val) {
         return TimeIntegrator::RK3;
     } else if (val == "euler") {
         return TimeIntegrator::Euler;
+    } else if (val == "simple") {
+        return TimeIntegrator::SIMPLE;
     } else {
         std::cerr << "Warning: Unknown time_integrator '" << val << "'. Using 'euler'.\n";
         return TimeIntegrator::Euler;
@@ -325,6 +327,12 @@ void Config::load(const std::string& filename) {
     trip_n_modes_z = get_int("trip_n_modes_z", trip_n_modes_z);
     trip_force_w = get_bool("trip_force_w", trip_force_w);
     trip_w_scale = get_double("trip_w_scale", trip_w_scale);
+
+    // SIMPLE solver parameters
+    simple_alpha_u = get_double("simple_alpha_u", simple_alpha_u);
+    simple_alpha_p = get_double("simple_alpha_p", simple_alpha_p);
+    simple_Ti = get_double("simple_Ti", simple_Ti);
+    simple_nu_t_ratio = get_double("simple_nu_t_ratio", simple_nu_t_ratio);
 
     // Recycling inflow parameters
     recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
@@ -1103,6 +1111,7 @@ void Config::print() const {
         case TimeIntegrator::Euler: std::cout << "Euler (1st order)"; break;
         case TimeIntegrator::RK2: std::cout << "SSP-RK2 (2nd order)"; break;
         case TimeIntegrator::RK3: std::cout << "SSP-RK3 (3rd order)"; break;
+        case TimeIntegrator::SIMPLE: std::cout << "SIMPLE (steady-state)"; break;
     }
     std::cout << " + Projection\n"
               << "Poisson solver: ";

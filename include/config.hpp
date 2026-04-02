@@ -61,7 +61,8 @@ enum class PoissonSolverType {
 enum class TimeIntegrator {
     Euler,      ///< Forward Euler (1st order) - current default, for debugging/RANS
     RK2,        ///< SSP-RK2 (2nd order) - solid baseline
-    RK3         ///< SSP-RK3 (3rd order) - recommended for LES/DNS
+    RK3,        ///< SSP-RK3 (3rd order) - recommended for LES/DNS
+    SIMPLE      ///< SIMPLE steady-state solver (diagonal approximation, comparable to simpleFoam)
 };
 
 /// Simulation configuration
@@ -229,6 +230,12 @@ struct Config {
     int trip_n_modes_z = 8;                 ///< Number of spanwise modes in trip forcing
     bool trip_force_w = true;               ///< Also force w* (creates vortical structures)
     double trip_w_scale = 1.0;              ///< Scale factor for w trip forcing (>1 boosts 3D structures)
+
+    // SIMPLE steady-state solver parameters
+    double simple_alpha_u = 0.7;       ///< Velocity under-relaxation factor
+    double simple_alpha_p = 0.3;       ///< Pressure under-relaxation factor
+    double simple_Ti = 0.05;           ///< Freestream turbulence intensity for k/ω cold-start
+    double simple_nu_t_ratio = 100.0;  ///< Initial ν_t/ν ratio for ω cold-start
 
     // Recycling inflow (turbulent inlet BC for DNS/LES)
     bool recycling_inflow = false;          ///< Enable recycling inflow at x_lo

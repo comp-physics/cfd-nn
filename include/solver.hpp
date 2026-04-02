@@ -1012,9 +1012,13 @@ private:
     
     // Time integration methods
     void euler_substep(VectorField& vel_in, VectorField& vel_out, double dt);
-    void project_velocity(VectorField& vel, double dt);
+    void project_velocity(VectorField& vel, double dt, bool skip_correction = false);
     void ssprk2_step(double dt);
     void ssprk3_step(double dt);
+
+    // SIMPLE steady-state solver
+    double simple_step();
+    void correct_velocity_simple();
 
     /// Fill periodic ghost layers on device for a velocity field (GPU-resident, no swaps)
     /// This is called after predictor and after correction to ensure halos are consistent.
@@ -1081,6 +1085,12 @@ private:
     bool tau_div_frozen_ = false;       // frozen stress: tau_div computed once, then fixed
     int tau_div_ramp_step_ = 0;         // current step in ramp (0 = start)
     int tau_div_ramp_total_ = 0;        // total ramp steps (0 = no ramp, immediate full strength)
+
+    // SIMPLE diagonal coefficients (velocity-face sized)
+    std::vector<double> a_p_u_buf_, a_p_v_buf_, a_p_w_buf_;
+    double* a_p_u_ptr_ = nullptr;
+    double* a_p_v_ptr_ = nullptr;
+    double* a_p_w_ptr_ = nullptr;
 
     // Gradient scratch buffers (cell-centered, for turbulence models)
     double* dudx_ptr_ = nullptr;

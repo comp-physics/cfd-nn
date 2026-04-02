@@ -1228,6 +1228,11 @@ double RANSSolver::compute_residual() {
 }
 
 double RANSSolver::step() {
+    // SIMPLE: self-contained iteration, handles own turbulence + projection
+    if (config_.time_integrator == TimeIntegrator::SIMPLE) {
+        return simple_step();
+    }
+
     TIMED_SCOPE("solver_step");
     NVTX_SCOPE_SOLVER("time_step");
 
@@ -3892,6 +3897,16 @@ void RANSSolver::extract_field_pointers() {
     tau_div_v_ptr_ = tau_div_v_buf_.data();
     tau_div_w_ptr_ = tau_div_w_buf_.data();
 
+    // SIMPLE a_P diagonal coefficient buffers
+    if (config_.time_integrator == TimeIntegrator::SIMPLE) {
+        a_p_u_buf_.resize(velocity_.u_total_size(), 0.0);
+        a_p_v_buf_.resize(velocity_.v_total_size(), 0.0);
+        a_p_w_buf_.resize(velocity_.w_total_size(), 0.0);
+        a_p_u_ptr_ = a_p_u_buf_.data();
+        a_p_v_ptr_ = a_p_v_buf_.data();
+        a_p_w_ptr_ = a_p_w_buf_.data();
+    }
+
     // Gradient scratch buffers for turbulence models
     dudx_ptr_ = dudx_.data().data();
     dudy_ptr_ = dudy_.data().data();
@@ -4019,6 +4034,16 @@ void RANSSolver::initialize_gpu_buffers() {
         #pragma omp target enter data map(to: tau_div_u_ptr_[0:u_sz])
         #pragma omp target enter data map(to: tau_div_v_ptr_[0:v_sz])
         #pragma omp target enter data map(to: tau_div_w_ptr_[0:w_sz])
+    }
+
+    // SIMPLE a_P buffers
+    if (config_.time_integrator == TimeIntegrator::SIMPLE && a_p_u_ptr_) {
+        [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+        [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+        [[maybe_unused]] const size_t w_sz = velocity_.w_total_size();
+        #pragma omp target enter data map(to: a_p_u_ptr_[0:u_sz])
+        #pragma omp target enter data map(to: a_p_v_ptr_[0:v_sz])
+        #pragma omp target enter data map(to: a_p_w_ptr_[0:w_sz])
     }
 
     // 3D w-velocity fields
@@ -4189,6 +4214,16 @@ void RANSSolver::cleanup_gpu_buffers() {
         #pragma omp target exit data map(delete: tau_div_u_ptr_[0:u_sz])
         #pragma omp target exit data map(delete: tau_div_v_ptr_[0:v_sz])
         #pragma omp target exit data map(delete: tau_div_w_ptr_[0:w_sz])
+    }
+
+    // SIMPLE a_P cleanup
+    if (a_p_u_ptr_ && !a_p_u_buf_.empty()) {
+        [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+        [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+        [[maybe_unused]] const size_t w_sz = velocity_.w_total_size();
+        #pragma omp target exit data map(delete: a_p_u_ptr_[0:u_sz])
+        #pragma omp target exit data map(delete: a_p_v_ptr_[0:v_sz])
+        #pragma omp target exit data map(delete: a_p_w_ptr_[0:w_sz])
     }
 
     // Delete y-metric arrays for non-uniform y-spacing
