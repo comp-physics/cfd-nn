@@ -468,5 +468,158 @@ void simple_correct_velocity_3d(double* u, double* v, double* w, double* p,
     }
 }
 
+// ============================================================================
+// Jacobi momentum sweep: implicit convection + diffusion
+// u_new_P = [sum_nb(a_nb * u_iter_nb) + source - dp/dx * vol] / a_P
+// Coefficients use frozen mass flux (from velocity_old), iterate values
+// from previous Jacobi sweep. a_P recomputed inline for consistency.
+// ============================================================================
+
+void simple_jacobi_momentum_2d(
+    double* u_new, double* v_new,
+    const double* u_iter, const double* v_iter,
+    const double* u_frozen, const double* v_frozen,
+    const double* p, const double* nu_eff,
+    const double* tau_div_u, const double* tau_div_v,
+    double fx, double fy, double dx, double dy,
+    double pseudo_dt_inv,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride) {
+
+    const double inv_dx2 = 1.0 / (dx * dx);
+    const double inv_dy2 = 1.0 / (dy * dy);
+    const double vol = dx * dy;
+
+    [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
+    [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Ny + 2 * Ng + 1) * v_stride);
+    [[maybe_unused]] const size_t nu_sz = static_cast<size_t>((Ny + 2 * Ng) * cell_stride);
+    [[maybe_unused]] const size_t p_sz = nu_sz;
+
+    // u-momentum Jacobi sweep
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: u_new[0:u_sz], u_iter[0:u_sz], u_frozen[0:u_sz], \
+                     v_frozen[0:v_sz], p[0:p_sz], nu_eff[0:nu_sz], tau_div_u[0:u_sz])
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i <= Nx; ++i) {
+            int jg = j + Ng;
+            int ig = i + Ng;
+            int u_idx = jg * u_stride + ig;
+
+            // Cell centers left/right of this u-face
+            int cl = jg * cell_stride + (ig - 1);
+            int cr = jg * cell_stride + ig;
+
+            // Diffusion: nu at faces of u-CV
+            double nu_L = nu_eff[cl];
+            double nu_R = nu_eff[cr];
+            // Corner-averaged nu for y-direction diffusion
+            double nu_S = 0.25 * (nu_eff[cl] + nu_eff[cr]
+                + nu_eff[(jg-1) * cell_stride + (ig-1)] + nu_eff[(jg-1) * cell_stride + ig]);
+            double nu_N = 0.25 * (nu_eff[cl] + nu_eff[cr]
+                + nu_eff[(jg+1) * cell_stride + (ig-1)] + nu_eff[(jg+1) * cell_stride + ig]);
+
+            double a_W_diff = nu_L * inv_dx2 * vol;
+            double a_E_diff = nu_R * inv_dx2 * vol;
+            double a_S_diff = nu_S * inv_dy2 * vol;
+            double a_N_diff = nu_N * inv_dy2 * vol;
+
+            // Convection: mass fluxes from FROZEN field (upwind linearization)
+            double F_w = u_frozen[jg * u_stride + (ig - 1)] * dy;
+            double F_e = u_frozen[jg * u_stride + (ig + 1)] * dy;
+            double F_s = 0.5 * (v_frozen[jg * v_stride + (ig-1)] + v_frozen[jg * v_stride + ig]) * dx;
+            double F_n = 0.5 * (v_frozen[(jg+1) * v_stride + (ig-1)] + v_frozen[(jg+1) * v_stride + ig]) * dx;
+
+            // Off-diagonal convective: neighbor contributes when flux flows toward P
+            double a_W_conv = (F_w > 0.0) ? F_w : 0.0;
+            double a_E_conv = (F_e < 0.0) ? -F_e : 0.0;
+            double a_S_conv = (F_s > 0.0) ? F_s : 0.0;
+            double a_N_conv = (F_n < 0.0) ? -F_n : 0.0;
+
+            // Total off-diagonal
+            double a_W = a_W_diff + a_W_conv;
+            double a_E = a_E_diff + a_E_conv;
+            double a_S = a_S_diff + a_S_conv;
+            double a_N = a_N_diff + a_N_conv;
+
+            // Diagonal: sum of off-diag diffusion + convection self-contribution + damping
+            double a_P_val = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
+                + ((F_w < 0.0 ? -F_w : 0.0) + (F_e > 0.0 ? F_e : 0.0)
+                 + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0))
+                + vol * pseudo_dt_inv;
+            if (a_P_val < 1e-20) a_P_val = 1e-20;
+
+            // Neighbor sum (using ITERATE values, not frozen)
+            double sum_nb = a_W * u_iter[jg * u_stride + (ig-1)]
+                          + a_E * u_iter[jg * u_stride + (ig+1)]
+                          + a_S * u_iter[(jg-1) * u_stride + ig]
+                          + a_N * u_iter[(jg+1) * u_stride + ig];
+
+            double source = (tau_div_u[u_idx] + fx) * vol;
+            double dp_dx = (p[cr] - p[cl]) / dx * vol;
+
+            u_new[u_idx] = (sum_nb + source - dp_dx) / a_P_val;
+        }
+    }
+
+    // v-momentum Jacobi sweep
+    #pragma omp target teams distribute parallel for collapse(2) \
+        map(present: v_new[0:v_sz], v_iter[0:v_sz], v_frozen[0:v_sz], \
+                     u_frozen[0:u_sz], p[0:p_sz], nu_eff[0:nu_sz], tau_div_v[0:v_sz])
+    for (int j = 0; j <= Ny; ++j) {
+        for (int i = 0; i < Nx; ++i) {
+            int jg = j + Ng;
+            int ig = i + Ng;
+            int v_idx = jg * v_stride + ig;
+
+            int cb = (jg - 1) * cell_stride + ig;
+            int ct = jg * cell_stride + ig;
+
+            double nu_B = nu_eff[cb];
+            double nu_T = nu_eff[ct];
+            double nu_W = 0.25 * (nu_eff[cb] + nu_eff[ct]
+                + nu_eff[(jg-1) * cell_stride + (ig-1)] + nu_eff[jg * cell_stride + (ig-1)]);
+            double nu_E = 0.25 * (nu_eff[cb] + nu_eff[ct]
+                + nu_eff[(jg-1) * cell_stride + (ig+1)] + nu_eff[jg * cell_stride + (ig+1)]);
+
+            double a_S_diff = nu_B * inv_dy2 * vol;
+            double a_N_diff = nu_T * inv_dy2 * vol;
+            double a_W_diff = nu_W * inv_dx2 * vol;
+            double a_E_diff = nu_E * inv_dx2 * vol;
+
+            // Convection from frozen field
+            double F_w = 0.5 * (u_frozen[(jg-1) * u_stride + ig] + u_frozen[jg * u_stride + ig]) * dy;
+            double F_e = 0.5 * (u_frozen[(jg-1) * u_stride + (ig+1)] + u_frozen[jg * u_stride + (ig+1)]) * dy;
+            double F_s = v_frozen[(jg - 1) * v_stride + ig] * dx;
+            double F_n = v_frozen[(jg + 1) * v_stride + ig] * dx;
+
+            double a_W_conv = (F_w > 0.0) ? F_w : 0.0;
+            double a_E_conv = (F_e < 0.0) ? -F_e : 0.0;
+            double a_S_conv = (F_s > 0.0) ? F_s : 0.0;
+            double a_N_conv = (F_n < 0.0) ? -F_n : 0.0;
+
+            double a_W = a_W_diff + a_W_conv;
+            double a_E = a_E_diff + a_E_conv;
+            double a_S = a_S_diff + a_S_conv;
+            double a_N = a_N_diff + a_N_conv;
+
+            double a_P_val = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
+                + ((F_w < 0.0 ? -F_w : 0.0) + (F_e > 0.0 ? F_e : 0.0)
+                 + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0))
+                + vol * pseudo_dt_inv;
+            if (a_P_val < 1e-20) a_P_val = 1e-20;
+
+            double sum_nb = a_W * v_iter[jg * v_stride + (ig-1)]
+                          + a_E * v_iter[jg * v_stride + (ig+1)]
+                          + a_S * v_iter[(jg-1) * v_stride + ig]
+                          + a_N * v_iter[(jg+1) * v_stride + ig];
+
+            double source = (tau_div_v[v_idx] + fy) * vol;
+            double dp_dy = (p[ct] - p[cb]) / dy * vol;
+
+            v_new[v_idx] = (sum_nb + source - dp_dy) / a_P_val;
+        }
+    }
+}
+
 } // namespace time_kernels
 } // namespace nncfd

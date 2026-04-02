@@ -236,5 +236,17 @@ void simple_correct_velocity_3d(double* u, double* v, double* w, double* p,
                                 int w_stride, int w_plane,
                                 int cell_stride, int cell_plane);
 
+// Jacobi momentum sweep: implicit convection + diffusion
+void simple_jacobi_momentum_2d(
+    double* u_new, double* v_new,
+    const double* u_iter, const double* v_iter,
+    const double* u_frozen, const double* v_frozen,
+    const double* p, const double* nu_eff,
+    const double* tau_div_u, const double* tau_div_v,
+    double fx, double fy, double dx, double dy,
+    double pseudo_dt_inv,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride);
+
 } // namespace time_kernels
 } // namespace nncfd

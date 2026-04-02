@@ -31,7 +31,12 @@ double RANSSolver::simple_step() {
     const bool is_2d = mesh_->is2D();
 
     // ================================================================
-    // 0. Copy velocity to velocity_old_ for residual + under-relaxation
+    // 0. Ensure BCs are applied (ghost cells valid for Jacobi stencil)
+    // ================================================================
+    apply_velocity_bc();
+
+    // ================================================================
+    // 0b. Copy velocity to velocity_old_ for residual + under-relaxation
     // ================================================================
     {
         [[maybe_unused]] const size_t u_total_size = velocity_.u_total_size();
@@ -269,100 +274,153 @@ double RANSSolver::simple_step() {
     }
 
     // ================================================================
-    // 3. Compute convective, diffusive, and tau_div terms
+    // 3. Compute tau_div (anisotropic stress divergence)
+    //    NO RAMP — full strength from iteration 1
     // ================================================================
-    {
-        TIMED_SCOPE("convective_term");
-        compute_convective_term(velocity_, conv_);
-    }
-    {
-        TIMED_SCOPE("diffusive_term");
-        compute_diffusive_term(velocity_, nu_eff_, diff_);
-    }
-    // Anisotropic stress divergence: NO RAMP — full strength from iteration 1
     if (turb_model_ && turb_model_->provides_reynolds_stresses() && !tau_div_frozen_) {
         compute_tau_divergence();
     }
 
     // ================================================================
-    // 4. Compute a_P diagonal coefficient with pseudo-transient damping
-    //    a_P = diffusion_diagonal * vol + vol / dt_pseudo
-    //    dt_pseudo adapts: CFL-based from current max velocity
+    // 4-5. Momentum solve
+    //      Jacobi (simple_jacobi_sweeps > 0): implicit convection + diffusion
+    //      Diagonal approximation (simple_jacobi_sweeps <= 0): explicit predictor
     // ================================================================
     {
         const int u_stride = Nx + 2 * Ng + 1;
         const int v_stride = Nx + 2 * Ng;
         const int cell_stride = Nx + 2 * Ng;
 
-        // Pseudo-transient dt: limits update size based on CFL
-        // Estimate max velocity from velocity field
+        // Pseudo-transient damping: vol / dt_pseudo added to diagonal
         double u_max = 0.0;
+        double nu_eff_max = config_.nu;
         if (is_2d) {
-            const int us = Nx + 2 * Ng + 1;
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
                 for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
-                    double val = velocity_u_ptr_[j * us + i];
+                    double val = velocity_u_ptr_[j * u_stride + i];
                     if (val < 0) val = -val;
                     if (val > u_max) u_max = val;
                 }
-        } else {
-            const int us = Nx + 2 * Ng + 1;
-            const int up = us * (Ny + 2 * Ng);
-            for (int k = mesh_->k_begin(); k < mesh_->k_end(); ++k)
-                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
-                    for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
-                        double val = velocity_u_ptr_[k * up + j * us + i];
-                        if (val < 0) val = -val;
-                        if (val > u_max) u_max = val;
-                    }
         }
-        if (u_max < 1e-6) u_max = 1e-6;  // floor for initial zero/small velocity
-        double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
-                              : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
-        // Pseudo-dt: min of convective CFL and diffusion stability
-        // The diffusion limit prevents blowup when nu_t is large (SST, MLP)
-        double dt_conv = dx_min / u_max;
-        double nu_eff_max = config_.nu;
-        // Quick scan for max nu_eff (already computed this step)
         for (size_t idx = 0; idx < field_total_size_; ++idx) {
             if (nu_eff_ptr_[idx] > nu_eff_max) nu_eff_max = nu_eff_ptr_[idx];
         }
-        double dt_diff = (nu_eff_max > 0) ? 0.25 * dx_min * dx_min / nu_eff_max : 1e10;
-        double pseudo_dt = std::min(dt_conv, dt_diff);
+        if (u_max < 1e-6) u_max = 1e-6;
+        double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
+                              : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
+        double pseudo_dt = std::min(dx_min / u_max,
+                                    0.25 * dx_min * dx_min / nu_eff_max);
         if (pseudo_dt < 1e-15) pseudo_dt = 1e-15;
         double pseudo_dt_inv = 1.0 / pseudo_dt;
 
+        if (config_.verbose && step_count_ < 5) {
+            std::cerr << "[SIMPLE] pseudo_dt=" << pseudo_dt
+                      << " nu_max=" << nu_eff_max << " u_max=" << u_max << "\n";
+        }
+
+        const int n_sweeps = config_.simple_jacobi_sweeps;
+
+        if (n_sweeps > 0) {
+        // Jacobi path: implicit convection + diffusion
+        double* u_src = velocity_u_ptr_;
+        double* v_src = velocity_v_ptr_;
+        double* u_dst = velocity_star_u_ptr_;
+        double* v_dst = velocity_star_v_ptr_;
+
+        for (int sweep = 0; sweep < n_sweeps; ++sweep) {
+            if (is_2d) {
+                time_kernels::simple_jacobi_momentum_2d(
+                    u_dst, v_dst,           // write
+                    u_src, v_src,           // read (iterate)
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,  // frozen for coefficients
+                    pressure_ptr_, nu_eff_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, mesh_->dx, mesh_->dy,
+                    pseudo_dt_inv,
+                    Nx, Ny, Ng, u_stride, v_stride, cell_stride);
+            } else {
+                // TODO: 3D Jacobi kernel (use explicit predictor fallback for now)
+                break;
+            }
+
+            // Apply BCs to output buffer: swap into velocity_ position, apply, swap back
+            std::swap(velocity_u_ptr_, u_dst);
+            std::swap(velocity_v_ptr_, v_dst);
+            std::swap(velocity_, velocity_star_);
+            apply_velocity_bc();
+            std::swap(velocity_, velocity_star_);
+            std::swap(velocity_u_ptr_, u_dst);
+            std::swap(velocity_v_ptr_, v_dst);
+
+            // Ping-pong for next sweep
+            std::swap(u_src, u_dst);
+            std::swap(v_src, v_dst);
+        }
+
+        // After sweeps: result is in u_src (last swap). Need it in velocity_star_.
+        // If n_sweeps is even, result is in velocity_; if odd, in velocity_star_.
+        // Copy to velocity_star_ if needed.
+        if (n_sweeps % 2 == 0 && n_sweeps > 0) {
+            // Result in velocity_, need to copy to velocity_star_
+            [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
+            [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
+            time_kernels::copy_2d_uv(velocity_u_ptr_, velocity_star_u_ptr_,
+                                     velocity_v_ptr_, velocity_star_v_ptr_,
+                                     Nx, Ny, Ng, u_stride, v_stride,
+                                     u_total, v_total);
+        }
+
+        // Under-relax: velocity_star = alpha * jacobi_result + (1-alpha) * velocity_old
+        {
+            [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+            [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+            const double alpha = config_.simple_alpha_u;
+            const double one_m_alpha = 1.0 - alpha;
+            double* us = velocity_star_u_ptr_;
+            double* vs = velocity_star_v_ptr_;
+            const double* uo = velocity_old_u_ptr_;
+            const double* vo = velocity_old_v_ptr_;
+            #pragma omp target teams distribute parallel for \
+                map(present: us[0:u_sz], uo[0:u_sz])
+            for (size_t i = 0; i < u_sz; ++i) {
+                us[i] = alpha * us[i] + one_m_alpha * uo[i];
+            }
+            #pragma omp target teams distribute parallel for \
+                map(present: vs[0:v_sz], vo[0:v_sz])
+            for (size_t i = 0; i < v_sz; ++i) {
+                vs[i] = alpha * vs[i] + one_m_alpha * vo[i];
+            }
+        }
+
+        // Compute a_P for pressure correction (still needed for u = u* - (1/a_P)*grad(p'))
         if (is_2d) {
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_u_ptr_, velocity_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride, cell_stride,
                 mesh_->dx, mesh_->dy, pseudo_dt_inv);
-        } else {
-            const int u_plane = u_stride * (Ny + 2 * Ng);
-            const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-            const int w_stride = Nx + 2 * Ng;
-            const int w_plane = w_stride * (Ny + 2 * Ng);
-            const int cell_plane = cell_stride * (Ny + 2 * Ng);
-
-            time_kernels::simple_compute_aP_3d(
-                a_p_u_ptr_, a_p_v_ptr_, a_p_w_ptr_, nu_eff_ptr_,
-                velocity_u_ptr_, velocity_v_ptr_, velocity_w_ptr_,
-                Nx, Ny, Nz, Ng,
-                u_stride, u_plane, v_stride, v_plane,
-                w_stride, w_plane, cell_stride, cell_plane,
-                mesh_->dx, mesh_->dy, mesh_->dz, pseudo_dt_inv);
         }
-    }
+        } else {
+        // Diagonal-approximation path (fallback, works for laminar)
+        {
+            TIMED_SCOPE("convective_term");
+            compute_convective_term(velocity_, conv_);
+        }
+        {
+            TIMED_SCOPE("diffusive_term");
+            compute_diffusive_term(velocity_, nu_eff_, diff_);
+        }
 
-    // ================================================================
-    // 5. SIMPLE momentum predictor (under-relaxed)
-    // ================================================================
-    {
-        const int u_stride = Nx + 2 * Ng + 1;
-        const int v_stride = Nx + 2 * Ng;
-        const int cell_stride = Nx + 2 * Ng;
+        // Compute a_P with convective diagonal
+        if (is_2d) {
+            time_kernels::simple_compute_aP_2d(
+                a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
+                velocity_u_ptr_, velocity_v_ptr_,
+                Nx, Ny, Ng, u_stride, v_stride, cell_stride,
+                mesh_->dx, mesh_->dy, pseudo_dt_inv);
+        }
 
+        // Predictor: u* = u + (H - dp/dx) / a_P, under-relaxed
         if (is_2d) {
             time_kernels::simple_predictor_2d(
                 velocity_star_u_ptr_, velocity_star_v_ptr_,
@@ -376,29 +434,7 @@ double RANSSolver::simple_step() {
                 fx_, fy_, mesh_->dx, mesh_->dy,
                 config_.simple_alpha_u,
                 Nx, Ny, Ng, u_stride, v_stride, cell_stride);
-        } else {
-            const int u_plane = u_stride * (Ny + 2 * Ng);
-            const int v_plane = v_stride * (Ny + 2 * Ng + 1);
-            const int w_stride = Nx + 2 * Ng;
-            const int w_plane = w_stride * (Ny + 2 * Ng);
-            const int cell_stride_3d = Nx + 2 * Ng;
-            const int cell_plane = cell_stride_3d * (Ny + 2 * Ng);
-
-            time_kernels::simple_predictor_3d(
-                velocity_star_u_ptr_, velocity_star_v_ptr_, velocity_star_w_ptr_,
-                velocity_u_ptr_, velocity_v_ptr_, velocity_w_ptr_,
-                velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
-                conv_.u_data().data(), conv_.v_data().data(), conv_.w_data().data(),
-                diff_.u_data().data(), diff_.v_data().data(), diff_.w_data().data(),
-                tau_div_u_ptr_, tau_div_v_ptr_, tau_div_w_ptr_,
-                a_p_u_ptr_, a_p_v_ptr_, a_p_w_ptr_,
-                pressure_ptr_,
-                fx_, fy_, fz_,
-                mesh_->dx, mesh_->dy, mesh_->dz,
-                config_.simple_alpha_u,
-                Nx, Ny, Nz, Ng,
-                u_stride, u_plane, v_stride, v_plane,
-                w_stride, w_plane, cell_stride_3d, cell_plane);
+        }
         }
     }
 

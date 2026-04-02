@@ -333,6 +333,7 @@ void Config::load(const std::string& filename) {
     simple_alpha_p = get_double("simple_alpha_p", simple_alpha_p);
     simple_Ti = get_double("simple_Ti", simple_Ti);
     simple_nu_t_ratio = get_double("simple_nu_t_ratio", simple_nu_t_ratio);
+    simple_jacobi_sweeps = get_int("simple_jacobi_sweeps", simple_jacobi_sweeps);
 
     // Recycling inflow parameters
     recycling_inflow = get_bool("recycling_inflow", recycling_inflow);
