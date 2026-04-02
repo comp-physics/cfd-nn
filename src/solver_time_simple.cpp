@@ -601,6 +601,8 @@ double RANSSolver::simple_step() {
                 }
             }
         }
+        // NaN guard: if velocity contains NaN, return infinity to trigger divergence check
+        if (max_change != max_change) max_change = 1e30;  // NaN check
         return max_change;
     }
 }
