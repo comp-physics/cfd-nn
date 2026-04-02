@@ -44,6 +44,8 @@ void test_simple_poiseuille() {
     config.simple_alpha_p = 0.3;
     config.max_steps = 5000;
     config.tol = 1e-4;
+    // Jacobi path needs more work — use diagonal approx for now
+    // config.simple_jacobi_sweeps = 5;
     config.verbose = false;
     config.adaptive_dt = false;
     config.dt = 1.0;  // Not used by SIMPLE but needed for init

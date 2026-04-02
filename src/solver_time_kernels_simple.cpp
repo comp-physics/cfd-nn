@@ -6,6 +6,7 @@
 /// Free functions to avoid NVHPC this-pointer transfer.
 
 #include "solver_time_kernels.hpp"
+#include <cstdio>
 
 namespace nncfd {
 namespace time_kernels {
@@ -557,7 +558,28 @@ void simple_jacobi_momentum_2d(
             double source = (tau_div_u[u_idx] + fx) * vol;
             double dp_dx = (p[cr] - p[cl]) / dx * vol;
 
-            u_new[u_idx] = (sum_nb + source - dp_dx) / a_P_val;
+            double result = (sum_nb + source - dp_dx) / a_P_val;
+            // NaN debug trap (CPU only, remove for production)
+            if (result != result) {
+                // Print first NaN location
+                static bool printed = false;
+                if (!printed) {
+                    printed = false; // always print for debugging
+                    std::fprintf(stderr, "[Jacobi NaN] u at ig=%d jg=%d: sum_nb=%.6e source=%.6e dp=%.6e aP=%.6e\n"
+                                         "  a_W=%.4e a_E=%.4e a_S=%.4e a_N=%.4e\n"
+                                         "  u_W=%.4e u_E=%.4e u_S=%.4e u_N=%.4e\n"
+                                         "  F_w=%.4e F_e=%.4e F_s=%.4e F_n=%.4e\n"
+                                         "  nu_L=%.4e nu_R=%.4e nu_S=%.4e nu_N=%.4e\n",
+                                 ig, jg, sum_nb, source, dp_dx, a_P_val,
+                                 a_W, a_E, a_S, a_N,
+                                 u_iter[jg*u_stride+(ig-1)], u_iter[jg*u_stride+(ig+1)],
+                                 u_iter[(jg-1)*u_stride+ig], u_iter[(jg+1)*u_stride+ig],
+                                 F_w, F_e, F_s, F_n,
+                                 nu_L, nu_R, nu_S, nu_N);
+                    printed = true;
+                }
+            }
+            u_new[u_idx] = result;
         }
     }
 
