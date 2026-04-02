@@ -666,51 +666,119 @@ double RANSSolver::simple_step() {
 #endif
 
     // ================================================================
-    // 9. Residual: max|u_new - u_old| (NOT compute_residual() which
-    //    compares velocity_ vs velocity_star_ — wrong for SIMPLE)
+    // 9. Residual
+    //    RB-GS path: MOMENTUM EQUATION RESIDUAL (prevents premature convergence)
+    //    Diagonal-approx path: velocity change (momentum residual doesn't converge
+    //    for diagonal approximation since it doesn't solve the full momentum eq)
     // ================================================================
     {
         TIMED_SCOPE("residual_computation");
         const int u_stride = Nx + 2 * Ng + 1;
         const int v_stride = Nx + 2 * Ng;
-        double max_change = 0.0;
+        const int cell_stride = Nx + 2 * Ng;
 
-        // u-component residual
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
-                int idx = j * u_stride + i;
-                double du = velocity_u_ptr_[idx] - velocity_old_u_ptr_[idx];
-                if (du < 0.0) du = -du;
-                if (du > max_change) max_change = du;
+        double max_res = 0.0;
+
+        if (config_.simple_jacobi_sweeps > 0 && is_2d) {
+        // RB-GS path: momentum equation residual
+        const double inv_dx2 = 1.0 / (mesh_->dx * mesh_->dx);
+        const double inv_dy2 = 1.0 / (mesh_->dy * mesh_->dy);
+        const double vol = is_2d ? mesh_->dx * mesh_->dy
+                                 : mesh_->dx * mesh_->dy * mesh_->dz;
+        const double pdt_inv = (simple_pseudo_dt_fixed_ > 0)
+                               ? 1.0 / simple_pseudo_dt_fixed_ : 0.0;
+
+        {
+            // u-momentum residual
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i <= Nx; ++i) {
+                    int jg = j + Ng;
+                    int ig = i + Ng;
+                    int u_idx = jg * u_stride + ig;
+                    int cl = jg * cell_stride + (ig - 1);
+                    int cr = jg * cell_stride + ig;
+
+                    // Diffusion coefficients
+                    double nu_L = nu_eff_ptr_[cl];
+                    double nu_R = nu_eff_ptr_[cr];
+                    double nu_S = 0.25 * (nu_eff_ptr_[cl] + nu_eff_ptr_[cr]
+                        + nu_eff_ptr_[(jg-1)*cell_stride+(ig-1)] + nu_eff_ptr_[(jg-1)*cell_stride+ig]);
+                    double nu_N = 0.25 * (nu_eff_ptr_[cl] + nu_eff_ptr_[cr]
+                        + nu_eff_ptr_[(jg+1)*cell_stride+(ig-1)] + nu_eff_ptr_[(jg+1)*cell_stride+ig]);
+
+                    double a_W_d = nu_L * inv_dx2 * vol;
+                    double a_E_d = nu_R * inv_dx2 * vol;
+                    double a_S_d = nu_S * inv_dy2 * vol;
+                    double a_N_d = nu_N * inv_dy2 * vol;
+
+                    // Convection (upwind from frozen)
+                    double F_w = velocity_old_u_ptr_[jg*u_stride+(ig-1)] * mesh_->dy;
+                    double F_e = velocity_old_u_ptr_[jg*u_stride+(ig+1)] * mesh_->dy;
+                    double F_s = 0.5*(velocity_old_v_ptr_[jg*v_stride+(ig-1)]
+                                    + velocity_old_v_ptr_[jg*v_stride+ig]) * mesh_->dx;
+                    double F_n = 0.5*(velocity_old_v_ptr_[(jg+1)*v_stride+(ig-1)]
+                                    + velocity_old_v_ptr_[(jg+1)*v_stride+ig]) * mesh_->dx;
+
+                    double a_W = a_W_d + (F_w > 0 ? F_w : 0);
+                    double a_E = a_E_d + (F_e < 0 ? -F_e : 0);
+                    double a_S = a_S_d + (F_s > 0 ? F_s : 0);
+                    double a_N = a_N_d + (F_n < 0 ? -F_n : 0);
+
+                    double a_P_val = (a_W_d + a_E_d + a_S_d + a_N_d)
+                        + ((F_w<0?-F_w:0) + (F_e>0?F_e:0) + (F_s<0?-F_s:0) + (F_n>0?F_n:0))
+                        + vol * pdt_inv;
+
+                    double sum_nb = a_W * velocity_u_ptr_[jg*u_stride+(ig-1)]
+                                  + a_E * velocity_u_ptr_[jg*u_stride+(ig+1)]
+                                  + a_S * velocity_u_ptr_[(jg-1)*u_stride+ig]
+                                  + a_N * velocity_u_ptr_[(jg+1)*u_stride+ig];
+
+                    double source = (tau_div_u_ptr_[u_idx] + fx_) * vol;
+                    double dp_dx = (pressure_ptr_[cr] - pressure_ptr_[cl]) / mesh_->dx * vol;
+                    double transient = vol * pdt_inv * velocity_old_u_ptr_[u_idx];
+
+                    // Residual: how far is a_P*u from (sum_nb + source - dp + transient)?
+                    double R = a_P_val * velocity_u_ptr_[u_idx]
+                             - (sum_nb + source - dp_dx + transient);
+                    if (R < 0) R = -R;
+                    // Normalize by a_P to get velocity units
+                    if (a_P_val > 1e-20) R /= a_P_val;
+                    if (R > max_res) max_res = R;
+                }
             }
-        }
-        // v-component residual
-        for (int j = mesh_->j_begin(); j <= mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                int idx = j * v_stride + i;
-                double dv = velocity_v_ptr_[idx] - velocity_old_v_ptr_[idx];
-                if (dv < 0.0) dv = -dv;
-                if (dv > max_change) max_change = dv;
-            }
-        }
-        // w-component for 3D
-        if (!is_2d) {
-            const int w_stride = Nx + 2 * Ng;
-            const int w_plane = w_stride * (Ny + 2 * Ng);
-            for (int k = mesh_->k_begin(); k <= mesh_->k_end(); ++k) {
-                for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-                    for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                        int idx = k * w_plane + j * w_stride + i;
-                        double dw = velocity_w_ptr_[idx] - velocity_old_w_ptr_[idx];
-                        if (dw < 0.0) dw = -dw;
-                        if (dw > max_change) max_change = dw;
-                    }
+
+            // v-momentum residual (simplified — just use velocity change as proxy)
+            for (int j = mesh_->j_begin(); j <= mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    int idx = j * v_stride + i;
+                    double dv = velocity_v_ptr_[idx] - velocity_old_v_ptr_[idx];
+                    if (dv < 0) dv = -dv;
+                    if (dv > max_res) max_res = dv;
                 }
             }
         }
-        // NaN guard: if velocity contains NaN, return infinity to trigger divergence check
-        if (max_change != max_change) max_change = 1e30;  // NaN check
-        return max_change;
+        } else {
+            // Diagonal-approx or 3D fallback: velocity-change residual
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
+                    int idx = j * u_stride + i;
+                    double du = velocity_u_ptr_[idx] - velocity_old_u_ptr_[idx];
+                    if (du < 0) du = -du;
+                    if (du > max_res) max_res = du;
+                }
+            }
+            for (int j = mesh_->j_begin(); j <= mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    int idx = j * v_stride + i;
+                    double dv = velocity_v_ptr_[idx] - velocity_old_v_ptr_[idx];
+                    if (dv < 0) dv = -dv;
+                    if (dv > max_res) max_res = dv;
+                }
+            }
+        }
+
+        if (max_res != max_res) max_res = 1e30;  // NaN guard
+        return max_res;
     }
 }
 
