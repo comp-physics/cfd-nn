@@ -312,6 +312,8 @@ double RANSSolver::simple_step() {
                                     0.25 * dx_min * dx_min / nu_eff_max);
         if (pseudo_dt < 1e-15) pseudo_dt = 1e-15;
         double pseudo_dt_inv = 1.0 / pseudo_dt;
+        // Store for Rhie-Chow correction (used in correct_velocity_simple)
+        current_dt_ = pseudo_dt;
 
         if (config_.verbose && step_count_ < 5) {
             std::cerr << "[SIMPLE] pseudo_dt=" << pseudo_dt
@@ -738,6 +740,13 @@ void RANSSolver::correct_velocity_simple() {
     const int v_stride = Nx + 2 * Ng;
     const int cell_stride = Nx + 2 * Ng;
 
+    // For Jacobi path: Rhie-Chow uses undamped a_P for correction
+    // pseudo_dt_inv stored in current_dt_ as 1/pseudo_dt from the momentum section
+    double pdt_inv = (config_.simple_jacobi_sweeps > 0 && current_dt_ > 0)
+                     ? 1.0 / current_dt_ : 0.0;  // 0 = no Rhie-Chow (diagonal approx path)
+    double vol = is_2d ? mesh_->dx * mesh_->dy
+                       : mesh_->dx * mesh_->dy * mesh_->dz;
+
     if (is_2d) {
         time_kernels::simple_correct_velocity_2d(
             velocity_u_ptr_, velocity_v_ptr_, pressure_ptr_,
@@ -745,6 +754,7 @@ void RANSSolver::correct_velocity_simple() {
             pressure_corr_ptr_,
             a_p_u_ptr_, a_p_v_ptr_,
             config_.simple_alpha_p, mesh_->dx, mesh_->dy,
+            pdt_inv, vol,
             Nx, Ny, Ng, u_stride, v_stride, cell_stride);
     } else {
         const int u_plane = u_stride * (Ny + 2 * Ng);

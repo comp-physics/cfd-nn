@@ -353,6 +353,7 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
                                 const double* p_corr,
                                 const double* a_p_u, const double* a_p_v,
                                 double alpha_p, double dx, double dy,
+                                double pseudo_dt_inv, double vol,
                                 int Nx, int Ny, int Ng,
                                 int u_stride, int v_stride, int cell_stride) {
     [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
@@ -369,7 +370,10 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
             int u_idx = jg * u_stride + ig;
             double dp_dx = (p_corr[jg * cell_stride + ig] -
                             p_corr[jg * cell_stride + (ig - 1)]) / dx;
-            u[u_idx] = u_star[u_idx] - dp_dx / a_p_u[u_idx];
+            // Rhie-Chow: use undamped a_P for correction (remove pseudo-transient term)
+            double a_p_undamped = a_p_u[u_idx] - vol * pseudo_dt_inv;
+            if (a_p_undamped < 1e-20) a_p_undamped = a_p_u[u_idx];  // fallback if undamped is tiny
+            u[u_idx] = u_star[u_idx] - dp_dx / a_p_undamped;
         }
     }
 
@@ -383,7 +387,9 @@ void simple_correct_velocity_2d(double* u, double* v, double* p,
             int v_idx = jg * v_stride + ig;
             double dp_dy = (p_corr[jg * cell_stride + ig] -
                             p_corr[(jg - 1) * cell_stride + ig]) / dy;
-            v[v_idx] = v_star[v_idx] - dp_dy / a_p_v[v_idx];
+            double a_p_v_undamped = a_p_v[v_idx] - vol * pseudo_dt_inv;
+            if (a_p_v_undamped < 1e-20) a_p_v_undamped = a_p_v[v_idx];
+            v[v_idx] = v_star[v_idx] - dp_dy / a_p_v_undamped;
         }
     }
 
