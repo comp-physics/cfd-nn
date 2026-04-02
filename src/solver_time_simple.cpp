@@ -372,11 +372,17 @@ double RANSSolver::simple_step() {
                 nu_eff_ptr_, alpha_u, mesh_->dx, mesh_->dy,
                 Nx, Ny, Ng, u_stride, v_stride, cell_stride);
 
-            // Step 2: r = b - A*x (compute b inline and subtract)
+            // Step 2: r = b - A*x
+            // Compute b using the SAME stencil as the matvec for consistency.
+            // b_P = source_P - grad(p)_P + (a_P_eff - a_P_phys) * u_old_P
+            // where a_P_phys includes BOTH diffusion AND convection diagonal
+            // (matching the matvec's a_P_phys exactly).
             {
                 const double inv_dx2 = 1.0 / (mesh_->dx * mesh_->dx);
                 const double inv_dy2 = 1.0 / (mesh_->dy * mesh_->dy);
                 const double vol = mesh_->dx * mesh_->dy;
+                const double ddx = mesh_->dx;
+                const double ddy = mesh_->dy;
 
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i <= Nx; ++i) {
@@ -386,15 +392,28 @@ double RANSSolver::simple_step() {
                         int cl = jg * cell_stride + (ig-1);
                         int cr = jg * cell_stride + ig;
 
-                        double source = (tau_div_u_ptr_[u_idx] + fx_) * vol;
-                        double dp_dx = (pressure_ptr_[cr] - pressure_ptr_[cl]) / mesh_->dx * vol;
-
-                        // Patankar relaxation source
+                        // Compute a_P_phys with FULL stencil (same as matvec)
                         double nu_L = nu_eff_ptr_[cl], nu_R = nu_eff_ptr_[cr];
-                        double nu_avg = 0.5 * (nu_L + nu_R);
-                        double a_P_phys = nu_avg * (2*inv_dx2 + 2*inv_dy2) * vol;
-                        // Add convective diagonal (simplified — just use nu for now)
+                        double nu_S = 0.25*(nu_eff_ptr_[cl]+nu_eff_ptr_[cr]
+                            +nu_eff_ptr_[(jg-1)*cell_stride+(ig-1)]+nu_eff_ptr_[(jg-1)*cell_stride+ig]);
+                        double nu_N = 0.25*(nu_eff_ptr_[cl]+nu_eff_ptr_[cr]
+                            +nu_eff_ptr_[(jg+1)*cell_stride+(ig-1)]+nu_eff_ptr_[(jg+1)*cell_stride+ig]);
+
+                        double F_w = velocity_old_u_ptr_[jg*u_stride+(ig-1)] * ddy;
+                        double F_e = velocity_old_u_ptr_[jg*u_stride+(ig+1)] * ddy;
+                        double F_s = 0.5*(velocity_old_v_ptr_[jg*v_stride+(ig-1)]
+                                        + velocity_old_v_ptr_[jg*v_stride+ig]) * ddx;
+                        double F_n = 0.5*(velocity_old_v_ptr_[(jg+1)*v_stride+(ig-1)]
+                                        + velocity_old_v_ptr_[(jg+1)*v_stride+ig]) * ddx;
+
+                        double a_P_phys = (nu_L + nu_R) * inv_dx2 * vol
+                                        + (nu_S + nu_N) * inv_dy2 * vol
+                                        + ((F_w<0?-F_w:0) + (F_e>0?F_e:0)
+                                         + (F_s<0?-F_s:0) + (F_n>0?F_n:0));
                         if (a_P_phys < 1e-20) a_P_phys = 1e-20;
+
+                        double source = (tau_div_u_ptr_[u_idx] + fx_) * vol;
+                        double dp_dx = (pressure_ptr_[cr] - pressure_ptr_[cl]) / ddx * vol;
                         double relax_src = ((1.0 - alpha_u) / alpha_u) * a_P_phys
                                           * velocity_old_u_ptr_[u_idx];
 
@@ -415,8 +434,8 @@ double RANSSolver::simple_step() {
             }
 
             // BiCGSTAB iterations
-            const int max_inner = n_sweeps * 10;  // n_sweeps repurposed as iteration multiplier
-            const double inner_tol = 0.1;  // loose inner tolerance
+            const int max_inner = 1;  // single BiCGSTAB iteration per outer SIMPLE step
+            const double inner_tol = 0.5;  // very loose — just improve, don't converge
             double r_norm_init = 0.0;
             for (int j = 0; j < Ny; ++j)
                 for (int i = 0; i <= Nx; ++i) {
@@ -520,20 +539,12 @@ double RANSSolver::simple_step() {
                 velocity_star_v_ptr_[i] = velocity_v_ptr_[i];
         }
 
-        // Compute a_P_eff for pressure correction: use Patankar a_P/alpha
-        if (is_2d) {
-            time_kernels::simple_compute_aP_2d(
-                a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
-                velocity_u_ptr_, velocity_v_ptr_,
-                Nx, Ny, Ng, u_stride, v_stride, cell_stride,
-                mesh_->dx, mesh_->dy, /*pseudo_dt_inv=*/0.0);
-            // Scale: a_P_eff = a_P_phys / alpha_u
-            double inv_alpha = 1.0 / config_.simple_alpha_u;
-            for (size_t i = 0; i < velocity_.u_total_size(); ++i)
-                a_p_u_ptr_[i] *= inv_alpha;
-            for (size_t i = 0; i < velocity_.v_total_size(); ++i)
-                a_p_v_ptr_[i] *= inv_alpha;
-        }
+        // For consistent correction: use UNIFORM a_P = vol/pseudo_dt
+        // This matches the constant-coefficient Poisson solve exactly.
+        // (Variable a_P causes mismatch with the constant-coeff MG.)
+        // The pseudo_dt is computed in the Poisson section from mean(a_P_eff).
+        // For now, just let the correction use the same pseudo_dt as the Poisson.
+        // Leave a_P arrays for now — they'll be set in the Poisson section.
         } else {
         // Diagonal-approximation predictor: u* = u + (H - dp/dx) / a_P
         // Works for laminar flows. For turbulent flows (SST), use time_integrator=euler
@@ -669,6 +680,16 @@ double RANSSolver::simple_step() {
         }
         if (pseudo_dt_proj < 1e-15) pseudo_dt_proj = 1e-15;
         current_dt_ = pseudo_dt_proj;
+
+        // For BiCGSTAB path: fill a_P arrays with uniform vol/pseudo_dt for consistent correction
+        if (config_.simple_jacobi_sweeps > 0) {
+            double a_p_uniform = (is_2d ? mesh_->dx * mesh_->dy : mesh_->dx * mesh_->dy * mesh_->dz)
+                                / pseudo_dt_proj;
+            for (size_t i_f = 0; i_f < velocity_.u_total_size(); ++i_f)
+                a_p_u_ptr_[i_f] = a_p_uniform;
+            for (size_t i_f = 0; i_f < velocity_.v_total_size(); ++i_f)
+                a_p_v_ptr_[i_f] = a_p_uniform;
+        }
 
         // Compute divergence of velocity_star_
         compute_divergence(VelocityWhich::Star, div_velocity_);
