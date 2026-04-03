@@ -350,10 +350,10 @@ double RANSSolver::simple_step() {
             const double ddy = mesh_->dy;
             const int v_stride_s = Nx + 2 * Ng;
 
-            // --- Step A: RB-GS momentum solve (Patankar + pseudo-transient) ---
-            // Pseudo-transient provides stability; Patankar provides correct
-            // steady-state behavior. The discrete Jacobi pressure correction
-            // (Step C) uses the SAME a_P_mod, ensuring consistency.
+            // --- Step A: ADI momentum solve (Patankar, NO pseudo-transient) ---
+            // Alternating: Y-line Thomas (implicit y) then X-line Thomas (implicit x)
+            // Each direction is GPU-parallel (columns/rows independent).
+            // ADI provides implicit coupling in BOTH directions per cycle.
             {
                 [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
                 [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
@@ -364,23 +364,30 @@ double RANSSolver::simple_step() {
             }
 
             for (int sweep = 0; sweep < n_sweeps; ++sweep) {
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+                // Y-line sweep: implicit y, explicit x
+                time_kernels::simple_yline_momentum_u_2d(
+                    velocity_star_u_ptr_,
                     velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, ddx, ddy,
-                    alpha_u_s, pseudo_dt_inv, 0,
+                    nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
+                    fx_, alpha_u_s, ddx, ddy,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+
+                // BCs (needed for ghost cells before x-sweep)
+                std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+                std::swap(velocity_, velocity_star_);
+                apply_velocity_bc();
+                std::swap(velocity_, velocity_star_);
+                std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+
+                // X-line sweep: implicit x, explicit y (reads y-updated values)
+                time_kernels::simple_xline_momentum_u_2d(
+                    velocity_star_u_ptr_,
                     velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, ddx, ddy,
-                    alpha_u_s, pseudo_dt_inv, 1,
+                    nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
+                    fx_, alpha_u_s, ddx, ddy,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-                // BCs
+
+                // BCs after x-sweep
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
                 std::swap(velocity_, velocity_star_);
@@ -390,25 +397,23 @@ double RANSSolver::simple_step() {
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
             }
 
+            // For v: just copy for now (TODO: ADI for v-momentum)
+            for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
+                velocity_star_v_ptr_[i_v] = velocity_v_ptr_[i_v];
+
             // --- Step B: Compute a_P_mod for pressure correction ---
-            // a_P_mod = a_P_phys / alpha_u (same as used in RB-GS diagonal)
+            // a_P_mod = a_P_phys / alpha_u (NO pseudo-transient for ADI)
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, pseudo_dt_inv);
-            // Scale: a_P = (diff+conv+vol*pdt_inv) → (diff+conv)/alpha + vol*pdt_inv
+                ddx, ddy, /*pseudo_dt_inv=*/0.0);
             {
-                double vol_pdt = ddx * ddy * pseudo_dt_inv;
                 double inv_alpha = 1.0 / alpha_u_s;
-                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a) {
-                    double a_phys = a_p_u_ptr_[i_a] - vol_pdt;
-                    a_p_u_ptr_[i_a] = a_phys * inv_alpha + vol_pdt;
-                }
-                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a) {
-                    double a_phys = a_p_v_ptr_[i_a] - vol_pdt;
-                    a_p_v_ptr_[i_a] = a_phys * inv_alpha + vol_pdt;
-                }
+                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a)
+                    a_p_u_ptr_[i_a] *= inv_alpha;
+                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a)
+                    a_p_v_ptr_[i_a] *= inv_alpha;
             }
 
             // --- Step C: DISCRETE pressure correction (Jacobi) ---
@@ -486,12 +491,20 @@ double RANSSolver::simple_step() {
                     }
                 }
 
-                // Pressure update
+                // Pressure update + debug
+                double max_pp = 0, max_p = 0;
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
                         int idx = (j+Ng) * cell_stride + (i+Ng);
+                        double ppv = pp[idx]; if (ppv < 0) ppv = -ppv;
+                        if (ppv > max_pp) max_pp = ppv;
                         pressure_ptr_[idx] += alpha_p_s * pp[idx];
+                        double pv = pressure_ptr_[idx]; if (pv < 0) pv = -pv;
+                        if (pv > max_p) max_p = pv;
                     }
+                }
+                if (config_.verbose && step_count_ < 10) {
+                    std::cerr << "[SIMPLE] max|pp|=" << max_pp << " max|p|=" << max_p << "\n";
                 }
             }
 
