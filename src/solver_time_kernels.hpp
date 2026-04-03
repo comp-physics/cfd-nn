@@ -246,6 +246,7 @@ void simple_varcoeff_residual_2d(
     int cell_stride, int u_stride, int v_stride);
 
 // Red-Black Gauss-Seidel momentum sweep (one color pass, in-place)
+// Patankar relaxation (a_P/alpha_u) + optional pseudo-transient (vol*pseudo_dt_inv)
 void simple_rbgs_momentum_2d(
     double* u, double* v,
     const double* u_frozen, const double* v_frozen,
@@ -253,7 +254,7 @@ void simple_rbgs_momentum_2d(
     const double* p_old,
     const double* tau_div_u, const double* tau_div_v,
     double fx, double fy, double dx, double dy,
-    double pseudo_dt_inv,
+    double alpha_u, double pseudo_dt_inv,
     int color,
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride);

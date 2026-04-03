@@ -59,6 +59,25 @@ public:
     int solve_device(double* rhs_present, double* p_present, const PoissonConfig& cfg);
 #endif
     
+    /// Set variable coefficients for SIMPLE pressure equation: ∇·(D·∇p) = rhs
+    /// D_u, D_v are 1/a_P at velocity faces (staggered). Only used at level 0.
+    /// Call before solve/solve_device. Pass nullptr to clear (revert to constant coeff).
+    void set_variable_coefficients(double* D_u, double* D_v,
+                                   int u_stride, int v_stride,
+                                   double dx, double dy) {
+        varcoeff_Du_ = D_u;
+        varcoeff_Dv_ = D_v;
+        varcoeff_u_stride_ = u_stride;
+        varcoeff_v_stride_ = v_stride;
+        varcoeff_dx_ = dx;
+        varcoeff_dy_ = dy;
+    }
+    void clear_variable_coefficients() {
+        varcoeff_Du_ = nullptr;
+        varcoeff_Dv_ = nullptr;
+    }
+    bool has_variable_coefficients() const { return varcoeff_Du_ != nullptr; }
+
     /// Get final residual ||r||_∞
     double residual() const { return residual_; }
 
@@ -177,6 +196,14 @@ private:
     PoissonBC bc_z_lo_ = PoissonBC::Periodic;
     PoissonBC bc_z_hi_ = PoissonBC::Periodic;
     
+    // Variable coefficients for SIMPLE (level 0 only, nullptr = constant coeff)
+    double* varcoeff_Du_ = nullptr;  ///< D = 1/a_P at u-faces
+    double* varcoeff_Dv_ = nullptr;  ///< D = 1/a_P at v-faces
+    int varcoeff_u_stride_ = 0;
+    int varcoeff_v_stride_ = 0;
+    double varcoeff_dx_ = 0.0;
+    double varcoeff_dy_ = 0.0;
+
     double residual_ = 0.0;      // Final ||r||_∞
     double residual_l2_ = 0.0;   // Final ||r||_2
     double b_inf_ = 0.0;         // ||b||_∞ from last solve

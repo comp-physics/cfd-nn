@@ -540,7 +540,8 @@ void simple_rbgs_momentum_2d(
     const double* p_old,
     const double* tau_div_u, const double* tau_div_v,
     double fx, double fy, double dx, double dy,
-    double pseudo_dt_inv,
+    double alpha_u,                                    // Patankar under-relaxation
+    double pseudo_dt_inv,                              // pseudo-transient (0 = pure Patankar)
     int color,                                         // 0 = red, 1 = black
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride) {
@@ -602,15 +603,13 @@ void simple_rbgs_momentum_2d(
             double a_S = a_S_diff + a_S_conv;
             double a_N = a_N_diff + a_N_conv;
 
-            // Diagonal: diffusion + convection + pseudo-transient (for Jacobi stability)
-            double a_P_val = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
+            // Diagonal: Patankar relaxation + optional pseudo-transient
+            double a_P_phys = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
                 + ((F_w < 0.0 ? -F_w : 0.0) + (F_e > 0.0 ? F_e : 0.0)
-                 + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0))
-                + vol * pseudo_dt_inv;
-            if (a_P_val < 1e-20) a_P_val = 1e-20;
+                 + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0));
+            if (a_P_phys < 1e-20) a_P_phys = 1e-20;
+            double a_P_eff = a_P_phys / alpha_u + vol * pseudo_dt_inv;
 
-            // Neighbor sum: reads from SAME array (in-place GS)
-            // Opposite-color neighbors already have updated values
             double sum_nb = a_W * u[jg * u_stride + (ig-1)]
                           + a_E * u[jg * u_stride + (ig+1)]
                           + a_S * u[(jg-1) * u_stride + ig]
@@ -618,9 +617,10 @@ void simple_rbgs_momentum_2d(
 
             double source = (tau_div_u[u_idx] + fx) * vol;
             double dp_dx = (p_old[cr] - p_old[cl]) / dx * vol;
-            double transient_src = vol * pseudo_dt_inv * u_frozen[u_idx];
+            // Combined relaxation source: Patankar + pseudo-transient
+            double relax_src = (a_P_eff - a_P_phys) * u_frozen[u_idx];
 
-            u[u_idx] = (sum_nb + source - dp_dx + transient_src) / a_P_val;
+            u[u_idx] = (sum_nb + source - dp_dx + relax_src) / a_P_eff;
         }
     }
 
@@ -666,13 +666,12 @@ void simple_rbgs_momentum_2d(
             double a_S = a_S_diff + a_S_conv;
             double a_N = a_N_diff + a_N_conv;
 
-            double a_P_val = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
+            double a_P_phys = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
                 + ((F_w < 0.0 ? -F_w : 0.0) + (F_e > 0.0 ? F_e : 0.0)
-                 + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0))
-                + vol * pseudo_dt_inv;
-            if (a_P_val < 1e-20) a_P_val = 1e-20;
+                 + (F_s < 0.0 ? -F_s : 0.0) + (F_n > 0.0 ? F_n : 0.0));
+            if (a_P_phys < 1e-20) a_P_phys = 1e-20;
+            double a_P_eff = a_P_phys / alpha_u + vol * pseudo_dt_inv;
 
-            // In-place GS: reads from same array (opposite color already updated)
             double sum_nb = a_W * v[jg * v_stride + (ig-1)]
                           + a_E * v[jg * v_stride + (ig+1)]
                           + a_S * v[(jg-1) * v_stride + ig]
@@ -680,9 +679,9 @@ void simple_rbgs_momentum_2d(
 
             double source = (tau_div_v[v_idx] + fy) * vol;
             double dp_dy = (p_old[ct] - p_old[cb]) / dy * vol;
-            double transient_src = vol * pseudo_dt_inv * v_frozen[v_idx];
+            double relax_src = (a_P_eff - a_P_phys) * v_frozen[v_idx];
 
-            v[v_idx] = (sum_nb + source - dp_dy + transient_src) / a_P_val;
+            v[v_idx] = (sum_nb + source - dp_dy + relax_src) / a_P_eff;
         }
     }
 }

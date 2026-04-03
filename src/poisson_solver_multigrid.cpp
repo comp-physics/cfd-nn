@@ -1082,13 +1082,44 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
     for (int iter = 0; iter < iterations; ++iter) {
         if (iter % 2 == 0) {
             // u -> tmp
-            if (is_2d && use_nonuniform_y) {
+            if (level == 0 && varcoeff_Du_ && is_2d) {
+                // 2D with variable coefficients (SIMPLE pressure equation)
+                // ∇·(D·∇p) stencil: D_e, D_w at u-faces; D_n, D_s at v-faces
+                const double* Du = varcoeff_Du_;
+                const double* Dv = varcoeff_Dv_;
+                const int u_str = varcoeff_u_stride_;
+                const int v_str = varcoeff_v_stride_;
+                const double vdx2 = varcoeff_dx_ * varcoeff_dx_;
+                const double vdy2 = varcoeff_dy_ * varcoeff_dy_;
+                JACOBI_TARGET_U_TO_TMP_2D
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = j * stride + i;
+                        double u_old = u_ptr[idx];
+                        // D at faces: east=(i+1,j), west=(i,j), north=(i,j+1), south=(i,j)
+                        double D_e = Du[j * u_str + (i + 1)];
+                        double D_w = Du[j * u_str + i];
+                        double D_n = Dv[(j + 1) * v_str + i];
+                        double D_s = Dv[j * v_str + i];
+                        double c_E = D_e / vdx2;
+                        double c_W = D_w / vdx2;
+                        double c_N = D_n / vdy2;
+                        double c_S = D_s / vdy2;
+                        double diag = c_E + c_W + c_N + c_S;
+                        if (diag < 1e-30) diag = 1e-30;
+                        double u_jacobi = (c_E * u_ptr[idx+1] + c_W * u_ptr[idx-1]
+                                         + c_N * u_ptr[idx+stride] + c_S * u_ptr[idx-stride]
+                                         - f_ptr[idx]) / diag;
+                        tmp_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
+                }
+            } else if (is_2d && use_nonuniform_y) {
                 // 2D with non-uniform y-spacing (semi-coarsening in x only)
                 JACOBI_TARGET_U_TO_TMP_2D_NONUNIF
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = j * stride + i;
-                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        int jm = j + y_metric_offset;
                         double u_old = u_ptr[idx];
                         double lap_x = (u_ptr[idx+1] + u_ptr[idx-1]) / dx2;
                         double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aN_ptr[jm] * u_ptr[idx+stride];
@@ -1148,13 +1179,40 @@ void MultigridPoissonSolver::smooth_jacobi(int level, int iterations, double ome
             }
         } else {
             // tmp -> u
-            if (is_2d && use_nonuniform_y) {
+            if (level == 0 && varcoeff_Du_ && is_2d) {
+                // 2D variable-coefficient (SIMPLE)
+                const double* Du = varcoeff_Du_;
+                const double* Dv = varcoeff_Dv_;
+                const int u_str = varcoeff_u_stride_;
+                const int v_str = varcoeff_v_stride_;
+                const double vdx2 = varcoeff_dx_ * varcoeff_dx_;
+                const double vdy2 = varcoeff_dy_ * varcoeff_dy_;
+                JACOBI_TARGET_TMP_TO_U_2D
+                for (int j = Ng; j < Ny + Ng; ++j) {
+                    for (int i = Ng; i < Nx + Ng; ++i) {
+                        int idx = j * stride + i;
+                        double u_old = tmp_ptr[idx];
+                        double D_e = Du[j * u_str + (i+1)];
+                        double D_w = Du[j * u_str + i];
+                        double D_n = Dv[(j+1) * v_str + i];
+                        double D_s = Dv[j * v_str + i];
+                        double c_E = D_e/vdx2, c_W = D_w/vdx2;
+                        double c_N = D_n/vdy2, c_S = D_s/vdy2;
+                        double diag = c_E + c_W + c_N + c_S;
+                        if (diag < 1e-30) diag = 1e-30;
+                        double u_jacobi = (c_E*tmp_ptr[idx+1] + c_W*tmp_ptr[idx-1]
+                                         + c_N*tmp_ptr[idx+stride] + c_S*tmp_ptr[idx-stride]
+                                         - f_ptr[idx]) / diag;
+                        u_ptr[idx] = (1.0 - omega) * u_old + omega * u_jacobi;
+                    }
+                }
+            } else if (is_2d && use_nonuniform_y) {
                 // 2D with non-uniform y-spacing (semi-coarsening in x only)
                 JACOBI_TARGET_TMP_TO_U_2D_NONUNIF
                 for (int j = Ng; j < Ny + Ng; ++j) {
                     for (int i = Ng; i < Nx + Ng; ++i) {
                         int idx = j * stride + i;
-                        int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
+                        int jm = j + y_metric_offset;
                         double u_old = tmp_ptr[idx];
                         double lap_x = (tmp_ptr[idx+1] + tmp_ptr[idx-1]) / dx2;
                         double lap_y = aS_ptr[jm] * tmp_ptr[idx-stride] + aN_ptr[jm] * tmp_ptr[idx+stride];
@@ -1761,7 +1819,30 @@ void MultigridPoissonSolver::compute_residual(int level) {
 #endif
 
     if (is_2d) {
-        if (use_nonuniform_y) {
+        if (level == 0 && varcoeff_Du_) {
+            // 2D variable-coefficient residual: r = f - ∇·(D·∇u)
+            const double* Du = varcoeff_Du_;
+            const double* Dv = varcoeff_Dv_;
+            const int u_str = varcoeff_u_stride_;
+            const int v_str = varcoeff_v_stride_;
+            const double vdx2 = varcoeff_dx_ * varcoeff_dx_;
+            const double vdy2 = varcoeff_dy_ * varcoeff_dy_;
+#ifdef USE_GPU_OFFLOAD
+            #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr)
+#endif
+            for (int j = Ng; j < Ny + Ng; ++j) {
+                for (int i = Ng; i < Nx + Ng; ++i) {
+                    int idx = j * stride + i;
+                    double D_e = Du[j * u_str + (i+1)];
+                    double D_w = Du[j * u_str + i];
+                    double D_n = Dv[(j+1) * v_str + i];
+                    double D_s = Dv[j * v_str + i];
+                    double lap = (D_e * u_ptr[idx+1] - (D_e+D_w) * u_ptr[idx] + D_w * u_ptr[idx-1]) / vdx2
+                               + (D_n * u_ptr[idx+stride] - (D_n+D_s) * u_ptr[idx] + D_s * u_ptr[idx-stride]) / vdy2;
+                    r_ptr[idx] = f_ptr[idx] - lap;
+                }
+            }
+        } else if (use_nonuniform_y) {
             // 2D with non-uniform y-spacing
 #ifdef USE_GPU_OFFLOAD
             #pragma omp target teams distribute parallel for collapse(2) is_device_ptr(u_ptr, f_ptr, r_ptr, aS_ptr, aN_ptr, aP_ptr)
@@ -1769,8 +1850,7 @@ void MultigridPoissonSolver::compute_residual(int level) {
             for (int j = Ng; j < Ny + Ng; ++j) {
                 for (int i = Ng; i < Nx + Ng; ++i) {
                     int idx = j * stride + i;
-                    int jm = j + y_metric_offset;  // Map to fine mesh y-metric index
-                    // Non-uniform y Laplacian: aS*u[j-1] + aP*u[j] + aN*u[j+1]
+                    int jm = j + y_metric_offset;
                     double lap_x = (u_ptr[idx+1] - 2.0*u_ptr[idx] + u_ptr[idx-1]) / dx2;
                     double lap_y = aS_ptr[jm] * u_ptr[idx-stride] + aP_ptr[jm] * u_ptr[idx] + aN_ptr[jm] * u_ptr[idx+stride];
                     r_ptr[idx] = f_ptr[idx] - (lap_x + lap_y);
