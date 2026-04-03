@@ -550,6 +550,29 @@ double RANSSolver::simple_step() {
                 if (config_.verbose && step_count_ < 10) {
                     std::cerr << "[SIMPLE] max|pp|=" << max_pp << " max|p|=" << max_p << "\n";
                 }
+
+                // Wrap periodic pressure ghost cells
+                // Without this, p(ghost) stays at 0 while p(interior) grows,
+                // creating a spurious dp/dx at boundary faces that opposes convergence.
+                if (velocity_bc_.x_lo == VelocityBC::Periodic) {
+                    for (int j = 0; j < Ny; ++j) {
+                        int jg = j + Ng;
+                        pressure_ptr_[jg*cell_stride + (Ng-1)] =
+                            pressure_ptr_[jg*cell_stride + (Ng+Nx-1)];
+                        pressure_ptr_[jg*cell_stride + (Ng+Nx)] =
+                            pressure_ptr_[jg*cell_stride + Ng];
+                    }
+                }
+                // y-walls: Neumann (zero normal gradient for pressure)
+                if (velocity_bc_.y_lo == VelocityBC::NoSlip) {
+                    for (int i = 0; i < Nx; ++i) {
+                        int ig = i + Ng;
+                        pressure_ptr_[(Ng-1)*cell_stride + ig] =
+                            pressure_ptr_[Ng*cell_stride + ig];
+                        pressure_ptr_[(Ng+Ny)*cell_stride + ig] =
+                            pressure_ptr_[(Ng+Ny-1)*cell_stride + ig];
+                    }
+                }
             }
 
             // Copy corrected velocity to velocity_ only (NOT velocity_old_).
