@@ -350,10 +350,10 @@ double RANSSolver::simple_step() {
             const double ddy = mesh_->dy;
             const int v_stride_s = Nx + 2 * Ng;
 
-            // --- Step A: Y-line Thomas momentum solve (Patankar, NO pseudo-transient) ---
-            // Implicit in y (Thomas tridiagonal per column), explicit in x.
-            // Each column is independent → GPU parallel.
-            // N sweeps with BCs between: info propagates wall-to-wall per sweep.
+            // --- Step A: RB-GS momentum solve (Patankar + pseudo-transient) ---
+            // Pseudo-transient provides stability; Patankar provides correct
+            // steady-state behavior. The discrete Jacobi pressure correction
+            // (Step C) uses the SAME a_P_mod, ensuring consistency.
             {
                 [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
                 [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
@@ -364,21 +364,23 @@ double RANSSolver::simple_step() {
             }
 
             for (int sweep = 0; sweep < n_sweeps; ++sweep) {
-                // Y-line solve for u-momentum (all columns simultaneously)
-                // x-neighbors read from velocity_star_ (updated from previous sweep)
-                // mass flux from velocity_old_ (frozen for this outer iteration)
-                time_kernels::simple_yline_momentum_u_2d(
-                    velocity_star_u_ptr_,
-                    velocity_star_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                    fx_, alpha_u_s, ddx, ddy,
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, ddx, ddy,
+                    alpha_u_s, pseudo_dt_inv, 0,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-
-                // For v: just copy for now (TODO: y-line v-momentum)
-                for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
-                    velocity_star_v_ptr_[i_v] = velocity_v_ptr_[i_v];
-
-                // BCs between sweeps
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, ddx, ddy,
+                    alpha_u_s, pseudo_dt_inv, 1,
+                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+                // BCs
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
                 std::swap(velocity_, velocity_star_);
@@ -439,8 +441,10 @@ double RANSSolver::simple_step() {
                             int jg = j + Ng, ig = i + Ng;
                             int idx = jg * cell_stride + ig;
 
-                            double ae_p = (i < Nx-1) ? ddy*ddy / a_p_u_ptr_[jg*u_stride+(ig+1)] : 0.0;
-                            double aw_p = (i > 0)    ? ddy*ddy / a_p_u_ptr_[jg*u_stride+ig]     : 0.0;
+                            // x-periodic: ae/aw always valid (ghosts handle wrapping)
+                            // y-walls: Neumann BC → an/as zero at boundaries
+                            double ae_p = ddy*ddy / a_p_u_ptr_[jg*u_stride+(ig+1)];
+                            double aw_p = ddy*ddy / a_p_u_ptr_[jg*u_stride+ig];
                             double an_p = (j < Ny-1) ? ddx*ddx / a_p_v_ptr_[(jg+1)*v_stride_s+ig] : 0.0;
                             double as_p = (j > 0)    ? ddx*ddx / a_p_v_ptr_[jg*v_stride_s+ig]     : 0.0;
 
@@ -453,6 +457,12 @@ double RANSSolver::simple_step() {
                                      + as_p * pp_old[(jg-1)*cell_stride+ig]
                                      - mass_imb_buf[idx]) / ap_p;
                         }
+                    }
+                    // Apply periodic x-BCs to pp (ghost cells wrap)
+                    for (int j = 0; j < Ny; ++j) {
+                        int jg = j + Ng;
+                        pp[jg*cell_stride + (Ng-1)] = pp[jg*cell_stride + (Ng+Nx-1)];  // west ghost
+                        pp[jg*cell_stride + (Ng+Nx)] = pp[jg*cell_stride + Ng];         // east ghost
                     }
                     for (size_t i_c = 0; i_c < field_total_size_; ++i_c)
                         pp_old[i_c] = pp[i_c];
@@ -901,8 +911,10 @@ simple_residual:
             if (prev_residual > 0 && max_res > 0 && max_res < 1e20) {
                 double ratio = prev_residual / max_res;
                 // Clamp ratio to prevent wild swings
-                if (ratio > 2.0) ratio = 2.0;
-                if (ratio < 0.5) ratio = 0.5;
+                if (ratio > 5.0) ratio = 5.0;
+                if (ratio < 0.2) ratio = 0.2;
+                // Always grow slowly even at plateau to prevent permanent stagnation
+                if (ratio >= 0.95 && ratio <= 1.05) ratio = 1.01;
                 simple_pseudo_dt_fixed_ *= ratio;
                 // Cap pseudo_dt growth to prevent over-relaxation
                 double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
