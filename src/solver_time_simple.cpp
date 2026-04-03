@@ -379,15 +379,15 @@ double RANSSolver::simple_step() {
                 std::swap(velocity_, velocity_star_);
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
 
-                // RB-GS sweep for additional x-coupling + stabilization
-                // (x-line Thomas alone is unstable for convection-dominated flows)
+                // RB-GS x-sweep: handles periodic x correctly through ghost cells
+                // (x-line Thomas can't handle cyclic tridiagonal for periodic x)
                 time_kernels::simple_rbgs_momentum_2d(
                     velocity_star_u_ptr_, velocity_star_v_ptr_,
                     velocity_old_u_ptr_, velocity_old_v_ptr_,
                     nu_eff_ptr_, pressure_ptr_,
                     tau_div_u_ptr_, tau_div_v_ptr_,
                     fx_, fy_, ddx, ddy,
-                    alpha_u_s, pseudo_dt_inv, 0,
+                    alpha_u_s, /*pseudo_dt_inv=*/0.0, /*color=*/0,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
                 time_kernels::simple_rbgs_momentum_2d(
                     velocity_star_u_ptr_, velocity_star_v_ptr_,
@@ -395,7 +395,7 @@ double RANSSolver::simple_step() {
                     nu_eff_ptr_, pressure_ptr_,
                     tau_div_u_ptr_, tau_div_v_ptr_,
                     fx_, fy_, ddx, ddy,
-                    alpha_u_s, pseudo_dt_inv, 1,
+                    alpha_u_s, /*pseudo_dt_inv=*/0.0, /*color=*/1,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
 
                 // BCs after x-sweep
@@ -408,29 +408,25 @@ double RANSSolver::simple_step() {
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
             }
 
-            // For v: just copy for now (TODO: ADI for v-momentum)
+            // For v: zero for now (Poiseuille has v=0)
+            // TODO: implement v-momentum ADI for general flows
             for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
-                velocity_star_v_ptr_[i_v] = velocity_v_ptr_[i_v];
+                velocity_star_v_ptr_[i_v] = 0.0;
 
             // --- Step B: Compute a_P_mod for pressure correction ---
             // a_P_mod = a_P_phys / alpha_u (NO pseudo-transient for ADI)
-            // a_P_mod matches RB-GS diagonal: (diff+conv)/alpha + vol/pseudo_dt
+            // a_P_mod = a_P_phys / alpha (pure Patankar, NO pseudo-transient)
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, pseudo_dt_inv);
+                ddx, ddy, /*pseudo_dt_inv=*/0.0);
             {
-                double vol_pdt = ddx * ddy * pseudo_dt_inv;
                 double inv_alpha = 1.0 / alpha_u_s;
-                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a) {
-                    double a_phys = a_p_u_ptr_[i_a] - vol_pdt;
-                    a_p_u_ptr_[i_a] = a_phys * inv_alpha + vol_pdt;
-                }
-                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a) {
-                    double a_phys = a_p_v_ptr_[i_a] - vol_pdt;
-                    a_p_v_ptr_[i_a] = a_phys * inv_alpha + vol_pdt;
-                }
+                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a)
+                    a_p_u_ptr_[i_a] *= inv_alpha;
+                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a)
+                    a_p_v_ptr_[i_a] *= inv_alpha;
             }
 
             // --- Step C: DISCRETE pressure correction (Jacobi) ---
@@ -466,6 +462,28 @@ double RANSSolver::simple_step() {
                 }
 
                 const int pp_iters = 250;
+                // DEBUG: print u at a few x-positions for row j=Ny/2
+                if (config_.verbose && step_count_ < 2) {
+                    int jg_mid = Ny/2 + Ng;
+                    std::cerr << "[SIMPLE] u at j=" << Ny/2 << ": ";
+                    for (int i = 0; i < std::min(8, Nx+1); ++i)
+                        std::cerr << velocity_star_u_ptr_[jg_mid*u_stride+(i+Ng)] << " ";
+                    std::cerr << "\n";
+                }
+                // DEBUG: print mass_imb statistics
+                if (config_.verbose && step_count_ < 3) {
+                    double max_imb = 0, sum_imb_abs = 0;
+                    for (int j = 0; j < Ny; ++j)
+                        for (int i = 0; i < Nx; ++i) {
+                            double v = mass_imb_buf[(j+Ng)*cell_stride+(i+Ng)];
+                            if (v < 0) v = -v;
+                            if (v > max_imb) max_imb = v;
+                            sum_imb_abs += v;
+                        }
+                    std::cerr << "[SIMPLE] mass_imb: max=" << max_imb
+                              << " sum_abs=" << sum_imb_abs
+                              << " mean=" << (sum_imb / (Nx*Ny)) << "\n";
+                }
                 for (int pp_iter = 0; pp_iter < pp_iters; ++pp_iter) {
                     for (int j = 0; j < Ny; ++j) {
                         for (int i = 0; i < Nx; ++i) {
