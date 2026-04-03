@@ -350,7 +350,10 @@ double RANSSolver::simple_step() {
             const double ddy = mesh_->dy;
             const int v_stride_s = Nx + 2 * Ng;
 
-            // --- Step A: RB-GS momentum solve (Patankar, NO pseudo-transient) ---
+            // --- Step A: Y-line Thomas momentum solve (Patankar, NO pseudo-transient) ---
+            // Implicit in y (Thomas tridiagonal per column), explicit in x.
+            // Each column is independent → GPU parallel.
+            // N sweeps with BCs between: info propagates wall-to-wall per sweep.
             {
                 [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
                 [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
@@ -361,22 +364,20 @@ double RANSSolver::simple_step() {
             }
 
             for (int sweep = 0; sweep < n_sweeps; ++sweep) {
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, ddx, ddy,
-                    alpha_u_s, pseudo_dt_inv, 0,
+                // Y-line solve for u-momentum (all columns simultaneously)
+                // x-neighbors read from velocity_star_ (updated from previous sweep)
+                // mass flux from velocity_old_ (frozen for this outer iteration)
+                time_kernels::simple_yline_momentum_u_2d(
+                    velocity_star_u_ptr_,
+                    velocity_star_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
+                    fx_, alpha_u_s, ddx, ddy,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, ddx, ddy,
-                    alpha_u_s, pseudo_dt_inv, 1,
-                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+
+                // For v: just copy for now (TODO: y-line v-momentum)
+                for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
+                    velocity_star_v_ptr_[i_v] = velocity_v_ptr_[i_v];
+
                 // BCs between sweeps
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);

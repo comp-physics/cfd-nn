@@ -687,6 +687,113 @@ void simple_rbgs_momentum_2d(
 }
 
 // ============================================================================
+// Y-line Thomas solver for SIMPLE momentum equation (2D)
+// Solves the FULL momentum equation implicitly along y-columns.
+// x-neighbors are frozen (explicit) from the current velocity field.
+// Each column i is independent → GPU parallel.
+// This provides complete wall-to-wall info propagation per sweep.
+// ============================================================================
+
+void simple_yline_momentum_u_2d(
+    double* u,                                        // IN-PLACE update
+    const double* u_frozen, const double* v_frozen,   // frozen for x-neighbor + mass flux
+    const double* nu_eff, const double* p,
+    const double* tau_div_u,
+    double fx, double alpha_u, double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride) {
+
+    const double inv_dx2 = 1.0 / (dx * dx);
+    const double inv_dy2 = 1.0 / (dy * dy);
+    const double vol = dx * dy;
+    static constexpr int MAX_NY_LOC = 4096;
+
+    [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
+    [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Ny + 2 * Ng + 1) * v_stride);
+    [[maybe_unused]] const size_t nu_sz = static_cast<size_t>((Ny + 2 * Ng) * cell_stride);
+
+    // Thomas solve for u — Ny unknowns per column i
+    #pragma omp target teams distribute parallel for \
+        map(present: u[0:u_sz], u_frozen[0:u_sz], v_frozen[0:v_sz], \
+                     nu_eff[0:nu_sz], p[0:nu_sz], tau_div_u[0:u_sz])
+    for (int i = 0; i <= Nx; ++i) {
+        double c_prime[MAX_NY_LOC] = {0.0}, d_prime[MAX_NY_LOC] = {0.0};
+        int ig = i + Ng;
+
+        for (int jj = 0; jj < Ny; ++jj) {
+            int jg = jj + Ng;
+            int u_idx = jg * u_stride + ig;
+            int cl = jg * cell_stride + (ig - 1);
+            int cr = jg * cell_stride + ig;
+
+            // Diffusion coefficients
+            double nu_L = nu_eff[cl], nu_R = nu_eff[cr];
+            double nu_S = 0.25 * (nu_eff[cl] + nu_eff[cr]
+                + nu_eff[(jg-1)*cell_stride+(ig-1)] + nu_eff[(jg-1)*cell_stride+ig]);
+            double nu_N = 0.25 * (nu_eff[cl] + nu_eff[cr]
+                + nu_eff[(jg+1)*cell_stride+(ig-1)] + nu_eff[(jg+1)*cell_stride+ig]);
+
+            double a_W_diff = nu_L * inv_dx2 * vol;
+            double a_E_diff = nu_R * inv_dx2 * vol;
+            double a_S_diff = nu_S * inv_dy2 * vol;
+            double a_N_diff = nu_N * inv_dy2 * vol;
+
+            // Convection from frozen field (upwind)
+            double F_w = u_frozen[jg * u_stride + (ig-1)] * dy;
+            double F_e = u_frozen[jg * u_stride + (ig+1)] * dy;
+            double F_s = 0.5*(v_frozen[jg*v_stride+(ig-1)] + v_frozen[jg*v_stride+ig]) * dx;
+            double F_n = 0.5*(v_frozen[(jg+1)*v_stride+(ig-1)] + v_frozen[(jg+1)*v_stride+ig]) * dx;
+
+            double a_W = a_W_diff + (F_w > 0 ? F_w : 0);
+            double a_E = a_E_diff + (F_e < 0 ? -F_e : 0);
+            double a_S = a_S_diff + (F_s > 0 ? F_s : 0);
+            double a_N = a_N_diff + (F_n < 0 ? -F_n : 0);
+
+            // Full diagonal (Patankar)
+            double a_P_phys = (a_W_diff + a_E_diff + a_S_diff + a_N_diff)
+                + ((F_w<0?-F_w:0) + (F_e>0?F_e:0) + (F_s<0?-F_s:0) + (F_n>0?F_n:0));
+            if (a_P_phys < 1e-20) a_P_phys = 1e-20;
+            double a_P_eff = a_P_phys / alpha_u;
+
+            // Tridiagonal coefficients (y-direction IMPLICIT, x-direction EXPLICIT)
+            double a_lower = -a_S;  // sub-diagonal (j-1)
+            double a_upper = -a_N;  // super-diagonal (j+1)
+            double a_diag  = a_P_eff;  // diagonal
+
+            // At walls: no-slip ghost → extra diagonal from wall reflection
+            if (jj == 0) { a_lower = 0.0; a_diag += a_S; }
+            if (jj == Ny - 1) { a_upper = 0.0; a_diag += a_N; }
+
+            // RHS: x-neighbors (EXPLICIT) + source + pressure + Patankar source
+            double source = (tau_div_u[u_idx] + fx) * vol;
+            double dp_dx = (p[cr] - p[cl]) / dx * vol;
+            double relax_src = (a_P_eff - a_P_phys) * u_frozen[u_idx];
+            double rhs = a_W * u_frozen[jg*u_stride+(ig-1)]   // x-neighbor (frozen)
+                       + a_E * u_frozen[jg*u_stride+(ig+1)]   // x-neighbor (frozen)
+                       + source - dp_dx + relax_src;
+
+            // Thomas forward elimination
+            if (jj == 0) {
+                c_prime[0] = a_upper / a_diag;
+                d_prime[0] = rhs / a_diag;
+            } else {
+                double denom = a_diag - a_lower * c_prime[jj - 1];
+                if (denom == 0.0) denom = 1e-30;
+                c_prime[jj] = a_upper / denom;
+                d_prime[jj] = (rhs - a_lower * d_prime[jj - 1]) / denom;
+            }
+        }
+
+        // Backward substitution
+        u[(Ng + Ny - 1) * u_stride + ig] = d_prime[Ny - 1];
+        for (int jj = Ny - 2; jj >= 0; --jj) {
+            u[(jj + Ng) * u_stride + ig] =
+                d_prime[jj] - c_prime[jj] * u[(jj + Ng + 1) * u_stride + ig];
+        }
+    }
+}
+
+// ============================================================================
 // Momentum matrix-vector product: y = A*x (for BiCGSTAB)
 // A = Patankar-relaxed momentum matrix: a_P_eff*x_P - sum(a_nb*x_nb)
 // where a_P_eff = a_P_phys / alpha_u (Patankar diagonal)

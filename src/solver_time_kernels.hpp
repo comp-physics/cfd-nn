@@ -259,6 +259,16 @@ void simple_rbgs_momentum_2d(
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride);
 
+// Y-line Thomas solver for SIMPLE u-momentum (implicit y, explicit x)
+void simple_yline_momentum_u_2d(
+    double* u,
+    const double* u_frozen, const double* v_frozen,
+    const double* nu_eff, const double* p,
+    const double* tau_div_u,
+    double fx, double alpha_u, double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride);
+
 // Momentum matrix-vector product y = A*x for u-velocity (BiCGSTAB)
 void simple_momentum_matvec_u_2d(
     double* y, const double* x,
