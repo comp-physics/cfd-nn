@@ -379,12 +379,23 @@ double RANSSolver::simple_step() {
                 std::swap(velocity_, velocity_star_);
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
 
-                // X-line sweep: implicit x, explicit y (reads y-updated values)
-                time_kernels::simple_xline_momentum_u_2d(
-                    velocity_star_u_ptr_,
+                // RB-GS sweep for additional x-coupling + stabilization
+                // (x-line Thomas alone is unstable for convection-dominated flows)
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,
                     velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                    fx_, alpha_u_s, ddx, ddy,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, ddx, ddy,
+                    alpha_u_s, pseudo_dt_inv, 0,
+                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, ddx, ddy,
+                    alpha_u_s, pseudo_dt_inv, 1,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
 
                 // BCs after x-sweep
@@ -403,17 +414,23 @@ double RANSSolver::simple_step() {
 
             // --- Step B: Compute a_P_mod for pressure correction ---
             // a_P_mod = a_P_phys / alpha_u (NO pseudo-transient for ADI)
+            // a_P_mod matches RB-GS diagonal: (diff+conv)/alpha + vol/pseudo_dt
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, /*pseudo_dt_inv=*/0.0);
+                ddx, ddy, pseudo_dt_inv);
             {
+                double vol_pdt = ddx * ddy * pseudo_dt_inv;
                 double inv_alpha = 1.0 / alpha_u_s;
-                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a)
-                    a_p_u_ptr_[i_a] *= inv_alpha;
-                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a)
-                    a_p_v_ptr_[i_a] *= inv_alpha;
+                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a) {
+                    double a_phys = a_p_u_ptr_[i_a] - vol_pdt;
+                    a_p_u_ptr_[i_a] = a_phys * inv_alpha + vol_pdt;
+                }
+                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a) {
+                    double a_phys = a_p_v_ptr_[i_a] - vol_pdt;
+                    a_p_v_ptr_[i_a] = a_phys * inv_alpha + vol_pdt;
+                }
             }
 
             // --- Step C: DISCRETE pressure correction (Jacobi) ---
@@ -422,7 +439,9 @@ double RANSSolver::simple_step() {
                 double* pp_old = bicg_r_ptr_;
                 double* mass_imb_buf = bicg_rhat_ptr_;
 
-                // Compute mass imbalance
+                // Compute mass imbalance with mean subtraction
+                // (prevents spurious pressure gradient in periodic domains)
+                double sum_imb = 0.0;
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
                         int jg = j + Ng, ig = i + Ng;
@@ -431,7 +450,14 @@ double RANSSolver::simple_step() {
                                                   - velocity_star_u_ptr_[jg*u_stride+ig])
                                           + ddx * (velocity_star_v_ptr_[(jg+1)*v_stride_s+ig]
                                                   - velocity_star_v_ptr_[jg*v_stride_s+ig]);
+                        sum_imb += mass_imb_buf[idx];
                     }
+                }
+                {
+                    double mean_imb = sum_imb / (Nx * Ny);
+                    for (int j = 0; j < Ny; ++j)
+                        for (int i = 0; i < Nx; ++i)
+                            mass_imb_buf[(j+Ng)*cell_stride+(i+Ng)] -= mean_imb;
                 }
 
                 for (size_t i_z = 0; i_z < field_total_size_; ++i_z) {
