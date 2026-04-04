@@ -460,59 +460,123 @@ double RANSSolver::simple_step() {
 #endif
             }
 
-            // --- V-momentum solve (same structure, different grid) ---
-            if (!is_2d) {
-                const int n_v = Nx * (Ny+1) * Nz;
-                std::vector<double> aW(n_v), aE(n_v), aS(n_v), aN(n_v);
-                std::vector<double> aB(n_v), aF(n_v);
-                std::vector<double> aP(n_v), rhs_mom(n_v);
+            // --- V-momentum solve (2D and 3D) ---
+            {
+                const int Nz_v = is_2d ? 1 : Nz;
+                const int n_v = Nx * (Ny+1) * Nz_v;
+                std::vector<double> aW_v(n_v), aE_v(n_v), aS_v(n_v), aN_v(n_v);
+                std::vector<double> aB_v, aF_v;
+                std::vector<double> aP_v(n_v), rhs_v(n_v);
+                if (!is_2d) { aB_v.resize(n_v); aF_v.resize(n_v); }
 
-                const int u_plane = u_stride * (Ny + 2*Ng);
-                const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
-                const int w_stride = Nx + 2*Ng;
-                const int w_plane = w_stride * (Ny + 2*Ng);
-                const int cell_plane_s = cell_stride * (Ny + 2*Ng);
+                if (is_2d) {
+                    // 2D v-momentum assembly (inline, same structure as u)
+                    const double inv_dx2 = 1.0/(ddx*ddx), inv_dy2 = 1.0/(ddy*ddy);
+                    const double vol = ddx * ddy;
+                    for (int j = 0; j <= Ny; ++j) {
+                        for (int i = 0; i < Nx; ++i) {
+                            int jg = j + Ng, ig = i + Ng;
+                            int v_idx = jg * v_stride_s + ig;
+                            int cb = (jg-1)*cell_stride + ig;
+                            int ct = jg*cell_stride + ig;
+                            int flat = j*Nx + i;
 
-                time_kernels::simple_assemble_momentum_v_3d(
-                    aW.data(), aE.data(), aS.data(), aN.data(),
-                    aB.data(), aF.data(), aP.data(), rhs_mom.data(),
-                    velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
-                    nu_eff_ptr_, pressure_ptr_, tau_div_v_ptr_,
-                    fy_, alpha_u_s, simple_pdt_inv, ddx, ddy, mesh_->dz,
-                    Nx, Ny, Nz, Ng,
-                    u_stride, u_plane, v_stride_s, v_plane,
-                    w_stride, w_plane, cell_stride, cell_plane_s);
+                            double nu_B = nu_eff_ptr_[cb], nu_T = nu_eff_ptr_[ct];
+                            double nu_W = 0.25*(nu_eff_ptr_[cb]+nu_eff_ptr_[ct]
+                                +nu_eff_ptr_[(jg-1)*cell_stride+(ig-1)]+nu_eff_ptr_[jg*cell_stride+(ig-1)]);
+                            double nu_E = 0.25*(nu_eff_ptr_[cb]+nu_eff_ptr_[ct]
+                                +nu_eff_ptr_[(jg-1)*cell_stride+(ig+1)]+nu_eff_ptr_[jg*cell_stride+(ig+1)]);
+
+                            double aW = nu_W*inv_dx2*vol, aE = nu_E*inv_dx2*vol;
+                            double aS = nu_B*inv_dy2*vol, aN = nu_T*inv_dy2*vol;
+
+                            double F_w = 0.5*(velocity_old_u_ptr_[(jg-1)*u_stride+ig]
+                                             +velocity_old_u_ptr_[jg*u_stride+ig]) * ddy;
+                            double F_e = 0.5*(velocity_old_u_ptr_[(jg-1)*u_stride+(ig+1)]
+                                             +velocity_old_u_ptr_[jg*u_stride+(ig+1)]) * ddy;
+                            double F_s = velocity_old_v_ptr_[(jg-1)*v_stride_s+ig] * ddx;
+                            double F_n = velocity_old_v_ptr_[(jg+1)*v_stride_s+ig] * ddx;
+
+                            aW += (F_w > 0 ? F_w : 0); aE += (F_e < 0 ? -F_e : 0);
+                            aS += (F_s > 0 ? F_s : 0); aN += (F_n < 0 ? -F_n : 0);
+
+                            double aP_phys = (nu_W+nu_E)*inv_dx2*vol + (nu_B+nu_T)*inv_dy2*vol
+                                + ((F_w<0?-F_w:0)+(F_e>0?F_e:0)+(F_s<0?-F_s:0)+(F_n>0?F_n:0));
+                            if (aP_phys < 1e-20) aP_phys = 1e-20;
+                            double aP_eff = aP_phys / alpha_u_s;
+
+                            aW_v[flat] = aW; aE_v[flat] = aE;
+                            aS_v[flat] = aS; aN_v[flat] = aN;
+                            aP_v[flat] = aP_eff;
+
+                            double source = (tau_div_v_ptr_[v_idx] + fy_) * vol;
+                            double dp_dy = (pressure_ptr_[ct] - pressure_ptr_[cb]) / ddy * vol;
+                            double relax_src = (aP_eff - aP_phys) * velocity_old_v_ptr_[v_idx];
+                            rhs_v[flat] = aW*velocity_old_v_ptr_[jg*v_stride_s+(ig-1)]
+                                + aE*velocity_old_v_ptr_[jg*v_stride_s+(ig+1)]
+                                + aS*velocity_old_v_ptr_[(jg-1)*v_stride_s+ig]
+                                + aN*velocity_old_v_ptr_[(jg+1)*v_stride_s+ig]
+                                + source - dp_dy + relax_src;
+                        }
+                    }
+                } else {
+                    const int u_plane = u_stride * (Ny + 2*Ng);
+                    const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
+                    const int w_stride = Nx + 2*Ng;
+                    const int w_plane = w_stride * (Ny + 2*Ng);
+                    const int cell_plane_s = cell_stride * (Ny + 2*Ng);
+                    time_kernels::simple_assemble_momentum_v_3d(
+                        aW_v.data(), aE_v.data(), aS_v.data(), aN_v.data(),
+                        aB_v.data(), aF_v.data(), aP_v.data(), rhs_v.data(),
+                        velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
+                        nu_eff_ptr_, pressure_ptr_, tau_div_v_ptr_,
+                        fy_, alpha_u_s, simple_pdt_inv, ddx, ddy, mesh_->dz,
+                        Nx, Ny, Nz, Ng,
+                        u_stride, u_plane, v_stride_s, v_plane,
+                        w_stride, w_plane, cell_stride, cell_plane_s);
+                }
 
 #ifdef USE_HYPRE
                 static std::unique_ptr<HypreMomentumSolver> hypre_v;
                 if (!hypre_v) hypre_v = std::make_unique<HypreMomentumSolver>(*mesh_, false);
 
                 std::vector<double> x_flat(n_v);
-                for (int k = 0; k < Nz; ++k)
+                if (is_2d) {
                     for (int j = 0; j <= Ny; ++j)
                         for (int i = 0; i < Nx; ++i)
-                            x_flat[k*((Ny+1)*Nx)+j*Nx+i] =
-                                velocity_old_v_ptr_[(k+Ng)*v_plane+(j+Ng)*v_stride_s+(i+Ng)];
+                            x_flat[j*Nx+i] = velocity_old_v_ptr_[(j+Ng)*v_stride_s+(i+Ng)];
+                } else {
+                    const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
+                    for (int k = 0; k < Nz_v; ++k)
+                        for (int j = 0; j <= Ny; ++j)
+                            for (int i = 0; i < Nx; ++i)
+                                x_flat[k*((Ny+1)*Nx)+j*Nx+i] =
+                                    velocity_old_v_ptr_[(k+Ng)*v_plane+(j+Ng)*v_stride_s+(i+Ng)];
+                }
 
-                hypre_v->set_coefficients(aW.data(), aE.data(), aS.data(), aN.data(),
-                    aB.data(), aF.data(), aP.data(), n_v);
+                hypre_v->set_coefficients(aW_v.data(), aE_v.data(), aS_v.data(), aN_v.data(),
+                    is_2d ? nullptr : aB_v.data(), is_2d ? nullptr : aF_v.data(),
+                    aP_v.data(), n_v);
                 int max_mom_iters_v = std::min(n_sweeps, 2);
-                int v_iters = hypre_v->solve(rhs_mom.data(), x_flat.data(), 1e-2, max_mom_iters_v);
+                int v_iters = hypre_v->solve(rhs_v.data(), x_flat.data(), 1e-2, max_mom_iters_v);
 
-                if (config_.verbose && step_count_ < 5)
+                if (config_.verbose)
                     std::cerr << "[SIMPLE] HYPRE v-mom: " << v_iters
                               << " iters, res=" << hypre_v->final_residual() << "\n";
 
-                for (int k = 0; k < Nz; ++k)
+                if (is_2d) {
                     for (int j = 0; j <= Ny; ++j)
                         for (int i = 0; i < Nx; ++i)
-                            velocity_star_v_ptr_[(k+Ng)*v_plane+(j+Ng)*v_stride_s+(i+Ng)] =
-                                x_flat[k*((Ny+1)*Nx)+j*Nx+i];
+                            velocity_star_v_ptr_[(j+Ng)*v_stride_s+(i+Ng)] = x_flat[j*Nx+i];
+                } else {
+                    const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
+                    for (int k = 0; k < Nz_v; ++k)
+                        for (int j = 0; j <= Ny; ++j)
+                            for (int i = 0; i < Nx; ++i)
+                                velocity_star_v_ptr_[(k+Ng)*v_plane+(j+Ng)*v_stride_s+(i+Ng)] =
+                                    x_flat[k*((Ny+1)*Nx)+j*Nx+i];
+                }
 #endif
-            } else {
-                // 2D: v=0 for channel/Poiseuille (no v-momentum solve)
-                for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
-                    velocity_star_v_ptr_[i_v] = 0.0;
             }
 
             // --- W-momentum solve (3D only) ---
@@ -849,6 +913,21 @@ double RANSSolver::simple_step() {
 #endif
         {
             mg_poisson_solver_.solve(rhs_poisson_, pressure_correction_, pcfg);
+        }
+
+        // Debug: check p' magnitude (GPU reduction)
+        if (config_.verbose) {
+            double max_pp = 0.0;
+            double* pp = pressure_corr_ptr_;
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: pp[0:cell_sz]) reduction(max:max_pp)
+            for (int j = 0; j < Ny; ++j)
+                for (int i = 0; i < Nx; ++i) {
+                    double v = pp[(j+Ng)*stride+(i+Ng)];
+                    if (v < 0) v = -v;
+                    if (v > max_pp) max_pp = v;
+                }
+            std::cerr << "[SIMPLE] max|p'|=" << max_pp << "\n";
         }
 
         // Defect-correction: iterate to solve variable-coefficient Poisson
