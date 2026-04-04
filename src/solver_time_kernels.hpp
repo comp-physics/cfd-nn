@@ -298,7 +298,8 @@ void simple_assemble_momentum_u_2d(
     const double* u_old, const double* v_old,
     const double* nu_eff, const double* pressure,
     const double* tau_div_u,
-    double fx, double alpha_u, double dx, double dy,
+    double fx, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy,
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride);
 

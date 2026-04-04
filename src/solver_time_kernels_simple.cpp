@@ -980,7 +980,8 @@ void simple_assemble_momentum_u_2d(
     const double* u_old, const double* v_old,
     const double* nu_eff, const double* pressure,
     const double* tau_div_u,
-    double fx, double alpha_u, double dx, double dy,
+    double fx, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy,
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride) {
 
@@ -1021,7 +1022,8 @@ void simple_assemble_momentum_u_2d(
             double aP_phys = (nu_L+nu_R)*inv_dx2*vol + (nu_S+nu_N)*inv_dy2*vol
                 + ((F_w<0?-F_w:0) + (F_e>0?F_e:0) + (F_s<0?-F_s:0) + (F_n>0?F_n:0));
             if (aP_phys < 1e-20) aP_phys = 1e-20;
-            double aP_eff = aP_phys / alpha_u;
+            // Patankar + pseudo-transient: a_P_eff = a_P_phys/alpha + vol/dt
+            double aP_eff = aP_phys / alpha_u + vol * pseudo_dt_inv;
 
             a_W_out[flat] = aW;
             a_E_out[flat] = aE;
@@ -1029,7 +1031,7 @@ void simple_assemble_momentum_u_2d(
             a_N_out[flat] = aN;
             a_P_out[flat] = aP_eff;
 
-            // RHS: sum of neighbor contributions + source + Patankar
+            // RHS: neighbors + source + Patankar source + pseudo-transient source
             double source = (tau_div_u[u_idx] + fx) * vol;
             double dp_dx = (pressure[cr] - pressure[cl]) / dx * vol;
             double relax_src = (aP_eff - aP_phys) * u_old[u_idx];

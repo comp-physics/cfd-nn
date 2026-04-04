@@ -367,16 +367,16 @@ double RANSSolver::simple_step() {
                 aP.data(), rhs_mom.data(),
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                fx_, alpha_u_s, ddx, ddy,
+                fx_, alpha_u_s, pseudo_dt_inv, ddx, ddy,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
 
             // Also store a_P in the solver's a_p_u buffer for pressure correction
-            // (a_P_phys = a_P_eff * alpha_u, needed by correct_velocity_simple)
+            // Include pseudo_dt for consistency with the momentum stencil
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, /*pseudo_dt_inv=*/0.0);
+                ddx, ddy, pseudo_dt_inv);
 
             // Solve momentum: A * u* = rhs
             // Uses HYPRE BiCGSTAB+PFMG when available, fallback to our BiCGSTAB
