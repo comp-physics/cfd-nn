@@ -338,22 +338,19 @@ double RANSSolver::simple_step() {
 
         if (n_sweeps > 0 && is_2d) {
         // ============================================================
-        // CORRECT SIMPLE (following Patankar / Fortran reference):
-        // 1. Momentum: RB-GS with Patankar relaxation (NO pseudo-transient)
-        // 2. Pressure: DISCRETE Jacobi of variable-coefficient equation
-        // 3. Velocity correction: dy/a_P_mod * dp'
+        // GPU SIMPLE momentum solve: RB-GS with Patankar relaxation.
+        // Equivalent to OpenFOAM's symGaussSeidel momentum smoother.
+        // n_sweeps controls the number of RB-GS passes (2-5 typical).
+        // NO pseudo-transient — Patankar alpha_u provides stability.
+        // Followed by variable-coefficient Poisson pressure correction.
         // ============================================================
         {
             const double alpha_u_s = config_.simple_alpha_u;
-            const double alpha_p_s = config_.simple_alpha_p;
             const double ddx = mesh_->dx;
             const double ddy = mesh_->dy;
             const int v_stride_s = Nx + 2 * Ng;
 
-            // --- Step A: ADI momentum solve (Patankar, NO pseudo-transient) ---
-            // Alternating: Y-line Thomas (implicit y) then X-line Thomas (implicit x)
-            // Each direction is GPU-parallel (columns/rows independent).
-            // ADI provides implicit coupling in BOTH directions per cycle.
+            // Copy velocity to velocity_star for RB-GS to update in-place
             {
                 [[maybe_unused]] const size_t u_total = velocity_.u_total_size();
                 [[maybe_unused]] const size_t v_total = velocity_.v_total_size();
@@ -365,22 +362,27 @@ double RANSSolver::simple_step() {
 
             // Inner momentum solve: y-line Thomas with Patankar under-relaxation.
             // x-neighbors come from velocity_old (outer iterate). Multiple sweeps
-            // are idempotent with frozen x-neighbors, so we use n_sweeps=1 effectively.
-            // The outer SIMPLE iteration handles convergence (pressure correction drives
-            // velocity toward the correct solution over many outer iterations).
-            //
-            // For flows requiring x-coupling, additional RB-GS sweeps can be added
-            // AFTER the Thomas (as a CORRECTION, not replacement).
-            time_kernels::simple_yline_momentum_u_2d(
-                velocity_star_u_ptr_,
-                velocity_old_u_ptr_, velocity_old_v_ptr_,  // x-neighbors (outer iterate)
-                velocity_old_u_ptr_,                        // Patankar source (outer iterate)
-                nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                fx_, alpha_u_s, ddx, ddy,
-                Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-
-            // Apply BCs to velocity_star
-            {
+            // RB-GS momentum sweeps: Patankar relaxation, NO pseudo-transient.
+            // Each sweep updates velocity_star in-place using current neighbors.
+            // The "frozen" field for mass fluxes/Patankar source is velocity_old.
+            for (int sweep = 0; sweep < n_sweeps; ++sweep) {
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, ddx, ddy,
+                    alpha_u_s, /*pseudo_dt_inv=*/0.0, /*color=*/0,
+                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+                time_kernels::simple_rbgs_momentum_2d(
+                    velocity_star_u_ptr_, velocity_star_v_ptr_,
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    nu_eff_ptr_, pressure_ptr_,
+                    tau_div_u_ptr_, tau_div_v_ptr_,
+                    fx_, fy_, ddx, ddy,
+                    alpha_u_s, /*pseudo_dt_inv=*/0.0, /*color=*/1,
+                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+                // Apply BCs between sweeps
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
                 std::swap(velocity_, velocity_star_);
@@ -390,20 +392,13 @@ double RANSSolver::simple_step() {
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
             }
 
-            // For v: zero for now (Poiseuille has v=0)
-            // TODO: implement v-momentum ADI for general flows
-            for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
-                velocity_star_v_ptr_[i_v] = 0.0;
-
-            // Compute a_P for pressure correction (with pseudo_dt_inv for
-            // consistency with the Poisson RHS scaling). The y-Thomas uses
-            // Patankar internally, but the pressure correction pipeline needs
-            // a_P ≈ vol/pseudo_dt to match the Poisson solve's time scaling.
+            // Compute a_P (physical only, no pseudo-transient) for pressure correction
+            // This a_P matches the RB-GS momentum diagonal (Patankar: a_P_phys/alpha_u)
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, pseudo_dt_inv);
+                ddx, ddy, /*pseudo_dt_inv=*/0.0);
         }
         } else {
         // Diagonal-approximation predictor: u* = u + (H - dp/dx) / a_P
@@ -420,12 +415,17 @@ double RANSSolver::simple_step() {
         }
 
         // Compute a_P with convective diagonal
+        // a_P includes pseudo-transient (vol/pseudo_dt) for stability.
+        // CRITICAL: the SAME a_P must be used for BOTH the predictor AND
+        // the pressure correction. This ensures the momentum-pressure
+        // coupling is consistent, preventing divergence.
+        const double aP_pdt_inv = pseudo_dt_inv;
         if (is_2d) {
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_u_ptr_, velocity_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride, cell_stride,
-                mesh_->dx, mesh_->dy, pseudo_dt_inv);
+                mesh_->dx, mesh_->dy, aP_pdt_inv);
         }
 
         // Predictor: u* = u + (H - dp/dx) / a_P, under-relaxed
