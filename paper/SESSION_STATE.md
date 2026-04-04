@@ -159,3 +159,28 @@ All committed and pushed to `fixup` branch.
 - Branch: `fixup`
 - All changes committed and pushed
 - Latest commit: 8b7530d (duct dp/dx fix)
+
+## SIMPLE Progress Update (Apr 4, 3:45 PM)
+
+### HYPRE Integration Complete
+- Build: nvc++ 25.5 + HYPRE 2.32 (CPU mode) + GPU offload (H200) ✓
+- HYPRE BiCGSTAB+PFMG solves SST momentum in 2-3 iterations ✓
+- No divergence for SST (the core achievement) ✓
+- Variable-coefficient MG forces MG over FFT for SIMPLE pressure ✓
+
+### Remaining SIMPLE Issues
+1. Periodic channel stagnates: div(u*)=0 for x-uniform Poiseuille
+   → degenerate test case, not relevant for duct/hills
+2. Need 3D stencil assembly for duct (currently 2D only)
+3. Need v-momentum solver (currently only u solved)
+4. Need to test on non-degenerate geometry (duct with walls)
+
+### Key Commits
+- 177c3e8: Force MG for varcoeff, update HYPRE v2.32
+- 426a33b: HYPRE momentum solver works for SST
+- e1cb0e4: Add pseudo-transient to HYPRE stencil
+
+### Performance
+- HYPRE momentum solve: 1-3 BiCGSTAB iters (converges fast)
+- Per SIMPLE iteration (2D, 32x48): ~56ms (dominated by MG pressure)
+- For comparison: OpenFOAM SIMPLE on duct: 3340ms per iteration
