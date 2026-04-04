@@ -20,12 +20,23 @@
   - Full 2D mean + RMS fields (131K points each)
 - Source: DOI 10.14459/2018mp1415670
 
-## Square Duct Re_b=3500
-- **f = 0.0419** (friction factor, Pinelli et al. 2010, JFM 644)
-- **U_cl/U_b ≈ 1.43** (centerline to bulk velocity ratio)
-- **Secondary flow magnitude: 1-2% of U_b**
-- Also: Gavrilakis (1992) JFM 244 at Re_tau=150
-- Need: U(y,z) contours, V/W secondary flow pattern, wall shear
+## Square Duct
+### Vinuesa et al. (2018) DNS — Re_b=2500, Re_tau=165 (DOWNLOADED)
+- **U_cl/U_b = 1.315**
+- **Secondary flow |V,W|/U_b ≈ 0.02 (2%)**
+- **Cf = 0.0087**
+- DATA: `data/dns_reference/duct/` — U,V,W profiles + Reynolds stresses (279×279 grid)
+- Source: ftp://ftp.mech.kth.se/pub/rvinuesa/DuctData/AR_1_180/
+- Ref: Vinuesa, Schlatter & Nagib, Phys. Rev. Fluids 3, 054606 (2018)
+
+### Pinelli et al. (2010) — Re_b=3500, Re_tau=150 (NOT publicly available)
+- **f = 0.0419** (friction factor)
+- **U_cl/U_b ≈ 1.43**
+- Data must be digitized from paper figures
+
+### McConkey training data uses Pinelli Re_b=3500
+Our solver should target Re_b=3500 for consistency with training data.
+If comparing to Vinuesa DNS, need Re_b=2500 (nu=0.0008, dp/dx adjusted).
 
 ## Sphere Re=200
 - **Cd = 0.775** (Johnson & Patel 1999, JFM 378, Table 2)

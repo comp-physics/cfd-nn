@@ -304,6 +304,11 @@ int main(int argc, char** argv) {
     // Set body force (pressure gradient)
     solver.set_body_force(-config.dp_dx, 0.0, 0.0);
 
+    // Enable bulk velocity controller if configured (adjusts dp/dx to maintain target U_b)
+    if (config.bulk_velocity_target > 0.0) {
+        solver.enable_bulk_velocity_control(config.bulk_velocity_target);
+    }
+
     // Set initial turbulence model — must be set BEFORE sync_to_gpu()
     // so GPU buffers are mapped for the model that actually runs first.
     // If warm-up is configured and target is non-transport, start with SST warm-up model.
