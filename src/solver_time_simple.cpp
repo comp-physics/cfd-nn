@@ -688,16 +688,23 @@ double RANSSolver::simple_step() {
 
 #ifdef USE_GPU_OFFLOAD
         if (gpu_ready_) {
-            switch (selected_solver_) {
-                case PoissonSolverType::FFT:
-                case PoissonSolverType::FFT2D:
-                case PoissonSolverType::FFT1D:
-                    if (fft_poisson_solver_)
-                        fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-                    break;
-                default:
-                    mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
-                    break;
+            // SIMPLE with varcoeff: MUST use MG (FFT is constant-coefficient only)
+            bool use_mg = mg_poisson_solver_.has_variable_coefficients();
+            if (!use_mg) {
+                switch (selected_solver_) {
+                    case PoissonSolverType::FFT:
+                    case PoissonSolverType::FFT2D:
+                    case PoissonSolverType::FFT1D:
+                        if (fft_poisson_solver_)
+                            fft_poisson_solver_->solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
+                        break;
+                    default:
+                        use_mg = true;
+                        break;
+                }
+            }
+            if (use_mg) {
+                mg_poisson_solver_.solve_device(rhs_poisson_ptr_, pressure_corr_ptr_, pcfg);
             }
         } else
 #endif

@@ -14,6 +14,8 @@
 #ifdef USE_HYPRE
 
 #include "mesh.hpp"
+#include "HYPRE_config.h"
+#include "_hypre_utilities.h"
 #include "HYPRE.h"
 #include "HYPRE_struct_ls.h"
 

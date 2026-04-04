@@ -190,7 +190,7 @@ if(USE_HYPRE)
         FetchContent_Declare(
             hypre
             GIT_REPOSITORY https://github.com/hypre-space/hypre.git
-            GIT_TAG v2.31.0
+            GIT_TAG v2.32.0
             SOURCE_SUBDIR src
         )
 
