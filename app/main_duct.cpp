@@ -598,10 +598,13 @@ int main(int argc, char** argv) {
 
         // Wall shear stress along y-walls (averaged over x)
         std::vector<double> tau_bot(Nz), tau_top(Nz);
-        // Wall-to-cell-center distance is dy/2 (cell center is half a cell from wall face)
+        // Wall-to-cell-center distance: use actual first cell height for stretched grids
+        double dy_wall = mesh.is_y_stretched()
+            ? (mesh.yc[Ng] - mesh.yf[Ng])          // actual wall-to-center distance
+            : mesh.dy / 2.0;                         // uniform grid
         nncfd::qoi::compute_wall_shear_y_device(
             vel.u_data().data(), vel.u_stride(), vel.u_plane_stride(),
-            config.nu, mesh.dy / 2.0,
+            config.nu, dy_wall,
             Nx, Ny, Nz, Ng,
             tau_bot.data(), tau_top.data());
 
