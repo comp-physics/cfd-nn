@@ -225,7 +225,10 @@ public:
 
     /// Set current time step (for external adaptive dt control)
     void set_dt(double dt) { current_dt_ = dt; }
-    
+
+    /// Switch time integrator (e.g., RK3 for warm-up, then SIMPLE for evaluation)
+    void set_time_integrator(TimeIntegrator ti) { config_.time_integrator = ti; }
+
     /// Access fields
     const VectorField& velocity() const { return velocity_; }
     const ScalarField& pressure() const { return pressure_; }

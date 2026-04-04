@@ -126,3 +126,20 @@ profiles/
 
 bench_*
 data/models/tbrf_paper/forests.pkl
+
+# OpenFOAM output (large mesh/solution files)
+openfoam_baseline/*/[0-9]*
+openfoam_baseline/*/constant/polyMesh
+openfoam_baseline/*/postProcessing
+openfoam_baseline/*/log.*
+
+# Production run output
+run_test/production_*
+run_test/*.log
+run_test/qoi_*
+
+# DNS reference data (large, tracked separately)
+data/dns_reference/hills/KKW_DNS_Periodic_Hill_Re5600/
+data/dns_reference/hills/mean_files.dat
+data/dns_reference/hills/rms_files*.dat
+data/dns_reference/duct/*.prof.txt

@@ -627,7 +627,27 @@ int main(int argc, char** argv) {
         
         // Initialize with small perturbation (w=0 for 3D handled internally)
         solver.initialize_uniform(0.1 * u_max_expected, 0.0);
-        
+
+        // For SIMPLE: warm up with RK3 to develop the flow field first.
+        // SIMPLE needs a reasonable initial velocity (not zero/small) so that
+        // div(u*) ≠ 0 and the pressure correction can activate.
+        if (config.time_integrator == TimeIntegrator::SIMPLE) {
+            std::cout << "=== RK3 warm-up for SIMPLE ===\n";
+            solver.set_time_integrator(TimeIntegrator::RK3);
+            solver.sync_to_gpu();
+            const int warmup_steps = 500;
+            for (int ws = 0; ws < warmup_steps; ++ws) {
+                // Always use adaptive dt for RK3 warm-up (SIMPLE's dt is too large)
+                solver.set_dt(solver.compute_adaptive_dt());
+                solver.step();
+            }
+            double ub = solver.bulk_velocity();
+            std::cout << "  RK3 warm-up complete (" << warmup_steps
+                      << " steps), U_b=" << ub << "\n";
+            solver.set_time_integrator(TimeIntegrator::SIMPLE);
+            std::cout << "  Switching to SIMPLE\n";
+        }
+
         // Solve to steady state with automatic VTK snapshots
         ScopedTimer total_timer("Total simulation", false);
 
