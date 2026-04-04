@@ -292,21 +292,26 @@ int main(int argc, char** argv) {
     int snap_count = 0;
 
     // Warm-up phase: model already set above (warm-up SST or target transport).
+    // For SIMPLE: always use RK3 during warm-up to develop the flow field.
+    // SIMPLE needs a developed velocity (not zero) so div(u*) ≠ 0.
+    const bool simple_mode = (config.time_integrator == TimeIntegrator::SIMPLE);
+    if (simple_mode) {
+        solver.set_time_integrator(TimeIntegrator::RK3);
+    }
+
     if (!config.warmup_model.empty() && config.warmup_time > 0.0) {
         {
             if (mpi_rank == 0) {
                 std::cout << "=== Warm-up phase: " << config.warmup_model
-                          << " for t=" << config.warmup_time << " ===\n";
+                          << " for t=" << config.warmup_time
+                          << (simple_mode ? " (RK3 for SIMPLE warm-up)" : "")
+                          << " ===\n";
             }
 
-            // Warm-up has its own step budget (not shared with max_steps).
-            // At CFL~0.15 on fine grids, dt can be very small, requiring
-            // many steps to reach the target physical time.
-            const int warmup_max_steps = 500000;  // generous limit
+            const int warmup_max_steps = 500000;
             for (int ws = 1; ws <= warmup_max_steps; ++ws) {
-                if (config.adaptive_dt) {
-                    solver.set_dt(solver.compute_adaptive_dt());
-                }
+                // Always use adaptive dt during warm-up (SIMPLE's dt may be too large)
+                solver.set_dt(solver.compute_adaptive_dt());
                 double res = solver.step();
                 double t = solver.current_time();
                 if (t >= config.warmup_time) {
@@ -351,6 +356,14 @@ int main(int argc, char** argv) {
                 }
             } else if (config.turb_model == TurbulenceModelType::None) {
                 solver.set_turbulence_model(nullptr);
+            }
+
+            // Switch back to SIMPLE for evaluation phase
+            if (simple_mode) {
+                solver.set_time_integrator(TimeIntegrator::SIMPLE);
+                if (mpi_rank == 0) {
+                    std::cout << "  Switching to SIMPLE for evaluation\n";
+                }
             }
 
             // Reset timing stats for the evaluation phase

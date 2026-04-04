@@ -59,7 +59,6 @@ private:
     HYPRE_StructVector b_ = nullptr;
     HYPRE_StructVector x_ = nullptr;
     HYPRE_StructSolver solver_ = nullptr;
-    HYPRE_StructSolver precond_ = nullptr;
 
     // Grid dimensions
     HYPRE_Int ilower_[3], iupper_[3];

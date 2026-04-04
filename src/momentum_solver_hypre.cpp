@@ -51,8 +51,7 @@ HypreMomentumSolver::HypreMomentumSolver(const Mesh& mesh, bool is_u_component)
 }
 
 HypreMomentumSolver::~HypreMomentumSolver() {
-    if (precond_) HYPRE_StructPFMGDestroy(precond_);
-    if (solver_) HYPRE_StructBiCGSTABDestroy(solver_);
+    if (solver_) HYPRE_StructPFMGDestroy(solver_);
     if (x_) HYPRE_StructVectorDestroy(x_);
     if (b_) HYPRE_StructVectorDestroy(b_);
     if (A_) HYPRE_StructMatrixDestroy(A_);
@@ -104,21 +103,17 @@ void HypreMomentumSolver::create_vectors() {
 }
 
 void HypreMomentumSolver::create_solver() {
-    // BiCGSTAB for the non-symmetric momentum system
-    HYPRE_StructBiCGSTABCreate(MPI_COMM_SELF, &solver_);
-    HYPRE_StructBiCGSTABSetMaxIter(solver_, 20);
-    HYPRE_StructBiCGSTABSetTol(solver_, 1e-4);
-    HYPRE_StructBiCGSTABSetLogging(solver_, 0);
-
-    // PFMG preconditioner (structured multigrid)
-    HYPRE_StructPFMGCreate(MPI_COMM_SELF, &precond_);
-    HYPRE_StructPFMGSetMaxIter(precond_, 1);  // 1 V-cycle per preconditioning step
-    HYPRE_StructPFMGSetTol(precond_, 0.0);     // exact preconditioning
-    HYPRE_StructPFMGSetNumPreRelax(precond_, 1);
-    HYPRE_StructPFMGSetNumPostRelax(precond_, 1);
-
-    HYPRE_StructBiCGSTABSetPrecond(solver_,
-        HYPRE_StructPFMGSolve, HYPRE_StructPFMGSetup, precond_);
+    // Use PFMG directly as the SOLVER (not preconditioner).
+    // This gives an APPROXIMATE solve equivalent to OpenFOAM's 2 GS sweeps.
+    // The approximate solve leaves residual divergence that drives SIMPLE
+    // pressure correction. An exact solve (BiCGSTAB+PFMG) gives div(u*)=0
+    // which prevents SIMPLE from converging.
+    HYPRE_StructPFMGCreate(MPI_COMM_SELF, &solver_);
+    HYPRE_StructPFMGSetMaxIter(solver_, 1);    // Exactly 1 V-cycle
+    HYPRE_StructPFMGSetTol(solver_, 0.0);       // Don't check convergence
+    HYPRE_StructPFMGSetNumPreRelax(solver_, 1);  // 1 pre-smoothing sweep
+    HYPRE_StructPFMGSetNumPostRelax(solver_, 1); // 1 post-smoothing sweep
+    HYPRE_StructPFMGSetLogging(solver_, 0);
 }
 
 void HypreMomentumSolver::set_coefficients(
@@ -153,16 +148,17 @@ void HypreMomentumSolver::set_coefficients(
     HYPRE_StructMatrixAssemble(A_);
 
     // Re-setup the solver with the new matrix
-    HYPRE_StructBiCGSTABSetup(solver_, A_, b_, x_);
+    HYPRE_StructPFMGSetup(solver_, A_, b_, x_);
 }
 
 int HypreMomentumSolver::solve(const double* b, double* x,
                                  double tol, int max_iter)
 {
-    HYPRE_StructBiCGSTABSetTol(solver_, tol);
-    HYPRE_StructBiCGSTABSetMaxIter(solver_, max_iter);
+    // PFMG: set number of V-cycles (max_iter) and tolerance
+    HYPRE_StructPFMGSetMaxIter(solver_, std::max(1, max_iter));
+    HYPRE_StructPFMGSetTol(solver_, tol);
 
-    // Pack RHS (strip ghost cells from the solver's field layout)
+    // Pack RHS
     std::memcpy(rhs_host_.data(), b, n_cells_ * sizeof(double));
     HYPRE_StructVectorSetBoxValues(b_, ilower_, iupper_, rhs_host_.data());
     HYPRE_StructVectorAssemble(b_);
@@ -172,8 +168,8 @@ int HypreMomentumSolver::solve(const double* b, double* x,
     HYPRE_StructVectorSetBoxValues(x_, ilower_, iupper_, x_host_.data());
     HYPRE_StructVectorAssemble(x_);
 
-    // Solve
-    HYPRE_StructBiCGSTABSolve(solver_, A_, b_, x_);
+    // Solve (1 V-cycle = approximate solve, like OpenFOAM's 2 GS sweeps)
+    HYPRE_StructPFMGSolve(solver_, A_, b_, x_);
 
     // Extract solution
     HYPRE_StructVectorGetBoxValues(x_, ilower_, iupper_, x_host_.data());
@@ -181,8 +177,8 @@ int HypreMomentumSolver::solve(const double* b, double* x,
 
     // Get convergence info
     HYPRE_Int num_iter;
-    HYPRE_StructBiCGSTABGetNumIterations(solver_, &num_iter);
-    HYPRE_StructBiCGSTABGetFinalRelativeResidualNorm(solver_, &final_residual_);
+    HYPRE_StructPFMGGetNumIterations(solver_, &num_iter);
+    HYPRE_StructPFMGGetFinalRelativeResidualNorm(solver_, &final_residual_);
 
     return static_cast<int>(num_iter);
 }

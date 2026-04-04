@@ -135,7 +135,7 @@ double RANSSolver::simple_step() {
             double dt_d = 0.25 * dx_min_t * dx_min_t / nu_max_t;
             double transport_dt = std::min(dt_c, dt_d);
             if (transport_dt > 0.1) transport_dt = 0.1;  // cap for safety
-            if (config_.verbose && step_count_ < 5) {
+            if (config_.verbose) {
                 std::cerr << "[SIMPLE] transport_dt=" << transport_dt
                           << " nu_max=" << nu_max_t << " u_max=" << u_max_t << "\n";
             }
@@ -716,8 +716,16 @@ double RANSSolver::simple_step() {
         if (config_.time_integrator == TimeIntegrator::SIMPLE && is_2d) {
             const int u_stride = Nx + 2 * Ng + 1;
             const int v_stride = Nx + 2 * Ng;
+            // The MG expects D = 1/a_P (diffusion coefficient), not a_P itself.
+            // Compute 1/a_P into scratch buffers for the pressure solve.
+            double* D_u = bicg_r_ptr_;  // reuse scratch buffer
+            double* D_v = bicg_s_ptr_;  // reuse scratch buffer
+            for (size_t ii = 0; ii < velocity_.u_total_size(); ++ii)
+                D_u[ii] = (a_p_u_ptr_[ii] > 1e-20) ? 1.0 / a_p_u_ptr_[ii] : 0.0;
+            for (size_t ii = 0; ii < velocity_.v_total_size(); ++ii)
+                D_v[ii] = (a_p_v_ptr_[ii] > 1e-20) ? 1.0 / a_p_v_ptr_[ii] : 0.0;
             mg_poisson_solver_.set_variable_coefficients(
-                a_p_u_ptr_, a_p_v_ptr_,
+                D_u, D_v,
                 u_stride, v_stride,
                 mesh_->dx, mesh_->dy);
             // RHS = div(u*) - mean_div (solvability for periodic/Neumann)
@@ -732,9 +740,19 @@ double RANSSolver::simple_step() {
                     }
                 }
                 mean_div = (count > 0) ? sum_d / count : 0.0;
-                if (config_.verbose && step_count_ < 5) {
+                if (config_.verbose) {
+                    double max_div = 0.0;
+                    #pragma omp target teams distribute parallel for collapse(2) \
+                        map(present: div_sv[0:cell_sz]) reduction(max:max_div)
+                    for (int j = 0; j < Ny; ++j)
+                        for (int i = 0; i < Nx; ++i) {
+                            double d = div_sv[(j+Ng)*stride+(i+Ng)];
+                            if (d < 0) d = -d;
+                            if (d > max_div) max_div = d;
+                        }
                     std::cerr << "[SIMPLE] div(u*): sum=" << sum_d
-                              << " mean=" << mean_div << " count=" << count << "\n";
+                              << " max=" << max_div
+                              << " mean=" << mean_div << "\n";
                 }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
