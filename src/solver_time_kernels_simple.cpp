@@ -1044,5 +1044,276 @@ void simple_assemble_momentum_u_2d(
     }
 }
 
+// ============================================================================
+// 3D u-momentum stencil assembly (7-point stencil)
+// ============================================================================
+void simple_assemble_momentum_u_3d(
+    double* a_W_out, double* a_E_out, double* a_S_out, double* a_N_out,
+    double* a_B_out, double* a_F_out,
+    double* a_P_out, double* rhs_out,
+    const double* u_old, const double* v_old, const double* w_old,
+    const double* nu_eff, const double* pressure,
+    const double* tau_div_u,
+    double fx, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy, double dz,
+    int Nx, int Ny, int Nz, int Ng,
+    int u_stride, int u_plane, int v_stride, int v_plane,
+    int w_stride, int w_plane, int cell_stride, int cell_plane) {
+
+    const double inv_dx2 = 1.0/(dx*dx), inv_dy2 = 1.0/(dy*dy), inv_dz2 = 1.0/(dz*dz);
+    const double vol = dx * dy * dz;
+    const int n_u_x = Nx + 1;
+
+    for (int k = 0; k < Nz; ++k) {
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i <= Nx; ++i) {
+                int kg = k + Ng, jg = j + Ng, ig = i + Ng;
+                int u_idx = kg*u_plane + jg*u_stride + ig;
+                int cl = kg*cell_plane + jg*cell_stride + (ig-1);
+                int cr = kg*cell_plane + jg*cell_stride + ig;
+                int flat = k*(Ny*n_u_x) + j*n_u_x + i;
+
+                // Diffusion coefficients (face-averaged nu_eff)
+                double nu_L = nu_eff[cl], nu_R = nu_eff[cr];
+                double nu_S = 0.25*(nu_eff[cl]+nu_eff[cr]
+                    +nu_eff[(kg)*cell_plane+(jg-1)*cell_stride+(ig-1)]
+                    +nu_eff[(kg)*cell_plane+(jg-1)*cell_stride+ig]);
+                double nu_N = 0.25*(nu_eff[cl]+nu_eff[cr]
+                    +nu_eff[(kg)*cell_plane+(jg+1)*cell_stride+(ig-1)]
+                    +nu_eff[(kg)*cell_plane+(jg+1)*cell_stride+ig]);
+                double nu_B = 0.25*(nu_eff[cl]+nu_eff[cr]
+                    +nu_eff[(kg-1)*cell_plane+jg*cell_stride+(ig-1)]
+                    +nu_eff[(kg-1)*cell_plane+jg*cell_stride+ig]);
+                double nu_F = 0.25*(nu_eff[cl]+nu_eff[cr]
+                    +nu_eff[(kg+1)*cell_plane+jg*cell_stride+(ig-1)]
+                    +nu_eff[(kg+1)*cell_plane+jg*cell_stride+ig]);
+
+                double aW = nu_L*inv_dx2*vol, aE = nu_R*inv_dx2*vol;
+                double aS = nu_S*inv_dy2*vol, aN = nu_N*inv_dy2*vol;
+                double aB = nu_B*inv_dz2*vol, aF = nu_F*inv_dz2*vol;
+
+                // Upwind convection
+                double F_w = u_old[kg*u_plane+jg*u_stride+(ig-1)] * dy*dz;
+                double F_e = u_old[kg*u_plane+jg*u_stride+(ig+1)] * dy*dz;
+                double F_s = 0.5*(v_old[kg*v_plane+jg*v_stride+(ig-1)]
+                                 +v_old[kg*v_plane+jg*v_stride+ig]) * dx*dz;
+                double F_n = 0.5*(v_old[kg*v_plane+(jg+1)*v_stride+(ig-1)]
+                                 +v_old[kg*v_plane+(jg+1)*v_stride+ig]) * dx*dz;
+                double F_b = 0.5*(w_old[(kg)*w_plane+jg*w_stride+(ig-1)]
+                                 +w_old[(kg)*w_plane+jg*w_stride+ig]) * dx*dy;
+                double F_f = 0.5*(w_old[(kg+1)*w_plane+jg*w_stride+(ig-1)]
+                                 +w_old[(kg+1)*w_plane+jg*w_stride+ig]) * dx*dy;
+
+                aW += (F_w > 0 ? F_w : 0); aE += (F_e < 0 ? -F_e : 0);
+                aS += (F_s > 0 ? F_s : 0); aN += (F_n < 0 ? -F_n : 0);
+                aB += (F_b > 0 ? F_b : 0); aF += (F_f < 0 ? -F_f : 0);
+
+                double aP_phys = (nu_L+nu_R)*inv_dx2*vol + (nu_S+nu_N)*inv_dy2*vol
+                    + (nu_B+nu_F)*inv_dz2*vol
+                    + ((F_w<0?-F_w:0)+(F_e>0?F_e:0)+(F_s<0?-F_s:0)+(F_n>0?F_n:0)
+                      +(F_b<0?-F_b:0)+(F_f>0?F_f:0));
+                if (aP_phys < 1e-20) aP_phys = 1e-20;
+                double aP_eff = aP_phys / alpha_u + vol * pseudo_dt_inv;
+
+                a_W_out[flat] = aW; a_E_out[flat] = aE;
+                a_S_out[flat] = aS; a_N_out[flat] = aN;
+                a_B_out[flat] = aB; a_F_out[flat] = aF;
+                a_P_out[flat] = aP_eff;
+
+                double source = (tau_div_u[u_idx] + fx) * vol;
+                double dp_dx = (pressure[cr] - pressure[cl]) / dx * vol;
+                double relax_src = (aP_eff - aP_phys) * u_old[u_idx];
+                rhs_out[flat] = aW*u_old[kg*u_plane+jg*u_stride+(ig-1)]
+                    + aE*u_old[kg*u_plane+jg*u_stride+(ig+1)]
+                    + aS*u_old[kg*u_plane+(jg-1)*u_stride+ig]
+                    + aN*u_old[kg*u_plane+(jg+1)*u_stride+ig]
+                    + aB*u_old[(kg-1)*u_plane+jg*u_stride+ig]
+                    + aF*u_old[(kg+1)*u_plane+jg*u_stride+ig]
+                    + source - dp_dx + relax_src;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 3D v-momentum stencil assembly (7-point stencil)
+// v lives at y-faces: Nx cells in x, (Ny+1) faces in y, Nz cells in z
+// ============================================================================
+void simple_assemble_momentum_v_3d(
+    double* a_W_out, double* a_E_out, double* a_S_out, double* a_N_out,
+    double* a_B_out, double* a_F_out,
+    double* a_P_out, double* rhs_out,
+    const double* u_old, const double* v_old, const double* w_old,
+    const double* nu_eff, const double* pressure,
+    const double* tau_div_v,
+    double fy, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy, double dz,
+    int Nx, int Ny, int Nz, int Ng,
+    int u_stride, int u_plane, int v_stride, int v_plane,
+    int w_stride, int w_plane, int cell_stride, int cell_plane) {
+
+    const double inv_dx2 = 1.0/(dx*dx), inv_dy2 = 1.0/(dy*dy), inv_dz2 = 1.0/(dz*dz);
+    const double vol = dx * dy * dz;
+
+    for (int k = 0; k < Nz; ++k) {
+        for (int j = 0; j <= Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int kg = k + Ng, jg = j + Ng, ig = i + Ng;
+                int v_idx = kg*v_plane + jg*v_stride + ig;
+                int cb = kg*cell_plane + (jg-1)*cell_stride + ig;
+                int ct = kg*cell_plane + jg*cell_stride + ig;
+                int flat = k*((Ny+1)*Nx) + j*Nx + i;
+
+                double nu_B_cell = nu_eff[cb], nu_T_cell = nu_eff[ct];
+                double nu_W = 0.25*(nu_eff[cb]+nu_eff[ct]
+                    +nu_eff[kg*cell_plane+(jg-1)*cell_stride+(ig-1)]
+                    +nu_eff[kg*cell_plane+jg*cell_stride+(ig-1)]);
+                double nu_E = 0.25*(nu_eff[cb]+nu_eff[ct]
+                    +nu_eff[kg*cell_plane+(jg-1)*cell_stride+(ig+1)]
+                    +nu_eff[kg*cell_plane+jg*cell_stride+(ig+1)]);
+                double nu_Bk = 0.25*(nu_eff[cb]+nu_eff[ct]
+                    +nu_eff[(kg-1)*cell_plane+(jg-1)*cell_stride+ig]
+                    +nu_eff[(kg-1)*cell_plane+jg*cell_stride+ig]);
+                double nu_Fk = 0.25*(nu_eff[cb]+nu_eff[ct]
+                    +nu_eff[(kg+1)*cell_plane+(jg-1)*cell_stride+ig]
+                    +nu_eff[(kg+1)*cell_plane+jg*cell_stride+ig]);
+
+                double aW = nu_W*inv_dx2*vol, aE = nu_E*inv_dx2*vol;
+                double aS = nu_B_cell*inv_dy2*vol, aN = nu_T_cell*inv_dy2*vol;
+                double aB = nu_Bk*inv_dz2*vol, aF = nu_Fk*inv_dz2*vol;
+
+                // Upwind convection for v
+                double F_w = 0.5*(u_old[kg*u_plane+(jg-1)*u_stride+ig]
+                                 +u_old[kg*u_plane+jg*u_stride+ig]) * dy*dz;
+                double F_e = 0.5*(u_old[kg*u_plane+(jg-1)*u_stride+(ig+1)]
+                                 +u_old[kg*u_plane+jg*u_stride+(ig+1)]) * dy*dz;
+                double F_s = v_old[kg*v_plane+(jg-1)*v_stride+ig] * dx*dz;
+                double F_n = v_old[kg*v_plane+(jg+1)*v_stride+ig] * dx*dz;
+                double F_b = 0.5*(w_old[(kg)*w_plane+(jg-1)*w_stride+ig]
+                                 +w_old[(kg)*w_plane+jg*w_stride+ig]) * dx*dy;
+                double F_f = 0.5*(w_old[(kg+1)*w_plane+(jg-1)*w_stride+ig]
+                                 +w_old[(kg+1)*w_plane+jg*w_stride+ig]) * dx*dy;
+
+                aW += (F_w > 0 ? F_w : 0); aE += (F_e < 0 ? -F_e : 0);
+                aS += (F_s > 0 ? F_s : 0); aN += (F_n < 0 ? -F_n : 0);
+                aB += (F_b > 0 ? F_b : 0); aF += (F_f < 0 ? -F_f : 0);
+
+                double aP_phys = (nu_W+nu_E)*inv_dx2*vol + (nu_B_cell+nu_T_cell)*inv_dy2*vol
+                    + (nu_Bk+nu_Fk)*inv_dz2*vol
+                    + ((F_w<0?-F_w:0)+(F_e>0?F_e:0)+(F_s<0?-F_s:0)+(F_n>0?F_n:0)
+                      +(F_b<0?-F_b:0)+(F_f>0?F_f:0));
+                if (aP_phys < 1e-20) aP_phys = 1e-20;
+                double aP_eff = aP_phys / alpha_u + vol * pseudo_dt_inv;
+
+                a_W_out[flat] = aW; a_E_out[flat] = aE;
+                a_S_out[flat] = aS; a_N_out[flat] = aN;
+                a_B_out[flat] = aB; a_F_out[flat] = aF;
+                a_P_out[flat] = aP_eff;
+
+                double source = (tau_div_v[v_idx] + fy) * vol;
+                double dp_dy = (pressure[ct] - pressure[cb]) / dy * vol;
+                double relax_src = (aP_eff - aP_phys) * v_old[v_idx];
+                rhs_out[flat] = aW*v_old[kg*v_plane+jg*v_stride+(ig-1)]
+                    + aE*v_old[kg*v_plane+jg*v_stride+(ig+1)]
+                    + aS*v_old[kg*v_plane+(jg-1)*v_stride+ig]
+                    + aN*v_old[kg*v_plane+(jg+1)*v_stride+ig]
+                    + aB*v_old[(kg-1)*v_plane+jg*v_stride+ig]
+                    + aF*v_old[(kg+1)*v_plane+jg*v_stride+ig]
+                    + source - dp_dy + relax_src;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 3D w-momentum stencil assembly (7-point stencil)
+// w lives at z-faces: Nx cells in x, Ny cells in y, (Nz+1) faces in z
+// ============================================================================
+void simple_assemble_momentum_w_3d(
+    double* a_W_out, double* a_E_out, double* a_S_out, double* a_N_out,
+    double* a_B_out, double* a_F_out,
+    double* a_P_out, double* rhs_out,
+    const double* u_old, const double* v_old, const double* w_old,
+    const double* nu_eff, const double* pressure,
+    const double* tau_div_w,
+    double fz, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy, double dz,
+    int Nx, int Ny, int Nz, int Ng,
+    int u_stride, int u_plane, int v_stride, int v_plane,
+    int w_stride, int w_plane, int cell_stride, int cell_plane) {
+
+    const double inv_dx2 = 1.0/(dx*dx), inv_dy2 = 1.0/(dy*dy), inv_dz2 = 1.0/(dz*dz);
+    const double vol = dx * dy * dz;
+
+    for (int k = 0; k <= Nz; ++k) {
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                int kg = k + Ng, jg = j + Ng, ig = i + Ng;
+                int w_idx = kg*w_plane + jg*w_stride + ig;
+                int ck_back = (kg-1)*cell_plane + jg*cell_stride + ig;
+                int ck_front = kg*cell_plane + jg*cell_stride + ig;
+                int flat = k*(Ny*Nx) + j*Nx + i;
+
+                double nu_Back = nu_eff[ck_back], nu_Front = nu_eff[ck_front];
+                double nu_W = 0.25*(nu_eff[ck_back]+nu_eff[ck_front]
+                    +nu_eff[(kg-1)*cell_plane+jg*cell_stride+(ig-1)]
+                    +nu_eff[kg*cell_plane+jg*cell_stride+(ig-1)]);
+                double nu_E = 0.25*(nu_eff[ck_back]+nu_eff[ck_front]
+                    +nu_eff[(kg-1)*cell_plane+jg*cell_stride+(ig+1)]
+                    +nu_eff[kg*cell_plane+jg*cell_stride+(ig+1)]);
+                double nu_S = 0.25*(nu_eff[ck_back]+nu_eff[ck_front]
+                    +nu_eff[(kg-1)*cell_plane+(jg-1)*cell_stride+ig]
+                    +nu_eff[kg*cell_plane+(jg-1)*cell_stride+ig]);
+                double nu_N = 0.25*(nu_eff[ck_back]+nu_eff[ck_front]
+                    +nu_eff[(kg-1)*cell_plane+(jg+1)*cell_stride+ig]
+                    +nu_eff[kg*cell_plane+(jg+1)*cell_stride+ig]);
+
+                double aW = nu_W*inv_dx2*vol, aE = nu_E*inv_dx2*vol;
+                double aS = nu_S*inv_dy2*vol, aN = nu_N*inv_dy2*vol;
+                double aB = nu_Back*inv_dz2*vol, aF = nu_Front*inv_dz2*vol;
+
+                // Upwind convection for w
+                double F_w = 0.5*(u_old[kg*u_plane+jg*u_stride+ig] // approx
+                                 +u_old[(kg-1)*u_plane+jg*u_stride+ig]) * dy*dz;
+                double F_e = 0.5*(u_old[kg*u_plane+jg*u_stride+(ig+1)]
+                                 +u_old[(kg-1)*u_plane+jg*u_stride+(ig+1)]) * dy*dz;
+                double F_s = 0.5*(v_old[kg*v_plane+jg*v_stride+ig]
+                                 +v_old[(kg-1)*v_plane+jg*v_stride+ig]) * dx*dz;
+                double F_n = 0.5*(v_old[kg*v_plane+(jg+1)*v_stride+ig]
+                                 +v_old[(kg-1)*v_plane+(jg+1)*v_stride+ig]) * dx*dz;
+                double F_b = w_old[(kg-1)*w_plane+jg*w_stride+ig] * dx*dy;
+                double F_f = w_old[(kg+1)*w_plane+jg*w_stride+ig] * dx*dy;
+
+                aW += (F_w > 0 ? F_w : 0); aE += (F_e < 0 ? -F_e : 0);
+                aS += (F_s > 0 ? F_s : 0); aN += (F_n < 0 ? -F_n : 0);
+                aB += (F_b > 0 ? F_b : 0); aF += (F_f < 0 ? -F_f : 0);
+
+                double aP_phys = (nu_W+nu_E)*inv_dx2*vol + (nu_S+nu_N)*inv_dy2*vol
+                    + (nu_Back+nu_Front)*inv_dz2*vol
+                    + ((F_w<0?-F_w:0)+(F_e>0?F_e:0)+(F_s<0?-F_s:0)+(F_n>0?F_n:0)
+                      +(F_b<0?-F_b:0)+(F_f>0?F_f:0));
+                if (aP_phys < 1e-20) aP_phys = 1e-20;
+                double aP_eff = aP_phys / alpha_u + vol * pseudo_dt_inv;
+
+                a_W_out[flat] = aW; a_E_out[flat] = aE;
+                a_S_out[flat] = aS; a_N_out[flat] = aN;
+                a_B_out[flat] = aB; a_F_out[flat] = aF;
+                a_P_out[flat] = aP_eff;
+
+                double source = (tau_div_w[w_idx] + fz) * vol;
+                double dp_dz = (pressure[ck_front] - pressure[ck_back]) / dz * vol;
+                double relax_src = (aP_eff - aP_phys) * w_old[w_idx];
+                rhs_out[flat] = aW*w_old[kg*w_plane+jg*w_stride+(ig-1)]
+                    + aE*w_old[kg*w_plane+jg*w_stride+(ig+1)]
+                    + aS*w_old[kg*w_plane+(jg-1)*w_stride+ig]
+                    + aN*w_old[kg*w_plane+(jg+1)*w_stride+ig]
+                    + aB*w_old[(kg-1)*w_plane+jg*w_stride+ig]
+                    + aF*w_old[(kg+1)*w_plane+jg*w_stride+ig]
+                    + source - dp_dz + relax_src;
+            }
+        }
+    }
+}
+
 } // namespace time_kernels
 } // namespace nncfd

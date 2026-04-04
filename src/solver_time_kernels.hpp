@@ -303,5 +303,39 @@ void simple_assemble_momentum_u_2d(
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride);
 
+// 3D stencil assembly for HYPRE momentum solver (u, v, w components)
+void simple_assemble_momentum_u_3d(
+    double* a_W, double* a_E, double* a_S, double* a_N,
+    double* a_B, double* a_F, double* a_P, double* rhs,
+    const double* u_old, const double* v_old, const double* w_old,
+    const double* nu_eff, const double* pressure, const double* tau_div_u,
+    double fx, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy, double dz,
+    int Nx, int Ny, int Nz, int Ng,
+    int u_stride, int u_plane, int v_stride, int v_plane,
+    int w_stride, int w_plane, int cell_stride, int cell_plane);
+
+void simple_assemble_momentum_v_3d(
+    double* a_W, double* a_E, double* a_S, double* a_N,
+    double* a_B, double* a_F, double* a_P, double* rhs,
+    const double* u_old, const double* v_old, const double* w_old,
+    const double* nu_eff, const double* pressure, const double* tau_div_v,
+    double fy, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy, double dz,
+    int Nx, int Ny, int Nz, int Ng,
+    int u_stride, int u_plane, int v_stride, int v_plane,
+    int w_stride, int w_plane, int cell_stride, int cell_plane);
+
+void simple_assemble_momentum_w_3d(
+    double* a_W, double* a_E, double* a_S, double* a_N,
+    double* a_B, double* a_F, double* a_P, double* rhs,
+    const double* u_old, const double* v_old, const double* w_old,
+    const double* nu_eff, const double* pressure, const double* tau_div_w,
+    double fz, double alpha_u, double pseudo_dt_inv,
+    double dx, double dy, double dz,
+    int Nx, int Ny, int Nz, int Ng,
+    int u_stride, int u_plane, int v_stride, int v_plane,
+    int w_stride, int w_plane, int cell_stride, int cell_plane);
+
 } // namespace time_kernels
 } // namespace nncfd

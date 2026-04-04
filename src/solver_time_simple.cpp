@@ -397,7 +397,8 @@ double RANSSolver::simple_step() {
 
                 // Set matrix and solve
                 hypre_mom->set_coefficients(aW.data(), aE.data(),
-                    aS.data(), aN.data(), aP.data(), n_u_interior);
+                    aS.data(), aN.data(), nullptr, nullptr,
+                    aP.data(), n_u_interior);
                 int iters = hypre_mom->solve(rhs_mom.data(), x_flat.data(),
                     1e-3, n_sweeps);
 

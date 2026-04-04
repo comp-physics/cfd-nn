@@ -32,10 +32,11 @@ public:
 
     /// Set the momentum matrix coefficients for this SIMPLE iteration.
     /// a_W, a_E, a_S, a_N: off-diagonal (face-based, positive values)
+    /// a_B, a_F: back/front for 3D (nullptr for 2D)
     /// a_P: diagonal (center, positive, includes Patankar scaling)
-    /// Arrays are interior-only (Nx*Ny for u, etc.)
     void set_coefficients(const double* a_W, const double* a_E,
                           const double* a_S, const double* a_N,
+                          const double* a_B, const double* a_F,
                           const double* a_P, int n_cells);
 
     /// Solve A*x = b.

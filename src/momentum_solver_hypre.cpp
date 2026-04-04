@@ -124,10 +124,11 @@ void HypreMomentumSolver::create_solver() {
 void HypreMomentumSolver::set_coefficients(
     const double* a_W, const double* a_E,
     const double* a_S, const double* a_N,
+    const double* a_B, const double* a_F,
     const double* a_P, int n_cells)
 {
     // Set matrix coefficients for each stencil entry
-    // Stencil: 0=center, 1=west, 2=east, 3=south, 4=north
+    // Stencil: 0=center, 1=west, 2=east, 3=south, 4=north, 5=back, 6=front
     const int stencil_size = mesh_->is2D() ? 5 : 7;
 
     for (int s = 0; s < stencil_size; ++s) {
@@ -136,11 +137,12 @@ void HypreMomentumSolver::set_coefficients(
         for (size_t i = 0; i < n_cells_; ++i) {
             switch (s) {
                 case 0: coeff_host_[i] =  a_P[i]; break;
-                case 1: coeff_host_[i] = -a_W[i]; break;  // negative off-diagonal
+                case 1: coeff_host_[i] = -a_W[i]; break;
                 case 2: coeff_host_[i] = -a_E[i]; break;
                 case 3: coeff_host_[i] = -a_S[i]; break;
                 case 4: coeff_host_[i] = -a_N[i]; break;
-                default: coeff_host_[i] = 0.0; break;      // 3D extensions
+                case 5: coeff_host_[i] = a_B ? -a_B[i] : 0.0; break;
+                case 6: coeff_host_[i] = a_F ? -a_F[i] : 0.0; break;
             }
         }
 
