@@ -593,9 +593,10 @@ int main(int argc, char** argv) {
 
         // Wall shear stress along y-walls (averaged over x)
         std::vector<double> tau_bot(Nz), tau_top(Nz);
+        // Wall-to-cell-center distance is dy/2 (cell center is half a cell from wall face)
         nncfd::qoi::compute_wall_shear_y_device(
             vel.u_data().data(), vel.u_stride(), vel.u_plane_stride(),
-            config.nu, mesh.dy,
+            config.nu, mesh.dy / 2.0,
             Nx, Ny, Nz, Ng,
             tau_bot.data(), tau_top.data());
 

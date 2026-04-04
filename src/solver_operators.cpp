@@ -1147,7 +1147,7 @@ void RANSSolver::compute_tau_divergence() {
             // stabilizing Boussinesq diffusion (prevents anti-diffusion).
             double S_mag = sqrt(dudx[idx]*dudx[idx] + dvdy[idx]*dvdy[idx]
                               + 0.5*(dudy[idx]+dvdx[idx])*(dudy[idx]+dvdx[idx]));
-            double nu_eff_local = nu_t_val + 1e-10;  // molecular nu not available here
+            double nu_eff_local = nu_eff_ptr_[idx];  // nu + nu_t (full effective viscosity)
             double tau_limit = scale * 2.0 * nu_eff_local * S_mag;
             double tau_nl_mag = sqrt(txx[idx]*txx[idx] + 2.0*txy[idx]*txy[idx]
                                    + tyy[idx]*tyy[idx]);
@@ -1243,7 +1243,7 @@ void RANSSolver::compute_tau_divergence() {
                            + (dudz[idx]+dwdx[idx])*(dudz[idx]+dwdx[idx])
                            + (dvdz[idx]+dwdy[idx])*(dvdz[idx]+dwdy[idx]));
             double S_mag = (S2 > 0.0) ? sqrt(S2) : 0.0;
-            double tau_limit = scale * 2.0 * (nu_t_val + 1e-10) * S_mag;
+            double tau_limit = scale * 2.0 * nu_eff_ptr_[idx] * S_mag;  // nu + nu_t
             double tau_nl_sq = txx[idx]*txx[idx] + tyy[idx]*tyy[idx] + tzz[idx]*tzz[idx]
                              + 2.0*(txy[idx]*txy[idx] + txz[idx]*txz[idx] + tyz[idx]*tyz[idx]);
             double tau_nl_mag = (tau_nl_sq > 0.0) ? sqrt(tau_nl_sq) : 0.0;
