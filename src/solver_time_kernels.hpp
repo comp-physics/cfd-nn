@@ -260,9 +260,12 @@ void simple_rbgs_momentum_2d(
     int u_stride, int v_stride, int cell_stride);
 
 // Y-line Thomas solver for SIMPLE u-momentum (implicit y, explicit x)
+// u_xnb/v_xnb: x-neighbor values (inner iterate for Gauss-Seidel)
+// u_relax: Patankar relaxation source (outer iterate velocity_old)
 void simple_yline_momentum_u_2d(
     double* u,
-    const double* u_frozen, const double* v_frozen,
+    const double* u_xnb, const double* v_xnb,
+    const double* u_relax,
     const double* nu_eff, const double* p,
     const double* tau_div_u,
     double fx, double alpha_u, double dx, double dy,

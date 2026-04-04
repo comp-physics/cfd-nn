@@ -363,42 +363,24 @@ double RANSSolver::simple_step() {
                                          u_total, v_total);
             }
 
-            for (int sweep = 0; sweep < n_sweeps; ++sweep) {
-                // Y-line sweep: implicit y, explicit x
-                time_kernels::simple_yline_momentum_u_2d(
-                    velocity_star_u_ptr_,
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                    fx_, alpha_u_s, ddx, ddy,
-                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+            // Inner momentum solve: y-line Thomas with Patankar under-relaxation.
+            // x-neighbors come from velocity_old (outer iterate). Multiple sweeps
+            // are idempotent with frozen x-neighbors, so we use n_sweeps=1 effectively.
+            // The outer SIMPLE iteration handles convergence (pressure correction drives
+            // velocity toward the correct solution over many outer iterations).
+            //
+            // For flows requiring x-coupling, additional RB-GS sweeps can be added
+            // AFTER the Thomas (as a CORRECTION, not replacement).
+            time_kernels::simple_yline_momentum_u_2d(
+                velocity_star_u_ptr_,
+                velocity_old_u_ptr_, velocity_old_v_ptr_,  // x-neighbors (outer iterate)
+                velocity_old_u_ptr_,                        // Patankar source (outer iterate)
+                nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
+                fx_, alpha_u_s, ddx, ddy,
+                Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
 
-                // BCs (needed for ghost cells before x-sweep)
-                std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-                std::swap(velocity_, velocity_star_);
-                apply_velocity_bc();
-                std::swap(velocity_, velocity_star_);
-                std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-
-                // RB-GS x-sweep: handles periodic x correctly through ghost cells
-                // (x-line Thomas can't handle cyclic tridiagonal for periodic x)
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, ddx, ddy,
-                    alpha_u_s, /*pseudo_dt_inv=*/0.0, /*color=*/0,
-                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-                time_kernels::simple_rbgs_momentum_2d(
-                    velocity_star_u_ptr_, velocity_star_v_ptr_,
-                    velocity_old_u_ptr_, velocity_old_v_ptr_,
-                    nu_eff_ptr_, pressure_ptr_,
-                    tau_div_u_ptr_, tau_div_v_ptr_,
-                    fx_, fy_, ddx, ddy,
-                    alpha_u_s, /*pseudo_dt_inv=*/0.0, /*color=*/1,
-                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-
-                // BCs after x-sweep
+            // Apply BCs to velocity_star
+            {
                 std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
                 std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
                 std::swap(velocity_, velocity_star_);
@@ -413,174 +395,15 @@ double RANSSolver::simple_step() {
             for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
                 velocity_star_v_ptr_[i_v] = 0.0;
 
-            // --- Step B: Compute a_P_mod for pressure correction ---
-            // a_P_mod = a_P_phys / alpha_u (NO pseudo-transient for ADI)
-            // a_P_mod = a_P_phys / alpha (pure Patankar, NO pseudo-transient)
+            // Compute a_P for pressure correction (with pseudo_dt_inv for
+            // consistency with the Poisson RHS scaling). The y-Thomas uses
+            // Patankar internally, but the pressure correction pipeline needs
+            // a_P ≈ vol/pseudo_dt to match the Poisson solve's time scaling.
             time_kernels::simple_compute_aP_2d(
                 a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                 velocity_old_u_ptr_, velocity_old_v_ptr_,
                 Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, /*pseudo_dt_inv=*/0.0);
-            {
-                double inv_alpha = 1.0 / alpha_u_s;
-                for (size_t i_a = 0; i_a < velocity_.u_total_size(); ++i_a)
-                    a_p_u_ptr_[i_a] *= inv_alpha;
-                for (size_t i_a = 0; i_a < velocity_.v_total_size(); ++i_a)
-                    a_p_v_ptr_[i_a] *= inv_alpha;
-            }
-
-            // --- Step C: DISCRETE pressure correction (Jacobi) ---
-            {
-                double* pp = pressure_corr_ptr_;
-                double* pp_old = bicg_r_ptr_;
-                double* mass_imb_buf = bicg_rhat_ptr_;
-
-                // Compute mass imbalance with mean subtraction
-                // (prevents spurious pressure gradient in periodic domains)
-                double sum_imb = 0.0;
-                for (int j = 0; j < Ny; ++j) {
-                    for (int i = 0; i < Nx; ++i) {
-                        int jg = j + Ng, ig = i + Ng;
-                        int idx = jg * cell_stride + ig;
-                        mass_imb_buf[idx] = ddy * (velocity_star_u_ptr_[jg*u_stride+(ig+1)]
-                                                  - velocity_star_u_ptr_[jg*u_stride+ig])
-                                          + ddx * (velocity_star_v_ptr_[(jg+1)*v_stride_s+ig]
-                                                  - velocity_star_v_ptr_[jg*v_stride_s+ig]);
-                        sum_imb += mass_imb_buf[idx];
-                    }
-                }
-                {
-                    double mean_imb = sum_imb / (Nx * Ny);
-                    for (int j = 0; j < Ny; ++j)
-                        for (int i = 0; i < Nx; ++i)
-                            mass_imb_buf[(j+Ng)*cell_stride+(i+Ng)] -= mean_imb;
-                }
-
-                for (size_t i_z = 0; i_z < field_total_size_; ++i_z) {
-                    pp[i_z] = 0.0;
-                    pp_old[i_z] = 0.0;
-                }
-
-                const int pp_iters = 250;
-                // DEBUG: print u at a few x-positions for row j=Ny/2
-                if (config_.verbose && step_count_ < 2) {
-                    int jg_mid = Ny/2 + Ng;
-                    std::cerr << "[SIMPLE] u at j=" << Ny/2 << ": ";
-                    for (int i = 0; i < std::min(8, Nx+1); ++i)
-                        std::cerr << velocity_star_u_ptr_[jg_mid*u_stride+(i+Ng)] << " ";
-                    std::cerr << "\n";
-                }
-                // DEBUG: print mass_imb statistics
-                if (config_.verbose && step_count_ < 3) {
-                    double max_imb = 0, sum_imb_abs = 0;
-                    for (int j = 0; j < Ny; ++j)
-                        for (int i = 0; i < Nx; ++i) {
-                            double v = mass_imb_buf[(j+Ng)*cell_stride+(i+Ng)];
-                            if (v < 0) v = -v;
-                            if (v > max_imb) max_imb = v;
-                            sum_imb_abs += v;
-                        }
-                    std::cerr << "[SIMPLE] mass_imb: max=" << max_imb
-                              << " sum_abs=" << sum_imb_abs
-                              << " mean=" << (sum_imb / (Nx*Ny)) << "\n";
-                }
-                for (int pp_iter = 0; pp_iter < pp_iters; ++pp_iter) {
-                    for (int j = 0; j < Ny; ++j) {
-                        for (int i = 0; i < Nx; ++i) {
-                            int jg = j + Ng, ig = i + Ng;
-                            int idx = jg * cell_stride + ig;
-
-                            // x-periodic: ae/aw always valid (ghosts handle wrapping)
-                            // y-walls: Neumann BC → an/as zero at boundaries
-                            double ae_p = ddy*ddy / a_p_u_ptr_[jg*u_stride+(ig+1)];
-                            double aw_p = ddy*ddy / a_p_u_ptr_[jg*u_stride+ig];
-                            double an_p = (j < Ny-1) ? ddx*ddx / a_p_v_ptr_[(jg+1)*v_stride_s+ig] : 0.0;
-                            double as_p = (j > 0)    ? ddx*ddx / a_p_v_ptr_[jg*v_stride_s+ig]     : 0.0;
-
-                            double ap_p = ae_p + aw_p + an_p + as_p;
-                            if (ap_p < 1e-30) { pp[idx] = 0.0; continue; }
-
-                            pp[idx] = (ae_p * pp_old[jg*cell_stride+(ig+1)]
-                                     + aw_p * pp_old[jg*cell_stride+(ig-1)]
-                                     + an_p * pp_old[(jg+1)*cell_stride+ig]
-                                     + as_p * pp_old[(jg-1)*cell_stride+ig]
-                                     - mass_imb_buf[idx]) / ap_p;
-                        }
-                    }
-                    // Apply periodic x-BCs to pp (ghost cells wrap)
-                    for (int j = 0; j < Ny; ++j) {
-                        int jg = j + Ng;
-                        pp[jg*cell_stride + (Ng-1)] = pp[jg*cell_stride + (Ng+Nx-1)];  // west ghost
-                        pp[jg*cell_stride + (Ng+Nx)] = pp[jg*cell_stride + Ng];         // east ghost
-                    }
-                    for (size_t i_c = 0; i_c < field_total_size_; ++i_c)
-                        pp_old[i_c] = pp[i_c];
-                }
-
-                // --- Step D: Velocity correction ---
-                for (int j = 0; j < Ny; ++j) {
-                    for (int i = 0; i <= Nx; ++i) {
-                        int jg = j + Ng, ig = i + Ng;
-                        int u_idx = jg * u_stride + ig;
-                        velocity_star_u_ptr_[u_idx] += ddy / a_p_u_ptr_[u_idx]
-                            * (pp[jg*cell_stride+(ig-1)] - pp[jg*cell_stride+ig]);
-                    }
-                }
-                for (int j = 0; j <= Ny; ++j) {
-                    for (int i = 0; i < Nx; ++i) {
-                        int jg = j + Ng, ig = i + Ng;
-                        int v_idx = jg * v_stride_s + ig;
-                        velocity_star_v_ptr_[v_idx] += ddx / a_p_v_ptr_[v_idx]
-                            * (pp[(jg-1)*cell_stride+ig] - pp[jg*cell_stride+ig]);
-                    }
-                }
-
-                // Pressure update + debug
-                double max_pp = 0, max_p = 0;
-                for (int j = 0; j < Ny; ++j) {
-                    for (int i = 0; i < Nx; ++i) {
-                        int idx = (j+Ng) * cell_stride + (i+Ng);
-                        double ppv = pp[idx]; if (ppv < 0) ppv = -ppv;
-                        if (ppv > max_pp) max_pp = ppv;
-                        pressure_ptr_[idx] += alpha_p_s * pp[idx];
-                        double pv = pressure_ptr_[idx]; if (pv < 0) pv = -pv;
-                        if (pv > max_p) max_p = pv;
-                    }
-                }
-                if (config_.verbose && step_count_ < 10) {
-                    std::cerr << "[SIMPLE] max|pp|=" << max_pp << " max|p|=" << max_p << "\n";
-                }
-
-                // Wrap periodic pressure ghost cells
-                // Without this, p(ghost) stays at 0 while p(interior) grows,
-                // creating a spurious dp/dx at boundary faces that opposes convergence.
-                if (velocity_bc_.x_lo == VelocityBC::Periodic) {
-                    for (int j = 0; j < Ny; ++j) {
-                        int jg = j + Ng;
-                        pressure_ptr_[jg*cell_stride + (Ng-1)] =
-                            pressure_ptr_[jg*cell_stride + (Ng+Nx-1)];
-                        pressure_ptr_[jg*cell_stride + (Ng+Nx)] =
-                            pressure_ptr_[jg*cell_stride + Ng];
-                    }
-                }
-                // y-walls: Neumann (zero normal gradient for pressure)
-                if (velocity_bc_.y_lo == VelocityBC::NoSlip) {
-                    for (int i = 0; i < Nx; ++i) {
-                        int ig = i + Ng;
-                        pressure_ptr_[(Ng-1)*cell_stride + ig] =
-                            pressure_ptr_[Ng*cell_stride + ig];
-                        pressure_ptr_[(Ng+Ny)*cell_stride + ig] =
-                            pressure_ptr_[(Ng+Ny-1)*cell_stride + ig];
-                    }
-                }
-            }
-
-            // Copy corrected velocity to velocity_ only (NOT velocity_old_).
-            // velocity_old_ retains the start-of-iteration value for residual computation.
-            for (size_t i_c = 0; i_c < velocity_.u_total_size(); ++i_c)
-                velocity_u_ptr_[i_c] = velocity_star_u_ptr_[i_c];
-            for (size_t i_c = 0; i_c < velocity_.v_total_size(); ++i_c)
-                velocity_v_ptr_[i_c] = velocity_star_v_ptr_[i_c];
+                ddx, ddy, pseudo_dt_inv);
         }
         } else {
         // Diagonal-approximation predictor: u* = u + (H - dp/dx) / a_P
@@ -623,9 +446,10 @@ double RANSSolver::simple_step() {
         }
     }
 
-    // For n_sweeps>0 path: everything is done (momentum + pressure + correction)
-    // Skip sections 6-8 which are for the diagonal-approx path only.
-    if (config_.simple_jacobi_sweeps > 0 && is_2d) goto simple_residual;
+    // Both paths (ADI and diagonal-approx) now use sections 6-8 for pressure correction.
+    // The ADI path provides a better momentum solve (implicit y-diffusion);
+    // the diagonal-approx path uses explicit predictor. Both need the standard
+    // Poisson + velocity correction for pressure-velocity coupling.
 
     // ================================================================
     // 6. Apply BCs to predictor velocity (velocity_star_)
@@ -722,15 +546,9 @@ double RANSSolver::simple_step() {
         if (pseudo_dt_proj < 1e-15) pseudo_dt_proj = 1e-15;
         current_dt_ = pseudo_dt_proj;
 
-        // For BiCGSTAB path: fill a_P arrays with uniform vol/pseudo_dt for consistent correction
-        if (config_.simple_jacobi_sweeps > 0) {
-            double a_p_uniform = (is_2d ? mesh_->dx * mesh_->dy : mesh_->dx * mesh_->dy * mesh_->dz)
-                                / pseudo_dt_proj;
-            for (size_t i_f = 0; i_f < velocity_.u_total_size(); ++i_f)
-                a_p_u_ptr_[i_f] = a_p_uniform;
-            for (size_t i_f = 0; i_f < velocity_.v_total_size(); ++i_f)
-                a_p_v_ptr_[i_f] = a_p_uniform;
-        }
+        // For ADI path: a_P was already computed with physical coefficients.
+        // For diagonal-approx path: a_P was computed with pseudo_dt_inv.
+        // Both use the same Poisson + correct_velocity_simple pipeline.
 
         // Compute divergence of velocity_star_
         compute_divergence(VelocityWhich::Star, div_velocity_);
@@ -764,8 +582,7 @@ double RANSSolver::simple_step() {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int idx = (j + Ng) * stride + (i + Ng);
-                    rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv
-                            * (config_.simple_jacobi_sweeps > 0 ? config_.simple_alpha_u : 1.0);
+                    rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
                 }
             }
         } else {
@@ -787,8 +604,7 @@ double RANSSolver::simple_step() {
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
                         int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
-                        rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv
-                            * (config_.simple_jacobi_sweeps > 0 ? config_.simple_alpha_u : 1.0);
+                        rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
                     }
                 }
             }
@@ -840,7 +656,31 @@ double RANSSolver::simple_step() {
     // ================================================================
     correct_velocity_simple();
 
-simple_residual:
+    // Wrap periodic pressure ghost cells after pressure update.
+    // Without this, p(ghost) stays stale while p(interior) grows,
+    // creating a spurious dp/dx at boundary faces.
+    if (is_2d) {
+        const int cell_stride = Nx + 2 * Ng;
+        if (velocity_bc_.x_lo == VelocityBC::Periodic) {
+            for (int j = 0; j < Ny; ++j) {
+                int jg = j + Ng;
+                pressure_ptr_[jg*cell_stride + (Ng-1)] =
+                    pressure_ptr_[jg*cell_stride + (Ng+Nx-1)];
+                pressure_ptr_[jg*cell_stride + (Ng+Nx)] =
+                    pressure_ptr_[jg*cell_stride + Ng];
+            }
+        }
+        if (velocity_bc_.y_lo == VelocityBC::NoSlip) {
+            for (int i = 0; i < Nx; ++i) {
+                int ig = i + Ng;
+                pressure_ptr_[(Ng-1)*cell_stride + ig] =
+                    pressure_ptr_[Ng*cell_stride + ig];
+                pressure_ptr_[(Ng+Ny)*cell_stride + ig] =
+                    pressure_ptr_[(Ng+Ny-1)*cell_stride + ig];
+            }
+        }
+    }
+
     // ================================================================
     // 8. Post-correction: IBM + BCs + halo exchange
     // ================================================================
@@ -870,99 +710,16 @@ simple_residual:
 #endif
 
     // ================================================================
-    // 9. Residual
-    //    RB-GS path: MOMENTUM EQUATION RESIDUAL (prevents premature convergence)
-    //    Diagonal-approx path: velocity change (momentum residual doesn't converge
-    //    for diagonal approximation since it doesn't solve the full momentum eq)
+    // 9. Residual: velocity change max|u^{n+1} - u^n|
     // ================================================================
     {
         TIMED_SCOPE("residual_computation");
         const int u_stride = Nx + 2 * Ng + 1;
         const int v_stride = Nx + 2 * Ng;
-        const int cell_stride = Nx + 2 * Ng;
 
         double max_res = 0.0;
 
-        if (config_.simple_jacobi_sweeps > 0 && is_2d) {
-        // RB-GS path: momentum equation residual
-        const double inv_dx2 = 1.0 / (mesh_->dx * mesh_->dx);
-        const double inv_dy2 = 1.0 / (mesh_->dy * mesh_->dy);
-        const double vol = is_2d ? mesh_->dx * mesh_->dy
-                                 : mesh_->dx * mesh_->dy * mesh_->dz;
-        const double pdt_inv = (simple_pseudo_dt_fixed_ > 0)
-                               ? 1.0 / simple_pseudo_dt_fixed_ : 0.0;
-
         {
-            // u-momentum residual
-            for (int j = 0; j < Ny; ++j) {
-                for (int i = 0; i <= Nx; ++i) {
-                    int jg = j + Ng;
-                    int ig = i + Ng;
-                    int u_idx = jg * u_stride + ig;
-                    int cl = jg * cell_stride + (ig - 1);
-                    int cr = jg * cell_stride + ig;
-
-                    // Diffusion coefficients
-                    double nu_L = nu_eff_ptr_[cl];
-                    double nu_R = nu_eff_ptr_[cr];
-                    double nu_S = 0.25 * (nu_eff_ptr_[cl] + nu_eff_ptr_[cr]
-                        + nu_eff_ptr_[(jg-1)*cell_stride+(ig-1)] + nu_eff_ptr_[(jg-1)*cell_stride+ig]);
-                    double nu_N = 0.25 * (nu_eff_ptr_[cl] + nu_eff_ptr_[cr]
-                        + nu_eff_ptr_[(jg+1)*cell_stride+(ig-1)] + nu_eff_ptr_[(jg+1)*cell_stride+ig]);
-
-                    double a_W_d = nu_L * inv_dx2 * vol;
-                    double a_E_d = nu_R * inv_dx2 * vol;
-                    double a_S_d = nu_S * inv_dy2 * vol;
-                    double a_N_d = nu_N * inv_dy2 * vol;
-
-                    // Convection (upwind from frozen)
-                    double F_w = velocity_old_u_ptr_[jg*u_stride+(ig-1)] * mesh_->dy;
-                    double F_e = velocity_old_u_ptr_[jg*u_stride+(ig+1)] * mesh_->dy;
-                    double F_s = 0.5*(velocity_old_v_ptr_[jg*v_stride+(ig-1)]
-                                    + velocity_old_v_ptr_[jg*v_stride+ig]) * mesh_->dx;
-                    double F_n = 0.5*(velocity_old_v_ptr_[(jg+1)*v_stride+(ig-1)]
-                                    + velocity_old_v_ptr_[(jg+1)*v_stride+ig]) * mesh_->dx;
-
-                    double a_W = a_W_d + (F_w > 0 ? F_w : 0);
-                    double a_E = a_E_d + (F_e < 0 ? -F_e : 0);
-                    double a_S = a_S_d + (F_s > 0 ? F_s : 0);
-                    double a_N = a_N_d + (F_n < 0 ? -F_n : 0);
-
-                    double a_P_val = (a_W_d + a_E_d + a_S_d + a_N_d)
-                        + ((F_w<0?-F_w:0) + (F_e>0?F_e:0) + (F_s<0?-F_s:0) + (F_n>0?F_n:0))
-                        + vol * pdt_inv;
-
-                    double sum_nb = a_W * velocity_u_ptr_[jg*u_stride+(ig-1)]
-                                  + a_E * velocity_u_ptr_[jg*u_stride+(ig+1)]
-                                  + a_S * velocity_u_ptr_[(jg-1)*u_stride+ig]
-                                  + a_N * velocity_u_ptr_[(jg+1)*u_stride+ig];
-
-                    double source = (tau_div_u_ptr_[u_idx] + fx_) * vol;
-                    double dp_dx = (pressure_ptr_[cr] - pressure_ptr_[cl]) / mesh_->dx * vol;
-                    double transient = vol * pdt_inv * velocity_old_u_ptr_[u_idx];
-
-                    // Residual: how far is a_P*u from (sum_nb + source - dp + transient)?
-                    double R = a_P_val * velocity_u_ptr_[u_idx]
-                             - (sum_nb + source - dp_dx + transient);
-                    if (R < 0) R = -R;
-                    // Normalize by a_P to get velocity units
-                    if (a_P_val > 1e-20) R /= a_P_val;
-                    if (R > max_res) max_res = R;
-                }
-            }
-
-            // v-momentum residual (simplified — just use velocity change as proxy)
-            for (int j = mesh_->j_begin(); j <= mesh_->j_end(); ++j) {
-                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                    int idx = j * v_stride + i;
-                    double dv = velocity_v_ptr_[idx] - velocity_old_v_ptr_[idx];
-                    if (dv < 0) dv = -dv;
-                    if (dv > max_res) max_res = dv;
-                }
-            }
-        }
-        } else {
-            // Diagonal-approx or 3D fallback: velocity-change residual
             for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
                 for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
                     int idx = j * u_stride + i;
@@ -982,30 +739,6 @@ simple_residual:
         }
 
         if (max_res != max_res) max_res = 1e30;  // NaN guard
-
-        // SER (Switched Evolution/Relaxation): adapt pseudo_dt based on residual
-        // If residual decreases: increase pseudo_dt (less damping, faster convergence)
-        // If residual increases: decrease pseudo_dt (more damping, stability)
-        if (config_.simple_jacobi_sweeps > 0 && simple_pseudo_dt_fixed_ > 0) {
-            static double prev_residual = -1.0;
-            if (prev_residual > 0 && max_res > 0 && max_res < 1e20) {
-                double ratio = prev_residual / max_res;
-                // Clamp ratio to prevent wild swings
-                if (ratio > 5.0) ratio = 5.0;
-                if (ratio < 0.2) ratio = 0.2;
-                // Always grow slowly even at plateau to prevent permanent stagnation
-                if (ratio >= 0.95 && ratio <= 1.05) ratio = 1.01;
-                simple_pseudo_dt_fixed_ *= ratio;
-                // Cap pseudo_dt growth to prevent over-relaxation
-                double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
-                                      : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
-                double max_pseudo_dt = 10.0 * dx_min;  // 10× CFL=1
-                if (simple_pseudo_dt_fixed_ > max_pseudo_dt)
-                    simple_pseudo_dt_fixed_ = max_pseudo_dt;
-            }
-            prev_residual = max_res;
-        }
-
         return max_res;
     }
 }

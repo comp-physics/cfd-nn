@@ -696,7 +696,8 @@ void simple_rbgs_momentum_2d(
 
 void simple_yline_momentum_u_2d(
     double* u,                                        // IN-PLACE update
-    const double* u_frozen, const double* v_frozen,   // frozen for x-neighbor + mass flux
+    const double* u_xnb, const double* v_xnb,        // x-neighbors (inner iterate)
+    const double* u_relax,                            // Patankar relaxation source (outer iterate)
     const double* nu_eff, const double* p,
     const double* tau_div_u,
     double fx, double alpha_u, double dx, double dy,
@@ -711,10 +712,12 @@ void simple_yline_momentum_u_2d(
     [[maybe_unused]] const size_t u_sz = static_cast<size_t>((Ny + 2 * Ng) * u_stride);
     [[maybe_unused]] const size_t v_sz = static_cast<size_t>((Ny + 2 * Ng + 1) * v_stride);
     [[maybe_unused]] const size_t nu_sz = static_cast<size_t>((Ny + 2 * Ng) * cell_stride);
+    // u_relax may alias u_xnb (sweep 0), so we map it with present too
+    [[maybe_unused]] const double* u_rel = u_relax;
 
     // Thomas solve for u — Ny unknowns per column i
     #pragma omp target teams distribute parallel for \
-        map(present: u[0:u_sz], u_frozen[0:u_sz], v_frozen[0:v_sz], \
+        map(present: u[0:u_sz], u_xnb[0:u_sz], v_xnb[0:v_sz], u_rel[0:u_sz], \
                      nu_eff[0:nu_sz], p[0:nu_sz], tau_div_u[0:u_sz])
     for (int i = 0; i <= Nx; ++i) {
         double c_prime[MAX_NY_LOC] = {0.0}, d_prime[MAX_NY_LOC] = {0.0};
@@ -738,11 +741,11 @@ void simple_yline_momentum_u_2d(
             double a_S_diff = nu_S * inv_dy2 * vol;
             double a_N_diff = nu_N * inv_dy2 * vol;
 
-            // Convection from frozen field (upwind)
-            double F_w = u_frozen[jg * u_stride + (ig-1)] * dy;
-            double F_e = u_frozen[jg * u_stride + (ig+1)] * dy;
-            double F_s = 0.5*(v_frozen[jg*v_stride+(ig-1)] + v_frozen[jg*v_stride+ig]) * dx;
-            double F_n = 0.5*(v_frozen[(jg+1)*v_stride+(ig-1)] + v_frozen[(jg+1)*v_stride+ig]) * dx;
+            // Convection from x-neighbor field (upwind)
+            double F_w = u_xnb[jg * u_stride + (ig-1)] * dy;
+            double F_e = u_xnb[jg * u_stride + (ig+1)] * dy;
+            double F_s = 0.5*(v_xnb[jg*v_stride+(ig-1)] + v_xnb[jg*v_stride+ig]) * dx;
+            double F_n = 0.5*(v_xnb[(jg+1)*v_stride+(ig-1)] + v_xnb[(jg+1)*v_stride+ig]) * dx;
 
             double a_W = a_W_diff + (F_w > 0 ? F_w : 0);
             double a_E = a_E_diff + (F_e < 0 ? -F_e : 0);
@@ -764,12 +767,13 @@ void simple_yline_momentum_u_2d(
             if (jj == 0) { a_lower = 0.0; a_diag += a_S; }
             if (jj == Ny - 1) { a_upper = 0.0; a_diag += a_N; }
 
-            // RHS: x-neighbors (EXPLICIT) + source + pressure + Patankar source
+            // RHS: x-neighbors (EXPLICIT from inner iterate) + source + pressure
+            //      + Patankar source (from OUTER iterate)
             double source = (tau_div_u[u_idx] + fx) * vol;
             double dp_dx = (p[cr] - p[cl]) / dx * vol;
-            double relax_src = (a_P_eff - a_P_phys) * u_frozen[u_idx];
-            double rhs = a_W * u_frozen[jg*u_stride+(ig-1)]   // x-neighbor (frozen)
-                       + a_E * u_frozen[jg*u_stride+(ig+1)]   // x-neighbor (frozen)
+            double relax_src = (a_P_eff - a_P_phys) * u_rel[u_idx];
+            double rhs = a_W * u_xnb[jg*u_stride+(ig-1)]   // x-neighbor (inner iterate)
+                       + a_E * u_xnb[jg*u_stride+(ig+1)]   // x-neighbor (inner iterate)
                        + source - dp_dx + relax_src;
 
             // Thomas forward elimination
