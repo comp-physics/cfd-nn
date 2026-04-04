@@ -777,17 +777,25 @@ double RANSSolver::simple_step() {
         const int count = is_2d ? Nx * Ny : Nx * Ny * Nz;
 
         // Set variable coefficients for SIMPLE pressure equation
-        if (config_.time_integrator == TimeIntegrator::SIMPLE && is_2d) {
+        if (config_.time_integrator == TimeIntegrator::SIMPLE && is_2d
+            && config_.simple_jacobi_sweeps > 0) {
             const int u_stride = Nx + 2 * Ng + 1;
             const int v_stride = Nx + 2 * Ng;
             // The MG expects D = 1/a_P (diffusion coefficient), not a_P itself.
-            // Compute 1/a_P into scratch buffers for the pressure solve.
-            double* D_u = bicg_r_ptr_;  // reuse scratch buffer
-            double* D_v = bicg_s_ptr_;  // reuse scratch buffer
-            for (size_t ii = 0; ii < velocity_.u_total_size(); ++ii)
-                D_u[ii] = (a_p_u_ptr_[ii] > 1e-20) ? 1.0 / a_p_u_ptr_[ii] : 0.0;
-            for (size_t ii = 0; ii < velocity_.v_total_size(); ++ii)
-                D_v[ii] = (a_p_v_ptr_[ii] > 1e-20) ? 1.0 / a_p_v_ptr_[ii] : 0.0;
+            // Invert a_P in place, pass to MG, then invert back after the solve.
+            // a_p_u/v are GPU-mapped (persistent device data).
+            [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
+            [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+            double* apu = a_p_u_ptr_;
+            double* apv = a_p_v_ptr_;
+            #pragma omp target teams distribute parallel for map(present: apu[0:u_sz])
+            for (size_t ii = 0; ii < u_sz; ++ii)
+                apu[ii] = (apu[ii] > 1e-20) ? 1.0 / apu[ii] : 0.0;
+            #pragma omp target teams distribute parallel for map(present: apv[0:v_sz])
+            for (size_t ii = 0; ii < v_sz; ++ii)
+                apv[ii] = (apv[ii] > 1e-20) ? 1.0 / apv[ii] : 0.0;
+            double* D_u = apu;
+            double* D_v = apv;
             mg_poisson_solver_.set_variable_coefficients(
                 D_u, D_v,
                 u_stride, v_stride,
@@ -872,8 +880,20 @@ double RANSSolver::simple_step() {
                     }
                 }
             }
-            // Clear variable coefficients (use constant-coefficient MG)
+            // Clear variable coefficients and restore a_P (was inverted to 1/a_P)
             mg_poisson_solver_.clear_variable_coefficients();
+            {
+                const size_t usz = velocity_.u_total_size();
+                const size_t vsz = velocity_.v_total_size();
+                double* au = a_p_u_ptr_;
+                double* av = a_p_v_ptr_;
+                #pragma omp target teams distribute parallel for map(present: au[0:usz])
+                for (size_t ii = 0; ii < usz; ++ii)
+                    au[ii] = (au[ii] > 1e-20) ? 1.0 / au[ii] : 0.0;
+                #pragma omp target teams distribute parallel for map(present: av[0:vsz])
+                for (size_t ii = 0; ii < vsz; ++ii)
+                    av[ii] = (av[ii] > 1e-20) ? 1.0 / av[ii] : 0.0;
+            }
         }
 
         // IBM RHS masking
