@@ -3139,39 +3139,51 @@ std::pair<double, int> RANSSolver::solve_steady_with_snapshots(
 }
 
 double RANSSolver::bulk_velocity() const {
-    // Area-averaged streamwise velocity
+    // Volume-averaged streamwise velocity (correct for both 2D and 3D)
     double sum = 0.0;
     int count = 0;
-    
+
     [[maybe_unused]] const int Nx = mesh_->Nx;
     [[maybe_unused]] const int Ny = mesh_->Ny;
+    [[maybe_unused]] const int Nz = mesh_->Nz;
     [[maybe_unused]] const int Ng = mesh_->Nghost;
-    
+    const bool is3D = !mesh_->is2D();
+
 #ifdef USE_GPU_OFFLOAD
     if (gpu_ready_) {
-        // GPU path: compute sum on device, only transfer scalar
         const size_t u_total_size = velocity_.u_total_size();
         const int u_stride = Nx + 2*Ng + 1;
-        
-        #pragma omp target teams distribute parallel for \
+        const int u_plane = u_stride * (Ny + 2*Ng);
+        const int Nz_loop = is3D ? Nz : 1;
+
+        #pragma omp target teams distribute parallel for collapse(3) \
             map(present: velocity_u_ptr_[0:u_total_size]) \
             reduction(+:sum)
-        for (int j = 0; j < Ny; ++j) {
-            for (int i = 0; i < Nx; ++i) {
-                int ii = i + Ng;
-                int jj = j + Ng;
-                sum += velocity_u_ptr_[jj * u_stride + ii];
+        for (int k = 0; k < Nz_loop; ++k) {
+            for (int j = 0; j < Ny; ++j) {
+                for (int i = 0; i < Nx; ++i) {
+                    int ii = i + Ng;
+                    int jj = j + Ng;
+                    int kk = is3D ? (k + Ng) : 0;
+                    sum += velocity_u_ptr_[kk * u_plane + jj * u_stride + ii];
+                }
             }
         }
-        count = Nx * Ny;
+        count = Nx * Ny * Nz_loop;
     } else
 #endif
     {
-        // Host path
-        for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
-            for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
-                sum += velocity_.u(i, j);
-                ++count;
+        // Host path (also 3D-correct)
+        const int Nz_loop = is3D ? Nz : 1;
+        for (int k = 0; k < Nz_loop; ++k) {
+            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j) {
+                for (int i = mesh_->i_begin(); i < mesh_->i_end(); ++i) {
+                    if (is3D)
+                        sum += velocity_.u(i, j, k + Ng);
+                    else
+                        sum += velocity_.u(i, j);
+                    ++count;
+                }
             }
         }
     }
