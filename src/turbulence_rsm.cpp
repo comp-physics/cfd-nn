@@ -14,6 +14,7 @@
 
 #include "turbulence_rsm.hpp"
 #include "gpu_kernels.hpp"
+#include "gpu_kernels.hpp"
 #include "timing.hpp"
 #include <cmath>
 #include <algorithm>
@@ -555,8 +556,27 @@ void RSMModel::advance_turbulence(
 #ifdef USE_GPU_OFFLOAD
     if (device_view && device_view->is_valid()) {
         // GPU path: operate on solver-owned device-resident data
-        // Velocity gradients must already be computed (by solver)
+        // Compute velocity gradients from MAC velocity (other models do this
+        // internally; RSM needs them before the transport step)
         [[maybe_unused]] const int cell_total = device_view->cell_total;
+
+        gpu_kernels::compute_gradients_from_mac_gpu(
+            device_view->u_face, device_view->v_face,
+            is3D ? device_view->w_face : device_view->u_face,
+            device_view->dudx, device_view->dudy,
+            device_view->dvdx, device_view->dvdy,
+            is3D ? device_view->dudz : device_view->dudx,
+            is3D ? device_view->dvdz : device_view->dudx,
+            is3D ? device_view->dwdx : device_view->dudx,
+            is3D ? device_view->dwdy : device_view->dudx,
+            is3D ? device_view->dwdz : device_view->dudx,
+            Nx, Ny, Nz, Ng,
+            device_view->u_stride, device_view->v_stride,
+            is3D ? device_view->w_stride : device_view->u_stride,
+            device_view->u_plane_stride, device_view->v_plane_stride,
+            is3D ? device_view->w_plane_stride : device_view->u_plane_stride,
+            cell_stride, plane_stride, cell_total,
+            dx, dy, dz);
 
         // Get device pointers
         const double* dudx_d = device_view->dudx;
@@ -727,27 +747,62 @@ void RSMModel::advance_turbulence(
     double* k_ptr = k.data().data();
     const double* nu_t_ptr = nu_t_prev.data().data();
 
-    // Need velocity gradients on CPU — use solver's gradient fields if available
-    // For CPU, we need to compute gradients ourselves if device_view is null
-    // The solver computes gradients before calling advance_turbulence,
-    // and stores them in the device_view. For CPU builds, gradients are
-    // stored in the ScalarField arrays that back the device_view pointers.
-    // Since device_view is null here, we need the gradient fields.
-    // For simplicity, use zero gradients on first call (solver will provide device_view on GPU).
-    // On CPU, the solver always provides device_view with valid gradient pointers.
-
-    // Use zero gradient arrays for the rare CPU-no-device_view path
+    // Compute velocity gradients from MAC velocity on CPU.
+    // Other models compute gradients internally in update(), but RSM
+    // needs them in advance_turbulence() for the transport equations.
     const int total_cells = static_cast<int>(k.data().size());
-    std::vector<double> zero_grad(total_cells, 0.0);
-    const double* dudx_ptr = zero_grad.data();
-    const double* dudy_ptr = zero_grad.data();
-    const double* dudz_ptr = zero_grad.data();
-    const double* dvdx_ptr = zero_grad.data();
-    const double* dvdy_ptr = zero_grad.data();
-    const double* dvdz_ptr = zero_grad.data();
-    const double* dwdx_ptr = zero_grad.data();
-    const double* dwdy_ptr = zero_grad.data();
-    const double* dwdz_ptr = zero_grad.data();
+    std::vector<double> grad_dudx(total_cells, 0.0);
+    std::vector<double> grad_dudy(total_cells, 0.0);
+    std::vector<double> grad_dvdx(total_cells, 0.0);
+    std::vector<double> grad_dvdy(total_cells, 0.0);
+    std::vector<double> grad_dudz(total_cells, 0.0);
+    std::vector<double> grad_dvdz(total_cells, 0.0);
+    std::vector<double> grad_dwdx(total_cells, 0.0);
+    std::vector<double> grad_dwdy(total_cells, 0.0);
+    std::vector<double> grad_dwdz(total_cells, 0.0);
+
+    // Compute gradients from staggered MAC velocity
+    const double inv_dx = 1.0 / dx;
+    const double inv_dy = 1.0 / dy;
+    const double inv_dz = is3D ? 1.0 / dz : 0.0;
+    const int u_stride = velocity.u_stride();
+    const int v_stride = velocity.v_stride();
+
+    for (int cidx = 0; cidx < n_cells; ++cidx) {
+        int il, jl, kl;
+        if (is3D) {
+            kl = cidx / (Nx * Ny); il = cidx % Nx; jl = (cidx / Nx) % Ny;
+        } else {
+            il = cidx % Nx; jl = cidx / Nx; kl = 0;
+        }
+        int ig = il + Ng, jg = jl + Ng, kg = is3D ? kl + Ng : 0;
+        int cell = kg * plane_stride + jg * cell_stride + ig;
+
+        // du/dx, du/dy from staggered u
+        grad_dudx[cell] = (velocity.u_data()[jg * u_stride + (ig + 1)]
+                         - velocity.u_data()[jg * u_stride + ig]) * inv_dx;
+        grad_dudy[cell] = 0.5 * ((velocity.u_data()[(jg+1) * u_stride + ig]
+                                 + velocity.u_data()[(jg+1) * u_stride + (ig+1)])
+                                - (velocity.u_data()[(jg-1) * u_stride + ig]
+                                 + velocity.u_data()[(jg-1) * u_stride + (ig+1)])) * 0.5 * inv_dy;
+        // dv/dx, dv/dy from staggered v
+        grad_dvdx[cell] = 0.5 * ((velocity.v_data()[jg * v_stride + (ig+1)]
+                                 + velocity.v_data()[(jg+1) * v_stride + (ig+1)])
+                                - (velocity.v_data()[jg * v_stride + (ig-1)]
+                                 + velocity.v_data()[(jg+1) * v_stride + (ig-1)])) * 0.5 * inv_dx;
+        grad_dvdy[cell] = (velocity.v_data()[(jg + 1) * v_stride + ig]
+                         - velocity.v_data()[jg * v_stride + ig]) * inv_dy;
+    }
+
+    const double* dudx_ptr = grad_dudx.data();
+    const double* dudy_ptr = grad_dudy.data();
+    const double* dudz_ptr = grad_dudz.data();
+    const double* dvdx_ptr = grad_dvdx.data();
+    const double* dvdy_ptr = grad_dvdy.data();
+    const double* dvdz_ptr = grad_dvdz.data();
+    const double* dwdx_ptr = grad_dwdx.data();
+    const double* dwdy_ptr = grad_dwdy.data();
+    const double* dwdz_ptr = grad_dwdz.data();
 
     for (int cidx = 0; cidx < n_cells; ++cidx) {
         int i_loc, j_loc, k_loc;
