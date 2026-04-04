@@ -291,5 +291,16 @@ void simple_momentum_matvec_u_2d(
     int Nx, int Ny, int Ng,
     int u_stride, int v_stride, int cell_stride);
 
+// Assemble momentum stencil coefficients for HYPRE solver (2D u-component)
+void simple_assemble_momentum_u_2d(
+    double* a_W_out, double* a_E_out, double* a_S_out, double* a_N_out,
+    double* a_P_out, double* rhs_out,
+    const double* u_old, const double* v_old,
+    const double* nu_eff, const double* pressure,
+    const double* tau_div_u,
+    double fx, double alpha_u, double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride);
+
 } // namespace time_kernels
 } // namespace nncfd

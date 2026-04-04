@@ -970,5 +970,77 @@ void simple_momentum_matvec_u_2d(
     }
 }
 
+// ============================================================================
+// Assemble momentum stencil coefficients for HYPRE solver (2D u-component)
+// Packs a_W, a_E, a_S, a_N, a_P into flat interior-only arrays.
+// ============================================================================
+void simple_assemble_momentum_u_2d(
+    double* a_W_out, double* a_E_out, double* a_S_out, double* a_N_out,
+    double* a_P_out, double* rhs_out,
+    const double* u_old, const double* v_old,
+    const double* nu_eff, const double* pressure,
+    const double* tau_div_u,
+    double fx, double alpha_u, double dx, double dy,
+    int Nx, int Ny, int Ng,
+    int u_stride, int v_stride, int cell_stride) {
+
+    const double inv_dx2 = 1.0 / (dx * dx);
+    const double inv_dy2 = 1.0 / (dy * dy);
+    const double vol = dx * dy;
+    const int n_u_x = Nx + 1;  // u-faces in x
+
+    for (int j = 0; j < Ny; ++j) {
+        for (int i = 0; i <= Nx; ++i) {
+            int jg = j + Ng, ig = i + Ng;
+            int u_idx = jg * u_stride + ig;
+            int cl = jg * cell_stride + (ig - 1);
+            int cr = jg * cell_stride + ig;
+            int flat = j * n_u_x + i;
+
+            double nu_L = nu_eff[cl], nu_R = nu_eff[cr];
+            double nu_S = 0.25*(nu_eff[cl]+nu_eff[cr]
+                +nu_eff[(jg-1)*cell_stride+(ig-1)]+nu_eff[(jg-1)*cell_stride+ig]);
+            double nu_N = 0.25*(nu_eff[cl]+nu_eff[cr]
+                +nu_eff[(jg+1)*cell_stride+(ig-1)]+nu_eff[(jg+1)*cell_stride+ig]);
+
+            double aW = nu_L * inv_dx2 * vol;
+            double aE = nu_R * inv_dx2 * vol;
+            double aS = nu_S * inv_dy2 * vol;
+            double aN = nu_N * inv_dy2 * vol;
+
+            double F_w = u_old[jg*u_stride+(ig-1)] * dy;
+            double F_e = u_old[jg*u_stride+(ig+1)] * dy;
+            double F_s = 0.5*(v_old[jg*v_stride+(ig-1)]+v_old[jg*v_stride+ig]) * dx;
+            double F_n = 0.5*(v_old[(jg+1)*v_stride+(ig-1)]+v_old[(jg+1)*v_stride+ig]) * dx;
+
+            aW += (F_w > 0 ? F_w : 0);
+            aE += (F_e < 0 ? -F_e : 0);
+            aS += (F_s > 0 ? F_s : 0);
+            aN += (F_n < 0 ? -F_n : 0);
+
+            double aP_phys = (nu_L+nu_R)*inv_dx2*vol + (nu_S+nu_N)*inv_dy2*vol
+                + ((F_w<0?-F_w:0) + (F_e>0?F_e:0) + (F_s<0?-F_s:0) + (F_n>0?F_n:0));
+            if (aP_phys < 1e-20) aP_phys = 1e-20;
+            double aP_eff = aP_phys / alpha_u;
+
+            a_W_out[flat] = aW;
+            a_E_out[flat] = aE;
+            a_S_out[flat] = aS;
+            a_N_out[flat] = aN;
+            a_P_out[flat] = aP_eff;
+
+            // RHS: sum of neighbor contributions + source + Patankar
+            double source = (tau_div_u[u_idx] + fx) * vol;
+            double dp_dx = (pressure[cr] - pressure[cl]) / dx * vol;
+            double relax_src = (aP_eff - aP_phys) * u_old[u_idx];
+            rhs_out[flat] = aW * u_old[jg*u_stride+(ig-1)]
+                          + aE * u_old[jg*u_stride+(ig+1)]
+                          + aS * u_old[(jg-1)*u_stride+ig]
+                          + aN * u_old[(jg+1)*u_stride+ig]
+                          + source - dp_dx + relax_src;
+        }
+    }
+}
+
 } // namespace time_kernels
 } // namespace nncfd

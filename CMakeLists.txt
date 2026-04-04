@@ -383,14 +383,16 @@ endif()
 
 # Add HYPRE Poisson solver when enabled
 if(USE_HYPRE)
-    target_sources(nn_cfd_core PRIVATE src/poisson_solver_hypre.cpp)
+    target_sources(nn_cfd_core PRIVATE
+        src/poisson_solver_hypre.cpp
+        src/momentum_solver_hypre.cpp)
     target_include_directories(nn_cfd_core PUBLIC ${hypre_SOURCE_DIR}/src)
     target_include_directories(nn_cfd_core PUBLIC ${hypre_BINARY_DIR})
     target_link_libraries(nn_cfd_core HYPRE)
     # Link CUDA runtime for hypre's CUDA backend
     target_link_libraries(nn_cfd_core CUDA::cudart)
     target_compile_definitions(nn_cfd_core PUBLIC USE_HYPRE)
-    message(STATUS "  HYPRE Poisson solver added to nn_cfd_core")
+    message(STATUS "  HYPRE Poisson + momentum solvers added to nn_cfd_core")
 endif()
 
 # Add FFT-hybrid Poisson solver (for periodic x/z cases)
