@@ -21,7 +21,7 @@ void compute_cf_x_device(const double* u_ptr, int u_stride,
                          const double* yf_ptr, [[maybe_unused]] int yf_size,
                          const double* hill_y_ptr,
                          const int* j_first_fluid_ptr,
-                         double nu, double u_ref,
+                         double nu, double u_ref, double dx,
                          double* cf_out,
                          int Nx, [[maybe_unused]] int Ny, int Ng) {
     const double q_ref = 0.5 * u_ref * u_ref;
@@ -34,7 +34,22 @@ void compute_cf_x_device(const double* u_ptr, int u_stride,
         double dy = y_cell - y_wall;
         double u_cell = 0.5 * (u_ptr[jf * u_stride + ig] +
                                 u_ptr[jf * u_stride + ig + 1]);
-        double tau_w = nu * u_cell / dy;
+
+        // Correct for hill slope: the wall-normal distance is dy * cos(θ),
+        // NOT dy. On sloped surfaces, using dy alone underestimates tau_w.
+        // dh/dx from central differences (periodic wrap for i=0 and i=Nx-1)
+        double dhdx;
+        if (i == 0) {
+            dhdx = (hill_y_ptr[1] - hill_y_ptr[Nx - 1]) / (2.0 * dx);
+        } else if (i == Nx - 1) {
+            dhdx = (hill_y_ptr[0] - hill_y_ptr[Nx - 2]) / (2.0 * dx);
+        } else {
+            dhdx = (hill_y_ptr[i + 1] - hill_y_ptr[i - 1]) / (2.0 * dx);
+        }
+        double cos_theta = 1.0 / std::sqrt(1.0 + dhdx * dhdx);
+        double dy_normal = dy * cos_theta;  // wall-normal distance
+
+        double tau_w = nu * u_cell / dy_normal;
         cf_out[i] = tau_w / q_ref;
     }
 }

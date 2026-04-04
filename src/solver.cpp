@@ -606,6 +606,31 @@ RANSSolver::~RANSSolver() {
 #endif
 }
 
+void RANSSolver::set_ibm_forcing(IBMForcing* ibm) {
+    ibm_ = ibm;
+    if (ibm_ && gpu_ready_) ibm_->map_to_gpu();
+
+    // Recompute wall distances using the IBM body's signed distance function.
+    // For IBM cases, the true wall is the body surface, not the domain boundary.
+    // Take the minimum of the domain wall distance and the IBM body distance.
+    if (ibm_ && mesh_) {
+        const auto& body = ibm_->body();
+        const bool is3D = mesh_->Nz > 1;
+        for (int k = 0; k < mesh_->total_Nz(); ++k) {
+            double z = is3D ? mesh_->z(k) : 0.0;
+            for (int j = 0; j < mesh_->total_Ny(); ++j) {
+                double y = mesh_->y(j);
+                for (int i = 0; i < mesh_->total_Nx(); ++i) {
+                    double x = mesh_->x(i);
+                    double d_ibm = std::abs(body.phi(x, y, z));
+                    double d_current = wall_distance_(i, j, k);
+                    wall_distance_(i, j, k) = std::min(d_current, d_ibm);
+                }
+            }
+        }
+    }
+}
+
 void RANSSolver::set_turbulence_model(std::unique_ptr<TurbulenceModel> model) {
     turb_model_ = std::move(model);
     if (turb_model_) {

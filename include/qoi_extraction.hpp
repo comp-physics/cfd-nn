@@ -14,7 +14,7 @@ namespace qoi {
 void compute_cf_x_device(const double* u_ptr, int u_stride, int u_plane_stride,
                          const double* yf_ptr, int yf_size,
                          const double* hill_y_ptr, const int* j_first_fluid_ptr,
-                         double nu, double u_ref,
+                         double nu, double u_ref, double dx,
                          double* cf_out,
                          int Nx, int Ny, int Ng);
 

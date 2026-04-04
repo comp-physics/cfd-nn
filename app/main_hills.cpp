@@ -478,7 +478,7 @@ int main(int argc, char** argv) {
             vel.u_data().data(), vel.u_stride(), 0,
             mesh.yf.data(), Ny + 2 * Ng + 1,
             hill_y.data(), j_first_fluid.data(),
-            config.nu, u_ref, cf.data(),
+            config.nu, u_ref, mesh.dx, cf.data(),
             Nx, Ny, Ng);
 
         // Write Cf(x)

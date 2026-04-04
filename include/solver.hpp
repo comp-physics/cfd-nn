@@ -98,10 +98,8 @@ public:
     /// Set IBM forcing (optional, for immersed boundary simulations)
     /// The IBMForcing must outlive the solver. Applies forcing after predictor
     /// and masks solid cells in Poisson RHS.
-    void set_ibm_forcing(class IBMForcing* ibm) {
-        ibm_ = ibm;
-        if (ibm_ && gpu_ready_) ibm_->map_to_gpu();
-    }
+    void set_ibm_forcing(class IBMForcing* ibm);
+
 
     /// Set turbulence model (takes ownership)
     void set_turbulence_model(std::unique_ptr<TurbulenceModel> model);
