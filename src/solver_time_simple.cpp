@@ -546,68 +546,99 @@ double RANSSolver::simple_step() {
         if (pseudo_dt_proj < 1e-15) pseudo_dt_proj = 1e-15;
         current_dt_ = pseudo_dt_proj;
 
-        // For ADI path: a_P was already computed with physical coefficients.
-        // For diagonal-approx path: a_P was computed with pseudo_dt_inv.
-        // Both use the same Poisson + correct_velocity_simple pipeline.
-
         // Compute divergence of velocity_star_
         compute_divergence(VelocityWhich::Star, div_velocity_);
 
-        // Build Poisson RHS: rhs = (div - mean_div) * mean(a_P) / vol
-        // This approximates ∇·(1/a_P · ∇p') ≈ (1/mean(1/a_P)) * ∇²p' = mean_aP_undamped * ∇²p'
-        // But the MG solves ∇²p' = rhs, so rhs = div * mean_aP_undamped
-        // For simplicity, use 1/pseudo_dt_proj which = mean_aP_undamped/vol
+        // SIMPLE pressure equation: ∇·(D · ∇p') = ∇·u*
+        // where D_u = 1/a_P_u (at u-faces), D_v = 1/a_P_v (at v-faces).
+        // This is the CORRECT variable-coefficient pressure correction.
+        //
+        // For SIMPLE mode: set variable coefficients on the MG solver so it
+        // solves the proper pressure equation. The RHS is just div(u*).
+        // For explicit RK3 mode: use constant-coefficient (1/dt) as before.
         const int stride = Nx + 2 * Ng;
         const int plane_stride = stride * (Ny + 2 * Ng);
         [[maybe_unused]] const size_t cell_sz = field_total_size_;
         double* rhs_sv = rhs_poisson_ptr_;
         double* div_sv = div_velocity_ptr_;
-        const double dt_inv = 1.0 / pseudo_dt_proj;
         const int count = is_2d ? Nx * Ny : Nx * Ny * Nz;
 
-        double mean_div = 0.0;
-        if (is_2d) {
-            double sum_d = 0.0;
-            #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum_d) \
-                map(present: div_sv[0:cell_sz])
-            for (int j = 0; j < Ny; ++j) {
-                for (int i = 0; i < Nx; ++i) {
-                    sum_d += div_sv[(j + Ng) * stride + (i + Ng)];
+        // Set variable coefficients for SIMPLE pressure equation
+        if (config_.time_integrator == TimeIntegrator::SIMPLE && is_2d) {
+            const int u_stride = Nx + 2 * Ng + 1;
+            const int v_stride = Nx + 2 * Ng;
+            mg_poisson_solver_.set_variable_coefficients(
+                a_p_u_ptr_, a_p_v_ptr_,
+                u_stride, v_stride,
+                mesh_->dx, mesh_->dy);
+            // RHS = div(u*) - mean_div (solvability for periodic/Neumann)
+            double mean_div = 0.0;
+            {
+                double sum_d = 0.0;
+                #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum_d) \
+                    map(present: div_sv[0:cell_sz])
+                for (int j = 0; j < Ny; ++j) {
+                    for (int i = 0; i < Nx; ++i) {
+                        sum_d += div_sv[(j + Ng) * stride + (i + Ng)];
+                    }
                 }
+                mean_div = (count > 0) ? sum_d / count : 0.0;
             }
-            mean_div = (count > 0) ? sum_d / count : 0.0;
-
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int idx = (j + Ng) * stride + (i + Ng);
-                    rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
+                    rhs_sv[idx] = div_sv[idx] - mean_div;
                 }
             }
         } else {
-            double sum_d = 0.0;
-            #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum_d) \
-                map(present: div_sv[0:cell_sz])
-            for (int k = 0; k < Nz; ++k) {
+            // RK3 path: constant-coefficient Poisson (1/dt scaling)
+            const double dt_inv = 1.0 / pseudo_dt_proj;
+            double mean_div = 0.0;
+            if (is_2d) {
+                double sum_d = 0.0;
+                #pragma omp target teams distribute parallel for collapse(2) reduction(+:sum_d) \
+                    map(present: div_sv[0:cell_sz])
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
-                        sum_d += div_sv[(k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng)];
+                        sum_d += div_sv[(j + Ng) * stride + (i + Ng)];
                     }
                 }
-            }
-            mean_div = (count > 0) ? sum_d / count : 0.0;
-
-            #pragma omp target teams distribute parallel for collapse(3) \
-                map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
-            for (int k = 0; k < Nz; ++k) {
+                mean_div = (count > 0) ? sum_d / count : 0.0;
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
                 for (int j = 0; j < Ny; ++j) {
                     for (int i = 0; i < Nx; ++i) {
-                        int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
+                        int idx = (j + Ng) * stride + (i + Ng);
                         rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
                     }
                 }
+            } else {
+                double sum_d = 0.0;
+                #pragma omp target teams distribute parallel for collapse(3) reduction(+:sum_d) \
+                    map(present: div_sv[0:cell_sz])
+                for (int k = 0; k < Nz; ++k) {
+                    for (int j = 0; j < Ny; ++j) {
+                        for (int i = 0; i < Nx; ++i) {
+                            sum_d += div_sv[(k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng)];
+                        }
+                    }
+                }
+                mean_div = (count > 0) ? sum_d / count : 0.0;
+                #pragma omp target teams distribute parallel for collapse(3) \
+                    map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
+                for (int k = 0; k < Nz; ++k) {
+                    for (int j = 0; j < Ny; ++j) {
+                        for (int i = 0; i < Nx; ++i) {
+                            int idx = (k + Ng) * plane_stride + (j + Ng) * stride + (i + Ng);
+                            rhs_sv[idx] = (div_sv[idx] - mean_div) * dt_inv;
+                        }
+                    }
+                }
             }
+            // Clear variable coefficients (use constant-coefficient MG)
+            mg_poisson_solver_.clear_variable_coefficients();
         }
 
         // IBM RHS masking
