@@ -64,3 +64,26 @@ would take ~160 ms → only 1.6× overhead (vs 2.56× at 884K cells).
    increase to ~5× (TBNN-small). Conversely, if the NN were reduced 10×
    (e.g., via quantization), the total step cost would barely change
    (15.3 → 14.0 ms, only 8% savings).
+
+## Geometry Dependence (updated finding)
+
+The Poisson cost is geometry-dependent, not solver-choice-dependent:
+
+| Case | Geometry | Periodic dirs | Poisson solver | Poisson/step | % of total |
+|------|----------|---------------|----------------|-------------|------------|
+| Cylinder | 2D external | x (periodic) | FFT2D | 0.14 ms | 22% |
+| Hills | 2D internal | x (periodic) | FFT2D | ~0.5 ms | ~30% |
+| Duct | 3D internal | x only | MG (stretched) | 4.1 ms ×3 | 81% |
+
+Uniform duct + FFT1D is 3.8× SLOWER (58 ms/step) because FFT1D decomposes
+into 49 separate 2D MG solves. The duct's 4-wall geometry fundamentally
+requires MG — FFT needs ≥2 periodic directions.
+
+**Paper narrative**: "For internal flows with multiple wall boundaries
+(ducts, diffusers, turbomachinery), the multigrid Poisson solve dominates
+step cost and amortizes NN inference. For external flows where FFT is viable,
+NN cost becomes the primary overhead."
+
+This means the Pareto plot has TWO regimes:
+- Duct (MG-limited): NN overhead 1.3-4.2× → Poisson amortizes
+- Cylinder (FFT): NN overhead would be the dominant cost
