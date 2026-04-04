@@ -356,13 +356,17 @@ double RANSSolver::simple_step() {
             [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
             const int n_u_interior = (Nx + 1) * Ny;
 
-            // Compute a_P for pressure correction (includes pseudo_dt)
+            // Compute a_P for pressure correction.
+            // For HYPRE SIMPLE: NO pseudo-transient. HYPRE's PFMG provides
+            // the multigrid damping that bare Jacobi/RB-GS lacked.
+            // Pure Patankar: a_P = a_P_phys / alpha_u (no vol/dt term).
+            const double simple_pdt_inv = 0.0;  // Pure SIMPLE
             if (is_2d) {
                 time_kernels::simple_compute_aP_2d(
                     a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
                     velocity_old_u_ptr_, velocity_old_v_ptr_,
                     Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                    ddx, ddy, pseudo_dt_inv);
+                    ddx, ddy, simple_pdt_inv);
             }
             // TODO: simple_compute_aP_3d for 3D
 
@@ -382,7 +386,7 @@ double RANSSolver::simple_step() {
                         aP.data(), rhs_mom.data(),
                         velocity_old_u_ptr_, velocity_old_v_ptr_,
                         nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                        fx_, alpha_u_s, pseudo_dt_inv, ddx, ddy,
+                        fx_, alpha_u_s, simple_pdt_inv, ddx, ddy,
                         Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
                 } else {
                     const int u_plane = u_stride * (Ny + 2*Ng);
@@ -395,7 +399,7 @@ double RANSSolver::simple_step() {
                         aB.data(), aF.data(), aP.data(), rhs_mom.data(),
                         velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
                         nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                        fx_, alpha_u_s, pseudo_dt_inv, ddx, ddy, mesh_->dz,
+                        fx_, alpha_u_s, simple_pdt_inv, ddx, ddy, mesh_->dz,
                         Nx, Ny, Nz, Ng,
                         u_stride, u_plane, v_stride_s, v_plane,
                         w_stride, w_plane, cell_stride, cell_plane_s);
@@ -422,7 +426,12 @@ double RANSSolver::simple_step() {
                 hypre_u->set_coefficients(aW.data(), aE.data(), aS.data(), aN.data(),
                     is_2d ? nullptr : aB.data(), is_2d ? nullptr : aF.data(),
                     aP.data(), n_u);
-                int u_iters = hypre_u->solve(rhs_mom.data(), x_flat.data(), 1e-3, n_sweeps);
+                // Limit HYPRE to 1-2 iterations (approximate solve, like OpenFOAM's 2 GS sweeps).
+                // An exact solve gives u* ≈ u_old (Patankar pulls toward old solution),
+                // leaving div(u*)=0 and no pressure correction driver.
+                // An approximate solve leaves residual divergence that drives pressure.
+                int max_mom_iters = std::min(n_sweeps, 2);
+                int u_iters = hypre_u->solve(rhs_mom.data(), x_flat.data(), 1e-2, max_mom_iters);
 
                 if (config_.verbose && step_count_ < 5)
                     std::cerr << "[SIMPLE] HYPRE u-mom: " << u_iters
@@ -469,7 +478,7 @@ double RANSSolver::simple_step() {
                     aB.data(), aF.data(), aP.data(), rhs_mom.data(),
                     velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
                     nu_eff_ptr_, pressure_ptr_, tau_div_v_ptr_,
-                    fy_, alpha_u_s, pseudo_dt_inv, ddx, ddy, mesh_->dz,
+                    fy_, alpha_u_s, simple_pdt_inv, ddx, ddy, mesh_->dz,
                     Nx, Ny, Nz, Ng,
                     u_stride, u_plane, v_stride_s, v_plane,
                     w_stride, w_plane, cell_stride, cell_plane_s);
@@ -487,7 +496,8 @@ double RANSSolver::simple_step() {
 
                 hypre_v->set_coefficients(aW.data(), aE.data(), aS.data(), aN.data(),
                     aB.data(), aF.data(), aP.data(), n_v);
-                int v_iters = hypre_v->solve(rhs_mom.data(), x_flat.data(), 1e-3, n_sweeps);
+                int max_mom_iters_v = std::min(n_sweeps, 2);
+                int v_iters = hypre_v->solve(rhs_mom.data(), x_flat.data(), 1e-2, max_mom_iters_v);
 
                 if (config_.verbose && step_count_ < 5)
                     std::cerr << "[SIMPLE] HYPRE v-mom: " << v_iters
@@ -523,7 +533,7 @@ double RANSSolver::simple_step() {
                     aB_w.data(), aF_w.data(), aP_w.data(), rhs_w.data(),
                     velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
                     nu_eff_ptr_, pressure_ptr_, tau_div_w_ptr_,
-                    fz_, alpha_u_s, pseudo_dt_inv, ddx, ddy, mesh_->dz,
+                    fz_, alpha_u_s, simple_pdt_inv, ddx, ddy, mesh_->dz,
                     Nx, Ny, Nz, Ng,
                     u_stride, u_plane, v_stride_s, v_plane,
                     w_stride, w_plane, cell_stride, cell_plane_s);
@@ -722,6 +732,10 @@ double RANSSolver::simple_step() {
                     }
                 }
                 mean_div = (count > 0) ? sum_d / count : 0.0;
+                if (config_.verbose && step_count_ < 5) {
+                    std::cerr << "[SIMPLE] div(u*): sum=" << sum_d
+                              << " mean=" << mean_div << " count=" << count << "\n";
+                }
             }
             #pragma omp target teams distribute parallel for collapse(2) \
                 map(present: div_sv[0:cell_sz], rhs_sv[0:cell_sz])
