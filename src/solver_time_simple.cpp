@@ -340,7 +340,7 @@ double RANSSolver::simple_step() {
 
         const int n_sweeps = config_.simple_jacobi_sweeps;
 
-        if (n_sweeps > 0 && is_2d) {
+        if (n_sweeps > 0) {
         // ============================================================
         // GPU SIMPLE momentum solve.
         // When USE_HYPRE: BiCGSTAB + PFMG preconditioner (robust, fast)
@@ -356,82 +356,199 @@ double RANSSolver::simple_step() {
             [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
             const int n_u_interior = (Nx + 1) * Ny;
 
-            // Assemble momentum stencil: a_W, a_E, a_S, a_N, a_P, rhs
-            // Packed into flat interior-only arrays for HYPRE
-            std::vector<double> aW(n_u_interior), aE(n_u_interior);
-            std::vector<double> aS(n_u_interior), aN(n_u_interior);
-            std::vector<double> aP(n_u_interior), rhs_mom(n_u_interior);
+            // Compute a_P for pressure correction (includes pseudo_dt)
+            if (is_2d) {
+                time_kernels::simple_compute_aP_2d(
+                    a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
+                    velocity_old_u_ptr_, velocity_old_v_ptr_,
+                    Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
+                    ddx, ddy, pseudo_dt_inv);
+            }
+            // TODO: simple_compute_aP_3d for 3D
 
-            time_kernels::simple_assemble_momentum_u_2d(
-                aW.data(), aE.data(), aS.data(), aN.data(),
-                aP.data(), rhs_mom.data(),
-                velocity_old_u_ptr_, velocity_old_v_ptr_,
-                nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
-                fx_, alpha_u_s, pseudo_dt_inv, ddx, ddy,
-                Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
-
-            // Also store a_P in the solver's a_p_u buffer for pressure correction
-            // Include pseudo_dt for consistency with the momentum stencil
-            time_kernels::simple_compute_aP_2d(
-                a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
-                velocity_old_u_ptr_, velocity_old_v_ptr_,
-                Nx, Ny, Ng, u_stride, v_stride_s, cell_stride,
-                ddx, ddy, pseudo_dt_inv);
-
-            // Solve momentum: A * u* = rhs
-            // Uses HYPRE BiCGSTAB+PFMG when available, fallback to our BiCGSTAB
+            // --- U-momentum solve ---
             {
+                const int n_u_x = Nx + 1;
+                const int Nz_eff = is_2d ? 1 : Nz;
+                const int n_u = n_u_x * Ny * Nz_eff;
+                std::vector<double> aW(n_u), aE(n_u), aS(n_u), aN(n_u);
+                std::vector<double> aB, aF;
+                std::vector<double> aP(n_u), rhs_mom(n_u);
+                if (!is_2d) { aB.resize(n_u); aF.resize(n_u); }
+
+                if (is_2d) {
+                    time_kernels::simple_assemble_momentum_u_2d(
+                        aW.data(), aE.data(), aS.data(), aN.data(),
+                        aP.data(), rhs_mom.data(),
+                        velocity_old_u_ptr_, velocity_old_v_ptr_,
+                        nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
+                        fx_, alpha_u_s, pseudo_dt_inv, ddx, ddy,
+                        Nx, Ny, Ng, u_stride, v_stride_s, cell_stride);
+                } else {
+                    const int u_plane = u_stride * (Ny + 2*Ng);
+                    const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
+                    const int w_stride = Nx + 2*Ng;
+                    const int w_plane = w_stride * (Ny + 2*Ng);
+                    const int cell_plane_s = cell_stride * (Ny + 2*Ng);
+                    time_kernels::simple_assemble_momentum_u_3d(
+                        aW.data(), aE.data(), aS.data(), aN.data(),
+                        aB.data(), aF.data(), aP.data(), rhs_mom.data(),
+                        velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
+                        nu_eff_ptr_, pressure_ptr_, tau_div_u_ptr_,
+                        fx_, alpha_u_s, pseudo_dt_inv, ddx, ddy, mesh_->dz,
+                        Nx, Ny, Nz, Ng,
+                        u_stride, u_plane, v_stride_s, v_plane,
+                        w_stride, w_plane, cell_stride, cell_plane_s);
+                }
+
 #ifdef USE_HYPRE
-                // HYPRE path: BiCGSTAB + PFMG preconditioner
-                // Create solver on first use (or reuse static instance)
-                static std::unique_ptr<HypreMomentumSolver> hypre_mom;
-                if (!hypre_mom) {
-                    hypre_mom = std::make_unique<HypreMomentumSolver>(*mesh_, true);
+                static std::unique_ptr<HypreMomentumSolver> hypre_u;
+                if (!hypre_u) hypre_u = std::make_unique<HypreMomentumSolver>(*mesh_, true);
+
+                std::vector<double> x_flat(n_u);
+                if (is_2d) {
+                    for (int j = 0; j < Ny; ++j)
+                        for (int i = 0; i <= Nx; ++i)
+                            x_flat[j*n_u_x+i] = velocity_old_u_ptr_[(j+Ng)*u_stride+(i+Ng)];
+                } else {
+                    const int u_plane = u_stride * (Ny + 2*Ng);
+                    for (int k = 0; k < Nz; ++k)
+                        for (int j = 0; j < Ny; ++j)
+                            for (int i = 0; i <= Nx; ++i)
+                                x_flat[k*(Ny*n_u_x)+j*n_u_x+i] =
+                                    velocity_old_u_ptr_[(k+Ng)*u_plane+(j+Ng)*u_stride+(i+Ng)];
                 }
 
-                // Pack initial guess (u_old interior → flat array)
-                std::vector<double> x_flat(n_u_interior);
-                for (int j = 0; j < Ny; ++j)
-                    for (int i = 0; i <= Nx; ++i)
-                        x_flat[j*(Nx+1)+i] = velocity_old_u_ptr_[(j+Ng)*u_stride+(i+Ng)];
+                hypre_u->set_coefficients(aW.data(), aE.data(), aS.data(), aN.data(),
+                    is_2d ? nullptr : aB.data(), is_2d ? nullptr : aF.data(),
+                    aP.data(), n_u);
+                int u_iters = hypre_u->solve(rhs_mom.data(), x_flat.data(), 1e-3, n_sweeps);
 
-                // Set matrix and solve
-                hypre_mom->set_coefficients(aW.data(), aE.data(),
-                    aS.data(), aN.data(), nullptr, nullptr,
-                    aP.data(), n_u_interior);
-                int iters = hypre_mom->solve(rhs_mom.data(), x_flat.data(),
-                    1e-3, n_sweeps);
+                if (config_.verbose && step_count_ < 5)
+                    std::cerr << "[SIMPLE] HYPRE u-mom: " << u_iters
+                              << " iters, res=" << hypre_u->final_residual() << "\n";
 
-                if (config_.verbose && step_count_ < 5) {
-                    std::cerr << "[SIMPLE] HYPRE momentum: " << iters
-                              << " iters, res=" << hypre_mom->final_residual() << "\n";
+                if (is_2d) {
+                    for (int j = 0; j < Ny; ++j)
+                        for (int i = 0; i <= Nx; ++i)
+                            velocity_star_u_ptr_[(j+Ng)*u_stride+(i+Ng)] = x_flat[j*n_u_x+i];
+                } else {
+                    const int u_plane = u_stride * (Ny + 2*Ng);
+                    for (int k = 0; k < Nz; ++k)
+                        for (int j = 0; j < Ny; ++j)
+                            for (int i = 0; i <= Nx; ++i)
+                                velocity_star_u_ptr_[(k+Ng)*u_plane+(j+Ng)*u_stride+(i+Ng)] =
+                                    x_flat[k*(Ny*n_u_x)+j*n_u_x+i];
                 }
-
-                // Unpack solution to velocity_star (interior + ghost via BC)
-                for (int j = 0; j < Ny; ++j)
-                    for (int i = 0; i <= Nx; ++i)
-                        velocity_star_u_ptr_[(j+Ng)*u_stride+(i+Ng)] = x_flat[j*(Nx+1)+i];
 #else
-                // Fallback: single Jacobi sweep (diagonal approximation)
-                // This is weak but stable with the varcoeff pressure correction.
-                for (int j = 0; j < Ny; ++j)
-                    for (int i = 0; i <= Nx; ++i) {
-                        int flat = j*(Nx+1)+i;
-                        int idx = (j+Ng)*u_stride+(i+Ng);
-                        velocity_star_u_ptr_[idx] = rhs_mom[flat] / aP[flat];
-                    }
+                // Fallback: Jacobi diagonal approximation
+                if (is_2d) {
+                    for (int j = 0; j < Ny; ++j)
+                        for (int i = 0; i <= Nx; ++i)
+                            velocity_star_u_ptr_[(j+Ng)*u_stride+(i+Ng)] =
+                                rhs_mom[j*(Nx+1)+i] / aP[j*(Nx+1)+i];
+                }
 #endif
-                // Apply BCs to u*
-                std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
-                std::swap(velocity_, velocity_star_);
-                apply_velocity_bc();
-                std::swap(velocity_, velocity_star_);
-                std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
             }
 
-            // For v: zero for now (channel/Poiseuille has v≈0)
-            for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
-                velocity_star_v_ptr_[i_v] = 0.0;
+            // --- V-momentum solve (same structure, different grid) ---
+            if (!is_2d) {
+                const int n_v = Nx * (Ny+1) * Nz;
+                std::vector<double> aW(n_v), aE(n_v), aS(n_v), aN(n_v);
+                std::vector<double> aB(n_v), aF(n_v);
+                std::vector<double> aP(n_v), rhs_mom(n_v);
+
+                const int u_plane = u_stride * (Ny + 2*Ng);
+                const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
+                const int w_stride = Nx + 2*Ng;
+                const int w_plane = w_stride * (Ny + 2*Ng);
+                const int cell_plane_s = cell_stride * (Ny + 2*Ng);
+
+                time_kernels::simple_assemble_momentum_v_3d(
+                    aW.data(), aE.data(), aS.data(), aN.data(),
+                    aB.data(), aF.data(), aP.data(), rhs_mom.data(),
+                    velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
+                    nu_eff_ptr_, pressure_ptr_, tau_div_v_ptr_,
+                    fy_, alpha_u_s, pseudo_dt_inv, ddx, ddy, mesh_->dz,
+                    Nx, Ny, Nz, Ng,
+                    u_stride, u_plane, v_stride_s, v_plane,
+                    w_stride, w_plane, cell_stride, cell_plane_s);
+
+#ifdef USE_HYPRE
+                static std::unique_ptr<HypreMomentumSolver> hypre_v;
+                if (!hypre_v) hypre_v = std::make_unique<HypreMomentumSolver>(*mesh_, false);
+
+                std::vector<double> x_flat(n_v);
+                for (int k = 0; k < Nz; ++k)
+                    for (int j = 0; j <= Ny; ++j)
+                        for (int i = 0; i < Nx; ++i)
+                            x_flat[k*((Ny+1)*Nx)+j*Nx+i] =
+                                velocity_old_v_ptr_[(k+Ng)*v_plane+(j+Ng)*v_stride_s+(i+Ng)];
+
+                hypre_v->set_coefficients(aW.data(), aE.data(), aS.data(), aN.data(),
+                    aB.data(), aF.data(), aP.data(), n_v);
+                int v_iters = hypre_v->solve(rhs_mom.data(), x_flat.data(), 1e-3, n_sweeps);
+
+                if (config_.verbose && step_count_ < 5)
+                    std::cerr << "[SIMPLE] HYPRE v-mom: " << v_iters
+                              << " iters, res=" << hypre_v->final_residual() << "\n";
+
+                for (int k = 0; k < Nz; ++k)
+                    for (int j = 0; j <= Ny; ++j)
+                        for (int i = 0; i < Nx; ++i)
+                            velocity_star_v_ptr_[(k+Ng)*v_plane+(j+Ng)*v_stride_s+(i+Ng)] =
+                                x_flat[k*((Ny+1)*Nx)+j*Nx+i];
+#endif
+            } else {
+                // 2D: v=0 for channel/Poiseuille (no v-momentum solve)
+                for (size_t i_v = 0; i_v < velocity_.v_total_size(); ++i_v)
+                    velocity_star_v_ptr_[i_v] = 0.0;
+            }
+
+            // --- W-momentum solve (3D only) ---
+            if (!is_2d) {
+                const int n_w = Nx * Ny * (Nz+1);
+                std::vector<double> aW_w(n_w), aE_w(n_w), aS_w(n_w), aN_w(n_w);
+                std::vector<double> aB_w(n_w), aF_w(n_w);
+                std::vector<double> aP_w(n_w), rhs_w(n_w);
+
+                const int u_plane = u_stride * (Ny + 2*Ng);
+                const int v_plane = v_stride_s * (Ny + 2*Ng + 1);
+                const int w_stride = Nx + 2*Ng;
+                const int w_plane = w_stride * (Ny + 2*Ng);
+                const int cell_plane_s = cell_stride * (Ny + 2*Ng);
+
+                time_kernels::simple_assemble_momentum_w_3d(
+                    aW_w.data(), aE_w.data(), aS_w.data(), aN_w.data(),
+                    aB_w.data(), aF_w.data(), aP_w.data(), rhs_w.data(),
+                    velocity_old_u_ptr_, velocity_old_v_ptr_, velocity_old_w_ptr_,
+                    nu_eff_ptr_, pressure_ptr_, tau_div_w_ptr_,
+                    fz_, alpha_u_s, pseudo_dt_inv, ddx, ddy, mesh_->dz,
+                    Nx, Ny, Nz, Ng,
+                    u_stride, u_plane, v_stride_s, v_plane,
+                    w_stride, w_plane, cell_stride, cell_plane_s);
+
+                // W-momentum HYPRE solve would go here
+                // For now, use Jacobi fallback for w
+                for (int idx = 0; idx < n_w; ++idx)
+                    if (aP_w[idx] > 1e-20) {
+                        // Unpack to velocity_star_w (TODO: proper pack/unpack)
+                    }
+                // Simplified: copy w from old for now
+                for (size_t i_w = 0; i_w < velocity_.w_total_size(); ++i_w)
+                    velocity_star_w_ptr_[i_w] = velocity_old_w_ptr_[i_w];
+            }
+
+            // Apply BCs to velocity_star (all components)
+            std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+            std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+            if (!is_2d) std::swap(velocity_w_ptr_, velocity_star_w_ptr_);
+            std::swap(velocity_, velocity_star_);
+            apply_velocity_bc();
+            std::swap(velocity_, velocity_star_);
+            std::swap(velocity_u_ptr_, velocity_star_u_ptr_);
+            std::swap(velocity_v_ptr_, velocity_star_v_ptr_);
+            if (!is_2d) std::swap(velocity_w_ptr_, velocity_star_w_ptr_);
         }
         } else {
         // Diagonal-approximation predictor: u* = u + (H - dp/dx) / a_P
