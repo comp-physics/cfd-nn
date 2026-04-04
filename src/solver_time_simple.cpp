@@ -640,37 +640,26 @@ double RANSSolver::simple_step() {
         // Jacobi momentum solve uses damped a_P for stability.
         double pseudo_dt_proj;
         if (config_.simple_jacobi_sweeps > 0) {
-            // Compute undamped a_P = (diffusion + convection diagonal) at u-faces
-            const int u_stride_p = Nx + 2 * Ng + 1;
-            const int cell_stride_p = Nx + 2 * Ng;
-            double inv_dx2 = 1.0 / (mesh_->dx * mesh_->dx);
-            double inv_dy2 = 1.0 / (mesh_->dy * mesh_->dy);
+            // For SIMPLE: pseudo_dt = vol / mean(a_P) where a_P is the
+            // diagonal from the momentum equation (already stored in a_p_u_ptr_).
+            // This ensures the pressure RHS scaling matches the velocity correction.
             double vol = is_2d ? mesh_->dx * mesh_->dy
                                : mesh_->dx * mesh_->dy * mesh_->dz;
-            double sum_aP_undamped = 0.0;
-            int n_interior = (Nx + 1) * Ny;
-            for (int j_m = 0; j_m < Ny; ++j_m) {
-                for (int i_m = 0; i_m <= Nx; ++i_m) {
-                    int jg = j_m + Ng;
-                    int ig = i_m + Ng;
-                    // Diffusion diagonal (same nu_avg as Jacobi)
-                    int cl = jg * cell_stride_p + (ig - 1);
-                    int cr = jg * cell_stride_p + ig;
-                    double nu_avg = 0.5 * (nu_eff_ptr_[cl] + nu_eff_ptr_[cr]);
-                    double aP_diff = nu_avg * (2.0 * inv_dx2 + 2.0 * inv_dy2) * vol;
-                    // Convection diagonal (upwind)
-                    double u_e = velocity_old_u_ptr_[jg * u_stride_p + (ig+1)];
-                    double u_w = velocity_old_u_ptr_[jg * u_stride_p + (ig-1)];
-                    double Fw = u_w * mesh_->dy;
-                    double Fe = u_e * mesh_->dy;
-                    double aP_conv = (Fw < 0 ? -Fw : 0.0) + (Fe > 0 ? Fe : 0.0);
-                    // v fluxes negligible for first approximation
-                    sum_aP_undamped += aP_diff + aP_conv;
-                }
-            }
-            double mean_aP_undamped = (n_interior > 0) ? sum_aP_undamped / n_interior : 1.0;
-            if (mean_aP_undamped < 1e-20) mean_aP_undamped = 1e-20;
-            pseudo_dt_proj = vol / mean_aP_undamped;
+            double sum_aP = 0.0;
+            const int u_stride_p = Nx + 2 * Ng + 1;
+            const int Nz_loop = is_2d ? 1 : Nz;
+            const int u_plane_p = u_stride_p * (Ny + 2 * Ng);
+            int n_total = 0;
+            for (int k = 0; k < Nz_loop; ++k)
+                for (int j = 0; j < Ny; ++j)
+                    for (int i = 0; i <= Nx; ++i) {
+                        int idx = (is_2d ? 0 : (k+Ng)*u_plane_p) + (j+Ng)*u_stride_p + (i+Ng);
+                        sum_aP += a_p_u_ptr_[idx];
+                        n_total++;
+                    }
+            double mean_aP = (n_total > 0) ? sum_aP / n_total : 1.0;
+            if (mean_aP < 1e-20) mean_aP = 1e-20;
+            pseudo_dt_proj = vol / mean_aP;
         } else {
             // Diagonal approx: use CFL-limited pseudo_dt
             double u_max_p = 0.0;
