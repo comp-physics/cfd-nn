@@ -1327,14 +1327,16 @@ double RANSSolver::step() {
     // For IBM cases with Cd computation, disable this (use fixed dp/dx instead).
     if (bulk_velocity_control_) {
         double U_b = bulk_velocity();
-        double error = bulk_velocity_target_ - U_b;
-        // Simple proportional controller: fx += alpha * error / dt
-        // The correction force needed: rho * dU/dt = dp/dx_correction
-        // For steady state convergence, scale by relaxation factor
-        double alpha = 1.0;  // relaxation (1.0 = full correction each step)
-        double correction = alpha * error / std::max(current_dt_, 1e-15);
-        fx_ += correction;
-        // Prevent negative body force (flow should go in positive x)
+        // Adjust body force proportionally: if U_b is too low, increase fx
+        // OpenFOAM approach: fx_new = fx_old * (U_target / U_b)
+        // With relaxation to prevent oscillation:
+        //   fx_new = fx_old + alpha * fx_old * (U_target/U_b - 1)
+        if (U_b > 1e-10) {
+            double ratio = bulk_velocity_target_ / U_b;
+            double alpha = 0.5;  // relaxation (0.5 = half-correction per step)
+            fx_ *= (1.0 + alpha * (ratio - 1.0));
+        }
+        // Prevent negative body force
         if (fx_ < 0.0) fx_ = 0.0;
     }
 
