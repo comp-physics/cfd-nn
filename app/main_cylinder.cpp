@@ -299,7 +299,11 @@ int main(int argc, char** argv) {
                           << " for t=" << config.warmup_time << " ===\n";
             }
 
-            for (int ws = 1; ws <= config.max_steps; ++ws) {
+            // Warm-up has its own step budget (not shared with max_steps).
+            // At CFL~0.15 on fine grids, dt can be very small, requiring
+            // many steps to reach the target physical time.
+            const int warmup_max_steps = 500000;  // generous limit
+            for (int ws = 1; ws <= warmup_max_steps; ++ws) {
                 if (config.adaptive_dt) {
                     solver.set_dt(solver.compute_adaptive_dt());
                 }

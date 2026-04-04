@@ -1321,10 +1321,22 @@ double RANSSolver::step() {
         fz_ = fz_target_ * ramp;
     }
 
-    // Note: bulk velocity control is available but NOT used for Cd computation.
-    // For periodic-domain IBM, use fixed dp/dx and compute Cd from momentum balance:
-    //   Cd = |dp/dx| * V_domain / (0.5 * U_bulk^2 * A_ref)
-    // The dp/dx value determines the Re, not the other way around.
+    // Bulk velocity controller: adjust fx_ to maintain target U_b.
+    // Equivalent to OpenFOAM's meanVelocityForce — computes U_b each step and
+    // applies a proportional correction to the body force.
+    // For IBM cases with Cd computation, disable this (use fixed dp/dx instead).
+    if (bulk_velocity_control_) {
+        double U_b = bulk_velocity();
+        double error = bulk_velocity_target_ - U_b;
+        // Simple proportional controller: fx += alpha * error / dt
+        // The correction force needed: rho * dU/dt = dp/dx_correction
+        // For steady state convergence, scale by relaxation factor
+        double alpha = 1.0;  // relaxation (1.0 = full correction each step)
+        double correction = alpha * error / std::max(current_dt_, 1e-15);
+        fx_ += correction;
+        // Prevent negative body force (flow should go in positive x)
+        if (fx_ < 0.0) fx_ = 0.0;
+    }
 
     // 1a. Advance turbulence transport equations (if model uses them)
     //     OR use background transport to keep k/omega alive for non-transport models
