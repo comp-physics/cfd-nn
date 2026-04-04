@@ -782,20 +782,22 @@ double RANSSolver::simple_step() {
             const int u_stride = Nx + 2 * Ng + 1;
             const int v_stride = Nx + 2 * Ng;
             // The MG expects D = 1/a_P (diffusion coefficient), not a_P itself.
-            // Invert a_P in place, pass to MG, then invert back after the solve.
-            // a_p_u/v are GPU-mapped (persistent device data).
+            // Store 1/a_P in tau_div scratch buffers (GPU-mapped, same size as u/v).
+            // Do NOT invert a_P in place — loses precision over many iterations.
             [[maybe_unused]] const size_t u_sz = velocity_.u_total_size();
             [[maybe_unused]] const size_t v_sz = velocity_.v_total_size();
+            double* D_u = tau_div_u_ptr_;  // GPU-mapped scratch buffer
+            double* D_v = tau_div_v_ptr_;  // GPU-mapped scratch buffer
             double* apu = a_p_u_ptr_;
             double* apv = a_p_v_ptr_;
-            #pragma omp target teams distribute parallel for map(present: apu[0:u_sz])
+            #pragma omp target teams distribute parallel for \
+                map(present: D_u[0:u_sz], apu[0:u_sz])
             for (size_t ii = 0; ii < u_sz; ++ii)
-                apu[ii] = (apu[ii] > 1e-20) ? 1.0 / apu[ii] : 0.0;
-            #pragma omp target teams distribute parallel for map(present: apv[0:v_sz])
+                D_u[ii] = (apu[ii] > 1e-20) ? 1.0 / apu[ii] : 0.0;
+            #pragma omp target teams distribute parallel for \
+                map(present: D_v[0:v_sz], apv[0:v_sz])
             for (size_t ii = 0; ii < v_sz; ++ii)
-                apv[ii] = (apv[ii] > 1e-20) ? 1.0 / apv[ii] : 0.0;
-            double* D_u = apu;
-            double* D_v = apv;
+                D_v[ii] = (apv[ii] > 1e-20) ? 1.0 / apv[ii] : 0.0;
             mg_poisson_solver_.set_variable_coefficients(
                 D_u, D_v,
                 u_stride, v_stride,
@@ -880,20 +882,8 @@ double RANSSolver::simple_step() {
                     }
                 }
             }
-            // Clear variable coefficients and restore a_P (was inverted to 1/a_P)
+            // Clear variable coefficients (a_P unchanged — 1/a_P was in scratch buffer)
             mg_poisson_solver_.clear_variable_coefficients();
-            {
-                const size_t usz = velocity_.u_total_size();
-                const size_t vsz = velocity_.v_total_size();
-                double* au = a_p_u_ptr_;
-                double* av = a_p_v_ptr_;
-                #pragma omp target teams distribute parallel for map(present: au[0:usz])
-                for (size_t ii = 0; ii < usz; ++ii)
-                    au[ii] = (au[ii] > 1e-20) ? 1.0 / au[ii] : 0.0;
-                #pragma omp target teams distribute parallel for map(present: av[0:vsz])
-                for (size_t ii = 0; ii < vsz; ++ii)
-                    av[ii] = (av[ii] > 1e-20) ? 1.0 / av[ii] : 0.0;
-            }
         }
 
         // IBM RHS masking
