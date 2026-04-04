@@ -184,3 +184,28 @@ All committed and pushed to `fixup` branch.
 - HYPRE momentum solve: 1-3 BiCGSTAB iters (converges fast)
 - Per SIMPLE iteration (2D, 32x48): ~56ms (dominated by MG pressure)
 - For comparison: OpenFOAM SIMPLE on duct: 3340ms per iteration
+
+## SIMPLE Status Update (Apr 4, 7:00 PM)
+
+### What Works
+- HYPRE PFMG approximate momentum solve (1 V-cycle, like OpenFOAM's 2 GS sweeps)
+- Variable-coefficient MG pressure solve (using 1/a_P, not a_P — fixed critical bug)
+- 2D u+v momentum with HYPRE
+- RK3 warm-up → SIMPLE switching
+- Nonzero div(u*) and nonzero p' correction
+- Cd changes from 0.67→0.70 in first 100 SIMPLE iterations
+
+### What Doesn't Work Yet
+- Cd stagnates at 0.70 (DNS=1.35) after ~100 iterations
+- Same result for all alpha_u (0.7, 0.9, 1.0) and alpha_p (0.3, 0.5)
+- Eventually goes NaN at ~1500 iterations
+
+### Root Cause Investigation Needed
+1. Check IBM interaction with pressure solve (are solid cells handled correctly?)
+2. Check that v-momentum is actually updating (res=0 suggests it's trivial)
+3. Verify a_P consistency between stencil assembly and compute_aP_2d
+4. Try on a case WITHOUT IBM (backward-facing step or driven cavity)
+
+### Key Commits
+- 78207a2: Fix varcoeff (1/a_P not a_P) + PFMG solver
+- 2bd431b: 2D v-momentum + p' debug
