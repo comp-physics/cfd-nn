@@ -112,24 +112,33 @@ double RANSSolver::simple_step() {
             }
 #endif
             // Transport dt: must respect SST stability (omega can be O(1000) at walls).
-            // Compute CFL-like dt from current velocity + diffusion stability.
+            // GPU reductions for u_max and nu_max (data is device-resident).
             double u_max_t = 0.0;
             double nu_max_t = config_.nu;
-            for (size_t idx = 0; idx < field_total_size_; ++idx) {
-                if (nu_eff_ptr_[idx] > nu_max_t) nu_max_t = nu_eff_ptr_[idx];
-            }
-            double dx_min_t = is_2d ? std::min(mesh_->dx, mesh_->dy)
-                                    : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
-            // Quick u_max from a few sample points (avoid full scan)
             {
+                [[maybe_unused]] const size_t ne_sz = field_total_size_;
+                [[maybe_unused]] const size_t u_total_sz = velocity_.u_total_size();
+                double* ne_ptr = nu_eff_ptr_;
+                double* u_ptr = velocity_u_ptr_;
+                #pragma omp target teams distribute parallel for \
+                    map(present: ne_ptr[0:ne_sz]) reduction(max:nu_max_t)
+                for (size_t idx = 0; idx < ne_sz; ++idx) {
+                    if (ne_ptr[idx] > nu_max_t) nu_max_t = ne_ptr[idx];
+                }
                 const int us = Nx + 2 * Ng + 1;
-                for (int j = mesh_->j_begin(); j < mesh_->j_end(); j += std::max(1, Ny/8))
-                    for (int i = mesh_->i_begin(); i <= mesh_->i_end(); i += std::max(1, Nx/8)) {
-                        double val = velocity_u_ptr_[j * us + i];
+                const int j_beg = mesh_->j_begin(), j_end = mesh_->j_end();
+                const int i_beg = mesh_->i_begin(), i_end = mesh_->i_end();
+                #pragma omp target teams distribute parallel for collapse(2) \
+                    map(present: u_ptr[0:u_total_sz]) reduction(max:u_max_t)
+                for (int j = j_beg; j < j_end; ++j)
+                    for (int i = i_beg; i <= i_end; ++i) {
+                        double val = u_ptr[j * us + i];
                         if (val < 0) val = -val;
                         if (val > u_max_t) u_max_t = val;
                     }
             }
+            double dx_min_t = is_2d ? std::min(mesh_->dx, mesh_->dy)
+                                    : std::min({mesh_->dx, mesh_->dy, mesh_->dz});
             if (u_max_t < 1e-6) u_max_t = 1e-6;
             double dt_c = dx_min_t / u_max_t;
             double dt_d = 0.25 * dx_min_t * dx_min_t / nu_max_t;
@@ -296,18 +305,29 @@ double RANSSolver::simple_step() {
         const int cell_stride = Nx + 2 * Ng;
 
         // Pseudo-transient damping: vol / dt_pseudo added to diagonal
+        // GPU reductions for u_max and nu_eff_max (data is device-resident)
         double u_max = 0.0;
         double nu_eff_max = config_.nu;
-        if (is_2d) {
-            for (int j = mesh_->j_begin(); j < mesh_->j_end(); ++j)
-                for (int i = mesh_->i_begin(); i <= mesh_->i_end(); ++i) {
-                    double val = velocity_u_ptr_[j * u_stride + i];
+        {
+            [[maybe_unused]] const size_t u_total_sz = velocity_.u_total_size();
+            [[maybe_unused]] const size_t ne_sz = field_total_size_;
+            double* u_ptr = velocity_u_ptr_;
+            double* ne_ptr = nu_eff_ptr_;
+            const int j_beg = mesh_->j_begin(), j_end = mesh_->j_end();
+            const int i_beg = mesh_->i_begin(), i_end = mesh_->i_end();
+            #pragma omp target teams distribute parallel for collapse(2) \
+                map(present: u_ptr[0:u_total_sz]) reduction(max:u_max)
+            for (int j = j_beg; j < j_end; ++j)
+                for (int i = i_beg; i <= i_end; ++i) {
+                    double val = u_ptr[j * u_stride + i];
                     if (val < 0) val = -val;
                     if (val > u_max) u_max = val;
                 }
-        }
-        for (size_t idx = 0; idx < field_total_size_; ++idx) {
-            if (nu_eff_ptr_[idx] > nu_eff_max) nu_eff_max = nu_eff_ptr_[idx];
+            #pragma omp target teams distribute parallel for \
+                map(present: ne_ptr[0:ne_sz]) reduction(max:nu_eff_max)
+            for (size_t idx = 0; idx < ne_sz; ++idx) {
+                if (ne_ptr[idx] > nu_eff_max) nu_eff_max = ne_ptr[idx];
+            }
         }
         if (u_max < 1e-6) u_max = 1e-6;
         double dx_min = is_2d ? std::min(mesh_->dx, mesh_->dy)
