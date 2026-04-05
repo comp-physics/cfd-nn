@@ -51,7 +51,7 @@ HypreMomentumSolver::HypreMomentumSolver(const Mesh& mesh, bool is_u_component)
 }
 
 HypreMomentumSolver::~HypreMomentumSolver() {
-    if (solver_) HYPRE_StructPFMGDestroy(solver_);
+    if (solver_) HYPRE_StructJacobiDestroy(solver_);
     if (x_) HYPRE_StructVectorDestroy(x_);
     if (b_) HYPRE_StructVectorDestroy(b_);
     if (A_) HYPRE_StructMatrixDestroy(A_);
@@ -108,12 +108,14 @@ void HypreMomentumSolver::create_solver() {
     // The approximate solve leaves residual divergence that drives SIMPLE
     // pressure correction. An exact solve (BiCGSTAB+PFMG) gives div(u*)=0
     // which prevents SIMPLE from converging.
-    HYPRE_StructPFMGCreate(MPI_COMM_SELF, &solver_);
-    HYPRE_StructPFMGSetMaxIter(solver_, 1);    // Exactly 1 V-cycle
-    HYPRE_StructPFMGSetTol(solver_, 0.0);       // Don't check convergence
-    HYPRE_StructPFMGSetNumPreRelax(solver_, 1);  // 1 pre-smoothing sweep
-    HYPRE_StructPFMGSetNumPostRelax(solver_, 1); // 1 post-smoothing sweep
-    HYPRE_StructPFMGSetLogging(solver_, 0);
+    // Use Jacobi as solver (NOT PFMG) — equivalent to OpenFOAM's 2 GS sweeps.
+    // PFMG V-cycle is too strong: it converges too well, leaving div(u*)≈0
+    // or overshooting the velocity. Jacobi is the weakest iterative method —
+    // 1-2 sweeps give a small velocity update that leaves residual divergence
+    // for the pressure correction to work with.
+    HYPRE_StructJacobiCreate(MPI_COMM_SELF, &solver_);
+    HYPRE_StructJacobiSetMaxIter(solver_, 2);   // 2 Jacobi sweeps
+    HYPRE_StructJacobiSetTol(solver_, 0.0);      // Don't check convergence
 }
 
 void HypreMomentumSolver::set_coefficients(
@@ -148,15 +150,15 @@ void HypreMomentumSolver::set_coefficients(
     HYPRE_StructMatrixAssemble(A_);
 
     // Re-setup the solver with the new matrix
-    HYPRE_StructPFMGSetup(solver_, A_, b_, x_);
+    HYPRE_StructJacobiSetup(solver_, A_, b_, x_);
 }
 
 int HypreMomentumSolver::solve(const double* b, double* x,
                                  double tol, int max_iter)
 {
-    // PFMG: set number of V-cycles (max_iter) and tolerance
-    HYPRE_StructPFMGSetMaxIter(solver_, std::max(1, max_iter));
-    HYPRE_StructPFMGSetTol(solver_, tol);
+    // Jacobi: set number of sweeps and tolerance
+    HYPRE_StructJacobiSetMaxIter(solver_, std::max(1, max_iter));
+    HYPRE_StructJacobiSetTol(solver_, tol);
 
     // Pack RHS
     std::memcpy(rhs_host_.data(), b, n_cells_ * sizeof(double));
@@ -168,8 +170,8 @@ int HypreMomentumSolver::solve(const double* b, double* x,
     HYPRE_StructVectorSetBoxValues(x_, ilower_, iupper_, x_host_.data());
     HYPRE_StructVectorAssemble(x_);
 
-    // Solve (1 V-cycle = approximate solve, like OpenFOAM's 2 GS sweeps)
-    HYPRE_StructPFMGSolve(solver_, A_, b_, x_);
+    // Solve (2 Jacobi sweeps = approximate solve, like OpenFOAM's 2 GS sweeps)
+    HYPRE_StructJacobiSolve(solver_, A_, b_, x_);
 
     // Extract solution
     HYPRE_StructVectorGetBoxValues(x_, ilower_, iupper_, x_host_.data());
@@ -177,8 +179,8 @@ int HypreMomentumSolver::solve(const double* b, double* x,
 
     // Get convergence info
     HYPRE_Int num_iter;
-    HYPRE_StructPFMGGetNumIterations(solver_, &num_iter);
-    HYPRE_StructPFMGGetFinalRelativeResidualNorm(solver_, &final_residual_);
+    HYPRE_StructJacobiGetNumIterations(solver_, &num_iter);
+    HYPRE_StructJacobiGetFinalRelativeResidualNorm(solver_, &final_residual_);
 
     return static_cast<int>(num_iter);
 }

@@ -377,10 +377,10 @@ double RANSSolver::simple_step() {
             const int n_u_interior = (Nx + 1) * Ny;
 
             // Compute a_P for pressure correction.
-            // For HYPRE SIMPLE: NO pseudo-transient. HYPRE's PFMG provides
-            // the multigrid damping that bare Jacobi/RB-GS lacked.
-            // Pure Patankar: a_P = a_P_phys / alpha_u (no vol/dt term).
-            const double simple_pdt_inv = 0.0;  // Pure SIMPLE
+            // Include pseudo-transient in a_P for stability of the pressure correction.
+            // Without pseudo_dt, 1/a_P is too large for SST → correction overshoots.
+            // This is equivalent to OpenFOAM's under-relaxation mechanism.
+            const double simple_pdt_inv = pseudo_dt_inv;
             if (is_2d) {
                 time_kernels::simple_compute_aP_2d(
                     a_p_u_ptr_, a_p_v_ptr_, nu_eff_ptr_,
